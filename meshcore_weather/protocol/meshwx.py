@@ -2,9 +2,60 @@
 
 Wire format reference: Weather_Protocol.md
 All multi-byte integers are big-endian unless noted.
+All binary payloads are COBS-encoded before transmission to avoid null bytes
+which the MeshCore firmware's companion protocol truncates at.
 """
 
 import struct
+
+
+# -- COBS (Consistent Overhead Byte Stuffing) --
+
+def cobs_encode(data: bytes) -> bytes:
+    """COBS-encode data to eliminate all 0x00 bytes.
+
+    Overhead: at most 1 byte per 254 input bytes.
+    """
+    output = bytearray()
+    block_start = len(output)
+    output.append(0)  # placeholder for first code byte
+    run_length = 1
+
+    for byte in data:
+        if byte == 0x00:
+            output[block_start] = run_length
+            block_start = len(output)
+            output.append(0)  # placeholder for next code byte
+            run_length = 1
+        else:
+            output.append(byte)
+            run_length += 1
+            if run_length == 0xFF:
+                output[block_start] = run_length
+                block_start = len(output)
+                output.append(0)
+                run_length = 1
+
+    output[block_start] = run_length
+    return bytes(output)
+
+
+def cobs_decode(data: bytes) -> bytes:
+    """Decode COBS-encoded data back to original bytes."""
+    output = bytearray()
+    i = 0
+    while i < len(data):
+        code = data[i]
+        i += 1
+        for _ in range(code - 1):
+            if i >= len(data):
+                break
+            output.append(data[i])
+            i += 1
+        # Append a zero delimiter between blocks, but not after the last block
+        if code < 0xFF and i < len(data):
+            output.append(0x00)
+    return bytes(output)
 
 # -- Message type bytes --
 MSG_RADAR = 0x10

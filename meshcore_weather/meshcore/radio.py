@@ -75,8 +75,14 @@ class MeshcoreRadio:
                 self._data_channel_idx = await self._resolve_channel(settings.meshwx_channel)
                 logger.info("Data channel %d (%s)", self._data_channel_idx, settings.meshwx_channel)
             except ValueError:
-                logger.warning("MeshWX data channel '%s' not found — binary broadcast disabled",
-                               settings.meshwx_channel)
+                # Channel doesn't exist — create it on a free slot
+                created = await self._create_channel(settings.meshwx_channel)
+                if created is not None:
+                    self._data_channel_idx = created
+                    logger.info("Created data channel %d (%s)", created, settings.meshwx_channel)
+                else:
+                    logger.warning("Could not create data channel '%s' — no free slots",
+                                   settings.meshwx_channel)
 
         # Subscribe to channel messages, DMs, and new adverts
         self._mc.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_msg)
@@ -105,6 +111,42 @@ class MeshcoreRadio:
         self._contacts_task = asyncio.create_task(self._contacts_loop())
 
         logger.info("Meshcore radio connected. Node: %s", self._mc.self_info.get("adv_name", "?"))
+
+    async def _create_channel(self, channel_name: str) -> int | None:
+        """Create a channel on the first free or reusable slot. Returns index or None."""
+        slots: dict[int, str] = {}
+        for i in range(8):
+            try:
+                ch = await self._mc.commands.get_channel(i)
+                name = ch.payload.get("channel_name", "")
+                slots[i] = name
+            except Exception:
+                break
+
+        # First: check if there's a stale version of this channel (e.g. #name vs name)
+        bare = channel_name.lstrip("#")
+        for i, name in slots.items():
+            if i == 0:
+                continue
+            if name.lstrip("#") == bare and name != channel_name:
+                logger.info("Overwriting stale channel %d (%s -> %s)", i, name, channel_name)
+                try:
+                    result = await self._mc.commands.set_channel(i, channel_name)
+                    if result.type == EventType.OK:
+                        return i
+                except Exception:
+                    pass
+
+        # Otherwise find a free slot
+        for i in range(1, 8):
+            if not slots.get(i):
+                try:
+                    result = await self._mc.commands.set_channel(i, channel_name)
+                    if result.type == EventType.OK:
+                        return i
+                except Exception:
+                    logger.debug("Failed to create channel on slot %d", i)
+        return None
 
     async def _resolve_channel(self, channel_ref: str) -> int:
         try:
@@ -170,9 +212,12 @@ class MeshcoreRadio:
             + payload
         )
         try:
-            await self._mc.commands.send(data, [EventType.OK, EventType.ERROR])
-            logger.debug("Binary sent on data ch %d: %d bytes (type 0x%02x)",
-                         self._data_channel_idx, len(payload), payload[0] if payload else 0)
+            result = await self._mc.commands.send(data, [EventType.OK, EventType.ERROR])
+            if result.type == EventType.ERROR:
+                logger.warning("Binary send failed on data ch %d: %s", self._data_channel_idx, result.payload)
+            else:
+                logger.info("Binary sent on ch %d: %d bytes (type 0x%02x)",
+                            self._data_channel_idx, len(payload), payload[0] if payload else 0)
         except Exception:
             logger.exception("Failed to send binary on data channel")
 

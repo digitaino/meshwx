@@ -9,6 +9,7 @@ import httpx
 from meshcore_weather.config import settings
 from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.parser.weather import WeatherStore
+from meshcore_weather.protocol.meshwx import cobs_encode
 from meshcore_weather.protocol.radar import fetch_radar_composite, build_radar_messages
 from meshcore_weather.protocol.warnings import extract_active_warnings, warnings_to_binary
 
@@ -74,7 +75,7 @@ class MeshWXBroadcaster:
             self._latest_radar = result
 
     async def _broadcast_radar(self) -> int:
-        """Fetch and broadcast radar grids for all regions with precipitation."""
+        """Fetch and broadcast COBS-encoded radar grids."""
         await self._fetch_radar()
         if not self._latest_radar:
             return 0
@@ -82,18 +83,18 @@ class MeshWXBroadcaster:
         msgs = build_radar_messages(img_data, ts_min)
         sent = 0
         for msg in msgs:
-            await self.radio.send_binary_channel(msg)
+            await self.radio.send_binary_channel(cobs_encode(msg))
             sent += 1
             await asyncio.sleep(TX_SPACING)
         return sent
 
     async def _broadcast_warnings(self) -> int:
-        """Broadcast all active warning polygons on the data channel."""
+        """Broadcast COBS-encoded warning polygons."""
         warnings = extract_active_warnings(self.store)
         msgs = warnings_to_binary(warnings)
         sent = 0
         for msg in msgs:
-            await self.radio.send_binary_channel(msg)
+            await self.radio.send_binary_channel(cobs_encode(msg))
             sent += 1
             if sent < len(msgs):
                 await asyncio.sleep(TX_SPACING)
@@ -121,7 +122,7 @@ class MeshWXBroadcaster:
                 if grid:
                     region = REGIONS[region_id]
                     msg = pack_radar_grid(region_id, 0, ts_min, region["scale"], grid)
-                    await self.radio.send_binary_channel(msg)
+                    await self.radio.send_binary_channel(cobs_encode(msg))
 
         if request_type in (2, 3):
             await self._broadcast_warnings()

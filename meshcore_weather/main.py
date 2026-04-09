@@ -336,14 +336,61 @@ class WeatherBot:
             await self.radio.send_dm(prefix, f"Contacts refreshed: {count} contacts.")
             return "refresh"
 
+        if cmd == "broadcast":
+            if not self._broadcaster:
+                await self.radio.send_dm(prefix, "MeshWX broadcast not enabled.")
+                return "disabled"
+            await self.radio.send_dm(prefix, "Broadcasting now...")
+            try:
+                await self._broadcaster._broadcast_all()
+                await self.radio.send_dm(prefix, "Broadcast complete.")
+            except Exception as e:
+                await self.radio.send_dm(prefix, f"Broadcast error: {e}")
+            return "broadcast"
+
+        if cmd == "radar":
+            if not self._broadcaster:
+                await self.radio.send_dm(prefix, "MeshWX broadcast not enabled.")
+                return "disabled"
+            await self.radio.send_dm(prefix, "Fetching radar...")
+            try:
+                count = await self._broadcaster._broadcast_radar()
+                await self.radio.send_dm(prefix, f"Sent {count} radar grid(s).")
+            except Exception as e:
+                await self.radio.send_dm(prefix, f"Radar error: {e}")
+            return "radar"
+
+        if cmd == "warnings-broadcast":
+            if not self._broadcaster:
+                await self.radio.send_dm(prefix, "MeshWX broadcast not enabled.")
+                return "disabled"
+            try:
+                count = await self._broadcaster._broadcast_warnings()
+                await self.radio.send_dm(prefix, f"Sent {count} warning polygon(s).")
+            except Exception as e:
+                await self.radio.send_dm(prefix, f"Warning broadcast error: {e}")
+            return "warnings-broadcast"
+
+        if cmd == "test-data-ch":
+            ch = self.radio.data_channel_idx
+            if ch is None:
+                await self.radio.send_dm(prefix, "No data channel configured.")
+                return "no ch"
+            await self.radio._mc.commands.send_chan_msg(ch, "MeshWX test ping")
+            await self.radio.send_dm(prefix, f"Sent text test on ch {ch}.")
+            return "test"
+
         if cmd == "admin":
             reply = (
                 "Admin commands (DM only):\n"
-                "contacts - list device contacts\n"
+                "contacts - list contacts\n"
                 "remove <name> - remove contact\n"
                 "clear-contacts - remove all\n"
                 "advert - send advert now\n"
-                "refresh - reload contacts"
+                "refresh - reload contacts\n"
+                "broadcast - send radar+warnings\n"
+                "radar - send radar only\n"
+                "warnings-broadcast - send warnings"
             )
             await self._send_dm_paginated(prefix, sender_name, reply)
             return reply
