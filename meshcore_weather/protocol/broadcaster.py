@@ -7,10 +7,24 @@ import time
 import httpx
 
 from meshcore_weather.config import settings
+from meshcore_weather.geodata import resolver
 from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.parser.weather import WeatherStore
 from meshcore_weather.protocol.coverage import Coverage
-from meshcore_weather.protocol.meshwx import cobs_encode
+from meshcore_weather.protocol.encoders import (
+    encode_forecast_from_zfp,
+    encode_metar,
+    encode_rwr_city,
+    now_utc_minutes,
+)
+from meshcore_weather.protocol.meshwx import (
+    DATA_FORECAST,
+    DATA_METAR,
+    DATA_WX,
+    LOC_STATION,
+    LOC_ZONE,
+    cobs_encode,
+)
 from meshcore_weather.protocol.radar import fetch_radar_composite, build_radar_messages
 from meshcore_weather.protocol.warnings import extract_active_warnings, warnings_to_binary
 
@@ -141,3 +155,133 @@ class MeshWXBroadcaster:
             await self._broadcast_warnings()
 
         logger.info("MeshWX refresh for region 0x%X (type=%d)", region_id, request_type)
+
+    async def respond_to_data_request(self, req: dict) -> None:
+        """Handle a v2 data request (0x02) and broadcast the response.
+
+        Rate-limited per (data_type, location) for 5 minutes.
+        Looks up the right data from the weather store and encodes it
+        using the v2 encoders, then broadcasts on the data channel.
+        """
+        data_type = req["data_type"]
+        loc = req["location"]
+
+        # Rate-limit key
+        loc_key = self._location_key(loc)
+        rate_key = f"{data_type}:{loc_key}"
+        now = time.time()
+        if not hasattr(self, "_v2_rate_limit"):
+            self._v2_rate_limit: dict[str, float] = {}
+        last = self._v2_rate_limit.get(rate_key, 0)
+        if now - last < 300:  # 5 min per (type, location)
+            logger.debug("v2 request throttled: %s", rate_key)
+            return
+        self._v2_rate_limit[rate_key] = now
+
+        # Resolve the location dict to something the store can query
+        location_name = self._location_to_query_string(loc)
+        if not location_name:
+            logger.debug("Could not resolve location for v2 request: %s", loc)
+            return
+
+        msg = None
+        if data_type == DATA_WX:
+            msg = self._build_observation(loc, location_name)
+        elif data_type == DATA_FORECAST:
+            msg = self._build_forecast(loc, location_name)
+        elif data_type == DATA_METAR:
+            msg = self._build_metar(loc, location_name)
+        else:
+            logger.debug("Unsupported v2 data type: %d", data_type)
+            return
+
+        if msg is None:
+            logger.info("No v2 response data available for %s", rate_key)
+            return
+
+        await self.radio.send_binary_channel(cobs_encode(msg))
+        logger.info("Sent v2 response type=0x%02x for %s (%d bytes)",
+                    msg[0], rate_key, len(msg))
+
+    @staticmethod
+    def _location_key(loc: dict) -> str:
+        """Stable string key for a location (used for rate limiting)."""
+        t = loc.get("type")
+        if t == LOC_ZONE:
+            return f"zone:{loc.get('zone')}"
+        if t == LOC_STATION:
+            return f"station:{loc.get('station')}"
+        return str(loc)
+
+    @staticmethod
+    def _location_to_query_string(loc: dict) -> str | None:
+        """Convert a location dict to a string the WeatherStore can resolve."""
+        t = loc.get("type")
+        if t == LOC_ZONE:
+            return loc.get("zone")
+        if t == LOC_STATION:
+            return loc.get("station")
+        return None
+
+    def _build_observation(self, loc: dict, query: str) -> bytes | None:
+        """Build a 0x30 observation message for the given location."""
+        resolved = resolver.resolve(query)
+        if not resolved:
+            return None
+
+        station = resolved.get("station")
+        if station:
+            raw = self.store._find_metar_raw(station)
+            if raw:
+                metar_text, _ts = raw
+                msg = encode_metar(station, metar_text, now_utc_minutes())
+                if msg:
+                    return msg
+
+        # Fall back: try RWR via WFO
+        zones = resolved.get("zones", [])
+        if zones:
+            zone = zones[0]
+            for wfo in resolved.get("wfos", []):
+                state = zone[:2]
+                rwr = self.store._find("RWR", f"{wfo}{state}")
+                if rwr:
+                    city = resolved["name"].split(",")[0].strip().upper()
+                    line = self.store._parse_rwr_city_raw(rwr.raw_text, city)
+                    if line:
+                        return encode_rwr_city(zone, line, now_utc_minutes())
+        return None
+
+    def _build_forecast(self, loc: dict, query: str) -> bytes | None:
+        """Build a 0x31 forecast message for the given location."""
+        resolved = resolver.resolve(query)
+        if not resolved:
+            return None
+        zones = resolved.get("zones", [])
+        if not zones:
+            return None
+        zone = zones[0]
+
+        # Find the ZFP for this zone via its WFO
+        for wfo in resolved.get("wfos", []):
+            state = zone[:2]
+            zfp = self.store._find("ZFP", f"{wfo}{state}")
+            if zfp:
+                from meshcore_weather.parser.weather import _age_str  # noqa
+                zone_text = self.store._parse_zfp_zone(zfp.raw_text, zone)
+                if zone_text:
+                    # _parse_zfp_zone returns a single period string; we need
+                    # the full text. Fall back to the raw product text.
+                    import math
+                    hours_ago = int(
+                        (now_utc_minutes() - zfp.timestamp.hour * 60 - zfp.timestamp.minute) / 60
+                    )
+                    return encode_forecast_from_zfp(
+                        zone, zfp.raw_text, max(0, hours_ago),
+                    )
+        return None
+
+    def _build_metar(self, loc: dict, query: str) -> bytes | None:
+        """Build a 0x35 METAR message (uses 0x30 observation format)."""
+        # For now, same as observation for station queries
+        return self._build_observation(loc, query)

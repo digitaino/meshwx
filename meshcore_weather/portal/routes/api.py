@@ -268,3 +268,52 @@ async def trigger_broadcast(request: Request) -> JSONResponse:
         raise HTTPException(400, "Broadcaster not running")
     await broadcaster._broadcast_all()
     return JSONResponse({"ok": True})
+
+
+@router.post("/actions/v2-request")
+async def trigger_v2_request(request: Request) -> JSONResponse:
+    """Simulate a v2 data request for testing (bypasses rate limit with force flag).
+
+    Body: {"data_type": "wx"|"forecast"|"metar", "location": "Austin TX"}
+    """
+    from meshcore_weather.protocol.meshwx import (
+        DATA_FORECAST, DATA_METAR, DATA_WX, LOC_STATION, LOC_ZONE
+    )
+    body = await request.json()
+    data_type_str = body.get("data_type", "wx")
+    location_str = body.get("location", "")
+
+    bot = request.app.state.bot
+    broadcaster = getattr(bot, "_broadcaster", None)
+    if not broadcaster:
+        raise HTTPException(400, "Broadcaster not running")
+
+    # Resolve the location string to a zone or station
+    resolved = resolver.resolve(location_str)
+    if not resolved:
+        raise HTTPException(400, f"Could not resolve: {location_str}")
+
+    # Prefer zone, fall back to station
+    zones = resolved.get("zones", [])
+    station = resolved.get("station")
+    if zones:
+        loc = {"type": LOC_ZONE, "zone": zones[0]}
+    elif station:
+        loc = {"type": LOC_STATION, "station": station}
+    else:
+        raise HTTPException(400, "Could not build location ref")
+
+    data_map = {"wx": DATA_WX, "forecast": DATA_FORECAST, "metar": DATA_METAR}
+    data_type = data_map.get(data_type_str)
+    if data_type is None:
+        raise HTTPException(400, f"Unknown data_type: {data_type_str}")
+
+    # Bypass rate limit by clearing this entry
+    loc_key = broadcaster._location_key(loc)
+    rate_key = f"{data_type}:{loc_key}"
+    if hasattr(broadcaster, "_v2_rate_limit"):
+        broadcaster._v2_rate_limit.pop(rate_key, None)
+
+    req = {"data_type": data_type, "location": loc, "client_newest": 0, "flags": 0}
+    await broadcaster.respond_to_data_request(req)
+    return JSONResponse({"ok": True, "location": loc, "data_type": data_type_str})

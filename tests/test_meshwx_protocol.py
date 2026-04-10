@@ -9,10 +9,34 @@ from meshcore_weather.protocol.meshwx import (
     unpack_warning_polygon,
     pack_refresh_request,
     unpack_refresh_request,
+    pack_location,
+    unpack_location,
+    pack_data_request,
+    unpack_data_request,
+    pack_observation,
+    unpack_observation,
+    pack_forecast,
+    unpack_forecast,
+    state_to_idx,
+    idx_to_state,
+    wind_dir_to_nibble,
+    nibble_to_wind_dir,
     region_for_location,
+    LOC_ZONE,
+    LOC_STATION,
+    LOC_PLACE,
+    LOC_LATLON,
+    LOC_WFO,
+    DATA_WX,
+    DATA_FORECAST,
+    SKY_CLEAR,
+    SKY_RAIN,
     MSG_RADAR,
     MSG_WARNING,
     MSG_REFRESH,
+    MSG_OBSERVATION,
+    MSG_FORECAST,
+    MSG_DATA_REQUEST,
     WARN_TORNADO,
     SEV_WARNING,
 )
@@ -164,3 +188,187 @@ class TestCOBS:
         msg = pack_radar_grid(0x0, 0, 0, 55, grid)
         encoded = cobs_encode(msg)
         assert len(encoded) <= len(msg) + 3
+
+
+class TestStateIndex:
+    def test_common_states(self):
+        assert state_to_idx("TX") == 42
+        assert state_to_idx("CA") == 4
+        assert state_to_idx("NY") == 31
+        assert state_to_idx("FL") == 8
+
+    def test_roundtrip(self):
+        for state in ["TX", "CA", "AK", "HI", "PR", "GU"]:
+            idx = state_to_idx(state)
+            assert idx != 0xFF
+            assert idx_to_state(idx) == state
+
+    def test_unknown(self):
+        assert state_to_idx("ZZ") == 0xFF
+
+
+class TestWindDirection:
+    def test_cardinal_points(self):
+        assert wind_dir_to_nibble(0) == 0     # N
+        assert wind_dir_to_nibble(90) == 4    # E
+        assert wind_dir_to_nibble(180) == 8   # S
+        assert wind_dir_to_nibble(270) == 12  # W
+
+    def test_labels(self):
+        assert nibble_to_wind_dir(0) == "N"
+        assert nibble_to_wind_dir(4) == "E"
+        assert nibble_to_wind_dir(8) == "S"
+        assert nibble_to_wind_dir(12) == "W"
+
+
+class TestLocationEncoding:
+    def test_zone_roundtrip(self):
+        encoded = pack_location(LOC_ZONE, "TXZ192")
+        assert len(encoded) == 4
+        loc, off = unpack_location(encoded)
+        assert loc["type"] == LOC_ZONE
+        assert loc["zone"] == "TXZ192"
+        assert off == 4
+
+    def test_station_roundtrip(self):
+        encoded = pack_location(LOC_STATION, "KAUS")
+        assert len(encoded) == 5
+        loc, _ = unpack_location(encoded)
+        assert loc["station"] == "KAUS"
+
+    def test_place_roundtrip(self):
+        encoded = pack_location(LOC_PLACE, 12345)
+        assert len(encoded) == 4
+        loc, _ = unpack_location(encoded)
+        assert loc["place_id"] == 12345
+
+    def test_latlon_roundtrip(self):
+        encoded = pack_location(LOC_LATLON, (30.27, -97.74))
+        assert len(encoded) == 7
+        loc, _ = unpack_location(encoded)
+        assert abs(loc["lat"] - 30.27) < 0.0001
+        assert abs(loc["lon"] - (-97.74)) < 0.0001
+
+    def test_wfo_roundtrip(self):
+        encoded = pack_location(LOC_WFO, "EWX")
+        assert len(encoded) == 4
+        loc, _ = unpack_location(encoded)
+        assert loc["wfo"] == "EWX"
+
+
+class TestDataRequest:
+    def test_wx_request(self):
+        msg = pack_data_request(DATA_WX, LOC_ZONE, "TXZ192")
+        assert msg[0] == MSG_DATA_REQUEST
+        assert len(msg) == 8  # 4 header + 4 zone
+        decoded = unpack_data_request(msg)
+        assert decoded["data_type"] == DATA_WX
+        assert decoded["location"]["zone"] == "TXZ192"
+
+    def test_forecast_request_with_newest(self):
+        msg = pack_data_request(DATA_FORECAST, LOC_STATION, "KAUS", client_newest=720)
+        decoded = unpack_data_request(msg)
+        assert decoded["data_type"] == DATA_FORECAST
+        assert decoded["client_newest"] == 720
+        assert decoded["location"]["station"] == "KAUS"
+
+
+class TestObservation:
+    def test_simple_roundtrip(self):
+        msg = pack_observation(
+            LOC_ZONE, "TXZ192",
+            timestamp_utc_min=720,
+            temp_f=72,
+            dewpoint_f=55,
+            wind_dir_deg=90,
+            sky_code=SKY_CLEAR,
+            wind_speed_mph=10,
+        )
+        decoded = unpack_observation(msg)
+        assert decoded["location"]["zone"] == "TXZ192"
+        assert decoded["timestamp_utc_min"] == 720
+        assert decoded["temp_f"] == 72
+        assert decoded["dewpoint_f"] == 55
+        assert decoded["wind_dir"] == "E"
+        assert decoded["sky_code"] == SKY_CLEAR
+        assert decoded["wind_speed_mph"] == 10
+
+    def test_rain_with_gusts(self):
+        msg = pack_observation(
+            LOC_STATION, "KAUS",
+            timestamp_utc_min=900,
+            temp_f=65,
+            dewpoint_f=63,
+            wind_dir_deg=45,
+            sky_code=SKY_RAIN,
+            wind_speed_mph=15,
+            wind_gust_mph=28,
+            visibility_mi=3,
+            pressure_inhg=29.85,
+        )
+        decoded = unpack_observation(msg)
+        assert decoded["sky_code"] == SKY_RAIN
+        assert decoded["wind_gust_mph"] == 28
+        assert decoded["visibility_mi"] == 3
+        assert abs(decoded["pressure_inhg"] - 29.85) < 0.01
+
+    def test_negative_temp(self):
+        msg = pack_observation(
+            LOC_ZONE, "AKZ001",
+            timestamp_utc_min=0,
+            temp_f=-20,
+            dewpoint_f=-25,
+            wind_dir_deg=315,
+            sky_code=SKY_CLEAR,
+            wind_speed_mph=5,
+        )
+        decoded = unpack_observation(msg)
+        assert decoded["temp_f"] == -20
+        assert decoded["dewpoint_f"] == -25
+
+    def test_size_budget(self):
+        msg = pack_observation(
+            LOC_ZONE, "TXZ192", 720, 72, 55, 90, 0, 10
+        )
+        # 1 type + 4 loc + 2 ts + 1 temp + 1 dew + 1 dir/sky + 1 speed
+        # + 1 gust + 1 vis + 1 press + 1 feels = 15 bytes
+        assert len(msg) == 15
+
+
+class TestForecast:
+    def test_multi_period_roundtrip(self):
+        periods = [
+            {"period_id": 0, "high_f": 85, "low_f": 65, "sky_code": 2,
+             "precip_pct": 20, "wind_dir_nibble": 4, "wind_speed_5mph": 2, "condition_flags": 0},
+            {"period_id": 1, "high_f": 88, "low_f": 68, "sky_code": 1,
+             "precip_pct": 10, "wind_dir_nibble": 8, "wind_speed_5mph": 3, "condition_flags": 1},
+            {"period_id": 2, "high_f": 92, "low_f": 72, "sky_code": 0,
+             "precip_pct": 0, "wind_dir_nibble": 4, "wind_speed_5mph": 1, "condition_flags": 0},
+        ]
+        msg = pack_forecast(LOC_ZONE, "TXZ192", 2, periods)
+        decoded = unpack_forecast(msg)
+        assert decoded["issued_hours_ago"] == 2
+        assert len(decoded["periods"]) == 3
+        assert decoded["periods"][0]["high_f"] == 85
+        assert decoded["periods"][0]["wind_speed_mph"] == 10  # nibble 2 * 5
+        assert decoded["periods"][2]["precip_pct"] == 0
+
+    def test_na_high_low(self):
+        periods = [
+            {"period_id": 0, "high_f": 127, "low_f": 65, "sky_code": 2,
+             "precip_pct": 20, "wind_dir_nibble": 0, "wind_speed_5mph": 0, "condition_flags": 0},
+        ]
+        msg = pack_forecast(LOC_STATION, "KAUS", 1, periods)
+        decoded = unpack_forecast(msg)
+        assert decoded["periods"][0]["high_f"] is None
+        assert decoded["periods"][0]["low_f"] == 65
+
+    def test_size_budget_7_periods(self):
+        periods = [
+            {"period_id": i, "high_f": 80, "low_f": 60, "sky_code": 0,
+             "precip_pct": 0, "wind_dir_nibble": 0, "wind_speed_5mph": 0, "condition_flags": 0}
+            for i in range(7)
+        ]
+        msg = pack_forecast(LOC_ZONE, "TXZ192", 0, periods)
+        # 1 type + 4 loc + 1 issued + 1 count + 7*7 = 56 bytes
+        assert len(msg) == 56

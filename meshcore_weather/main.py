@@ -218,6 +218,11 @@ class WeatherBot:
             await self._handle_meshwx_refresh(text, prefix, sender_name)
             return
 
+        # MeshWX v2 data request (e.g. "WXQ" + hex-encoded 0x02 message)
+        if text.startswith("WXQ") and self._broadcaster:
+            await self._handle_meshwx_data_request(text, prefix, sender_name)
+            return
+
         # Admin commands (DM-only, verified by pubkey)
         if self._is_admin(prefix):
             result = await self._handle_admin(text, prefix, sender_name)
@@ -269,6 +274,33 @@ class WeatherBot:
         logger.info("MeshWX refresh from %s: region=0x%X type=%d newest=%d",
                      sender_name, region_id, request_type, client_newest)
         await self._broadcaster.broadcast_region(region_id, request_type)
+
+    async def _handle_meshwx_data_request(
+        self, text: str, prefix: str, sender_name: str
+    ) -> None:
+        """Handle a MeshWX v2 data request DM.
+
+        Format: 'WXQ' + hex-encoded 0x02 data request message.
+        The bot parses the request, builds the response, and broadcasts
+        it on the data channel so all listeners benefit.
+        """
+        from meshcore_weather.protocol.meshwx import unpack_data_request
+        try:
+            payload = bytes.fromhex(text[3:].strip())
+            req = unpack_data_request(payload)
+        except (ValueError, IndexError) as e:
+            logger.warning("Bad WXQ request from %s: %s", sender_name, e)
+            return
+
+        logger.info(
+            "MeshWX data request from %s: type=%d loc=%s",
+            sender_name, req["data_type"], req["location"],
+        )
+
+        try:
+            await self._broadcaster.respond_to_data_request(req)
+        except Exception:
+            logger.exception("Data request handler failed")
 
     def _is_admin(self, pubkey_prefix: str) -> bool:
         admin = settings.admin_key.lower().strip()

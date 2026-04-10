@@ -839,6 +839,13 @@ class WeatherStore:
 
     def _parse_rwr_city(self, text: str, city: str) -> str:
         """Extract city conditions from RWR fixed-width table."""
+        raw = self._parse_rwr_city_raw(text, city)
+        if not raw:
+            return ""
+        return self._format_rwr_conditions(raw)
+
+    def _parse_rwr_city_raw(self, text: str, city: str) -> str:
+        """Like _parse_rwr_city but returns the raw column data, not formatted."""
         if not city:
             return ""
         in_table = False
@@ -852,12 +859,9 @@ class WeatherStore:
             if stripped.startswith("$$"):
                 in_table = False
                 continue
-            # Check if city name appears at start of line
             if not stripped.upper().startswith(city):
                 continue
-            # Parse: everything after the city name
-            after_city = stripped[len(city):].strip()
-            return self._format_rwr_conditions(after_city)
+            return stripped[len(city):].strip()
         return ""
 
     def _format_rwr_conditions(self, raw: str) -> str:
@@ -904,6 +908,14 @@ class WeatherStore:
 
     def _find_metar(self, station: str) -> tuple[str, datetime] | None:
         """Find and decode the newest METAR for a specific station."""
+        raw = self._find_metar_raw(station)
+        if not raw:
+            return None
+        metar_line, ts = raw
+        return (self._decode_metar(metar_line), ts)
+
+    def _find_metar_raw(self, station: str) -> tuple[str, datetime] | None:
+        """Find the newest raw METAR string for a specific station."""
         if not station:
             return None
         best: tuple[str, datetime] | None = None
@@ -914,8 +926,8 @@ class WeatherStore:
                 stripped = line.strip()
                 if stripped.startswith(station) and re.match(r"^[A-Z]{4}\s+\d{6}Z", stripped):
                     if best is None or prod.timestamp > best[1]:
-                        best = (self._decode_metar(stripped), prod.timestamp)
-                    break  # found in this product, check next product
+                        best = (stripped, prod.timestamp)
+                    break
         return best
 
     def _decode_metar(self, metar: str) -> str:
@@ -945,7 +957,12 @@ class WeatherStore:
                                 ("BKN", "Bkn"), ("OVC", "Ovc")]:
                 if part.startswith(code):
                     alt = part[len(code):]
-                    pieces.append(f"{desc}{int(alt)*100}ft" if alt else desc)
+                    # Strip any cloud type suffix (TCU, CB, ACC, etc.)
+                    m_alt = re.match(r"^(\d+)", alt)
+                    if m_alt:
+                        pieces.append(f"{desc}{int(m_alt.group(1))*100}ft")
+                    else:
+                        pieces.append(desc)
                     break
         return " | ".join(pieces)
 
