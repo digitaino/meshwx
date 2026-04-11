@@ -393,10 +393,10 @@ class WeatherBot:
             if not self._broadcaster:
                 await self.radio.send_dm(prefix, "MeshWX broadcast not enabled.")
                 return "disabled"
-            await self.radio.send_dm(prefix, "Broadcasting now...")
+            await self.radio.send_dm(prefix, "Running scheduler tick...")
             try:
-                await self._broadcaster._broadcast_all()
-                await self.radio.send_dm(prefix, "Broadcast complete.")
+                sent = await self._broadcaster.scheduler.tick()
+                await self.radio.send_dm(prefix, f"Scheduler tick sent {sent} message(s).")
             except Exception as e:
                 await self.radio.send_dm(prefix, f"Broadcast error: {e}")
             return "broadcast"
@@ -405,10 +405,10 @@ class WeatherBot:
             if not self._broadcaster:
                 await self.radio.send_dm(prefix, "MeshWX broadcast not enabled.")
                 return "disabled"
-            await self.radio.send_dm(prefix, "Fetching radar...")
+            await self.radio.send_dm(prefix, "Running radar job now...")
             try:
-                count = await self._broadcaster._broadcast_radar()
-                await self.radio.send_dm(prefix, f"Sent {count} radar grid(s).")
+                sent = await self._broadcaster.scheduler.run_job_now("radar-coverage")
+                await self.radio.send_dm(prefix, f"Sent {sent} radar grid(s).")
             except Exception as e:
                 await self.radio.send_dm(prefix, f"Radar error: {e}")
             return "radar"
@@ -418,8 +418,8 @@ class WeatherBot:
                 await self.radio.send_dm(prefix, "MeshWX broadcast not enabled.")
                 return "disabled"
             try:
-                count = await self._broadcaster._broadcast_warnings()
-                await self.radio.send_dm(prefix, f"Sent {count} warning polygon(s).")
+                sent = await self._broadcaster.scheduler.run_job_now("warnings-coverage")
+                await self.radio.send_dm(prefix, f"Sent {sent} warning message(s).")
             except Exception as e:
                 await self.radio.send_dm(prefix, f"Warning broadcast error: {e}")
             return "warnings-broadcast"

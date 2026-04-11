@@ -257,13 +257,14 @@ async def get_status(request: Request) -> JSONResponse:
 
 @router.post("/actions/broadcast")
 async def trigger_broadcast(request: Request) -> JSONResponse:
-    """Manually trigger a broadcast cycle."""
-    bot = request.app.state.bot
-    broadcaster = getattr(bot, "_broadcaster", None)
-    if not broadcaster:
-        raise HTTPException(400, "Broadcaster not running")
-    await broadcaster._broadcast_all()
-    return JSONResponse({"ok": True})
+    """Manually trigger a scheduler tick — runs any jobs whose interval
+    has elapsed right now. For per-job control use the /api/schedule/jobs/
+    {id}/run-now endpoint which force-runs a specific job regardless of
+    its schedule.
+    """
+    scheduler = _get_scheduler(request)
+    sent = await scheduler.tick()
+    return JSONResponse({"ok": True, "messages_sent": sent})
 
 
 @router.post("/actions/v2-request")
