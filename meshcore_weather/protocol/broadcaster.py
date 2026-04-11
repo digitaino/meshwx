@@ -16,18 +16,31 @@ from meshcore_weather.protocol.coverage import Coverage
 from meshcore_weather.protocol.encoders import (
     encode_forecast_from_pfm,
     encode_forecast_from_zfp,
+    encode_hwo,
+    encode_lsr_reports,
     encode_metar,
+    encode_rain_cities,
     encode_rwr_city,
+    encode_taf,
     now_utc_minutes,
 )
 from meshcore_weather.protocol.meshwx import (
     DATA_FORECAST,
     DATA_METAR,
+    DATA_OUTLOOK,
+    DATA_RAIN_OBS,
+    DATA_STORM_REPORTS,
+    DATA_TAF,
+    DATA_WARNINGS_NEAR,
     DATA_WX,
     LOC_PFM_POINT,
     LOC_STATION,
     LOC_ZONE,
+    SEV_ADVISORY,
+    SEV_WARNING,
+    SEV_WATCH,
     cobs_encode,
+    pack_warnings_near,
 )
 from meshcore_weather.protocol.radar import fetch_radar_composite, build_radar_messages
 from meshcore_weather.protocol.warnings import extract_active_warnings, warnings_to_binary
@@ -325,6 +338,16 @@ class MeshWXBroadcaster:
             msg = self._build_forecast(loc, location_name)
         elif data_type == DATA_METAR:
             msg = self._build_metar(loc, location_name)
+        elif data_type == DATA_OUTLOOK:
+            msg = self._build_outlook(loc, location_name)
+        elif data_type == DATA_STORM_REPORTS:
+            msg = self._build_storm_reports(loc, location_name)
+        elif data_type == DATA_RAIN_OBS:
+            msg = self._build_rain_obs(loc, location_name)
+        elif data_type == DATA_TAF:
+            msg = self._build_taf(loc, location_name)
+        elif data_type == DATA_WARNINGS_NEAR:
+            msg = self._build_warnings_near(loc, location_name)
         else:
             logger.debug("Unsupported v2 data type: %d", data_type)
             return
@@ -474,3 +497,286 @@ class MeshWXBroadcaster:
         """Build a 0x35 METAR message (uses 0x30 observation format)."""
         # For now, same as observation for station queries
         return self._build_observation(loc, query)
+
+    def _build_outlook(self, loc: dict, query: str) -> bytes | None:
+        """Build a 0x32 Hazardous Weather Outlook for the given location.
+
+        Looks up the latest HWO product for the location's WFO and runs
+        encode_hwo() to produce the outlook message. HWOs are typically
+        issued once daily by each WFO and cover days 1-7.
+        """
+        resolved = resolver.resolve(query)
+        if not resolved:
+            return None
+        zones = resolved.get("zones") or []
+        if not zones:
+            return None
+        zone = zones[0]
+
+        origs = self.store._build_origs(resolved)
+        hwo = self.store._find_any_orig("HWO", origs)
+        if hwo is None:
+            # Wider fallback: any HWO whose UGC line covers our zone
+            from meshcore_weather.parser.weather import _expand_zone_ranges
+            loc_zones = set(zones)
+            best = None
+            for prod in self.store._products.values():
+                if prod.product_type != "HWO":
+                    continue
+                if loc_zones & _expand_zone_ranges(prod.raw_text):
+                    if best is None or prod.timestamp > best.timestamp:
+                        best = prod
+            hwo = best
+        if hwo is None:
+            return None
+
+        issued_min = hwo.timestamp.hour * 60 + hwo.timestamp.minute
+        return encode_hwo(zone, hwo.raw_text, issued_min)
+
+    def _build_storm_reports(self, loc: dict, query: str) -> bytes | None:
+        """Build a 0x33 Local Storm Reports message for the location.
+
+        Walks LSR products in the store, filters to entries from the
+        location's state, and runs encode_lsr_reports() to pack up to 16
+        most recent reports into the wire format.
+        """
+        resolved = resolver.resolve(query)
+        if not resolved:
+            return None
+        zones = resolved.get("zones") or []
+        if not zones:
+            return None
+        zone = zones[0]
+        state = zone[:2]
+
+        # Collect deduplicated entries from LSR products newest first
+        seen: set[str] = set()
+        entries: list[dict] = []
+        for prod in sorted(
+            self.store._products.values(), key=lambda p: p.timestamp, reverse=True
+        ):
+            if prod.product_type != "LSR":
+                continue
+            # Filter by state. We accept either an exact filename-state match
+            # or a text-derived affected state, since LSR filenames don't
+            # always agree with the state of the actual report.
+            if prod.state != state:
+                affected = self.store._affected_state(prod)
+                if affected != state:
+                    continue
+            for entry in self.store._parse_lsr_entries(prod.raw_text):
+                # Filter to reports actually in the requested state
+                if entry.get("state") and entry["state"] != state:
+                    continue
+                key = f"{entry.get('time','')}_{entry.get('event','')}_{entry.get('location','')}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append(entry)
+                if len(entries) >= 16:
+                    break
+            if len(entries) >= 16:
+                break
+
+        if not entries:
+            return None
+        return encode_lsr_reports(zone, entries, now_utc_minutes())
+
+    def _build_rain_obs(self, loc: dict, query: str) -> bytes | None:
+        """Build a 0x34 rain observations message for the location's region.
+
+        Scans RWR (Regional Weather Roundup) products from the location's
+        WFO for cities currently reporting any form of precipitation.
+        Encodes the list as 0x34 with each city referenced by its place_id.
+        """
+        resolved = resolver.resolve(query)
+        if not resolved:
+            return None
+        zones = resolved.get("zones") or []
+        if not zones:
+            return None
+        zone = zones[0]
+
+        origs = self.store._build_origs(resolved)
+        rwr = self.store._find_any_orig("RWR", origs)
+        if rwr is None:
+            return None
+
+        # Scan the RWR table for cities with precipitation. Reuses the same
+        # heuristic as WeatherStore.scan_rain but extracts structured data
+        # instead of pre-formatted text.
+        rain_keywords = {
+            "RAIN", "LGT RAIN", "HVY RAIN", "TSTORM", "T-STORM",
+            "DRIZZLE", "SHOWERS", "SHOWER", "SNOW",
+        }
+        rainy: list[dict] = []
+        seen_names: set[str] = set()
+        in_table = False
+        for line in rwr.raw_text.splitlines():
+            stripped = line.strip()
+            if "SKY/WX" in stripped and "TMP" in stripped:
+                in_table = True
+                continue
+            if not in_table or not stripped:
+                continue
+            if stripped.startswith("$$"):
+                break
+            upper = stripped.upper()
+            if not any(kw in upper for kw in rain_keywords):
+                continue
+            parts = stripped.split()
+            # Strip the leading "*" flag (NWS RWR uses it to mark significant
+            # weather rows) from the first part so the city name is clean
+            # for the place_id lookup.
+            if parts and parts[0].startswith("*"):
+                parts[0] = parts[0][1:]
+            # Walk forward extracting city name until we hit a sky-word or a number
+            sky_words = rain_keywords | {
+                "SUNNY", "MOSUNNY", "PTSUNNY", "CLEAR", "MOCLDY", "PTCLDY",
+                "CLOUDY", "FAIR", "FOG", "HAZE", "WINDY", "LGT", "HVY",
+            }
+            city_parts: list[str] = []
+            rain_text = ""
+            temp_f = 60
+            for p in parts:
+                if p.upper() in sky_words:
+                    rain_text = p
+                    break
+                if p.lstrip("-").isdigit():
+                    break
+                city_parts.append(p)
+            # First number after the sky word is the temperature
+            if rain_text:
+                idx = parts.index(rain_text) if rain_text in parts else -1
+                for tp in parts[idx + 1 :]:
+                    if tp.lstrip("-").isdigit():
+                        try:
+                            temp_f = int(tp)
+                        except ValueError:
+                            pass
+                        break
+            city_name = " ".join(city_parts).title().strip()
+            if not city_name or city_name in seen_names:
+                continue
+            seen_names.add(city_name)
+            rainy.append({
+                "name": city_name,
+                "state": zone[:2],
+                "rain_text": rain_text or "rain",
+                "temp_f": temp_f,
+            })
+
+        if not rainy:
+            return None
+        return encode_rain_cities(zone, rainy, now_utc_minutes())
+
+    def _build_taf(self, loc: dict, query: str) -> bytes | None:
+        """Build a 0x36 TAF (Terminal Aerodrome Forecast) message.
+
+        TAF is keyed to a station ICAO. Walks the store for any TAF product
+        that contains a TAF block for the requested station, then runs
+        encode_taf() to extract the BASE forecast group and pack it as 0x36.
+        """
+        # TAF is station-keyed. Resolve the location to a station.
+        if loc.get("type") == LOC_STATION:
+            station = loc.get("station")
+        else:
+            resolved = resolver.resolve(query)
+            if not resolved:
+                return None
+            station = resolved.get("station")
+        if not station:
+            return None
+
+        # Find a product whose text contains a TAF block for this station.
+        # NWS TAF products use AFOS like "TAFEWX" with multiple stations
+        # in one file, so we have to scan rather than direct-lookup.
+        target_marker = f"TAF {station}"
+        amend_marker = f"TAF AMD {station}"
+        candidate = None
+        for prod in sorted(
+            self.store._products.values(), key=lambda p: p.timestamp, reverse=True
+        ):
+            if prod.product_type != "TAF":
+                continue
+            text = prod.raw_text
+            if target_marker in text or amend_marker in text or f"\n{station} " in text:
+                candidate = prod
+                break
+        if candidate is None:
+            return None
+
+        issued_hours_ago = max(
+            0,
+            int(
+                (
+                    now_utc_minutes()
+                    - candidate.timestamp.hour * 60
+                    - candidate.timestamp.minute
+                )
+                / 60
+            ),
+        )
+        return encode_taf(station, candidate.raw_text, issued_hours_ago)
+
+    def _build_warnings_near(self, loc: dict, query: str) -> bytes | None:
+        """Build a 0x37 'warnings near location' summary.
+
+        Pulls all currently-active warnings from extract_active_warnings(),
+        filters to those that affect the requested location's zone, and packs
+        them as a compact 0x37 reply with type/severity/expiry per entry.
+
+        Works for both land zones (which the resolver knows about via
+        zones.json) AND marine zones (PMZ###, GMZ###, etc. which aren't
+        in the resolver but ARE valid UGC codes that pyIEM extracts from
+        warning products). For marine zones we skip the polygon fallback
+        and rely purely on UGC code matching.
+        """
+        # If the request was for a bare zone code, use it directly without
+        # going through the resolver — that lets us serve marine zones
+        # (PMZ172 etc.) which aren't in zones.json.
+        zone: str = ""
+        if loc.get("type") == LOC_ZONE:
+            zone = loc.get("zone", "")
+        if not zone:
+            resolved = resolver.resolve(query)
+            if not resolved:
+                return None
+            zones_list = resolved.get("zones") or []
+            if not zones_list:
+                return None
+            zone = zones_list[0]
+
+        all_warnings = extract_active_warnings(self.store, coverage=None)
+        # Filter to warnings whose UGCs include our zone (or whose polygon
+        # contains the zone's centroid as a fallback for land zones).
+        nearby: list[dict] = []
+        z_meta = resolver._zones.get(zone, {})
+        z_lat = z_meta.get("la", 0.0)
+        z_lon = z_meta.get("lo", 0.0)
+        for w in all_warnings:
+            ugcs = set(w.get("ugcs") or w.get("zones", []))
+            in_zone = zone in ugcs
+            if not in_zone and w.get("vertices"):
+                # Polygon containment check (point-in-polygon for the zone centroid)
+                from meshcore_weather.protocol.coverage import _point_in_polygon
+                if _point_in_polygon(z_lat, z_lon, w["vertices"]):
+                    in_zone = True
+            if not in_zone:
+                continue
+            # Pick a representative zone for the per-entry zone reference
+            entry_zone = zone if zone in ugcs else (sorted(ugcs)[0] if ugcs else "")
+            expires_at = w.get("expires_at")
+            expires_unix_min = (
+                int(expires_at.timestamp() / 60) if expires_at else 0
+            )
+            nearby.append({
+                "warning_type": w.get("warning_type", 0),
+                "severity": w.get("severity", SEV_WARNING),
+                "expires_unix_min": expires_unix_min,
+                "zone": entry_zone if len(entry_zone) == 6 and entry_zone[2] == "Z" else "",
+            })
+
+        if not nearby:
+            return None
+        return pack_warnings_near(LOC_ZONE, zone, nearby)

@@ -566,3 +566,95 @@ class TestWarningsNear:
         assert decoded["warnings"][0]["warning_type"] == WARN_TORNADO
         assert decoded["warnings"][0]["zone"] == "TXZ192"
         assert decoded["warnings"][1]["expires_unix_min"] == 29_500_480
+
+
+class TestTAF:
+    def test_round_trip(self):
+        from meshcore_weather.protocol.meshwx import (
+            pack_taf, unpack_taf, MSG_TAF, LOC_STATION,
+            TAF_WX_RAIN, TAF_WX_TSTM,
+        )
+        msg = pack_taf(
+            station_icao="KAUS",
+            issued_hours_ago=2,
+            valid_from_hour=18,
+            valid_to_hour=23,
+            wind_dir_nibble=6,        # SE
+            wind_speed_5kt=3,          # 15 kt
+            wind_gust_kt=25,
+            visibility_qsm=24,         # 6 sm
+            ceiling_100ft=30,          # 3000 ft
+            sky_code=0xA,              # tstorm
+            weather_flags=TAF_WX_RAIN | TAF_WX_TSTM,
+        )
+        assert msg[0] == MSG_TAF
+        assert len(msg) == 15
+        d = unpack_taf(msg)
+        assert d["location"]["type"] == LOC_STATION
+        assert d["location"]["station"] == "KAUS"
+        assert d["issued_hours_ago"] == 2
+        assert d["valid_from_hour"] == 18
+        assert d["valid_to_hour"] == 23
+        assert d["wind_dir"] == "SE"
+        assert d["wind_speed_kt"] == 15
+        assert d["wind_gust_kt"] == 25
+        assert d["visibility_sm"] == 6.0
+        assert d["ceiling_ft"] == 3000
+        assert d["sky_code"] == 0xA
+        assert d["weather_flags"] == TAF_WX_RAIN | TAF_WX_TSTM
+
+    def test_no_gust_no_ceiling_clear_skies(self):
+        from meshcore_weather.protocol.meshwx import pack_taf, unpack_taf
+        msg = pack_taf(
+            station_icao="KSFO",
+            issued_hours_ago=1,
+            valid_from_hour=12,
+            valid_to_hour=18,
+            wind_dir_nibble=12,    # W
+            wind_speed_5kt=2,      # 10 kt
+            wind_gust_kt=0,
+            visibility_qsm=64,     # 16+ sm "P6SM" / unlimited
+            ceiling_100ft=0,
+            sky_code=0x0,
+            weather_flags=0,
+        )
+        d = unpack_taf(msg)
+        assert d["wind_gust_kt"] == 0
+        assert d["ceiling_ft"] == 0
+        assert d["sky_code"] == 0
+        assert d["weather_flags"] == 0
+
+
+class TestEncodeTAFFromText:
+    """Verify encode_taf() correctly parses real TAF text into a 0x36 message."""
+
+    def test_parses_simple_taf(self):
+        from meshcore_weather.protocol.encoders import encode_taf
+        from meshcore_weather.protocol.meshwx import unpack_taf, MSG_TAF
+        # Realistic TAF block (KAUS, modified)
+        taf_text = """
+        TAFEWX
+        TAF KAUS 102320Z 1100/1206 18012G20KT P6SM SCT040 BKN100
+              FM110600 17008KT 4SM -SHRA BKN015 OVC030
+              FM111800 21015G25KT 6SM TSRA BKN025CB OVC050
+        """
+        msg = encode_taf("KAUS", taf_text, issued_hours_ago=3)
+        assert msg is not None
+        assert msg[0] == MSG_TAF
+        d = unpack_taf(msg)
+        assert d["location"]["station"] == "KAUS"
+        assert d["issued_hours_ago"] == 3
+        # Validity is "1100/1206" → start hour 0, end hour 6 (we extract HH parts)
+        assert d["valid_from_hour"] == 0
+        assert d["valid_to_hour"] == 6
+        # Base group: 18012G20KT → S 10kt gust 20
+        assert d["wind_dir"] == "S"
+        assert d["wind_speed_kt"] == 10  # 12kt rounded to nearest 5
+        assert d["wind_gust_kt"] == 20
+        # Visibility P6SM → 64 quarters (unlimited marker)
+        assert d["visibility_sm"] >= 6.0
+
+    def test_unknown_station_returns_none(self):
+        from meshcore_weather.protocol.encoders import encode_taf
+        msg = encode_taf("KZZZZ", "TAF KAUS 102320Z 1100/1206 18012KT P6SM SKC", 1)
+        assert msg is None

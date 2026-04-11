@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "description": "Fixed state/territory index for compact location encoding in MeshWX protocol v2",
+  "version": 2,
+  "description": "Fixed state/territory/marine index for compact location encoding in MeshWX protocol. Append-only — never reorder existing entries since wire format references them by 1-byte index.",
   "states": [
     "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
     "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
@@ -8,6 +8,7 @@
     "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
     "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
     "DC", "PR", "VI", "GU", "AS", "MP", "MH", "FM", "PW",
-    "AN", "AM", "GM", "PK", "PZ", "PH", "CI", "CN", "US", "MX"
+    "AN", "AM", "GM", "PK", "PZ", "PH", "CI", "CN", "US", "MX",
+    "PM", "LE", "LO", "LH", "LM", "LS", "LC", "SL", "PS"
   ]
 }

@@ -1125,3 +1125,106 @@ def unpack_warnings_near(data: bytes) -> dict:
         "location": location,
         "warnings": warnings,
     }
+
+
+# -- TAF (0x36) — Terminal Aerodrome Forecast snapshot --
+#
+# Wire format (v3, single-snapshot — multi-period TAFs are future work):
+#
+#   byte 0     : 0x36  MSG_TAF
+#   byte 1..5  : LOC_STATION reference (5 bytes: 0x02 + 4-byte ICAO ASCII)
+#   byte 6     : issued_hours_ago (uint8) — hours since the TAF was issued
+#   byte 7     : valid_from_hour (uint8, 0-23 UTC)
+#   byte 8     : valid_to_hour (uint8, 0-23 UTC; may wrap past midnight)
+#   byte 9     : wind_dir_nibble (high) | wind_speed_5kt_nibble (low)
+#                wind speed unit is 5 kt (so a value of 3 = 15 kt, max 75 kt)
+#   byte 10    : wind_gust_kt (uint8, 0 = no gust)
+#   byte 11    : visibility_qsm (uint8, 1/4 statute mile units;
+#                40 = 10 sm, 64+ = 16 sm = "10+" / unlimited)
+#   byte 12    : ceiling_100ft (uint8, 0 = no ceiling, 1 = 100 ft, 250 = 25000+ ft)
+#   byte 13    : sky_code (low nibble) — same table as 0x30
+#   byte 14    : weather flags (uint8 bitfield):
+#                  bit 0 (0x01): rain
+#                  bit 1 (0x02): snow
+#                  bit 2 (0x04): thunderstorm
+#                  bit 3 (0x08): freezing precipitation
+#                  bit 4 (0x10): mist / fog
+#                  bit 5 (0x20): showers
+#                  bit 6 (0x40): heavy
+#                  bit 7 (0x80): light
+#
+# Total: 15 bytes. Carries the BASE forecast group of a TAF for one
+# station. Multi-period TAFs (FROM/BECMG/TEMPO change groups) are not yet
+# expressed on the wire — when we add them this becomes a list of these
+# 9-byte snapshots after a count byte.
+
+TAF_WX_RAIN = 0x01
+TAF_WX_SNOW = 0x02
+TAF_WX_TSTM = 0x04
+TAF_WX_FREEZING = 0x08
+TAF_WX_FOG = 0x10
+TAF_WX_SHOWERS = 0x20
+TAF_WX_HEAVY = 0x40
+TAF_WX_LIGHT = 0x80
+
+
+def pack_taf(
+    station_icao: str,
+    issued_hours_ago: int,
+    valid_from_hour: int,
+    valid_to_hour: int,
+    wind_dir_nibble: int,
+    wind_speed_5kt: int,
+    wind_gust_kt: int,
+    visibility_qsm: int,
+    ceiling_100ft: int,
+    sky_code: int,
+    weather_flags: int,
+) -> bytes:
+    """Pack a 0x36 TAF snapshot message."""
+    msg = bytearray()
+    msg.append(MSG_TAF)
+    msg.extend(pack_location(LOC_STATION, station_icao))
+    msg.append(max(0, min(255, int(issued_hours_ago))))
+    msg.append(max(0, min(23, int(valid_from_hour))))
+    msg.append(max(0, min(23, int(valid_to_hour))))
+    msg.append(((wind_dir_nibble & 0x0F) << 4) | (wind_speed_5kt & 0x0F))
+    msg.append(max(0, min(255, int(wind_gust_kt))))
+    msg.append(max(0, min(255, int(visibility_qsm))))
+    msg.append(max(0, min(255, int(ceiling_100ft))))
+    msg.append(sky_code & 0x0F)
+    msg.append(weather_flags & 0xFF)
+    return bytes(msg)
+
+
+def unpack_taf(data: bytes) -> dict:
+    """Unpack a 0x36 TAF snapshot message."""
+    if len(data) < 15 or data[0] != MSG_TAF:
+        raise ValueError("Invalid TAF message")
+    location, offset = unpack_location(data, 1)  # offset should be 6
+    issued_hours_ago = data[offset]
+    valid_from_hour = data[offset + 1]
+    valid_to_hour = data[offset + 2]
+    dir_spd = data[offset + 3]
+    wind_dir_nib = (dir_spd >> 4) & 0x0F
+    wind_spd_5kt = dir_spd & 0x0F
+    wind_gust_kt = data[offset + 4]
+    visibility_qsm = data[offset + 5]
+    ceiling_100ft = data[offset + 6]
+    sky_code = data[offset + 7] & 0x0F
+    weather_flags = data[offset + 8]
+    return {
+        "type": MSG_TAF,
+        "location": location,
+        "issued_hours_ago": issued_hours_ago,
+        "valid_from_hour": valid_from_hour,
+        "valid_to_hour": valid_to_hour,
+        "wind_dir": nibble_to_wind_dir(wind_dir_nib),
+        "wind_dir_nibble": wind_dir_nib,
+        "wind_speed_kt": wind_spd_5kt * 5,
+        "wind_gust_kt": wind_gust_kt,
+        "visibility_sm": round(visibility_qsm / 4.0, 2),
+        "ceiling_ft": ceiling_100ft * 100,
+        "sky_code": sky_code,
+        "weather_flags": weather_flags,
+    }

@@ -788,6 +788,206 @@ def encode_warning_zones(
     return pack_warning_zones(warning_type, severity, expires_unix_min, zones, headline)
 
 
+# -- TAF (0x36) — Terminal Aerodrome Forecast → snapshot --
+
+# TAF weather code → bit flag in the 0x36 weather_flags byte
+_TAF_WX_BITS = {
+    "RA": 0x01, "DZ": 0x01,                          # rain / drizzle
+    "SN": 0x02, "SG": 0x02, "PL": 0x02,              # snow / snow grains / ice pellets
+    "TS": 0x04,                                       # thunderstorm
+    "FZ": 0x08,                                       # freezing
+    "BR": 0x10, "FG": 0x10, "HZ": 0x10, "FU": 0x10,  # mist / fog / haze / smoke
+    "SH": 0x20,                                       # showers
+    "+":  0x40,                                       # heavy intensity
+    "-":  0x80,                                       # light intensity
+}
+
+# TAF cloud cover code → 0x30 sky nibble (matches obs sky_code table)
+_TAF_CLOUD_TO_SKY = {
+    "SKC": 0x0, "CLR": 0x0, "NSC": 0x0,
+    "FEW": 0x1,
+    "SCT": 0x2,
+    "BKN": 0x3,
+    "OVC": 0x4,
+    "VV":  0x4,    # vertical visibility = effectively obscured / overcast
+}
+
+
+def _parse_taf_block(taf_text: str, station: str) -> str | None:
+    """Find the TAF text block for a specific station inside a multi-station
+    TAF product. Returns the block (issue line through next blank/$$/next
+    station header) or None if the station isn't in this product.
+    """
+    lines = taf_text.splitlines()
+    block: list[str] = []
+    capturing = False
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not capturing:
+            # Look for "TAF <station>" or "TAF AMD <station>" or just
+            # "<station> DDHHMMZ ..." as the issue header
+            if (s.startswith(f"TAF {station}")
+                or s.startswith(f"TAF AMD {station}")
+                or s.startswith(f"TAF COR {station}")
+                or (s.startswith(station + " ") and " " in s and len(s) > 12)):
+                capturing = True
+                block.append(s)
+                continue
+            # Some TAF products list the station on its own line
+            if s == station and i + 1 < len(lines):
+                capturing = True
+                continue
+        else:
+            if not s or s.startswith("$$"):
+                break
+            # Heuristic for the start of the next station's TAF block
+            if (s.startswith("TAF ") and station not in s[:30]) or (
+                len(s) >= 4 and s[0].isupper() and s[:4].isalpha() and s[:4] != station
+                and i + 1 < len(lines)
+                and ("TEMPO" not in s and "BECMG" not in s and "FM" not in s[:3])
+                and " " in s and "Z" in s.split()[1] if len(s.split()) > 1 else False
+            ):
+                break
+            block.append(s)
+    if not block:
+        return None
+    return " ".join(block)
+
+
+def encode_taf(
+    station_icao: str,
+    taf_text: str,
+    issued_hours_ago: int,
+) -> bytes | None:
+    """Parse a TAF product and pack the BASE forecast group as 0x36.
+
+    Multi-period TAFs (FROM/BECMG/TEMPO change groups) are not yet
+    expressed on the wire — this encoder extracts the BASE group only,
+    which represents the conditions valid from the start of the TAF
+    period until the first change group.
+    """
+    from meshcore_weather.protocol.meshwx import (
+        pack_taf, wind_dir_to_nibble,
+    )
+
+    block = _parse_taf_block(taf_text, station_icao)
+    if not block:
+        return None
+
+    # Validity period: e.g. "2618/2718" (DDHH/DDHH) — extract HH parts
+    valid_from_hour = 0
+    valid_to_hour = 0
+    m_validity = re.search(r"\b\d{2}(\d{2})/\d{2}(\d{2})\b", block)
+    if m_validity:
+        valid_from_hour = int(m_validity.group(1))
+        valid_to_hour = int(m_validity.group(2)) % 24
+
+    # Wind: "27015G25KT" or "VRB05KT" or "21008KT"
+    wind_dir_nibble = 0
+    wind_speed_5kt = 0
+    wind_gust_kt = 0
+    m_wind = re.search(
+        r"\b(VRB|\d{3})(\d{2,3})(?:G(\d{2,3}))?KT\b", block
+    )
+    if m_wind:
+        dir_str = m_wind.group(1)
+        if dir_str == "VRB":
+            wind_dir_nibble = 0
+        else:
+            try:
+                wind_dir_nibble = wind_dir_to_nibble(int(dir_str))
+            except ValueError:
+                wind_dir_nibble = 0
+        try:
+            speed_kt = int(m_wind.group(2))
+            wind_speed_5kt = max(0, min(15, int(round(speed_kt / 5))))
+        except ValueError:
+            pass
+        if m_wind.group(3):
+            try:
+                wind_gust_kt = max(0, min(255, int(m_wind.group(3))))
+            except ValueError:
+                pass
+
+    # Visibility: "6SM", "P6SM" (>6), "1 1/2SM", "10SM"
+    visibility_qsm = 40  # default 10 sm
+    m_vis = re.search(r"\b(P)?(\d{1,2})(?:\s+(\d)/(\d))?SM\b", block)
+    if m_vis:
+        whole = int(m_vis.group(2))
+        if m_vis.group(3) and m_vis.group(4):
+            num, den = int(m_vis.group(3)), int(m_vis.group(4))
+            if den:
+                whole_q = whole * 4 + int(round(num * 4 / den))
+                visibility_qsm = whole_q
+            else:
+                visibility_qsm = whole * 4
+        else:
+            visibility_qsm = whole * 4
+        if m_vis.group(1) == "P":  # "P6SM" means greater than
+            visibility_qsm = max(visibility_qsm, 64)
+        visibility_qsm = max(0, min(255, visibility_qsm))
+
+    # Cloud layers: "BKN025", "OVC008", "FEW100", "SKC", "CLR", "VV001"
+    # Pick the lowest broken/overcast layer for ceiling, default no ceiling
+    ceiling_100ft = 0
+    sky_code = 0  # clear
+    cloud_layers = re.findall(r"\b(SKC|CLR|NSC|FEW|SCT|BKN|OVC|VV)(\d{3})?\b", block)
+    if cloud_layers:
+        # Find the most significant cloud cover code
+        cover_priority = {"OVC": 4, "VV": 4, "BKN": 3, "SCT": 2, "FEW": 1, "SKC": 0, "CLR": 0, "NSC": 0}
+        most_sig = max(cloud_layers, key=lambda c: cover_priority.get(c[0], 0))
+        sky_code = _TAF_CLOUD_TO_SKY.get(most_sig[0], 0)
+        # Ceiling: lowest BKN/OVC/VV layer
+        for code, height in cloud_layers:
+            if code in ("BKN", "OVC", "VV") and height:
+                try:
+                    h = int(height)  # in hundreds of feet
+                    if ceiling_100ft == 0 or h < ceiling_100ft:
+                        ceiling_100ft = h
+                except ValueError:
+                    pass
+        ceiling_100ft = max(0, min(255, ceiling_100ft))
+
+    # Weather flags: scan for known TAF weather codes
+    weather_flags = 0
+    # Strip wind/vis/cloud codes from the search area to reduce false matches
+    search_text = re.sub(
+        r"\b(?:VRB|\d{3})\d{2,3}(?:G\d{2,3})?KT\b|\bP?\d{1,2}(?:\s+\d/\d)?SM\b|"
+        r"\b(?:SKC|CLR|NSC|FEW|SCT|BKN|OVC|VV)\d{3}?\b",
+        " ", block,
+    )
+    for code, bit in _TAF_WX_BITS.items():
+        if re.search(rf"(?:^|\s|\+|-)({re.escape(code)})", search_text):
+            weather_flags |= bit
+    # Special case: leading "+"/"-" intensity prefixes
+    if re.search(r"\s\+(?:RA|SN|TS|SH)", search_text):
+        weather_flags |= 0x40
+    if re.search(r"\s-(?:RA|SN|DZ)", search_text):
+        weather_flags |= 0x80
+
+    # Override sky_code if there's a TS / heavy convective signature
+    if weather_flags & 0x04:
+        sky_code = 0xA  # SKY_THUNDERSTORM
+    elif weather_flags & 0x01:
+        sky_code = 0x8  # SKY_RAIN
+    elif weather_flags & 0x02:
+        sky_code = 0x9  # SKY_SNOW
+
+    return pack_taf(
+        station_icao=station_icao,
+        issued_hours_ago=issued_hours_ago,
+        valid_from_hour=valid_from_hour,
+        valid_to_hour=valid_to_hour,
+        wind_dir_nibble=wind_dir_nibble,
+        wind_speed_5kt=wind_speed_5kt,
+        wind_gust_kt=wind_gust_kt,
+        visibility_qsm=visibility_qsm,
+        ceiling_100ft=ceiling_100ft,
+        sky_code=sky_code,
+        weather_flags=weather_flags,
+    )
+
+
 # -- PFM-sourced forecast (preferred over ZFP narrative parsing) --
 
 def encode_forecast_from_pfm(
