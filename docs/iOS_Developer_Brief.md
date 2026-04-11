@@ -1,6 +1,6 @@
 # iOS Developer Brief — MeshWX Weather Bot
 
-Everything in this document describes what is **actually shipping in the bot today** (commit `1091d57` or later on `main`). Anything not here is not yet wired up. If something is documented elsewhere as "planned" or "target state," treat it as non-existent for integration purposes.
+Everything in this document describes what is **actually shipping in the bot today** (commit `9d08fde` or later on `main`). Anything not here is not yet wired up. If something is documented elsewhere as "planned" or "target state," treat it as non-existent for integration purposes.
 
 The canonical wire format reference is `docs/MeshWX_Protocol_v3.md` in the same repo. This brief is the iOS-side summary with extra context about transport and flow.
 
@@ -297,7 +297,21 @@ then    7     per period (period_count × 7 bytes):
                 1 byte  condition_flags (bitfield, see below)
 ```
 
-**`period_id`**: an ID mapping period names to display labels. Values are 0-16 for named periods (`today`, `tonight`, `tomorrow`, etc.). Periods come out of the NWS ZFP text in the order NWS publishes them.
+**`period_id`** is the **day offset (0, 1, 2, ...) from the first complete day in the underlying NWS Point Forecast Matrix (PFM) product** the bot used to build the forecast.
+
+- `period_id = 0` → the first full day in the forecast (NOT necessarily "today" — see below)
+- `period_id = 1` → the next day
+- ... up to `period_id = 6` for 7 days out
+
+Each period represents a **full calendar day in the issuing WFO's local timezone**, with `high_f` being the daytime max and `low_f` being the nighttime min for that local day.
+
+**Why "first complete day" instead of "always today"**: PFMs are issued ~2x/day at varying times. A PFM issued at 1 PM CDT only has Friday afternoon data left in it — that's not enough hours to compute a meaningful daily high/low for Friday, so the bot drops Friday and starts the forecast at Saturday (`period_id = 0` = Saturday). If the same PFM had been issued at 6 AM CDT, Friday would have a full day of remaining forecast data and you'd see Friday as `period_id = 0`. The bot's downsampler enforces a minimum-data filter (≥4 PFM time slots per day) to avoid emitting misleading partial-day aggregates.
+
+**For your UI**:
+- Don't hardcode `period_id == 1 → "Today"` style mappings — the values are sequential day offsets, not named-period codes.
+- Compute display labels from `(broadcastReceivedDate + period_id days)` if you want to show "Mon / Tue / Wed". This is approximate (off by one possible at midnight boundaries) but good enough for a 7-day strip.
+- Or display as "Day 1 / Day 2 / Day 3" if you want to play it safe.
+- Always display periods in `period_id` ascending order. They're emitted in order today, but don't assume that.
 
 **`wind_speed_5mph`** (low nibble of byte 6): wind speed in units of 5 mph. `3` = 15 mph, `5` = 25 mph, etc. 0 means calm.
 
@@ -313,7 +327,20 @@ bit 6 (0x40): heavy snow
 bit 7 (0x80): reserved
 ```
 
-**Data source note**: the forecast content (highs, lows, sky codes, precip percents) is currently extracted by regex from NWS ZFP narrative text. Accuracy is "good enough" but not great. A follow-up commit will swap the data source to proper PFM column-matrix parsing. **The wire format won't change** — same `0x31` bytes, just better accuracy in the fields. You don't need to do anything when that lands.
+**Data source**: the bot now sources `0x31` data from the canonical NWS Point Forecast Matrix (PFM) — a structured fixed-column table updated by every WFO ~2x/day for ~1,800 forecast points nationwide. Hard numeric values for temp / dewpoint / RH / wind / sky cover / 12hr PoP / 12hr QPF / rain / tstm / obstruction. Highs and lows are real readings from the PFM Temp row, downsampled to daily aggregates.
+
+**Defensive note**: if no PFM product is available for a zone (rare — < 1% of US zones have no associated PFM point), the bot falls back to the legacy ZFP narrative-text regex parser, which can produce `high_f = None` (decoded as the int8 sentinel `127`) for many zones because the regex patterns are fragile. Keep your `None`/`127` handling defensive — show "—" or hide the field rather than crashing.
+
+**Field accuracy summary** (after PFM landed):
+
+| Field | Source | Notes |
+|---|---|---|
+| `high_f`, `low_f` | PFM Temp row, daytime max + nighttime min | Real numbers, not regex-extracted |
+| `sky_code` | PFM Cloud row + rain/tstm/obvis precedence | Thunderstorm > rain > snow > fog > cloud cover |
+| `precip_pct` | PFM `PoP 12hr` row, max for the day | NWS-authoritative percentage |
+| `wind_dir_nibble` | PFM Wind dir, mode of daytime hours | 16-point compass index |
+| `wind_speed_5mph` | PFM Wind spd, average of daytime hours, ÷5 | Capped 0-15 |
+| `condition_flags` | OR of per-slot flag derivations | tstm/fog/heavy_rain/frost/high_wind/freezing_rain bits |
 
 ### `0x32`–`0x34`, `0x36`, `0x37` — Defined but not broadcast by the bot yet
 
