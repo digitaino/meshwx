@@ -126,12 +126,15 @@ class MeshWXBroadcaster:
             await asyncio.sleep(settings.meshwx_broadcast_interval)
 
     async def _broadcast_all(self) -> None:
-        """Run one full broadcast cycle: radar + warnings."""
+        """Run one full broadcast cycle: radar + warnings + home obs/forecast."""
         radar_count = await self._broadcast_radar()
         warn_count = await self._broadcast_warnings()
-        if radar_count or warn_count:
-            logger.info("MeshWX broadcast: %d radar grid(s), %d warning(s)",
-                        radar_count, warn_count)
+        home_count = await self._broadcast_home_locations()
+        if radar_count or warn_count or home_count:
+            logger.info(
+                "MeshWX broadcast: %d radar grid(s), %d warning(s), %d home msg(s)",
+                radar_count, warn_count, home_count,
+            )
 
     async def _fetch_radar(self) -> None:
         """Fetch latest radar composite from IEM."""
@@ -167,6 +170,96 @@ class MeshWXBroadcaster:
             if sent < len(msgs):
                 await asyncio.sleep(TX_SPACING)
         return sent
+
+    async def _broadcast_home_locations(self) -> int:
+        """Broadcast a 0x30 observation and 0x31 forecast for each home city.
+
+        Iterates through `settings.home_cities` (the operator-configured
+        list), resolves each city, builds the obs + forecast messages with
+        the same builders the v2 data-request path uses, and sends them on
+        the data channel.
+
+        For forecasts we prefer LOC_PFM_POINT (the same location type the
+        iOS city-search flow uses) so a client that has saved the city
+        from autocomplete will recognize the broadcast and update its
+        cached forecast without ever sending a request. Falls back to
+        LOC_ZONE if the city has no nearby PFM point.
+
+        For observations we use LOC_ZONE since RWR/METAR data is
+        zone/station-keyed; clients should index their cache by both zone
+        code and pfm_point_id so an obs broadcast can update an entry the
+        client originally saved by city search.
+        """
+        from meshcore_weather.config import settings
+
+        cities_csv = (settings.home_cities or "").strip()
+        if not cities_csv:
+            return 0
+
+        cities = [c.strip() for c in cities_csv.split(",") if c.strip()]
+        if not cities:
+            return 0
+
+        sent = 0
+        for city in cities:
+            resolved = resolver.resolve(city)
+            if not resolved:
+                logger.debug("home broadcast: could not resolve %r", city)
+                continue
+            zones = resolved.get("zones") or []
+            if not zones:
+                logger.debug("home broadcast: %r has no zones", city)
+                continue
+            zone = zones[0]
+
+            # 0x30 Observation — keyed by zone (RWR fallback) or station (METAR)
+            obs_loc = {"type": LOC_ZONE, "zone": zone}
+            obs_msg = self._build_observation(obs_loc, city)
+            if obs_msg:
+                await self.radio.send_binary_channel(cobs_encode(obs_msg))
+                sent += 1
+                logger.debug("home broadcast: sent obs for %s (%d bytes)", city, len(obs_msg))
+                await asyncio.sleep(TX_SPACING)
+
+            # 0x31 Forecast — prefer LOC_PFM_POINT so iOS city-search clients
+            # match the broadcast. Find the nearest PFM point to the city.
+            pfm_idx = self._nearest_pfm_point_index(
+                resolved.get("lat", 0.0), resolved.get("lon", 0.0)
+            )
+            if pfm_idx is not None:
+                fc_loc = {"type": LOC_PFM_POINT, "pfm_point_id": pfm_idx}
+            else:
+                fc_loc = {"type": LOC_ZONE, "zone": zone}
+            fc_msg = self._build_forecast(fc_loc, city)
+            if fc_msg:
+                await self.radio.send_binary_channel(cobs_encode(fc_msg))
+                sent += 1
+                logger.debug("home broadcast: sent fcst for %s (%d bytes)", city, len(fc_msg))
+                await asyncio.sleep(TX_SPACING)
+
+        return sent
+
+    def _nearest_pfm_point_index(self, lat: float, lon: float) -> int | None:
+        """Return the array index of the nearest PFM point to (lat, lon),
+        or None if pfm_points.json isn't available or no point is within
+        a reasonable distance (~50 km).
+        """
+        points = self._load_pfm_points()
+        if not points:
+            return None
+        best_idx: int | None = None
+        best_d2 = float("inf")
+        for i, p in enumerate(points):
+            dlat = lat - p["lat"]
+            dlon = lon - p["lon"]
+            d2 = dlat * dlat + dlon * dlon
+            if d2 < best_d2:
+                best_d2 = d2
+                best_idx = i
+        # Quick distance gate (~50 km = 0.45° squared = 0.2)
+        if best_d2 > 0.2:
+            return None
+        return best_idx
 
     async def broadcast_region(self, region_id: int, request_type: int = 3) -> None:
         """Broadcast data for a specific region (triggered by refresh request).
