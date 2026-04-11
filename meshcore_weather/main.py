@@ -189,7 +189,16 @@ class WeatherBot:
             return
 
         prefix = self._normalize_key(pubkey_prefix)
-        if not self._rate_check(prefix):
+        # Binary data requests (WXQ/MWX prefixes) bypass the 5-second per-user
+        # rate check — they have their own per-(data_type, location) rate limit
+        # at the broadcaster level (5 min), and iOS clients legitimately fire
+        # multiple binary requests back-to-back when fetching different data
+        # types for the same location. The 5-second check is meant for human
+        # users typing text commands like "wx austin" / "forecast", not for
+        # apps doing structured queries.
+        is_binary_request = text.startswith("WXQ") or text.startswith("MWX")
+        if not is_binary_request and not self._rate_check(prefix):
+            logger.debug("DM rate-limited from %s", sender_name)
             return
 
         # Parse @lat,lng prefix for location-aware commands
