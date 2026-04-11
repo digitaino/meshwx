@@ -147,26 +147,48 @@ async def list_warnings(request: Request) -> JSONResponse:
     # Get all warnings (no filter)
     all_warnings = extract_active_warnings(bot.store, coverage=None)
 
-    # Tag each with coverage status
+    # Build JSON-safe response objects. Warning dicts contain a datetime
+    # `expires_at` field (added in the v3 pyIEM port) which json.dumps can't
+    # serialize directly — convert to ISO 8601 string here.
+    out: list[dict] = []
     for w in all_warnings:
         if coverage is None or coverage.is_empty():
-            w["in_coverage"] = True
+            in_cov = True
         else:
             zones = w.get("zones", [])
-            w["in_coverage"] = (
+            in_cov = (
                 coverage.covers_any(zones)
                 or coverage.covers_polygon(w.get("vertices", []))
             )
-        # Strip vertices from JSON (large); just send bbox
+
         verts = w.get("vertices", [])
+        bbox = None
         if verts:
             lats = [v[0] for v in verts]
             lons = [v[1] for v in verts]
-            w["bbox"] = [min(lats), min(lons), max(lats), max(lons)]
-        else:
-            w["bbox"] = None
+            bbox = [min(lats), min(lons), max(lats), max(lons)]
 
-    return JSONResponse({"warnings": all_warnings, "count": len(all_warnings)})
+        expires_at = w.get("expires_at")
+        out.append({
+            "warning_type": w.get("warning_type"),
+            "severity": w.get("severity"),
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "expiry_minutes": w.get("expiry_minutes"),
+            "headline": w.get("headline"),
+            "zones": w.get("zones", []),
+            "ugcs": w.get("ugcs", []),
+            "product_type": w.get("product_type"),
+            "vtec_action": w.get("vtec_action"),
+            "vtec_phenomenon": w.get("vtec_phenomenon"),
+            "vtec_significance": w.get("vtec_significance"),
+            "vtec_office": w.get("vtec_office"),
+            "vtec_etn": w.get("vtec_etn"),
+            "in_coverage": in_cov,
+            "bbox": bbox,
+            "vertices": verts,  # kept for /data map view
+        })
+
+    return JSONResponse({"warnings": out, "count": len(out)})
 
 
 # -- EMWIN product browser --
