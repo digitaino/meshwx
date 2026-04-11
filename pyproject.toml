@@ -47,6 +47,8 @@ where = ["."]
 [tool.setuptools.package-data]
 meshcore_weather = [
     "geodata/*.json",
+    "client_data/*.json",
+    "client_data/*.geojson",
     "portal/templates/*.html",
     "portal/templates/partials/*.html",
     "portal/static/*.css",

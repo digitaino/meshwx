@@ -49,9 +49,14 @@ class MeshWXBroadcaster:
         self._http_client: httpx.AsyncClient | None = None
         self._latest_radar: tuple[bytes, int] | None = None  # (img_bytes, ts_min)
         self._coverage: Coverage = Coverage.empty()
-        self._pfm_points: list[dict] | None = None  # loaded lazily from client_data/
+        self._pfm_points: list[dict] | None = None  # loaded lazily from bundle
+        # client_data/ ships inside the package (see pyproject.toml
+        # package-data), so it travels with the pip install regardless of
+        # deployment location (Docker, bare install, editable mode).
+        # __file__ = .../meshcore_weather/protocol/broadcaster.py
+        # .parent.parent = .../meshcore_weather
         self._pfm_points_path = (
-            Path(__file__).resolve().parent.parent.parent
+            Path(__file__).resolve().parent.parent
             / "client_data"
             / "pfm_points.json"
         )

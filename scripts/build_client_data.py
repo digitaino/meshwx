@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Build the client preload bundle for MeshWX-aware apps.
 
-Outputs a directory `client_data/` with compact JSON files that iOS/web
-clients ship with their app. With this preloaded, broadcasts only need to
-transmit small IDs (zone codes, place indices, station ICAOs) instead of
+Outputs a directory of compact JSON + GeoJSON files that iOS/web clients
+ship with their app. With this preloaded, broadcasts only need to transmit
+small IDs (zone codes, place indices, PFM point indices, etc.) instead of
 full location names — the client looks up the full details locally.
 
 Usage:
     python scripts/build_client_data.py [output_dir]
 
-Defaults to `./client_data/`.
+Defaults to `meshcore_weather/client_data/` (inside the package) so the
+bundle ships as package-data and is available at runtime regardless of
+deployment location. The bot's broadcaster reads from this directory via
+`Path(__file__).resolve().parent.parent / "client_data"`.
 """
 
 import io
@@ -579,7 +582,10 @@ def build_pfm_points(out_dir: Path) -> None:
 
 
 def main():
-    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "client_data"
+    # Default output goes inside the package so it ships as package-data
+    # and is available at runtime regardless of deployment location.
+    default_out = ROOT / "meshcore_weather" / "client_data"
+    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else default_out
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Building client preload bundle in {out_dir}/")
