@@ -1,7 +1,5 @@
 """JSON/API routes for the portal (HTMX partials and data endpoints)."""
 
-from pathlib import Path
-
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -10,8 +8,6 @@ from meshcore_weather.protocol.coverage import Coverage
 from meshcore_weather.protocol.warnings import extract_active_warnings
 
 router = APIRouter()
-
-_ENV_PATH = Path(".env")
 
 
 # -- Coverage preview & save --
@@ -39,73 +35,37 @@ async def coverage_preview(
 
 @router.post("/coverage/save")
 async def coverage_save(request: Request) -> JSONResponse:
-    """Write coverage settings to .env and reload the broadcaster."""
-    body = await request.json()
-    cities = body.get("cities", [])
-    states = body.get("states", [])
-    wfos = body.get("wfos", [])
+    """Deprecated — coverage is bootstrap config loaded from environment.
 
-    if not isinstance(cities, list) or not isinstance(states, list) or not isinstance(wfos, list):
-        raise HTTPException(400, "cities/states/wfos must be lists")
+    Previously this endpoint tried to rewrite `.env` in place, which
+    crashed because the container runs as a non-root user and the file
+    is owned by root. More importantly, the whole premise — "web UI
+    edits environment variables that the process has already loaded" —
+    doesn't actually work cleanly since env vars are process-start
+    state.
 
-    # Validate
-    resolver.load()
-    for city in cities:
-        if not resolver.resolve(city):
-            raise HTTPException(400, f"Could not resolve city: {city}")
-    for state in states:
-        if len(state) != 2 or not state.isalpha():
-            raise HTTPException(400, f"Invalid state code: {state}")
-    for wfo in wfos:
-        if not any(z["w"] == wfo.upper() for z in resolver._zones.values()):
-            raise HTTPException(400, f"Unknown WFO: {wfo}")
-
-    # Write to .env (update or append)
-    _update_env_file({
-        "MCW_HOME_CITIES": ",".join(cities),
-        "MCW_HOME_STATES": ",".join(s.upper() for s in states),
-        "MCW_HOME_WFOS": ",".join(w.upper() for w in wfos),
-    })
-
-    # Update in-memory settings and reload the broadcaster
-    from meshcore_weather.config import settings
-    settings.home_cities = ",".join(cities)
-    settings.home_states = ",".join(s.upper() for s in states)
-    settings.home_wfos = ",".join(w.upper() for w in wfos)
-
-    bot = request.app.state.bot
-    if bot and getattr(bot, "_broadcaster", None):
-        bot._broadcaster.reload_coverage()
-        new_cov = bot._broadcaster.coverage
-        return JSONResponse({
-            "ok": True,
-            "summary": new_cov.summary(),
-            "zone_count": len(new_cov.zones),
-            "region_ids": sorted(new_cov.region_ids),
-        })
-    return JSONResponse({"ok": True, "summary": "broadcaster not running"})
-
-
-def _update_env_file(updates: dict[str, str]) -> None:
-    """Update or append given keys in .env, preserving other lines."""
-    if not _ENV_PATH.exists():
-        _ENV_PATH.write_text("")
-    lines = _ENV_PATH.read_text().splitlines()
-    seen = set()
-    out = []
-    for line in lines:
-        stripped = line.strip()
-        if "=" in stripped and not stripped.startswith("#"):
-            key = stripped.split("=", 1)[0].strip()
-            if key in updates:
-                out.append(f"{key}={updates[key]}")
-                seen.add(key)
-                continue
-        out.append(line)
-    for key in updates:
-        if key not in seen:
-            out.append(f"{key}={updates[key]}")
-    _ENV_PATH.write_text("\n".join(out) + "\n")
+    Runtime broadcast configuration lives in `data/broadcast_config.json`
+    now and is managed by the /schedule page. This endpoint remains so
+    the existing /config form doesn't 404, but it returns a clear
+    explanation instead of attempting a file write.
+    """
+    return JSONResponse(
+        {
+            "ok": False,
+            "error": "coverage_is_bootstrap_config",
+            "message": (
+                "Coverage (home_cities/home_states/home_wfos) is loaded "
+                "from environment variables at bot startup and cannot be "
+                "changed live from the portal. To change coverage, edit "
+                ".env on the host and restart the container. To change "
+                "what the bot broadcasts without touching coverage, use "
+                "the Schedule page (/schedule) — that lets you add, "
+                "remove, and configure individual broadcast jobs at "
+                "runtime without a restart."
+            ),
+        },
+        status_code=400,
+    )
 
 
 # -- Autocomplete helpers --
