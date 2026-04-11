@@ -372,3 +372,151 @@ class TestForecast:
         msg = pack_forecast(LOC_ZONE, "TXZ192", 0, periods)
         # 1 type + 4 loc + 1 issued + 1 count + 7*7 = 56 bytes
         assert len(msg) == 56
+
+
+class TestWarningPolygonWideSpan:
+    """Regression test: wide polygons should not have crossed lines."""
+
+    def test_wide_polygon_preserves_vertex_positions(self):
+        """A warning polygon spanning 3+ degrees should not collapse to ±1.27°."""
+        from meshcore_weather.protocol.meshwx import (
+            WARN_SEVERE_TSTORM, SEV_WARNING,
+        )
+        # Realistic severe thunderstorm polygon spanning ~2 degrees lat/lon
+        vertices = [
+            (30.5, -98.5),
+            (31.8, -97.0),
+            (31.0, -95.5),
+            (29.5, -96.0),
+            (29.0, -97.5),
+        ]
+        msg = pack_warning_polygon(
+            WARN_SEVERE_TSTORM, SEV_WARNING, 60, vertices, "TEST"
+        )
+        decoded = unpack_warning_polygon(msg)
+        assert len(decoded["vertices"]) == 5
+        # Each decoded vertex should be within ~0.01° of original
+        for orig, got in zip(vertices, decoded["vertices"]):
+            assert abs(orig[0] - got[0]) < 0.01, f"lat drift: {orig} vs {got}"
+            assert abs(orig[1] - got[1]) < 0.01, f"lon drift: {orig} vs {got}"
+
+
+class TestZoneCodedWarning:
+    def test_basic_roundtrip(self):
+        from meshcore_weather.protocol.meshwx import (
+            pack_warning_zones, unpack_warning_zones, WARN_TORNADO, SEV_WARNING,
+            MSG_WARNING_ZONES,
+        )
+        zones = ["TXZ192", "TXZ193", "TXZ205"]
+        msg = pack_warning_zones(
+            WARN_TORNADO, SEV_WARNING, 30, zones, "TAKE SHELTER NOW"
+        )
+        assert msg[0] == MSG_WARNING_ZONES
+        decoded = unpack_warning_zones(msg)
+        assert decoded["warning_type"] == WARN_TORNADO
+        assert decoded["severity"] == SEV_WARNING
+        assert decoded["expiry_minutes"] == 30
+        assert decoded["zones"] == zones
+        assert decoded["headline"] == "TAKE SHELTER NOW"
+
+    def test_size_comparison(self):
+        """Zone-coded should be much smaller than polygon for same coverage."""
+        from meshcore_weather.protocol.meshwx import (
+            pack_warning_zones, WARN_TORNADO, SEV_WARNING,
+        )
+        # 5 zones = 1 + 1 + 2 + 1 + 15 + headline
+        msg = pack_warning_zones(
+            WARN_TORNADO, SEV_WARNING, 60, ["TXZ192", "TXZ193", "TXZ205", "TXZ206", "TXZ207"],
+            "TORNADO WARNING until 915 PM CDT"
+        )
+        # 5 header bytes + 15 zone bytes + ~33 headline = ~53 bytes
+        assert len(msg) < 60
+
+
+class TestOutlook:
+    def test_roundtrip(self):
+        from meshcore_weather.protocol.meshwx import (
+            pack_outlook, unpack_outlook,
+            HAZARD_SEVERE_THUNDER, HAZARD_FLASH_FLOOD, HAZARD_TORNADO,
+            MSG_OUTLOOK,
+        )
+        days = [
+            {"day_offset": 1, "hazards": [
+                (HAZARD_SEVERE_THUNDER, 3),
+                (HAZARD_FLASH_FLOOD, 2),
+            ]},
+            {"day_offset": 2, "hazards": [
+                (HAZARD_TORNADO, 4),
+            ]},
+        ]
+        msg = pack_outlook(LOC_ZONE, "TXZ192", 720, days)
+        assert msg[0] == MSG_OUTLOOK
+        decoded = unpack_outlook(msg)
+        assert decoded["issued_utc_min"] == 720
+        assert len(decoded["days"]) == 2
+        assert decoded["days"][0]["day_offset"] == 1
+        assert len(decoded["days"][0]["hazards"]) == 2
+        assert decoded["days"][0]["hazards"][0]["hazard_type"] == HAZARD_SEVERE_THUNDER
+        assert decoded["days"][1]["hazards"][0]["risk_level"] == 4
+
+
+class TestStormReports:
+    def test_roundtrip(self):
+        from meshcore_weather.protocol.meshwx import (
+            pack_storm_reports, unpack_storm_reports,
+            EVENT_TORNADO, EVENT_HAIL, EVENT_TSTM_WIND,
+            MSG_STORM_REPORTS,
+        )
+        reports = [
+            {"event_type": EVENT_TORNADO, "magnitude": 0, "minutes_ago": 15, "place_id": 1234},
+            {"event_type": EVENT_HAIL, "magnitude": 6, "minutes_ago": 22, "place_id": 5678},  # 1.5" hail
+            {"event_type": EVENT_TSTM_WIND, "magnitude": 65, "minutes_ago": 30, "place_id": 9999},
+        ]
+        msg = pack_storm_reports(LOC_ZONE, "TXZ192", reports)
+        assert msg[0] == MSG_STORM_REPORTS
+        decoded = unpack_storm_reports(msg)
+        assert len(decoded["reports"]) == 3
+        assert decoded["reports"][0]["event_type"] == EVENT_TORNADO
+        assert decoded["reports"][1]["magnitude"] == 6
+        assert decoded["reports"][2]["place_id"] == 9999
+
+
+class TestRainObs:
+    def test_roundtrip(self):
+        from meshcore_weather.protocol.meshwx import (
+            pack_rain_obs, unpack_rain_obs,
+            RAIN_LIGHT, RAIN_HEAVY, RAIN_TSTORM,
+            MSG_RAIN_OBS,
+        )
+        cities = [
+            {"place_id": 100, "rain_type": RAIN_LIGHT, "temp_f": 68},
+            {"place_id": 200, "rain_type": RAIN_HEAVY, "temp_f": 72},
+            {"place_id": 300, "rain_type": RAIN_TSTORM, "temp_f": 65},
+        ]
+        msg = pack_rain_obs(LOC_ZONE, "TXZ192", 720, cities)
+        assert msg[0] == MSG_RAIN_OBS
+        decoded = unpack_rain_obs(msg)
+        assert decoded["timestamp_utc_min"] == 720
+        assert len(decoded["cities"]) == 3
+        assert decoded["cities"][0]["rain_type"] == RAIN_LIGHT
+        assert decoded["cities"][0]["temp_f"] == 68
+
+
+class TestWarningsNear:
+    def test_roundtrip(self):
+        from meshcore_weather.protocol.meshwx import (
+            pack_warnings_near, unpack_warnings_near,
+            WARN_TORNADO, WARN_FLASH_FLOOD, SEV_WARNING, SEV_WATCH,
+            MSG_WARNINGS_NEAR,
+        )
+        warnings = [
+            {"warning_type": WARN_TORNADO, "severity": SEV_WARNING, "expiry_minutes": 30, "zone": "TXZ192"},
+            {"warning_type": WARN_FLASH_FLOOD, "severity": SEV_WATCH, "expiry_minutes": 480, "zone": "TXZ205"},
+        ]
+        msg = pack_warnings_near(LOC_ZONE, "TXZ192", warnings)
+        assert msg[0] == MSG_WARNINGS_NEAR
+        decoded = unpack_warnings_near(msg)
+        assert len(decoded["warnings"]) == 2
+        assert decoded["warnings"][0]["warning_type"] == WARN_TORNADO
+        assert decoded["warnings"][0]["zone"] == "TXZ192"
+        assert decoded["warnings"][1]["expiry_minutes"] == 480

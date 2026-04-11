@@ -64,6 +64,7 @@ MSG_REFRESH = 0x01       # v1: client → bot refresh request (DM)
 MSG_DATA_REQUEST = 0x02  # v2: client → bot data request (DM)
 MSG_RADAR = 0x10         # v1: radar grid (broadcast)
 MSG_WARNING = 0x20       # v1: warning polygon (broadcast)
+MSG_WARNING_ZONES = 0x21 # v2: zone-coded warning (client renders polygons)
 MSG_OBSERVATION = 0x30   # v2: current conditions (wx reply)
 MSG_FORECAST = 0x31      # v2: multi-period forecast
 MSG_OUTLOOK = 0x32       # v2: HWO 1-7 day hazards
@@ -229,11 +230,14 @@ def pack_warning_polygon(
     msg.extend(lat_i.to_bytes(3, "big", signed=True))
     msg.extend(lon_i.to_bytes(3, "big", signed=True))
 
-    # Remaining vertices: int8 delta pairs (0.01 degree units)
+    # Remaining vertices: int16 delta pairs (0.001 degree units, ~110m precision).
+    # Range ±32.767° from first vertex — enough for any realistic warning polygon.
+    # Previous version used int8 @ 0.01° which clamped at ±1.27° and caused
+    # vertices to pin at the edge, producing crossed lines for wider polygons.
     for lat, lon in vertices[1:]:
-        dlat = max(-128, min(127, int((lat - lat0) / 0.01)))
-        dlon = max(-128, min(127, int((lon - lon0) / 0.01)))
-        msg.extend(struct.pack("bb", dlat, dlon))
+        dlat = max(-32768, min(32767, int(round((lat - lat0) / 0.001))))
+        dlon = max(-32768, min(32767, int(round((lon - lon0) / 0.001))))
+        msg.extend(struct.pack(">hh", dlat, dlon))
 
     # Headline fills remaining space
     remaining = 136 - len(msg)
@@ -258,12 +262,13 @@ def unpack_warning_polygon(data: bytes) -> dict:
         lon0 = int.from_bytes(data[offset + 3 : offset + 6], "big", signed=True) / 10000
         vertices.append((lat0, lon0))
         offset += 6
+        # int16 deltas at 0.001 degree units (~110m precision)
         for _ in range(vertex_count - 1):
-            if offset + 2 > len(data):
+            if offset + 4 > len(data):
                 break
-            dlat, dlon = struct.unpack_from("bb", data, offset)
-            vertices.append((lat0 + dlat * 0.01, lon0 + dlon * 0.01))
-            offset += 2
+            dlat, dlon = struct.unpack_from(">hh", data, offset)
+            vertices.append((lat0 + dlat * 0.001, lon0 + dlon * 0.001))
+            offset += 4
 
     headline = data[offset:].decode("utf-8", errors="replace").rstrip("\x00")
     return {
@@ -672,4 +677,383 @@ def unpack_forecast(data: bytes) -> dict:
         "location": location,
         "issued_hours_ago": issued_hours_ago,
         "periods": periods,
+    }
+
+
+# -- Zone-coded Warning (0x21) --
+# Clients with preloaded NWS zone polygons render the warning area from the
+# zone codes alone — no vertex data needed. Eliminates polygon crossing
+# artifacts entirely since geometry is canonical.
+
+def pack_warning_zones(
+    warning_type: int,
+    severity: int,
+    expiry_minutes: int,
+    zones: list[str],
+    headline: str,
+) -> bytes:
+    """Pack a zone-coded warning.
+
+    zones: list of NWS zone codes like ["TXZ192", "TXZ193"]. Max 30 per message.
+    Client uses its preloaded zone polygon data to render the affected area.
+    """
+    msg = bytearray()
+    msg.append(MSG_WARNING_ZONES)
+    msg.append(((warning_type & 0x0F) << 4) | (severity & 0x0F))
+    msg.extend(struct.pack(">H", min(expiry_minutes, 0xFFFF)))
+    msg.append(min(len(zones), 30))
+
+    # Pack each zone as 3 bytes: state_idx (1) + zone_num (uint16 BE)
+    for zone_code in zones[:30]:
+        if len(zone_code) != 6 or zone_code[2] != "Z":
+            continue
+        try:
+            state_idx = state_to_idx(zone_code[:2])
+            zone_num = int(zone_code[3:])
+        except (ValueError, KeyError):
+            continue
+        msg.append(state_idx & 0xFF)
+        msg.extend(struct.pack(">H", zone_num & 0xFFFF))
+
+    # Headline fills remaining space
+    remaining = 136 - len(msg)
+    if remaining > 0 and headline:
+        msg.extend(headline.encode("utf-8")[:remaining])
+    return bytes(msg)
+
+
+def unpack_warning_zones(data: bytes) -> dict:
+    """Unpack a zone-coded warning message."""
+    if len(data) < 5 or data[0] != MSG_WARNING_ZONES:
+        raise ValueError("Invalid zone-coded warning")
+    warning_type = (data[1] >> 4) & 0x0F
+    severity = data[1] & 0x0F
+    expiry = struct.unpack_from(">H", data, 2)[0]
+    zone_count = data[4]
+
+    zones = []
+    offset = 5
+    for _ in range(zone_count):
+        if offset + 3 > len(data):
+            break
+        state_idx = data[offset]
+        zone_num = struct.unpack_from(">H", data, offset + 1)[0]
+        state = idx_to_state(state_idx)
+        zones.append(f"{state}Z{zone_num:03d}")
+        offset += 3
+
+    headline = data[offset:].decode("utf-8", errors="replace").rstrip("\x00")
+    return {
+        "type": MSG_WARNING_ZONES,
+        "warning_type": warning_type,
+        "severity": severity,
+        "expiry_minutes": expiry,
+        "zones": zones,
+        "headline": headline,
+    }
+
+
+# -- Hazard Outlook (0x32) -- 1-7 day HWO --
+
+# Hazard type codes
+HAZARD_THUNDERSTORM = 0x0
+HAZARD_SEVERE_THUNDER = 0x1
+HAZARD_TORNADO = 0x2
+HAZARD_FLOOD = 0x3
+HAZARD_FLASH_FLOOD = 0x4
+HAZARD_EXCESSIVE_HEAT = 0x5
+HAZARD_WINTER_STORM = 0x6
+HAZARD_BLIZZARD = 0x7
+HAZARD_ICE = 0x8
+HAZARD_HIGH_WIND = 0x9
+HAZARD_FIRE_WEATHER = 0xA
+HAZARD_DENSE_FOG = 0xB
+HAZARD_RIP_CURRENT = 0xC
+HAZARD_HURRICANE = 0xD
+HAZARD_MARINE = 0xE
+HAZARD_OTHER = 0xF
+
+# Risk levels
+RISK_NONE = 0
+RISK_SLIGHT = 1
+RISK_LIMITED = 2
+RISK_ENHANCED = 3
+RISK_MODERATE = 4
+RISK_HIGH = 5
+RISK_EXTREME = 6
+
+
+def pack_outlook(
+    loc_type: int,
+    loc_id,
+    issued_utc_min: int,
+    days: list[dict],
+) -> bytes:
+    """Pack a 0x32 hazard outlook message.
+
+    days: list of {"day_offset": 1-7, "hazards": [(hazard_type, risk_level), ...]}
+    """
+    loc_bytes = pack_location(loc_type, loc_id)
+    msg = bytearray()
+    msg.append(MSG_OUTLOOK)
+    msg.extend(loc_bytes)
+    msg.extend(struct.pack("<H", issued_utc_min & 0xFFFF))
+    msg.append(min(len(days), 7))
+    for day in days[:7]:
+        hazards = day.get("hazards", [])
+        msg.append(day.get("day_offset", 1) & 0xFF)
+        msg.append(min(len(hazards), 15))
+        for h_type, risk in hazards[:15]:
+            msg.append(h_type & 0xFF)
+            msg.append(risk & 0xFF)
+    return bytes(msg)
+
+
+def unpack_outlook(data: bytes) -> dict:
+    """Unpack a hazard outlook message."""
+    if len(data) < 2 or data[0] != MSG_OUTLOOK:
+        raise ValueError("Invalid outlook message")
+    location, offset = unpack_location(data, 1)
+    if offset + 3 > len(data):
+        raise ValueError("Outlook header truncated")
+    issued = struct.unpack_from("<H", data, offset)[0]
+    day_count = data[offset + 2]
+    offset += 3
+    days = []
+    for _ in range(day_count):
+        if offset + 2 > len(data):
+            break
+        day_offset = data[offset]
+        hazard_count = data[offset + 1]
+        offset += 2
+        hazards = []
+        for _ in range(hazard_count):
+            if offset + 2 > len(data):
+                break
+            h_type = data[offset]
+            risk = data[offset + 1]
+            hazards.append({"hazard_type": h_type, "risk_level": risk})
+            offset += 2
+        days.append({"day_offset": day_offset, "hazards": hazards})
+    return {
+        "type": MSG_OUTLOOK,
+        "location": location,
+        "issued_utc_min": issued,
+        "days": days,
+    }
+
+
+# -- Storm Reports (0x33) -- LSR list --
+
+# Event type codes
+EVENT_TORNADO = 0x0
+EVENT_FUNNEL = 0x1
+EVENT_HAIL = 0x2
+EVENT_WIND_DAMAGE = 0x3
+EVENT_NON_TSTM_WIND = 0x4
+EVENT_TSTM_WIND = 0x5
+EVENT_FLOOD = 0x6
+EVENT_FLASH_FLOOD = 0x7
+EVENT_HEAVY_RAIN = 0x8
+EVENT_SNOW = 0x9
+EVENT_ICE = 0xA
+EVENT_LIGHTNING = 0xB
+EVENT_DEBRIS_FLOW = 0xC
+EVENT_OTHER = 0xF
+
+
+def pack_storm_reports(
+    loc_type: int,
+    loc_id,
+    reports: list[dict],
+) -> bytes:
+    """Pack a 0x33 storm reports message.
+
+    reports: list of dicts with:
+      event_type: int event code
+      magnitude: uint8 (hail size * 4 for inches, mph for wind)
+      minutes_ago: uint16
+      place_id: uint24 (index into preloaded places.json)
+    """
+    loc_bytes = pack_location(loc_type, loc_id)
+    msg = bytearray()
+    msg.append(MSG_STORM_REPORTS)
+    msg.extend(loc_bytes)
+    # Max reports that fit: (136 - header) / 7 bytes each
+    max_reports = (136 - 2 - len(loc_bytes)) // 7
+    report_count = min(len(reports), max_reports, 255)
+    msg.append(report_count)
+    for r in reports[:report_count]:
+        msg.append(r.get("event_type", EVENT_OTHER) & 0xFF)
+        msg.append(max(0, min(255, int(r.get("magnitude", 0)))))
+        msg.extend(struct.pack("<H", max(0, min(0xFFFF, r.get("minutes_ago", 0)))))
+        place_id = max(0, min(0xFFFFFF, r.get("place_id", 0)))
+        msg.extend(place_id.to_bytes(3, "big"))
+    return bytes(msg)
+
+
+def unpack_storm_reports(data: bytes) -> dict:
+    """Unpack a storm reports message."""
+    if len(data) < 2 or data[0] != MSG_STORM_REPORTS:
+        raise ValueError("Invalid storm reports message")
+    location, offset = unpack_location(data, 1)
+    if offset + 1 > len(data):
+        raise ValueError("Storm reports header truncated")
+    report_count = data[offset]
+    offset += 1
+    reports = []
+    for _ in range(report_count):
+        if offset + 7 > len(data):
+            break
+        reports.append({
+            "event_type": data[offset],
+            "magnitude": data[offset + 1],
+            "minutes_ago": struct.unpack_from("<H", data, offset + 2)[0],
+            "place_id": int.from_bytes(data[offset + 4 : offset + 7], "big"),
+        })
+        offset += 7
+    return {
+        "type": MSG_STORM_REPORTS,
+        "location": location,
+        "reports": reports,
+    }
+
+
+# -- Rain Observations (0x34) --
+
+# Rain type codes (reuse sky codes where they overlap)
+RAIN_LIGHT = 0x0
+RAIN_MODERATE = 0x1
+RAIN_HEAVY = 0x2
+RAIN_SHOWER = 0x3
+RAIN_TSTORM = 0x4
+RAIN_DRIZZLE = 0x5
+RAIN_SNOW = 0x6
+RAIN_FREEZING = 0x7
+RAIN_MIX = 0x8
+
+
+def pack_rain_obs(
+    loc_type: int,
+    loc_id,
+    timestamp_utc_min: int,
+    cities: list[dict],
+) -> bytes:
+    """Pack a 0x34 rain observations message.
+
+    cities: list of {"place_id": int, "rain_type": int, "temp_f": int}
+    """
+    loc_bytes = pack_location(loc_type, loc_id)
+    msg = bytearray()
+    msg.append(MSG_RAIN_OBS)
+    msg.extend(loc_bytes)
+    msg.extend(struct.pack("<H", timestamp_utc_min & 0xFFFF))
+
+    max_cities = (136 - 4 - len(loc_bytes)) // 5
+    city_count = min(len(cities), max_cities, 255)
+    msg.append(city_count)
+    for c in cities[:city_count]:
+        place_id = max(0, min(0xFFFFFF, c.get("place_id", 0)))
+        msg.extend(place_id.to_bytes(3, "big"))
+        msg.append(c.get("rain_type", RAIN_LIGHT) & 0xFF)
+        msg.append(max(-128, min(127, int(c.get("temp_f", 60)))) & 0xFF)
+    return bytes(msg)
+
+
+def unpack_rain_obs(data: bytes) -> dict:
+    """Unpack a rain observations message."""
+    if len(data) < 2 or data[0] != MSG_RAIN_OBS:
+        raise ValueError("Invalid rain obs message")
+    location, offset = unpack_location(data, 1)
+    if offset + 3 > len(data):
+        raise ValueError("Rain obs header truncated")
+    timestamp = struct.unpack_from("<H", data, offset)[0]
+    city_count = data[offset + 2]
+    offset += 3
+    cities = []
+    for _ in range(city_count):
+        if offset + 5 > len(data):
+            break
+        cities.append({
+            "place_id": int.from_bytes(data[offset : offset + 3], "big"),
+            "rain_type": data[offset + 3],
+            "temp_f": struct.unpack_from("b", data, offset + 4)[0],
+        })
+        offset += 5
+    return {
+        "type": MSG_RAIN_OBS,
+        "location": location,
+        "timestamp_utc_min": timestamp,
+        "cities": cities,
+    }
+
+
+# -- Warnings Near location (0x37) --
+# Summary reply: list of warnings currently active at the given location.
+# Each entry is a reference (type, severity, zone) so the client can
+# look up the full details from its cache of previously-received 0x21/0x20.
+
+def pack_warnings_near(
+    loc_type: int,
+    loc_id,
+    warnings: list[dict],
+) -> bytes:
+    """Pack a 0x37 'warnings near location' summary.
+
+    warnings: list of {"warning_type", "severity", "expiry_minutes", "zone"}
+    where zone is an optional 6-char NWS zone code for quick lookup.
+    """
+    loc_bytes = pack_location(loc_type, loc_id)
+    msg = bytearray()
+    msg.append(MSG_WARNINGS_NEAR)
+    msg.extend(loc_bytes)
+    max_entries = (136 - 2 - len(loc_bytes)) // 6
+    msg.append(min(len(warnings), max_entries))
+    for w in warnings[:max_entries]:
+        msg.append(((w.get("warning_type", WARN_OTHER) & 0x0F) << 4) | (w.get("severity", 0) & 0x0F))
+        msg.extend(struct.pack("<H", w.get("expiry_minutes", 0) & 0xFFFF))
+        zone = w.get("zone", "")
+        if len(zone) == 6 and zone[2] == "Z":
+            try:
+                state_idx = state_to_idx(zone[:2])
+                zone_num = int(zone[3:])
+                msg.append(state_idx & 0xFF)
+                msg.extend(struct.pack(">H", zone_num & 0xFFFF))
+            except ValueError:
+                msg.extend(b"\x00\x00\x00")
+        else:
+            msg.extend(b"\x00\x00\x00")
+    return bytes(msg)
+
+
+def unpack_warnings_near(data: bytes) -> dict:
+    """Unpack a warnings-near summary."""
+    if len(data) < 2 or data[0] != MSG_WARNINGS_NEAR:
+        raise ValueError("Invalid warnings-near message")
+    location, offset = unpack_location(data, 1)
+    if offset + 1 > len(data):
+        raise ValueError("Warnings-near header truncated")
+    count = data[offset]
+    offset += 1
+    warnings = []
+    for _ in range(count):
+        if offset + 6 > len(data):
+            break
+        type_sev = data[offset]
+        expiry = struct.unpack_from("<H", data, offset + 1)[0]
+        state_idx = data[offset + 3]
+        zone_num = struct.unpack_from(">H", data, offset + 4)[0]
+        state = idx_to_state(state_idx)
+        zone = f"{state}Z{zone_num:03d}" if state != "??" else ""
+        warnings.append({
+            "warning_type": (type_sev >> 4) & 0x0F,
+            "severity": type_sev & 0x0F,
+            "expiry_minutes": expiry,
+            "zone": zone,
+        })
+        offset += 6
+    return {
+        "type": MSG_WARNINGS_NEAR,
+        "location": location,
+        "warnings": warnings,
     }

@@ -16,6 +16,7 @@ from meshcore_weather.protocol.meshwx import (
     SEV_WARNING,
     WARN_OTHER,
     pack_warning_polygon,
+    pack_warning_zones,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,18 +115,36 @@ def extract_active_warnings(
     return results
 
 
-def warnings_to_binary(warnings: list[dict]) -> list[bytes]:
-    """Pack a list of warning dicts into MeshWX binary messages."""
+def warnings_to_binary(warnings: list[dict], prefer_zones: bool = True) -> list[bytes]:
+    """Pack a list of warning dicts into MeshWX binary messages.
+
+    If `prefer_zones` is True (default) and a warning has NWS zone codes
+    from its UGC line, emit the compact 0x21 zone-coded format which:
+      - is 2-4x smaller than polygon encoding for multi-zone warnings
+      - eliminates vertex crossing artifacts (client uses canonical zone polygons)
+
+    Falls back to 0x20 polygon format only when zones are unavailable.
+    """
     msgs = []
     for w in warnings:
         try:
-            msg = pack_warning_polygon(
-                warning_type=w["warning_type"],
-                severity=w["severity"],
-                expiry_minutes=w["expiry_minutes"],
-                vertices=w["vertices"],
-                headline=w["headline"],
-            )
+            zones = w.get("zones", [])
+            if prefer_zones and zones:
+                msg = pack_warning_zones(
+                    warning_type=w["warning_type"],
+                    severity=w["severity"],
+                    expiry_minutes=w["expiry_minutes"],
+                    zones=zones,
+                    headline=w["headline"],
+                )
+            else:
+                msg = pack_warning_polygon(
+                    warning_type=w["warning_type"],
+                    severity=w["severity"],
+                    expiry_minutes=w["expiry_minutes"],
+                    vertices=w["vertices"],
+                    headline=w["headline"],
+                )
             msgs.append(msg)
         except Exception:
             logger.debug("Failed to pack warning: %s", w.get("headline", "?")[:40])
