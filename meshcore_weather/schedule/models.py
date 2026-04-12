@@ -14,16 +14,17 @@ from pydantic import BaseModel, Field, field_validator
 # Supported product names. Adding a new product requires adding one
 # entry here AND one entry in executor.PRODUCT_BUILDERS.
 PRODUCT_TYPES = {
-    "radar",          # 0x10 radar grid (per region)
-    "warnings",       # 0x20/0x21 active warnings in coverage area
-    "observation",    # 0x30 current conditions for a point
-    "forecast",       # 0x31 multi-day forecast for a point
-    "outlook",        # 0x32 hazardous weather outlook
-    "storm_reports",  # 0x33 local storm reports
-    "rain_obs",       # 0x34 rain-reporting cities
-    "metar",          # 0x30 METAR for a station (alias for observation)
-    "taf",            # 0x36 TAF for a station
-    "warnings_near",  # 0x37 warnings near a specific zone
+    "radar",           # 0x10/0x11 radar grid (per region)
+    "warnings",        # 0x20/0x21 full re-broadcast of ALL active warnings (safety net, slow cycle)
+    "warnings_delta",  # 0x20/0x21 only NEW or CHANGED warnings since last cycle (fast cycle)
+    "observation",     # 0x30 current conditions for a point
+    "forecast",        # 0x31 multi-day forecast for a point
+    "outlook",         # 0x32 hazardous weather outlook
+    "storm_reports",   # 0x33 local storm reports
+    "rain_obs",        # 0x34 rain-reporting cities
+    "metar",           # 0x30 METAR for a station (alias for observation)
+    "taf",             # 0x36 TAF for a station
+    "warnings_near",   # 0x37 warnings near a specific zone
 }
 
 # Supported location types. Each tells the executor how to interpret the

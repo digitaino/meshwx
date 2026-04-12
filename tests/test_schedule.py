@@ -240,10 +240,11 @@ class TestStorePersistence:
 
         cfg = store_module.load_config()
         # Corrupt file → falls back to default_config_for_bootstrap, which
-        # always emits at least the radar + warnings coverage jobs.
+        # always emits at least the radar + warnings-delta + warnings-full.
         ids = {j.id for j in cfg.jobs}
         assert "radar-coverage" in ids
-        assert "warnings-coverage" in ids
+        assert "warnings-delta" in ids
+        assert "warnings-full" in ids
 
     def test_missing_file_bootstraps_and_saves(self, tmp_path, monkeypatch):
         tmp_cfg = tmp_path / "broadcast_config.json"
@@ -273,9 +274,10 @@ class TestBootstrap:
     def test_bootstrap_includes_core_jobs(self):
         cfg = store_module.default_config_for_bootstrap()
         ids = {j.id for j in cfg.jobs}
-        # Radar and warnings are always present regardless of home_cities
+        # Radar + warnings-delta + warnings-full always present
         assert "radar-coverage" in ids
-        assert "warnings-coverage" in ids
+        assert "warnings-delta" in ids
+        assert "warnings-full" in ids
 
     def test_bootstrap_adds_home_city_pairs(self, monkeypatch):
         """Each configured home city gets an obs + forecast pair."""
@@ -293,7 +295,7 @@ class TestBootstrap:
         from meshcore_weather.config import settings
         monkeypatch.setattr(settings, "home_cities", "")
         cfg = store_module.default_config_for_bootstrap()
-        assert len(cfg.jobs) == 2  # just radar + warnings
+        assert len(cfg.jobs) == 3  # radar + warnings-delta + warnings-full
 
 
 # -- Scheduler semantics -----------------------------------------------------

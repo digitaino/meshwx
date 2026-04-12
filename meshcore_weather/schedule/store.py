@@ -82,10 +82,10 @@ def default_config_for_bootstrap() -> BroadcastConfig:
     default jobs exactly mirror what the old hardcoded
     `_broadcast_all()` used to do:
 
-    1. Radar for the operator's coverage area (one job per region),
-       every 15 minutes
-    2. Active warnings for the operator's coverage area, every 5 minutes
-    3. Observation + forecast for each configured home city, every
+    1. Radar for the operator's coverage area, every 15 minutes
+    2. Warning delta — only NEW or CHANGED warnings, every 2 minutes
+    3. Warning full — all active warnings as a safety net, every 2 hours
+    4. Observation + forecast for each configured home city, every
        60 minutes
 
     Operators can edit / delete / add to this via the /schedule portal
@@ -108,12 +108,23 @@ def default_config_for_bootstrap() -> BroadcastConfig:
     )
     jobs.append(
         BroadcastJob(
-            id="warnings-coverage",
-            name="Active warnings (coverage)",
+            id="warnings-delta",
+            name="Warnings — new/changed only",
+            product="warnings_delta",
+            location_type="coverage",
+            location_id="",
+            interval_minutes=2,
+            enabled=True,
+        )
+    )
+    jobs.append(
+        BroadcastJob(
+            id="warnings-full",
+            name="Warnings — full re-broadcast (safety net)",
             product="warnings",
             location_type="coverage",
             location_id="",
-            interval_minutes=5,
+            interval_minutes=120,
             enabled=True,
         )
     )

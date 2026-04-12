@@ -78,6 +78,12 @@ class Scheduler:
         self._http_client: httpx.AsyncClient | None = None
         self._latest_radar: tuple[bytes, int] | None = None
 
+        # Warning change tracking — persists across ticks so the delta
+        # builder can compare current vs last-broadcast warning sets.
+        # Key: warning identity (VTEC key string)
+        # Value: (expires_unix_min, headline_hash)
+        self._warning_tracking: dict[str, tuple[int, int]] = {}
+
         self._task: asyncio.Task | None = None
         self._running = False
 
@@ -211,6 +217,7 @@ class Scheduler:
             coverage=self._coverage,
             pfm_points=self._pfm_points,
             latest_radar=self._latest_radar,
+            last_broadcast_warnings=self._warning_tracking,
         )
 
         now = time.time()
@@ -306,6 +313,7 @@ class Scheduler:
             coverage=self._coverage,
             pfm_points=self._pfm_points,
             latest_radar=self._latest_radar,
+            last_broadcast_warnings=self._warning_tracking,
         )
         msgs = self.executor.run_job(job, ctx)
         now = time.time()

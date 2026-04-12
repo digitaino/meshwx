@@ -23,7 +23,7 @@ debug level, records the run timestamp, and moves on.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from meshcore_weather.geodata import resolver
@@ -78,6 +78,10 @@ class ExecutorContext:
     coverage: Coverage
     pfm_points: list[dict]           # from pfm_points.json (or empty if unavailable)
     latest_radar: tuple[bytes, int] | None  # (image_bytes, timestamp_utc_min)
+    # Warning change tracking — persists across ticks via the scheduler.
+    # Key: warning identity string (VTEC key or SPS dedup key)
+    # Value: (expires_unix_min, headline_hash) — for detecting changes
+    last_broadcast_warnings: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 # -- Builders ----------------------------------------------------------------
@@ -143,12 +147,100 @@ def _build_radar(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     )
 
 
-def _build_warnings(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """Active warnings broadcast. Always uses coverage for filtering;
-    the job's `location_type` + `location_id` are ignored (the whole
-    coverage area is the filter)."""
+def _warning_identity(w: dict) -> str:
+    """Stable identity string for a warning, used for change detection.
+
+    For VTEC warnings: (phenomenon, significance, office, etn) — the
+    canonical VTEC event key that persists across SVS updates.
+    For non-VTEC (SPS): (office, product_type, filename) as a fallback.
+    """
+    ph = w.get("vtec_phenomenon")
+    sig = w.get("vtec_significance")
+    off = w.get("vtec_office")
+    etn = w.get("vtec_etn")
+    if ph and sig and off and etn is not None:
+        return f"{ph}.{sig}.{off}.{etn}"
+    # SPS / non-VTEC fallback
+    return f"_{w.get('product_type','?')}_{w.get('filename','?')}"
+
+
+def _warning_fingerprint(w: dict) -> tuple[int, int]:
+    """Compact fingerprint for detecting content changes in a warning.
+
+    Returns (expires_unix_min, headline_hash). If either changes between
+    cycles, the warning is re-broadcast.
+    """
+    expires_at = w.get("expires_at")
+    exp_min = int(expires_at.timestamp() / 60) if expires_at else 0
+    headline_hash = hash(w.get("headline", "")) & 0xFFFFFFFF
+    return (exp_min, headline_hash)
+
+
+def _build_warnings_full(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
+    """Full re-broadcast of ALL active warnings in coverage (safety net).
+
+    Runs on a slow cycle (default 2 hours). Updates the change-tracking
+    state so the delta builder knows the current baseline.
+    """
     warnings = extract_active_warnings(ctx.store, coverage=ctx.coverage)
+    # Update the tracking state with the current full set
+    ctx.last_broadcast_warnings.clear()
+    for w in warnings:
+        key = _warning_identity(w)
+        ctx.last_broadcast_warnings[key] = _warning_fingerprint(w)
+    if warnings:
+        logger.info(
+            "warnings-full: broadcasting %d active warning(s)", len(warnings)
+        )
     return warnings_to_binary(warnings)
+
+
+def _build_warnings_delta(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
+    """Delta broadcast — only warnings that are NEW or CHANGED since the
+    last broadcast cycle.
+
+    Compares the current active warning set against the tracking state
+    from the previous cycle. Only emits warnings whose identity is new
+    (not in previous set) or whose fingerprint changed (expiry extended,
+    headline updated, etc.).
+
+    Also removes expired warnings from the tracking state so they don't
+    accumulate forever.
+    """
+    current_warnings = extract_active_warnings(ctx.store, coverage=ctx.coverage)
+
+    # Build the current set keyed by identity
+    current_by_key: dict[str, dict] = {}
+    for w in current_warnings:
+        key = _warning_identity(w)
+        current_by_key[key] = w
+
+    # Find what's new or changed
+    delta: list[dict] = []
+    for key, w in current_by_key.items():
+        fp = _warning_fingerprint(w)
+        prev_fp = ctx.last_broadcast_warnings.get(key)
+        if prev_fp is None:
+            # New warning — not in previous set
+            delta.append(w)
+            logger.info("warnings-delta: NEW %s — %s", key, w.get("headline", "")[:50])
+        elif prev_fp != fp:
+            # Changed (expiry extended, headline updated, etc.)
+            delta.append(w)
+            logger.info("warnings-delta: CHANGED %s", key)
+
+    # Update tracking state with current set. This also drops expired
+    # warnings that are no longer in current_by_key.
+    ctx.last_broadcast_warnings.clear()
+    for key, w in current_by_key.items():
+        ctx.last_broadcast_warnings[key] = _warning_fingerprint(w)
+
+    if delta:
+        logger.info(
+            "warnings-delta: %d new/changed out of %d active",
+            len(delta), len(current_warnings),
+        )
+    return warnings_to_binary(delta)
 
 
 def _build_observation(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
@@ -542,7 +634,8 @@ def _build_warnings_near(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]
 
 PRODUCT_BUILDERS: dict[str, Callable[[BroadcastJob, ExecutorContext], list[bytes]]] = {
     "radar": _build_radar,
-    "warnings": _build_warnings,
+    "warnings": _build_warnings_full,      # full re-broadcast (safety net, slow cycle)
+    "warnings_delta": _build_warnings_delta,  # delta only (new/changed, fast cycle)
     "observation": _build_observation,
     "forecast": _build_forecast,
     "outlook": _build_outlook,
