@@ -129,9 +129,13 @@ async def list_warnings(request: Request) -> JSONResponse:
         if coverage is None or coverage.is_empty():
             in_cov = True
         else:
-            zones = w.get("zones", [])
+            # Use the full UGC list (zones + county FIPS) for coverage
+            # matching, not just the Z-only zones list. County-FIPS-only
+            # warnings (FFW, SVR with TXC### codes) would be missed
+            # if we only checked Z-codes.
+            ugcs = w.get("ugcs") or w.get("zones", [])
             in_cov = (
-                coverage.covers_any(zones)
+                coverage.covers_any(ugcs)
                 or coverage.covers_polygon(w.get("vertices", []))
             )
 

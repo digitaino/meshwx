@@ -17,6 +17,14 @@ dependencies = [
     # pyIEM is the canonical NWS text product parser (VTEC, UGC, polygons).
     # We use it with legacy_dict UGCProvider for offline operation — no DB.
     "pyIEM>=1.26",
+    # pytz + tzdata are required for pyIEM's timezone resolution on slim
+    # Docker images. Without them, every NWS product from a timezone that
+    # uses legacy aliases (US/Central, US/Eastern, etc.) fails to parse
+    # with "No time zone found with key US/Central". The slim base image
+    # strips /usr/share/zoneinfo so Python's zoneinfo module needs the
+    # tzdata package for the IANA timezone database.
+    "pytz>=2024.1",
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
