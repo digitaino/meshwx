@@ -63,7 +63,8 @@ def cobs_decode(data: bytes) -> bytes:
 MSG_REFRESH = 0x01       # v1: client → bot refresh request (DM)
 MSG_DATA_REQUEST = 0x02  # v2: client → bot data request (DM)
 MSG_NOT_AVAILABLE = 0x03 # v3: bot → client, "I can't serve that request" (broadcast)
-MSG_RADAR = 0x10         # v1: radar grid (broadcast)
+MSG_RADAR = 0x10         # v1: radar grid (broadcast, fixed 16×16 flat)
+MSG_RADAR_COMPRESSED = 0x11  # v3: compressed radar grid (32×32 or 64×64, sparse/RLE)
 MSG_WARNING = 0x20       # v1: warning polygon (broadcast)
 MSG_WARNING_ZONES = 0x21 # v2: zone-coded warning (client renders polygons)
 MSG_OBSERVATION = 0x30   # v2: current conditions (wx reply)
@@ -197,6 +198,224 @@ def unpack_radar_grid(data: bytes) -> dict:
         "scale_km": scale_km,
         "grid": grid,
     }
+
+
+# -- Compressed Radar Grid (0x11) v3 — 32×32 or 64×64 with sparse/RLE --------
+#
+# Wire format:
+#   byte 0     : 0x11 MSG_RADAR_COMPRESSED
+#   byte 1     : region_id (hi nibble) | chunk_seq (lo nibble)
+#                chunk_seq: 0 for single-message grids, 0-N for multi-msg
+#   byte 2     : grid_size (32 or 64)
+#   byte 3-4   : timestamp_utc_min (uint16 BE)
+#   byte 5     : scale_km (uint8)
+#   byte 6     : encoding (hi nibble) | total_chunks (lo nibble)
+#                encoding: 0 = sparse, 1 = RLE
+#   bytes 7+   : encoded grid data (format depends on encoding byte)
+#
+# Sparse encoding (encoding = 0):
+#   Each non-zero cell is a 2-byte entry:
+#     bits 15-4: position (row * grid_size + col), uint12 for 64×64
+#     bits 3-0:  value (4-bit reflectivity 0x1-0xE)
+#   Entries are sorted by position for efficient client rendering.
+#   Total data = 2 × non_zero_count bytes.
+#
+# RLE encoding (encoding = 1):
+#   Scans left→right, top→bottom. Each byte:
+#     bits 7-4: run_length - 1 (0-15, so runs of 1-16 cells)
+#     bits 3-0: value (4-bit reflectivity)
+#   Total data = number_of_runs bytes.
+#
+# Multi-message: if encoded data > 129 bytes (136 - 7 header), the grid
+# is split across multiple messages. chunk_seq counts up from 0,
+# total_chunks tells the client how many to expect. Client reassembles
+# before decoding.
+
+RADAR_ENC_SPARSE = 0
+RADAR_ENC_RLE = 1
+
+
+def _encode_radar_sparse(grid: list[list[int]], grid_size: int) -> bytes:
+    """Sparse-encode a grid: 2 bytes per non-zero cell."""
+    entries = bytearray()
+    for y in range(grid_size):
+        for x in range(grid_size):
+            val = grid[y][x] & 0x0F
+            if val == 0:
+                continue
+            pos = y * grid_size + x
+            # Pack: high byte = pos >> 4, low byte = (pos & 0xF) << 4 | val
+            entries.append((pos >> 4) & 0xFF)
+            entries.append(((pos & 0x0F) << 4) | val)
+    return bytes(entries)
+
+
+def _decode_radar_sparse(data: bytes, grid_size: int) -> list[list[int]]:
+    """Decode sparse entries back to a grid."""
+    grid = [[0] * grid_size for _ in range(grid_size)]
+    i = 0
+    while i + 1 < len(data):
+        pos = (data[i] << 4) | (data[i + 1] >> 4)
+        val = data[i + 1] & 0x0F
+        y = pos // grid_size
+        x = pos % grid_size
+        if 0 <= y < grid_size and 0 <= x < grid_size:
+            grid[y][x] = val
+        i += 2
+    return grid
+
+
+def _encode_radar_rle(grid: list[list[int]], grid_size: int) -> bytes:
+    """RLE-encode a grid: 1 byte per run (max run length 16)."""
+    flat = []
+    for row in grid:
+        flat.extend(row)
+    runs = bytearray()
+    i = 0
+    while i < len(flat):
+        val = flat[i] & 0x0F
+        run = 1
+        while i + run < len(flat) and (flat[i + run] & 0x0F) == val and run < 16:
+            run += 1
+        runs.append(((run - 1) << 4) | val)
+        i += run
+    return bytes(runs)
+
+
+def _decode_radar_rle(data: bytes, grid_size: int) -> list[list[int]]:
+    """Decode RLE back to a grid."""
+    flat = []
+    for byte in data:
+        run = ((byte >> 4) & 0x0F) + 1
+        val = byte & 0x0F
+        flat.extend([val] * run)
+    # Pad or truncate to exact grid_size²
+    total = grid_size * grid_size
+    flat = flat[:total]
+    flat.extend([0] * (total - len(flat)))
+    return [flat[y * grid_size:(y + 1) * grid_size] for y in range(grid_size)]
+
+
+def pack_radar_compressed(
+    region_id: int,
+    timestamp_utc_min: int,
+    scale_km: int,
+    grid: list[list[int]],
+    grid_size: int = 32,
+) -> list[bytes]:
+    """Pack a compressed radar grid into one or more 0x11 messages.
+
+    Picks whichever encoding (sparse vs RLE) is smaller. If the encoded
+    data exceeds one frame, splits across multiple messages with
+    chunk_seq / total_chunks.
+
+    Returns a list of wire-ready messages (usually 1, occasionally 2-4
+    during heavy weather).
+    """
+    # Encode both ways, pick the smaller
+    sparse_data = _encode_radar_sparse(grid, grid_size)
+    rle_data = _encode_radar_rle(grid, grid_size)
+    if len(sparse_data) <= len(rle_data):
+        encoding = RADAR_ENC_SPARSE
+        encoded = sparse_data
+    else:
+        encoding = RADAR_ENC_RLE
+        encoded = rle_data
+
+    # Split into chunks that fit in one frame
+    # Header = 7 bytes, max payload per frame = 136 - 7 = 129
+    max_payload = 129
+    chunks = []
+    offset = 0
+    while offset < len(encoded):
+        chunks.append(encoded[offset:offset + max_payload])
+        offset += max_payload
+    if not chunks:
+        chunks = [b""]  # empty grid is still one message
+
+    total_chunks = len(chunks)
+    messages = []
+    for seq, chunk in enumerate(chunks):
+        msg = bytearray()
+        msg.append(MSG_RADAR_COMPRESSED)
+        msg.append(((region_id & 0x0F) << 4) | (seq & 0x0F))
+        msg.append(grid_size & 0xFF)
+        msg.extend(struct.pack(">H", timestamp_utc_min & 0xFFFF))
+        msg.append(scale_km & 0xFF)
+        msg.append(((encoding & 0x0F) << 4) | (total_chunks & 0x0F))
+        msg.extend(chunk)
+        messages.append(bytes(msg))
+
+    return messages
+
+
+def unpack_radar_compressed(data: bytes) -> dict:
+    """Unpack a single 0x11 compressed radar message.
+
+    For multi-chunk grids, the caller must reassemble all chunks
+    (matching region_id and timestamp) before calling this on the
+    reassembled payload. For single-chunk messages (the common case),
+    this returns the complete grid directly.
+    """
+    if len(data) < 7 or data[0] != MSG_RADAR_COMPRESSED:
+        raise ValueError("Invalid compressed radar message")
+    region_id = (data[1] >> 4) & 0x0F
+    chunk_seq = data[1] & 0x0F
+    grid_size = data[2]
+    timestamp = struct.unpack_from(">H", data, 3)[0]
+    scale_km = data[5]
+    encoding = (data[6] >> 4) & 0x0F
+    total_chunks = data[6] & 0x0F
+    payload = data[7:]
+
+    # For single-chunk messages, decode the grid immediately.
+    # For multi-chunk, return the raw payload and metadata so the caller
+    # can reassemble.
+    grid = None
+    if total_chunks <= 1:
+        if encoding == RADAR_ENC_SPARSE:
+            grid = _decode_radar_sparse(payload, grid_size)
+        elif encoding == RADAR_ENC_RLE:
+            grid = _decode_radar_rle(payload, grid_size)
+
+    return {
+        "type": MSG_RADAR_COMPRESSED,
+        "region_id": region_id,
+        "chunk_seq": chunk_seq,
+        "total_chunks": total_chunks,
+        "grid_size": grid_size,
+        "timestamp_utc_min": timestamp,
+        "scale_km": scale_km,
+        "encoding": encoding,
+        "grid": grid,
+        "payload": payload,  # raw for multi-chunk reassembly
+    }
+
+
+def reassemble_radar_chunks(chunks: list[dict]) -> list[list[int]] | None:
+    """Reassemble a multi-chunk 0x11 radar grid from individual messages.
+
+    Each `chunk` is the dict returned by `unpack_radar_compressed`.
+    All chunks must have the same region_id, grid_size, timestamp,
+    and encoding. Returns the decoded grid or None on failure.
+    """
+    if not chunks:
+        return None
+    # Sort by chunk_seq
+    sorted_chunks = sorted(chunks, key=lambda c: c["chunk_seq"])
+    ref = sorted_chunks[0]
+    grid_size = ref["grid_size"]
+    encoding = ref["encoding"]
+    total = ref["total_chunks"]
+    if len(sorted_chunks) != total:
+        return None  # missing chunks
+    # Concatenate payloads
+    full_payload = b"".join(c["payload"] for c in sorted_chunks)
+    if encoding == RADAR_ENC_SPARSE:
+        return _decode_radar_sparse(full_payload, grid_size)
+    elif encoding == RADAR_ENC_RLE:
+        return _decode_radar_rle(full_payload, grid_size)
+    return None
 
 
 # -- Headline truncation helper (shared by warning packers) ------------------

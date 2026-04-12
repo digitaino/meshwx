@@ -155,7 +155,7 @@ def build_radar_messages(
     timestamp_utc_min: int,
     region_ids: set[int] | None = None,
 ) -> list[bytes]:
-    """Build MeshWX radar grid messages for regions with precipitation.
+    """Build MeshWX 0x10 radar grid messages (legacy 16×16 flat format).
 
     If `region_ids` is provided, only those regions are considered.
     Regions with no precipitation are always skipped.
@@ -178,4 +178,47 @@ def build_radar_messages(
         logger.debug("Radar grid for %s: %d non-zero cells",
                       region["name"],
                       sum(1 for row in grid for c in row if c > 0))
+    return messages
+
+
+def build_compressed_radar_messages(
+    img_data: bytes,
+    timestamp_utc_min: int,
+    region_ids: set[int] | None = None,
+    grid_size: int = 32,
+) -> list[bytes]:
+    """Build MeshWX 0x11 compressed radar messages (32×32 or 64×64).
+
+    Uses adaptive sparse/RLE encoding, which compresses dramatically
+    because radar grids are mostly empty (typically 5-20% of cells have
+    any precipitation). A 32×32 grid usually fits in 1 message; 64×64
+    in 1-4 messages depending on weather activity.
+
+    If `region_ids` is provided, only those regions are considered.
+    Regions with no precipitation are always skipped.
+    """
+    from meshcore_weather.protocol.meshwx import pack_radar_compressed
+
+    messages = []
+    for region_id, region in REGIONS.items():
+        if region_ids is not None and region_id not in region_ids:
+            continue
+        grid = extract_region_grid(img_data, region_id, grid_size=grid_size)
+        if grid is None:
+            continue
+        msgs = pack_radar_compressed(
+            region_id=region_id,
+            timestamp_utc_min=timestamp_utc_min,
+            scale_km=region["scale"],
+            grid=grid,
+            grid_size=grid_size,
+        )
+        nonzero = sum(1 for row in grid for c in row if c > 0)
+        enc = "sparse" if len(msgs) == 1 or True else "RLE"  # logged for debug
+        logger.debug(
+            "Compressed radar %s (%d×%d): %d non-zero, %d msg(s), %d total bytes",
+            region["name"], grid_size, grid_size, nonzero,
+            len(msgs), sum(len(m) for m in msgs),
+        )
+        messages.extend(msgs)
     return messages

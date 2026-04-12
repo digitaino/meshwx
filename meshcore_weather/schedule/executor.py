@@ -48,6 +48,7 @@ from meshcore_weather.protocol.meshwx import (
     pack_warnings_near,
 )
 from meshcore_weather.protocol.radar import (
+    build_compressed_radar_messages,
     build_radar_messages,
     extract_region_grid,
     fetch_radar_composite,
@@ -83,29 +84,63 @@ class ExecutorContext:
 
 
 def _build_radar(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """Radar grid broadcast. `location_type=coverage` emits one grid per
-    region in the operator's coverage; `location_type=region` emits just
-    one region (specified by `location_id`)."""
+    """Radar grid broadcast with configurable resolution.
+
+    The job's `location_id` can optionally include a grid size suffix
+    to control resolution:
+      - "3" or "0x3"          → single region, default 32×32
+      - "3:64"                → single region, 64×64 high-res
+      - "" (empty, coverage)  → all coverage regions, default 32×32
+
+    All radar jobs now emit 0x11 compressed format by default (32×32
+    sparse/RLE). Operators can configure 64×64 high-res for specific
+    regions via the schedule UI by adding ":64" to the location_id.
+    """
     if ctx.latest_radar is None:
         return []
     img, ts_min = ctx.latest_radar
 
-    if job.location_type == "region":
+    # Parse optional grid_size from location_id (e.g., "3:64" or just "3")
+    grid_size = 32  # default
+    loc_id = job.location_id.strip()
+    if ":" in loc_id:
+        parts = loc_id.split(":", 1)
+        loc_id = parts[0].strip()
         try:
-            region_id = int(job.location_id, 0)  # allow "3" or "0x3"
+            grid_size = int(parts[1].strip())
+            if grid_size not in (16, 32, 64):
+                logger.warning("radar job %s: invalid grid_size %d, using 32", job.id, grid_size)
+                grid_size = 32
+        except ValueError:
+            pass
+
+    if job.location_type == "region" and loc_id:
+        try:
+            region_id = int(loc_id, 0)
         except (ValueError, TypeError):
-            logger.warning("radar job %s: bad region id %r", job.id, job.location_id)
+            logger.warning("radar job %s: bad region id %r", job.id, loc_id)
             return []
-        grid = extract_region_grid(img, region_id)
+        grid = extract_region_grid(img, region_id, grid_size=grid_size)
         if not grid:
             return []
-        from meshcore_weather.protocol.meshwx import pack_radar_grid, REGIONS
-        region = REGIONS[region_id]
-        return [pack_radar_grid(region_id, 0, ts_min, region["scale"], grid)]
+        from meshcore_weather.protocol.meshwx import pack_radar_compressed
+        from meshcore_weather.protocol.meshwx import REGIONS
+        region = REGIONS.get(region_id)
+        if not region:
+            return []
+        return pack_radar_compressed(
+            region_id=region_id,
+            timestamp_utc_min=ts_min,
+            scale_km=region["scale"],
+            grid=grid,
+            grid_size=grid_size,
+        )
 
-    # coverage (default): emit grids for all regions in the coverage area
+    # coverage (default): emit compressed grids for all coverage regions
     region_ids = ctx.coverage.region_ids if not ctx.coverage.is_empty() else None
-    return build_radar_messages(img, ts_min, region_ids=region_ids)
+    return build_compressed_radar_messages(
+        img, ts_min, region_ids=region_ids, grid_size=grid_size,
+    )
 
 
 def _build_warnings(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
