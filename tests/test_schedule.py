@@ -433,3 +433,127 @@ class TestSchedulerTick:
         # Both jobs should execute — the exception is caught per-job
         await sched.tick()
         assert call_count["n"] == 2
+
+
+# -- Broadcaster MSG_NOT_AVAILABLE emission --------------------------------
+
+
+class TestBroadcasterNotAvailable:
+    """Verify respond_to_data_request emits MSG_NOT_AVAILABLE instead of
+    silently dropping requests it can't fulfill."""
+
+    def _make_broadcaster(self):
+        from meshcore_weather.parser.weather import WeatherStore
+        from meshcore_weather.protocol.broadcaster import MeshWXBroadcaster
+
+        store = WeatherStore()  # empty — no data to find
+        radio = MagicMock()
+        sent = []
+
+        async def cap(p):
+            sent.append(p)
+
+        radio.send_binary_channel = cap
+        bc = MeshWXBroadcaster(store, radio)
+        return bc, sent
+
+    @pytest.mark.asyncio
+    async def test_no_data_emits_not_available(self):
+        """Empty store + valid request → NOT_AVAILABLE with REASON_NO_DATA."""
+        from meshcore_weather.protocol.meshwx import (
+            cobs_decode, unpack_not_available, MSG_NOT_AVAILABLE,
+            LOC_STATION, DATA_METAR, REASON_NO_DATA,
+        )
+
+        bc, sent = self._make_broadcaster()
+        # Monkey-patch TX_SPACING to 0 for test speed
+        import meshcore_weather.protocol.broadcaster as bc_mod
+        original_gap = bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS
+        bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = 0
+        try:
+            req = {
+                "data_type": DATA_METAR,
+                "location": {"type": LOC_STATION, "station": "KAUS"},
+            }
+            await bc.respond_to_data_request(req)
+        finally:
+            bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = original_gap
+
+        assert len(sent) == 2  # double-transmit
+        raw = cobs_decode(sent[0])
+        assert raw[0] == MSG_NOT_AVAILABLE
+        d = unpack_not_available(raw)
+        assert d["data_type"] == DATA_METAR
+        assert d["reason"] == REASON_NO_DATA
+        assert d["location"]["type"] == LOC_STATION
+        assert d["location"]["station"] == "KAUS"
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_location_emits_not_available(self):
+        """Out-of-range PFM point index → NOT_AVAILABLE with REASON_LOCATION_UNRESOLVABLE.
+
+        LOC_PFM_POINT requests go through _location_to_query_string which
+        looks up the index in the bundled pfm_points.json. An index way
+        beyond the end of the list makes that helper return None, which
+        triggers REASON_LOCATION_UNRESOLVABLE at the top of
+        respond_to_data_request — distinct from the "deeper failure" path
+        where a valid location string resolves to a store that has no
+        data.
+        """
+        from meshcore_weather.protocol.meshwx import (
+            cobs_decode, unpack_not_available,
+            LOC_PFM_POINT, DATA_FORECAST, REASON_LOCATION_UNRESOLVABLE,
+        )
+
+        bc, sent = self._make_broadcaster()
+        import meshcore_weather.protocol.broadcaster as bc_mod
+        original_gap = bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS
+        bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = 0
+        try:
+            req = {
+                "data_type": DATA_FORECAST,
+                # Out-of-range PFM index — there are only ~1873 valid entries
+                "location": {"type": LOC_PFM_POINT, "pfm_point_id": 99999},
+            }
+            await bc.respond_to_data_request(req)
+        finally:
+            bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = original_gap
+
+        assert len(sent) == 2
+        raw = cobs_decode(sent[0])
+        d = unpack_not_available(raw)
+        assert d["reason"] == REASON_LOCATION_UNRESOLVABLE
+        assert d["location"]["type"] == LOC_PFM_POINT
+        assert d["location"]["pfm_point_id"] == 99999
+
+    @pytest.mark.asyncio
+    async def test_retry_rebroadcasts_cached_not_available(self):
+        """A second request for the same failing thing should cache-rebroadcast
+        the NOT_AVAILABLE without re-running the builder."""
+        from meshcore_weather.protocol.meshwx import (
+            cobs_decode, unpack_not_available,
+            LOC_STATION, DATA_METAR, REASON_NO_DATA,
+        )
+
+        bc, sent = self._make_broadcaster()
+        import meshcore_weather.protocol.broadcaster as bc_mod
+        original_gap = bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS
+        bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = 0
+        try:
+            req = {
+                "data_type": DATA_METAR,
+                "location": {"type": LOC_STATION, "station": "KAUS"},
+            }
+            # First request — fresh build, returns NOT_AVAILABLE
+            await bc.respond_to_data_request(req)
+            assert len(sent) == 2
+
+            # Retry — should hit cache, rebroadcast same NOT_AVAILABLE
+            sent.clear()
+            await bc.respond_to_data_request(req)
+            assert len(sent) == 2
+            raw = cobs_decode(sent[0])
+            d = unpack_not_available(raw)
+            assert d["reason"] == REASON_NO_DATA
+        finally:
+            bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = original_gap

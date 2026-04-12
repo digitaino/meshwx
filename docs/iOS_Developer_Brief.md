@@ -151,16 +151,63 @@ Offset  Size  Field
 |-------|------|------------------|--------|
 | `0x0` | `DATA_WX` | `0x30` Observation | ✅ wired |
 | `0x1` | `DATA_FORECAST` | `0x31` Forecast | ✅ wired |
-| `0x2` | `DATA_OUTLOOK` | `0x32` Outlook | ⚠️ not wired yet |
-| `0x3` | `DATA_STORM_REPORTS` | `0x33` Storm Reports | ⚠️ not wired yet |
-| `0x4` | `DATA_RAIN_OBS` | `0x34` Rain Obs | ⚠️ not wired yet |
+| `0x2` | `DATA_OUTLOOK` | `0x32` Outlook | ✅ wired |
+| `0x3` | `DATA_STORM_REPORTS` | `0x33` Storm Reports | ✅ wired |
+| `0x4` | `DATA_RAIN_OBS` | `0x34` Rain Obs | ✅ wired |
 | `0x5` | `DATA_METAR` | `0x30` Observation (same format as WX) | ✅ wired |
-| `0x6` | `DATA_TAF` | `0x36` TAF | ⚠️ not wired yet |
-| `0x7` | `DATA_WARNINGS_NEAR` | `0x37` Warnings Near | ⚠️ not wired yet |
+| `0x6` | `DATA_TAF` | `0x36` TAF | ✅ wired |
+| `0x7` | `DATA_WARNINGS_NEAR` | `0x37` Warnings Near | ✅ wired |
 
-For the wired types, the bot responds within a few seconds (assuming rate limit hasn't been hit). For the unwired types, the bot silently drops the request — don't use them yet.
+All 8 data types are now wired through the broadcaster. If the bot has data it will respond with the message type in the table. If it doesn't, it responds with a `0x03 NOT_AVAILABLE` (next section) so you can show an empty-state UI instead of spinning forever.
 
 **`flags` (low nibble of byte 1)**: reserved for future use (verbose/force). Pass 0.
+
+### `0x03` — Not Available (bot → client, broadcast)
+
+The bot sends this when it **received and understood your request** but **can't produce the data you asked for**. Previously these cases were silent drops, which made far-away requests look like "spinning forever" even when the bot was actively rejecting them. **Your client MUST handle this message type** or it will miss an important signal.
+
+```
+Offset  Size  Field
+0       1     0x03  MSG_NOT_AVAILABLE
+1       1     data_type (hi nibble) | reason_code (lo nibble)
+2       N     location reference — ECHOED from your original request so
+              you can correlate the response with the pending request it
+              corresponds to
+```
+
+Total size: **6-9 bytes** depending on location type.
+
+**Reason codes** (low nibble of byte 1):
+
+| Value | Name | What it means | UX suggestion |
+|-------|------|---------------|---------------|
+| `0x0` | `REASON_NO_DATA` | Bot parsed your request and looked for the source product (METAR, ZFP, PFM, LSR, etc.) but nothing is currently in its cache for that location | Show "No data available right now" and stop retrying. The bot's EMWIN cache refreshes every 2 minutes — try again in a few minutes if the data is expected to arrive. |
+| `0x1` | `REASON_LOCATION_UNRESOLVABLE` | The location you sent couldn't be resolved: an out-of-range `pfm_point_id`, an unknown zone code, a bad station ICAO, etc. | Show "Unknown location". Don't retry — the request is malformed, not transient. |
+| `0x2` | `REASON_PRODUCT_UNSUPPORTED` | You sent a `data_type` the bot doesn't have a builder for (should be unreachable now that all 8 types are wired, but reserved for future protocol additions) | Check your protocol version against the bot's |
+| `0x3` | `REASON_BOT_ERROR` | A builder raised an internal exception | Show "Temporary error, try again". Log and file a bug |
+| `0xF` | `REASON_UNKNOWN` | Fallback / catch-all | Same as bot_error |
+
+**Correlating `0x03` with your pending requests**: the `data_type` + `location` fields in the response match what you sent in your `0x02`. Your client should key its pending-request table by `(data_type, location)` and look up the matching entry when a `0x03` arrives.
+
+**Cached + double-transmitted** like any other v2 response. Retrying a request that recently got `NOT_AVAILABLE` will receive a rebroadcast from the cache — no re-evaluation on the bot side. So if your first receipt of the `0x03` was lost in the mesh, a retry gives you another shot at receiving it.
+
+**Decoder sketch** (Swift):
+
+```swift
+struct NotAvailable {
+    let dataType: UInt8       // which data_type the bot couldn't serve
+    let reason: UInt8          // REASON_* code
+    let location: Location     // echoed from your request
+
+    static func decode(_ bytes: Data) -> NotAvailable? {
+        guard bytes.count >= 3, bytes[0] == 0x03 else { return nil }
+        let dataType = (bytes[1] >> 4) & 0x0F
+        let reason = bytes[1] & 0x0F
+        guard let location = Location.decode(bytes, offset: 2) else { return nil }
+        return NotAvailable(dataType: dataType, reason: reason, location: location)
+    }
+}
+```
 
 **`client_newest` (bytes 2-3, uint16 LE)**: lets the bot skip sending data you already have. The bot may not check this yet; safe to send 0 or the minutes-since-midnight-UTC of your newest cached entry.
 

@@ -62,6 +62,7 @@ def cobs_decode(data: bytes) -> bytes:
 # -- Message type bytes --
 MSG_REFRESH = 0x01       # v1: client → bot refresh request (DM)
 MSG_DATA_REQUEST = 0x02  # v2: client → bot data request (DM)
+MSG_NOT_AVAILABLE = 0x03 # v3: bot → client, "I can't serve that request" (broadcast)
 MSG_RADAR = 0x10         # v1: radar grid (broadcast)
 MSG_WARNING = 0x20       # v1: warning polygon (broadcast)
 MSG_WARNING_ZONES = 0x21 # v2: zone-coded warning (client renders polygons)
@@ -573,6 +574,73 @@ def unpack_data_request(data: bytes) -> dict:
         "data_type": data_type,
         "flags": flags,
         "client_newest": client_newest,
+        "location": location,
+    }
+
+
+# -- Not Available (0x03) — bot tells client "I can't serve that request" --
+#
+# Wire format:
+#   byte 0     : 0x03 MSG_NOT_AVAILABLE
+#   byte 1     : data_type (hi nibble) | reason_code (lo nibble)
+#   bytes 2..N : location reference (same encoding as the request, echoed
+#                so the client can correlate the response with its
+#                outstanding request)
+#
+# Total: 6-9 bytes depending on location type.
+#
+# Purpose: without this, a client that sent a request and hit any of the
+# silent-drop paths in respond_to_data_request (unresolvable location,
+# no data in cache, builder exception, unsupported data_type) would spin
+# indefinitely. This message lets the bot say "request received and
+# understood, but I don't have data for you right now" so the client can
+# show an appropriate UI and stop retrying.
+#
+# Cached and double-transmitted just like any other v2 response.
+
+# Reason codes — low nibble of byte 1
+REASON_NO_DATA = 0x0               # Bot parsed the request and looked up the
+                                   # source product, but nothing is in the cache
+                                   # for this specific location/product right now
+REASON_LOCATION_UNRESOLVABLE = 0x1  # Location tag didn't resolve (unknown zone,
+                                    # out-of-range pfm index, etc.)
+REASON_PRODUCT_UNSUPPORTED = 0x2    # data_type is defined in the protocol but
+                                    # the bot has no builder wired up for it
+REASON_BOT_ERROR = 0x3              # Builder raised an exception
+REASON_UNKNOWN = 0xF                # Fallback / catch-all
+
+
+def pack_not_available(
+    data_type: int,
+    reason: int,
+    loc_type: int,
+    loc_id,
+) -> bytes:
+    """Pack a 0x03 Not Available response.
+
+    Echoes back the data_type and location so the client can correlate
+    the response with its outstanding request. The reason code tells
+    the client why the request couldn't be served, which drives UI
+    behavior (show "no data", show "try again later", etc.).
+    """
+    header = bytes([
+        MSG_NOT_AVAILABLE,
+        ((data_type & 0x0F) << 4) | (reason & 0x0F),
+    ])
+    return header + pack_location(loc_type, loc_id)
+
+
+def unpack_not_available(data: bytes) -> dict:
+    """Unpack a 0x03 Not Available response."""
+    if len(data) < 3 or data[0] != MSG_NOT_AVAILABLE:
+        raise ValueError("Invalid not-available message")
+    data_type = (data[1] >> 4) & 0x0F
+    reason = data[1] & 0x0F
+    location, _ = unpack_location(data, 2)
+    return {
+        "type": MSG_NOT_AVAILABLE,
+        "data_type": data_type,
+        "reason": reason,
         "location": location,
     }
 

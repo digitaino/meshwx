@@ -47,13 +47,20 @@ from meshcore_weather.protocol.meshwx import (
     DATA_TAF,
     DATA_WARNINGS_NEAR,
     DATA_WX,
+    LOC_LATLON,
     LOC_PFM_POINT,
     LOC_STATION,
+    LOC_WFO,
     LOC_ZONE,
+    REASON_BOT_ERROR,
+    REASON_LOCATION_UNRESOLVABLE,
+    REASON_NO_DATA,
+    REASON_PRODUCT_UNSUPPORTED,
     SEV_ADVISORY,
     SEV_WARNING,
     SEV_WATCH,
     cobs_encode,
+    pack_not_available,
     pack_warnings_near,
 )
 from meshcore_weather.protocol.radar import (
@@ -206,32 +213,61 @@ class MeshWXBroadcaster:
         # Cache miss or TTL expired — build a fresh response.
         location_name = self._location_to_query_string(loc)
         if not location_name:
-            logger.debug("Could not resolve location for v2 request: %s", loc)
+            logger.info(
+                "v2 request for %s: location unresolvable — sending NOT_AVAILABLE",
+                cache_key,
+            )
+            await self._emit_not_available(
+                data_type, REASON_LOCATION_UNRESOLVABLE, loc, cache_key, now,
+            )
             return
 
         msg = None
-        if data_type == DATA_WX:
-            msg = self._build_observation(loc, location_name)
-        elif data_type == DATA_FORECAST:
-            msg = self._build_forecast(loc, location_name)
-        elif data_type == DATA_METAR:
-            msg = self._build_metar(loc, location_name)
-        elif data_type == DATA_OUTLOOK:
-            msg = self._build_outlook(loc, location_name)
-        elif data_type == DATA_STORM_REPORTS:
-            msg = self._build_storm_reports(loc, location_name)
-        elif data_type == DATA_RAIN_OBS:
-            msg = self._build_rain_obs(loc, location_name)
-        elif data_type == DATA_TAF:
-            msg = self._build_taf(loc, location_name)
-        elif data_type == DATA_WARNINGS_NEAR:
-            msg = self._build_warnings_near(loc, location_name)
-        else:
-            logger.debug("Unsupported v2 data type: %d", data_type)
+        builder_exception: Exception | None = None
+        try:
+            if data_type == DATA_WX:
+                msg = self._build_observation(loc, location_name)
+            elif data_type == DATA_FORECAST:
+                msg = self._build_forecast(loc, location_name)
+            elif data_type == DATA_METAR:
+                msg = self._build_metar(loc, location_name)
+            elif data_type == DATA_OUTLOOK:
+                msg = self._build_outlook(loc, location_name)
+            elif data_type == DATA_STORM_REPORTS:
+                msg = self._build_storm_reports(loc, location_name)
+            elif data_type == DATA_RAIN_OBS:
+                msg = self._build_rain_obs(loc, location_name)
+            elif data_type == DATA_TAF:
+                msg = self._build_taf(loc, location_name)
+            elif data_type == DATA_WARNINGS_NEAR:
+                msg = self._build_warnings_near(loc, location_name)
+            else:
+                logger.info(
+                    "v2 request for %s: unsupported data_type %d — sending NOT_AVAILABLE",
+                    cache_key, data_type,
+                )
+                await self._emit_not_available(
+                    data_type, REASON_PRODUCT_UNSUPPORTED, loc, cache_key, now,
+                )
+                return
+        except Exception as exc:
+            builder_exception = exc
+            logger.exception("v2 builder raised for %s", cache_key)
+
+        if builder_exception is not None:
+            await self._emit_not_available(
+                data_type, REASON_BOT_ERROR, loc, cache_key, now,
+            )
             return
 
         if msg is None:
-            logger.info("No v2 response data available for %s", cache_key)
+            logger.info(
+                "v2 request for %s: no data available — sending NOT_AVAILABLE",
+                cache_key,
+            )
+            await self._emit_not_available(
+                data_type, REASON_NO_DATA, loc, cache_key, now,
+            )
             return
 
         # Cache the built message so retries within TTL rebroadcast it
@@ -240,6 +276,45 @@ class MeshWXBroadcaster:
             "Sent v2 response type=0x%02x for %s (%d bytes)",
             msg[0], cache_key, len(msg),
         )
+        await self._transmit_response(msg)
+
+    async def _emit_not_available(
+        self,
+        data_type: int,
+        reason: int,
+        loc: dict,
+        cache_key: str,
+        now: float,
+    ) -> None:
+        """Send a 0x03 MSG_NOT_AVAILABLE telling the client we can't serve
+        the request. Cached and double-transmitted like any other response
+        so retries within TTL will re-emit the same NOT_AVAILABLE without
+        re-running the expensive resolver + builder path.
+        """
+        loc_type = loc.get("type")
+        if loc_type == LOC_ZONE:
+            loc_id = loc.get("zone", "")
+        elif loc_type == LOC_STATION:
+            loc_id = loc.get("station", "")
+        elif loc_type == LOC_PFM_POINT:
+            loc_id = loc.get("pfm_point_id", 0)
+        elif loc_type == LOC_WFO:
+            loc_id = loc.get("wfo", "")
+        elif loc_type == LOC_LATLON:
+            loc_id = (loc.get("lat", 0.0), loc.get("lon", 0.0))
+        else:
+            # LOC_PLACE or unknown — use zero-valued placeholder so pack
+            # never raises. Client still gets enough info to correlate
+            # via data_type + reason.
+            loc_type = LOC_ZONE
+            loc_id = "AKZ000"  # minimal valid zone code
+        try:
+            msg = pack_not_available(data_type, reason, loc_type, loc_id)
+        except Exception:
+            logger.exception("failed to pack NOT_AVAILABLE for %s", cache_key)
+            return
+        # Cache so retries within TTL reuse this same NOT_AVAILABLE
+        self._v2_cache[cache_key] = (now, msg)
         await self._transmit_response(msg)
 
     async def _transmit_response(self, msg: bytes) -> None:

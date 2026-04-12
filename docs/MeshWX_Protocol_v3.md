@@ -10,6 +10,7 @@ Message types:
 |------|------|-----------|-------|
 | `0x01` | Refresh Request | client → bot (DM) | v1 |
 | `0x02` | Data Request | client → bot (DM) | v2 |
+| `0x03` | Not Available | bot broadcast | **v3 new** |
 | `0x10` | Radar Grid | bot broadcast | v1 |
 | `0x20` | Warning Polygon | bot broadcast | v1, **v3 wire format change** |
 | `0x21` | Warning Zones | bot broadcast | v2, **v3 wire format change** |
@@ -214,6 +215,31 @@ Offset  Size  Field
 ```
 
 Total: 7-11 bytes. Bot broadcasts the response on `#wx-broadcast` (so other listeners benefit).
+
+### `0x03` — Not Available (bot broadcast, NEW IN v3)
+
+Sent when the bot **received and understood** a `0x02` request but **can't produce the data** for it. Without this, the silent-drop failure mode was indistinguishable from "request lost in the mesh," leaving clients spinning indefinitely. Clients MUST handle this message to distinguish the two failure modes.
+
+```
+Offset  Size  Field
+0       1     0x03 MSG_NOT_AVAILABLE
+1       1     data_type (hi nibble) | reason_code (lo nibble)
+2       N     location reference, echoed from the original request
+```
+
+Total: **6-9 bytes** depending on location type.
+
+**Reason codes** (low nibble of byte 1):
+
+- `0x0 REASON_NO_DATA` — bot parsed the request, looked up the source product, found nothing in the 12-hour EMWIN cache
+- `0x1 REASON_LOCATION_UNRESOLVABLE` — location couldn't be resolved (out-of-range `pfm_point_id`, unknown zone, etc.)
+- `0x2 REASON_PRODUCT_UNSUPPORTED` — `data_type` defined in protocol but no builder wired (reserved; should be unreachable now that all 8 types are wired)
+- `0x3 REASON_BOT_ERROR` — builder raised an internal exception
+- `0xF REASON_UNKNOWN` — fallback
+
+Clients correlate the response to their pending-request table using `(data_type, location)` from the echoed fields.
+
+**Cached** and **double-transmitted** like every other v2 response. A client retry within the cache TTL (5 min) receives the same `NOT_AVAILABLE` from cache — the bot doesn't re-run the resolver + builder for retries.
 
 ### `0x20` — Warning Polygon (bot broadcast)
 

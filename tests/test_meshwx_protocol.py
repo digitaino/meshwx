@@ -568,6 +568,60 @@ class TestWarningsNear:
         assert decoded["warnings"][1]["expires_unix_min"] == 29_500_480
 
 
+class TestNotAvailable:
+    def test_no_data_zone(self):
+        from meshcore_weather.protocol.meshwx import (
+            pack_not_available, unpack_not_available,
+            MSG_NOT_AVAILABLE, LOC_ZONE, DATA_FORECAST,
+            REASON_NO_DATA,
+        )
+        msg = pack_not_available(DATA_FORECAST, REASON_NO_DATA, LOC_ZONE, "TXZ192")
+        assert msg[0] == MSG_NOT_AVAILABLE
+        assert len(msg) == 6
+        d = unpack_not_available(msg)
+        assert d["data_type"] == DATA_FORECAST
+        assert d["reason"] == REASON_NO_DATA
+        assert d["location"]["type"] == LOC_ZONE
+        assert d["location"]["zone"] == "TXZ192"
+
+    def test_unresolvable_station(self):
+        from meshcore_weather.protocol.meshwx import (
+            pack_not_available, unpack_not_available,
+            LOC_STATION, DATA_METAR, REASON_LOCATION_UNRESOLVABLE,
+        )
+        msg = pack_not_available(
+            DATA_METAR, REASON_LOCATION_UNRESOLVABLE, LOC_STATION, "KXXX"
+        )
+        assert len(msg) == 7
+        d = unpack_not_available(msg)
+        assert d["reason"] == REASON_LOCATION_UNRESOLVABLE
+        assert d["location"]["station"] == "KXXX"
+
+    def test_pfm_point_bot_error(self):
+        from meshcore_weather.protocol.meshwx import (
+            pack_not_available, unpack_not_available,
+            LOC_PFM_POINT, DATA_FORECAST, REASON_BOT_ERROR,
+        )
+        msg = pack_not_available(
+            DATA_FORECAST, REASON_BOT_ERROR, LOC_PFM_POINT, 1010
+        )
+        assert len(msg) == 6
+        d = unpack_not_available(msg)
+        assert d["reason"] == REASON_BOT_ERROR
+        assert d["location"]["pfm_point_id"] == 1010
+
+    def test_unsupported_product(self):
+        from meshcore_weather.protocol.meshwx import (
+            pack_not_available, unpack_not_available,
+            LOC_ZONE, REASON_PRODUCT_UNSUPPORTED,
+        )
+        # data_type = 0xE (unused slot)
+        msg = pack_not_available(0xE, REASON_PRODUCT_UNSUPPORTED, LOC_ZONE, "TXZ192")
+        d = unpack_not_available(msg)
+        assert d["data_type"] == 0xE
+        assert d["reason"] == REASON_PRODUCT_UNSUPPORTED
+
+
 class TestTAF:
     def test_round_trip(self):
         from meshcore_weather.protocol.meshwx import (
