@@ -157,29 +157,53 @@ class MeshWXBroadcaster:
 
         logger.info("MeshWX refresh for region 0x%X (type=%d)", region_id, request_type)
 
+    # Response cache for reliability over multi-hop mesh
+    # Key: f"{data_type}:{loc_key}"
+    # Value: (timestamp_unix, raw_wire_bytes)
+    # Cached responses are re-broadcast on retry within TTL instead of
+    # being silently dropped. TTL matches the old rate-limit window.
+    _V2_CACHE_TTL_SECONDS = 300           # 5 minutes
+    # How many times to transmit each on-demand response. Multi-hop mesh
+    # flood routing can drop a single broadcast, so we send each response
+    # twice with a short gap to give far-away clients a second chance.
+    _V2_RESEND_COUNT = 2
+    _V2_RESEND_GAP_SECONDS = 3
+
     async def respond_to_data_request(self, req: dict) -> None:
         """Handle a v2 data request (0x02) and broadcast the response.
 
-        Rate-limited per (data_type, location) for 5 minutes.
-        Looks up the right data from the weather store and encodes it
-        using the v2 encoders, then broadcasts on the data channel.
+        Reliability model:
+          - Fresh request: build the message, cache it, send it N times
+          - Retry within TTL: re-send the cached message N times (no rebuild)
+          - After TTL: treat as fresh request again
+
+        This gives far-away clients multiple chances to receive the
+        broadcast through the mesh — each retry by the client is a real
+        re-transmission, not a silent drop. Rebuilding is still gated by
+        TTL so the encoder pipeline isn't thrashed.
         """
         data_type = req["data_type"]
         loc = req["location"]
 
-        # Rate-limit key
         loc_key = self._location_key(loc)
-        rate_key = f"{data_type}:{loc_key}"
+        cache_key = f"{data_type}:{loc_key}"
         now = time.time()
-        if not hasattr(self, "_v2_rate_limit"):
-            self._v2_rate_limit: dict[str, float] = {}
-        last = self._v2_rate_limit.get(rate_key, 0)
-        if now - last < 300:  # 5 min per (type, location)
-            logger.debug("v2 request throttled: %s", rate_key)
-            return
-        self._v2_rate_limit[rate_key] = now
 
-        # Resolve the location dict to something the store can query
+        if not hasattr(self, "_v2_cache"):
+            self._v2_cache: dict[str, tuple[float, bytes]] = {}
+
+        # Hit the cache? Rebroadcast the existing bytes — no rebuild needed.
+        cached = self._v2_cache.get(cache_key)
+        if cached and (now - cached[0]) < self._V2_CACHE_TTL_SECONDS:
+            cached_msg = cached[1]
+            logger.info(
+                "Re-broadcasting cached v2 response type=0x%02x for %s (%d bytes, %ds old)",
+                cached_msg[0], cache_key, len(cached_msg), int(now - cached[0]),
+            )
+            await self._transmit_response(cached_msg)
+            return
+
+        # Cache miss or TTL expired — build a fresh response.
         location_name = self._location_to_query_string(loc)
         if not location_name:
             logger.debug("Could not resolve location for v2 request: %s", loc)
@@ -207,12 +231,35 @@ class MeshWXBroadcaster:
             return
 
         if msg is None:
-            logger.info("No v2 response data available for %s", rate_key)
+            logger.info("No v2 response data available for %s", cache_key)
             return
 
-        await self.radio.send_binary_channel(cobs_encode(msg))
-        logger.info("Sent v2 response type=0x%02x for %s (%d bytes)",
-                    msg[0], rate_key, len(msg))
+        # Cache the built message so retries within TTL rebroadcast it
+        self._v2_cache[cache_key] = (now, msg)
+        logger.info(
+            "Sent v2 response type=0x%02x for %s (%d bytes)",
+            msg[0], cache_key, len(msg),
+        )
+        await self._transmit_response(msg)
+
+    async def _transmit_response(self, msg: bytes) -> None:
+        """Send a v2 response on the data channel N times for reliability.
+
+        Flood-routed channel broadcasts can drop over multi-hop mesh
+        topologies. Sending the same message twice with a short gap
+        gives far-away clients a second chance to receive it. The gap
+        is there to let the first transmission fully propagate before
+        the second hits the channel.
+        """
+        cobs_msg = cobs_encode(msg)
+        for i in range(self._V2_RESEND_COUNT):
+            try:
+                await self.radio.send_binary_channel(cobs_msg)
+            except Exception:
+                logger.exception("v2 response send failed on transmission %d", i + 1)
+                return
+            if i + 1 < self._V2_RESEND_COUNT:
+                await asyncio.sleep(self._V2_RESEND_GAP_SECONDS)
 
     def _location_key(self, loc: dict) -> str:
         """Stable string key for a location (used for rate limiting)."""
