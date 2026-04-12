@@ -143,6 +143,13 @@ _WARNING_PRODUCT_TYPES = {
     "TOR", "SVR", "SVS", "SPS", "FFW", "FLW", "FLS",
     "WSW", "NPW", "RFW", "FWW", "MWW", "MWS",
     "SMW", "SWO", "DSW", "EWW", "SQW", "CFW",
+    # River products (VTEC-based)
+    "RVA",  # River Watch/Warning — flood stage warnings with VTEC
+    # SPC watch outlines (VTEC-based, have polygons)
+    "AWW",  # Area Weather Watch — SPC tornado/severe thunderstorm watch areas
+    "WCN",  # Watch County Notification — counties in a watch
+    # Hurricane products (VTEC-based)
+    "HLS",  # Hurricane Local Statement
 }
 
 # SPS products don't carry VTEC; they get the WARN_SPECIAL type and
