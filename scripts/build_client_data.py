@@ -204,11 +204,13 @@ def build_dictionary(out_dir: Path) -> None:
 def build_protocol_codes(out_dir: Path) -> None:
     """Export message type + code constants for client use."""
     out = {
-        "version": 4,
+        "version": 5,
         "messages": {
             "refresh_request": 0x01,
             "data_request": 0x02,
+            "not_available": 0x03,
             "radar_grid": 0x10,
+            "radar_compressed": 0x11,
             "warning_polygon": 0x20,
             "warning_zones": 0x21,
             "observation": 0x30,
@@ -228,6 +230,17 @@ def build_protocol_codes(out_dir: Path) -> None:
             "latlon": 0x04,
             "wfo": 0x05,
             "pfm_point": 0x06,
+        },
+        "radar_encoding": {
+            "sparse": 0x0,
+            "rle": 0x1,
+        },
+        "not_available_reasons": {
+            "no_data": 0x0,
+            "location_unresolvable": 0x1,
+            "product_unsupported": 0x2,
+            "bot_error": 0x3,
+            "unknown": 0xF,
         },
         "warning_types": {
             "tornado": 0x1,

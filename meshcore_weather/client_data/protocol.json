@@ -1,9 +1,11 @@
 {
-  "version": 4,
+  "version": 5,
   "messages": {
     "refresh_request": 1,
     "data_request": 2,
+    "not_available": 3,
     "radar_grid": 16,
+    "radar_compressed": 17,
     "warning_polygon": 32,
     "warning_zones": 33,
     "observation": 48,
@@ -23,6 +25,17 @@
     "latlon": 4,
     "wfo": 5,
     "pfm_point": 6
+  },
+  "radar_encoding": {
+    "sparse": 0,
+    "rle": 1
+  },
+  "not_available_reasons": {
+    "no_data": 0,
+    "location_unresolvable": 1,
+    "product_unsupported": 2,
+    "bot_error": 3,
+    "unknown": 15
   },
   "warning_types": {
     "tornado": 1,
