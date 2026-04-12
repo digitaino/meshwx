@@ -629,6 +629,54 @@ def _build_warnings_near(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]
     return [msg]
 
 
+def _build_afd(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
+    """Area Forecast Discussion (0x40 text chunks).
+
+    Finds the latest AFD for the target location's WFO, extracts the
+    key sections (synopsis + short term), and packs as chunked text.
+    """
+    from meshcore_weather.protocol.encoders import encode_afd
+
+    query = _location_to_query(job)
+    if not query:
+        return []
+    resolved = resolver.resolve(query)
+    if not resolved:
+        return []
+
+    origs = ctx.store._build_origs(resolved)
+    afd = ctx.store._find_any_orig("AFD", origs)
+    if afd is None:
+        return []
+
+    wfos = resolved.get("wfos", [])
+    wfo = wfos[0] if wfos else "UNK"
+    msgs = encode_afd(wfo, afd.raw_text)
+    return msgs or []
+
+
+def _build_space_weather(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
+    """Space weather products (0x40 text chunks).
+
+    Scans the store for DAY (daily indices), UVI (UV index), and other
+    SWPC products. Packs the most recent one as text chunks.
+    """
+    from meshcore_weather.protocol.encoders import encode_space_weather
+
+    # Space weather products have specific type codes
+    swpc_types = {"DAY", "UVI"}
+    best = None
+    for prod in ctx.store._products.values():
+        if prod.product_type in swpc_types:
+            if best is None or prod.timestamp > best.timestamp:
+                best = prod
+    if best is None:
+        return []
+
+    msgs = encode_space_weather(best.raw_text)
+    return msgs or []
+
+
 # -- Product registry --------------------------------------------------------
 
 
@@ -644,6 +692,8 @@ PRODUCT_BUILDERS: dict[str, Callable[[BroadcastJob, ExecutorContext], list[bytes
     "metar": _build_metar,
     "taf": _build_taf,
     "warnings_near": _build_warnings_near,
+    "afd": _build_afd,
+    "space_weather": _build_space_weather,
 }
 
 

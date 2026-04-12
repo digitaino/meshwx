@@ -242,6 +242,16 @@ def build_protocol_codes(out_dir: Path) -> None:
             "bot_error": 0x3,
             "unknown": 0xF,
         },
+        "text_subjects": {
+            "afd": 0x0,
+            "space_weather": 0x1,
+            "tropical": 0x2,
+            "river": 0x3,
+            "fire": 0x4,
+            "marine": 0x5,
+            "general": 0x6,
+            "climate": 0x7,
+        },
         "warning_types": {
             "tornado": 0x1,
             "severe_thunder": 0x2,

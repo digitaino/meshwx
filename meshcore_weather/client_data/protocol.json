@@ -37,6 +37,16 @@
     "bot_error": 3,
     "unknown": 15
   },
+  "text_subjects": {
+    "afd": 0,
+    "space_weather": 1,
+    "tropical": 2,
+    "river": 3,
+    "fire": 4,
+    "marine": 5,
+    "general": 6,
+    "climate": 7
+  },
   "warning_types": {
     "tornado": 1,
     "severe_thunder": 2,

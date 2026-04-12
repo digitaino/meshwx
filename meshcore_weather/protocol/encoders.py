@@ -1046,3 +1046,199 @@ def encode_forecast_from_pfm(
         issued_hours_ago=issued_hours_ago,
         periods=[p.to_encoder_dict() for p in daily_periods],
     )
+
+
+# -- Text Chunk (0x40) — AFD, space weather, and other text products ----------
+
+from meshcore_weather.protocol.meshwx import (
+    pack_text_chunks,
+    TEXT_SUBJECT_AFD,
+    TEXT_SUBJECT_SPACE_WEATHER,
+    TEXT_SUBJECT_TROPICAL,
+    TEXT_SUBJECT_RIVER,
+    TEXT_SUBJECT_FIRE,
+    TEXT_SUBJECT_MARINE,
+    TEXT_SUBJECT_GENERAL,
+    TEXT_SUBJECT_CLIMATE,
+    LOC_WFO,
+)
+
+
+def _extract_afd_key_sections(afd_text: str, max_chars: int = 1800) -> str:
+    """Extract the most valuable sections from an AFD product.
+
+    AFDs are structured with sections like:
+      .SYNOPSIS...
+      .SHORT TERM... (days 1-3)
+      .LONG TERM... (days 4-7)
+      .AVIATION...
+      .MARINE...
+
+    For LoRa airtime, we prioritize .SYNOPSIS + .SHORT TERM which is the
+    meteorologist's reasoning behind today's and tomorrow's forecast.
+    If there's room, we append .LONG TERM.
+    """
+    lines = afd_text.splitlines()
+    sections: dict[str, list[str]] = {}
+    current_section = ""
+    current_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(".") and "..." in stripped:
+            # Save previous section
+            if current_section and current_lines:
+                sections[current_section] = current_lines
+            # Start new section
+            header = stripped.lstrip(".").split("...")[0].strip().upper()
+            current_section = header
+            current_lines = []
+            # Include any text after the ... on the same line
+            after = stripped.split("...", 1)[1].strip() if "..." in stripped else ""
+            if after:
+                current_lines.append(after)
+        elif stripped.startswith("&&") or stripped.startswith("$$"):
+            if current_section and current_lines:
+                sections[current_section] = current_lines
+            current_section = ""
+            current_lines = []
+        elif current_section and stripped:
+            current_lines.append(stripped)
+
+    if current_section and current_lines:
+        sections[current_section] = current_lines
+
+    # Priority order of sections to include
+    priority = [
+        "SYNOPSIS", "WHAT HAS CHANGED",
+        "SHORT TERM", "NEAR TERM",
+        "LONG TERM", "EXTENDED",
+    ]
+
+    output_parts: list[str] = []
+    total_len = 0
+    for section_name in priority:
+        for key in sections:
+            if section_name in key:
+                text = " ".join(sections[key])
+                # Clean up common NWS formatting noise
+                text = re.sub(r"\s+", " ", text).strip()
+                if not text:
+                    continue
+                label = key.split("/")[0].strip()[:20]
+                entry = f"[{label}] {text}"
+                if total_len + len(entry) > max_chars:
+                    # Truncate this section to fit
+                    remaining = max_chars - total_len - len(label) - 4
+                    if remaining > 50:
+                        entry = f"[{label}] {text[:remaining]}..."
+                        output_parts.append(entry)
+                    break
+                output_parts.append(entry)
+                total_len += len(entry) + 1
+                break
+        if total_len >= max_chars:
+            break
+
+    return "\n".join(output_parts) if output_parts else afd_text[:max_chars]
+
+
+def _extract_space_weather_summary(text: str, max_chars: int = 1800) -> str:
+    """Extract a readable summary from a SWPC space weather product.
+
+    DAY (Daily Space Weather Indices) products have tabular Kp index,
+    solar flux, etc. We extract the key lines.
+    """
+    lines = text.splitlines()
+    summary_lines: list[str] = []
+    total = 0
+
+    # Skip header lines (product ID, blank lines)
+    in_data = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if in_data:
+                summary_lines.append("")
+            continue
+        # Skip comment/header lines
+        if stripped.startswith("#") or stripped.startswith(":"):
+            # But include :Product and :Issued lines
+            if stripped.startswith(":Product:") or stripped.startswith(":Issued:"):
+                clean = stripped.lstrip(":").strip()
+                summary_lines.append(clean)
+                total += len(clean)
+            continue
+        in_data = True
+        if total + len(stripped) > max_chars:
+            break
+        summary_lines.append(stripped)
+        total += len(stripped)
+
+    return "\n".join(summary_lines) if summary_lines else text[:max_chars]
+
+
+def encode_afd(
+    wfo: str,
+    afd_text: str,
+) -> list[bytes] | None:
+    """Encode an Area Forecast Discussion as 0x40 text chunks.
+
+    Extracts the key sections (synopsis + short term) and packs them
+    into one or more text chunk messages addressed by WFO.
+
+    Returns a list of chunk messages, or None if the AFD is empty.
+    """
+    summary = _extract_afd_key_sections(afd_text)
+    if not summary.strip():
+        return None
+    return pack_text_chunks(
+        subject_type=TEXT_SUBJECT_AFD,
+        loc_type=LOC_WFO,
+        loc_id=wfo,
+        text=summary,
+    )
+
+
+def encode_space_weather(
+    text: str,
+    subject_type: int = TEXT_SUBJECT_SPACE_WEATHER,
+) -> list[bytes] | None:
+    """Encode a space weather product as 0x40 text chunks.
+
+    Addressed by WFO "SPC" (Storm Prediction Center) as a convention,
+    since space weather isn't location-specific.
+    """
+    summary = _extract_space_weather_summary(text)
+    if not summary.strip():
+        return None
+    return pack_text_chunks(
+        subject_type=subject_type,
+        loc_type=LOC_WFO,
+        loc_id="SPC",  # convention for non-location-specific products
+        text=summary,
+    )
+
+
+def encode_generic_text(
+    subject_type: int,
+    loc_type: int,
+    loc_id,
+    text: str,
+    max_chars: int = 1800,
+) -> list[bytes] | None:
+    """Encode any NWS text product as 0x40 text chunks.
+
+    Generic wrapper — trims to max_chars and packs. Use the more
+    specific encoders (encode_afd, encode_space_weather) when the
+    product type is known, since they extract the most valuable sections.
+    """
+    trimmed = text.strip()[:max_chars]
+    if not trimmed:
+        return None
+    return pack_text_chunks(
+        subject_type=subject_type,
+        loc_type=loc_type,
+        loc_id=loc_id,
+        text=trimmed,
+    )

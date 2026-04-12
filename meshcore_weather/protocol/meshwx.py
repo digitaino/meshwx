@@ -1515,3 +1515,131 @@ def unpack_taf(data: bytes) -> dict:
         "sky_code": sky_code,
         "weather_flags": weather_flags,
     }
+
+
+# -- Text Chunk (0x40) — arbitrary NWS text products, chunked ----------------
+#
+# Wire format:
+#   byte 0     : 0x40 MSG_TEXT_CHUNK
+#   byte 1     : chunk_seq (hi nibble, 0-15) | total_chunks (lo nibble, 1-15)
+#   byte 2     : subject_type (uint8, see TEXT_SUBJECT_* constants)
+#   bytes 3..N : location reference (type-tagged — LOC_ZONE, LOC_WFO, etc.)
+#   bytes N+1..: text payload (UTF-8)
+#
+# For multi-chunk texts, the client reassembles by matching
+# (subject_type, location) and concatenating payloads in chunk_seq
+# order (0, 1, 2, ...). Each chunk is a standalone 0x40 message.
+#
+# Future: dictionary compression using weather_dict.json with 0xFE
+# escape sequences. The client detects dictionary-compressed text by
+# the presence of 0xFE bytes in the payload (0xFE is never valid
+# UTF-8, so raw text never contains it).
+#
+# Max text per chunk: 136 - 3 - location_bytes ≈ 127-129 bytes
+# Max total text: 15 chunks × ~127 bytes ≈ 1900 bytes (before compression)
+
+# Subject type constants — what kind of NWS text this is
+TEXT_SUBJECT_AFD = 0x00            # Area Forecast Discussion
+TEXT_SUBJECT_SPACE_WEATHER = 0x01  # SWPC space weather (solar, geomag, aurora)
+TEXT_SUBJECT_TROPICAL = 0x02       # Tropical cyclone advisory/discussion
+TEXT_SUBJECT_RIVER = 0x03          # River statement / flood potential
+TEXT_SUBJECT_FIRE = 0x04           # Fire weather forecast / spot forecast
+TEXT_SUBJECT_MARINE = 0x05         # Coastal/offshore/marine forecast
+TEXT_SUBJECT_GENERAL = 0x06        # General text (PNS, admin, other)
+TEXT_SUBJECT_CLIMATE = 0x07        # Climate data / records
+
+
+def pack_text_chunks(
+    subject_type: int,
+    loc_type: int,
+    loc_id,
+    text: str,
+) -> list[bytes]:
+    """Pack a text product into one or more 0x40 messages.
+
+    Splits the text across multiple frames so each fits within 136 bytes.
+    Returns a list of wire-ready messages. The client reassembles by
+    concatenating payloads in chunk_seq order.
+    """
+    loc_bytes = pack_location(loc_type, loc_id)
+    header_size = 3 + len(loc_bytes)  # 0x40 + seq/total + subject + location
+    max_text_per_chunk = 136 - header_size
+
+    # Encode the full text as UTF-8, then split into chunk-sized pieces.
+    # We split on byte boundaries but avoid cutting a multi-byte UTF-8
+    # codepoint by walking back to the last valid boundary.
+    encoded = text.encode("utf-8", errors="replace")
+    chunks: list[bytes] = []
+    offset = 0
+    while offset < len(encoded):
+        end = min(offset + max_text_per_chunk, len(encoded))
+        chunk = encoded[offset:end]
+        # If we split mid-codepoint, walk back to last complete char
+        if end < len(encoded):
+            # Decode then re-encode to find the safe boundary
+            safe = chunk.decode("utf-8", errors="ignore").encode("utf-8")
+            chunk = safe
+        chunks.append(chunk)
+        offset += len(chunk)
+    if not chunks:
+        chunks = [b""]
+
+    # Cap at 15 chunks (4-bit field)
+    if len(chunks) > 15:
+        chunks = chunks[:15]
+
+    total_chunks = len(chunks)
+    messages: list[bytes] = []
+    for seq, chunk in enumerate(chunks):
+        msg = bytearray()
+        msg.append(MSG_TEXT_CHUNK)
+        msg.append(((seq & 0x0F) << 4) | (total_chunks & 0x0F))
+        msg.append(subject_type & 0xFF)
+        msg.extend(loc_bytes)
+        msg.extend(chunk)
+        messages.append(bytes(msg))
+
+    return messages
+
+
+def unpack_text_chunk(data: bytes) -> dict:
+    """Unpack a single 0x40 text chunk message."""
+    if len(data) < 4 or data[0] != MSG_TEXT_CHUNK:
+        raise ValueError("Invalid text chunk message")
+    chunk_seq = (data[1] >> 4) & 0x0F
+    total_chunks = data[1] & 0x0F
+    subject_type = data[2]
+    location, offset = unpack_location(data, 3)
+    text_payload = data[offset:].decode("utf-8", errors="replace")
+
+    subject_names = {
+        TEXT_SUBJECT_AFD: "afd",
+        TEXT_SUBJECT_SPACE_WEATHER: "space_weather",
+        TEXT_SUBJECT_TROPICAL: "tropical",
+        TEXT_SUBJECT_RIVER: "river",
+        TEXT_SUBJECT_FIRE: "fire",
+        TEXT_SUBJECT_MARINE: "marine",
+        TEXT_SUBJECT_GENERAL: "general",
+        TEXT_SUBJECT_CLIMATE: "climate",
+    }
+    return {
+        "type": MSG_TEXT_CHUNK,
+        "chunk_seq": chunk_seq,
+        "total_chunks": total_chunks,
+        "subject_type": subject_type,
+        "subject_name": subject_names.get(subject_type, "unknown"),
+        "location": location,
+        "text": text_payload,
+    }
+
+
+def reassemble_text_chunks(chunks: list[dict]) -> str:
+    """Reassemble a multi-chunk text from individual 0x40 messages.
+
+    Each `chunk` is the dict from `unpack_text_chunk`. Returns the
+    concatenated text string, or empty string on failure.
+    """
+    if not chunks:
+        return ""
+    sorted_chunks = sorted(chunks, key=lambda c: c["chunk_seq"])
+    return "".join(c["text"] for c in sorted_chunks)

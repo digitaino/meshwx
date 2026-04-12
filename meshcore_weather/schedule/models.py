@@ -25,6 +25,8 @@ PRODUCT_TYPES = {
     "metar",           # 0x30 METAR for a station (alias for observation)
     "taf",             # 0x36 TAF for a station
     "warnings_near",   # 0x37 warnings near a specific zone
+    "afd",             # 0x40 Area Forecast Discussion (text chunks)
+    "space_weather",   # 0x40 SWPC space weather indices (text chunks)
 }
 
 # Supported location types. Each tells the executor how to interpret the
