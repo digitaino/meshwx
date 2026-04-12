@@ -1,0 +1,82 @@
+{
+  "0x0": {
+    "name": "Northeast",
+    "north": 48.0,
+    "south": 37.0,
+    "west": -82.0,
+    "east": -67.0,
+    "scale_km": 55
+  },
+  "0x1": {
+    "name": "Southeast",
+    "north": 37.0,
+    "south": 24.0,
+    "west": -92.0,
+    "east": -75.0,
+    "scale_km": 55
+  },
+  "0x2": {
+    "name": "Upper Midwest",
+    "north": 50.0,
+    "south": 40.0,
+    "west": -98.0,
+    "east": -82.0,
+    "scale_km": 55
+  },
+  "0x3": {
+    "name": "Southern",
+    "north": 37.0,
+    "south": 25.0,
+    "west": -105.0,
+    "east": -88.0,
+    "scale_km": 55
+  },
+  "0x4": {
+    "name": "Central",
+    "north": 44.0,
+    "south": 34.0,
+    "west": -105.0,
+    "east": -90.0,
+    "scale_km": 55
+  },
+  "0x5": {
+    "name": "Mountain",
+    "north": 49.0,
+    "south": 31.0,
+    "west": -117.0,
+    "east": -102.0,
+    "scale_km": 55
+  },
+  "0x6": {
+    "name": "Pacific",
+    "north": 49.0,
+    "south": 32.0,
+    "west": -125.0,
+    "east": -114.0,
+    "scale_km": 40
+  },
+  "0x7": {
+    "name": "Alaska",
+    "north": 72.0,
+    "south": 51.0,
+    "west": -180.0,
+    "east": -130.0,
+    "scale_km": 175
+  },
+  "0x8": {
+    "name": "Hawaii",
+    "north": 23.0,
+    "south": 18.0,
+    "west": -161.0,
+    "east": -154.0,
+    "scale_km": 28
+  },
+  "0x9": {
+    "name": "Puerto Rico",
+    "north": 19.5,
+    "south": 17.0,
+    "west": -68.0,
+    "east": -65.0,
+    "scale_km": 12
+  }
+}
