@@ -583,21 +583,6 @@ def warnings_to_binary(warnings: list[dict], prefer_zones: bool = True) -> list[
             else:
                 continue
             msgs.append(msg)
-
-            # Send description as text chunk if available
-            desc = w.get("description", "")
-            if desc:
-                from meshcore_weather.protocol.meshwx import (
-                    LOC_WFO, TEXT_SUBJECT_GENERAL, pack_text_chunks,
-                )
-                wfo = w.get("vtec_office", "UNK") or "UNK"
-                desc_msgs = pack_text_chunks(
-                    subject_type=TEXT_SUBJECT_GENERAL,
-                    loc_type=LOC_WFO,
-                    loc_id=wfo,
-                    text=desc,
-                )
-                msgs.extend(desc_msgs)
         except Exception:
             logger.debug("Failed to pack warning: %s", w.get("headline", "?")[:40])
     return msgs

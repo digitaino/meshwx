@@ -46,6 +46,7 @@ from meshcore_weather.protocol.meshwx import (
     DATA_RAIN_OBS,
     DATA_STORM_REPORTS,
     DATA_TAF,
+    DATA_WARNING_DETAIL,
     DATA_WARNINGS_NEAR,
     DATA_WX,
     LOC_LATLON,
@@ -276,6 +277,17 @@ class MeshWXBroadcaster:
                 msg = self._build_taf(loc, location_name)
             elif data_type == DATA_WARNINGS_NEAR:
                 msg = self._build_warnings_near(loc, location_name)
+            elif data_type == DATA_WARNING_DETAIL:
+                msgs = self._build_warning_detail(loc, location_name)
+                if msgs:
+                    for m in msgs:
+                        await self._transmit_response(m)
+                        self._v2_cache[cache_key] = (now, m)
+                    activity_log.record(EventDir.OUT, "v2_response",
+                        f"Warning detail: {len(msgs)} chunk(s) for {loc_key}",
+                        {"data_type": data_type, "location": loc_key, "chunks": len(msgs)})
+                    return
+                msg = None
             else:
                 logger.info(
                     "v2 request for %s: unsupported data_type %d — sending NOT_AVAILABLE",
@@ -795,3 +807,58 @@ class MeshWXBroadcaster:
         if not nearby:
             return None
         return pack_warnings_near(LOC_ZONE, zone, nearby)
+
+    def _build_warning_detail(self, loc: dict, query: str) -> list[bytes] | None:
+        """Build 0x40 text chunks with warning description for a zone.
+
+        The client sends this request after receiving a compact 0x20/0x21
+        warning and wanting the full detail (wind, humidity, impacts, etc.).
+        Returns text chunks for all warnings affecting the zone.
+        """
+        from meshcore_weather.protocol.meshwx import (
+            LOC_WFO, TEXT_SUBJECT_GENERAL, pack_text_chunks,
+        )
+
+        zone = ""
+        if loc.get("type") == LOC_ZONE:
+            zone = loc.get("zone", "")
+        if not zone:
+            resolved = resolver.resolve(query)
+            if not resolved:
+                return None
+            zones_list = resolved.get("zones") or []
+            if not zones_list:
+                return None
+            zone = zones_list[0]
+
+        all_warnings = extract_active_warnings(self.store, coverage=None)
+
+        descriptions: list[str] = []
+        for w in all_warnings:
+            ugcs = set(w.get("ugcs") or w.get("zones", []))
+            if zone not in ugcs:
+                continue
+            desc = w.get("description", "")
+            headline = w.get("headline", "")
+            if desc:
+                descriptions.append(f"{headline}\n{desc}" if headline else desc)
+            elif headline:
+                descriptions.append(headline)
+
+        if not descriptions:
+            return None
+
+        full_text = "\n---\n".join(descriptions)
+        wfo = "UNK"
+        # Use the first warning's office
+        for w in all_warnings:
+            if w.get("vtec_office"):
+                wfo = w["vtec_office"]
+                break
+
+        return pack_text_chunks(
+            subject_type=TEXT_SUBJECT_GENERAL,
+            loc_type=LOC_WFO,
+            loc_id=wfo,
+            text=full_text,
+        )

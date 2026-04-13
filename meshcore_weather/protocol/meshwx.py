@@ -665,6 +665,7 @@ DATA_RAIN_OBS = 0x4
 DATA_METAR = 0x5
 DATA_TAF = 0x6
 DATA_WARNINGS_NEAR = 0x7
+DATA_WARNING_DETAIL = 0x8  # client requests full description for a warning
 
 # Sky condition codes (low nibble in observation messages)
 SKY_CLEAR = 0x0
