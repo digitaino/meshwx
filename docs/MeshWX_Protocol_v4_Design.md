@@ -1,6 +1,6 @@
 # MeshWX Protocol v4 Design
 
-> **Status: partially implemented.** The v4 frame header (6-byte wrapper with sequence numbers) and dual-broadcast are implemented — the scheduler sends every product on both v3 and v4 channels simultaneously. New v4 products (FWF, RTP, NOW, SFT, SPC WOU/SEL, QPF) have parsers, wire encoders, and scheduler integration. Channel configuration is available in the portal System section. Still design-only: FEC/XOR parity, discovery beacon, and multi-bot support.
+> **Status: partially implemented.** The v4 frame header, dual-broadcast, and FEC/XOR parity are implemented. The scheduler sends every product on both v3 and v4 channels — simple products get v4 frame wrapping, while 64×64 radar gets spatial quadrant FEC (base layer + 4 quadrants + XOR parity = 6 messages) and AFD gets per-section FEC (synopsis base + section units + XOR parity). New v4 products (FWF, RTP, NOW, SFT, SPC WOU/SEL, QPF) have parsers, wire encoders, and scheduler integration. Channel configuration is available in the portal System section. Still design-only: discovery beacon and multi-bot support.
 
 ---
 

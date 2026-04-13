@@ -33,6 +33,11 @@ from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.parser.weather import WeatherStore
 from meshcore_weather.protocol.coverage import Coverage
 from meshcore_weather.protocol.meshwx import V4SequenceCounter, cobs_encode, v4_wrap
+
+# Products that get FEC treatment on the v4 channel.
+# For these, the scheduler builds separate FEC messages instead of
+# just wrapping v3 messages with the v4 header.
+_FEC_PRODUCTS = {"radar", "afd"}
 from meshcore_weather.protocol.radar import fetch_radar_composite
 from meshcore_weather.schedule.executor import BroadcastExecutor, ExecutorContext
 from meshcore_weather.schedule.models import BroadcastConfig, BroadcastJob
@@ -253,28 +258,39 @@ class Scheduler:
 
             sent_bytes = 0
             has_v4 = self.radio.v4_channel_idx is not None
+
+            # v3 broadcast (existing data channel) — always send
             for msg in msgs:
                 try:
-                    # v3 broadcast (existing data channel)
                     await self.radio.send_binary_channel(cobs_encode(msg))
                     sent_bytes += len(msg)
                     total_sent += 1
-
-                    # v4 broadcast (v4 channel with frame header)
-                    if has_v4:
-                        v4_msg = v4_wrap(msg, self._v4_seq.next())
-                        await self.radio.send_binary_v4(cobs_encode(v4_msg))
-                        sent_bytes += len(v4_msg)
-                        total_sent += 1
-
                     await asyncio.sleep(TX_SPACING)
                 except Exception:
-                    logger.exception("Scheduler: send failed for job %s", job.id)
+                    logger.exception("Scheduler: v3 send failed for job %s", job.id)
+
+            # v4 broadcast — FEC-eligible products get spatial/section FEC,
+            # others get simple v4 frame wrapping
+            v4_count = 0
+            if has_v4:
+                if job.product in _FEC_PRODUCTS:
+                    v4_msgs = self._build_fec_messages(job, ctx)
+                else:
+                    v4_msgs = [v4_wrap(m, self._v4_seq.next()) for m in msgs]
+                for v4_msg in v4_msgs:
+                    try:
+                        await self.radio.send_binary_v4(cobs_encode(v4_msg))
+                        sent_bytes += len(v4_msg)
+                        v4_count += 1
+                        total_sent += 1
+                        await asyncio.sleep(TX_SPACING)
+                    except Exception:
+                        logger.exception("Scheduler: v4 send failed for job %s", job.id)
 
             self._last_bytes[job.id] = sent_bytes
             self._total_bytes[job.id] = self._total_bytes.get(job.id, 0) + sent_bytes
             self._last_msg_count[job.id] = len(msgs)
-            v4_tag = " +v4" if has_v4 else ""
+            v4_tag = f" +v4({v4_count})" if v4_count else ""
             activity_log.record(EventDir.OUT, "broadcast",
                 f"Job {job.id}: {len(msgs)} msg(s), {sent_bytes}B ({job.product}{v4_tag})",
                 {"job_id": job.id, "product": job.product, "messages": len(msgs), "bytes": sent_bytes})
@@ -285,6 +301,65 @@ class Scheduler:
             )
 
         return total_sent
+
+    def _build_fec_messages(
+        self, job: BroadcastJob, ctx: ExecutorContext,
+    ) -> list[bytes]:
+        """Build FEC-wrapped v4 messages for products that benefit from it.
+
+        Radar 64×64 → spatial quadrants + XOR parity (6 msgs per region)
+        AFD → per-section + XOR parity
+        Falls back to simple v4 wrapping if FEC can't be applied.
+        """
+        if job.product == "radar" and ctx.latest_radar is not None:
+            # Only apply FEC to 64×64 radar jobs
+            loc_id = job.location_id.strip()
+            grid_size = 32
+            if ":" in loc_id:
+                parts = loc_id.split(":", 1)
+                try:
+                    grid_size = int(parts[1].strip())
+                except ValueError:
+                    pass
+
+            if grid_size == 64:
+                from meshcore_weather.protocol.radar import build_fec_radar_messages
+                img, ts_min = ctx.latest_radar
+                region_ids = (
+                    ctx.coverage.region_ids
+                    if not ctx.coverage.is_empty()
+                    else None
+                )
+                msgs = build_fec_radar_messages(
+                    img, ts_min, self._v4_seq,
+                    region_ids=region_ids,
+                )
+                if msgs:
+                    return msgs
+
+        if job.product == "afd":
+            from meshcore_weather.protocol.encoders import encode_afd_fec
+            from meshcore_weather.geodata import resolver
+
+            query = job.location_id.strip() if job.location_type == "city" else ""
+            if not query:
+                return []
+            resolved = resolver.resolve(query)
+            if not resolved:
+                return []
+            origs = ctx.store._build_origs(resolved)
+            afd = ctx.store._find_any_orig("AFD", origs)
+            if afd is None:
+                return []
+            wfos = resolved.get("wfos", [])
+            wfo = wfos[0] if wfos else "UNK"
+            msgs = encode_afd_fec(wfo, afd.raw_text, self._v4_seq)
+            if msgs:
+                return msgs
+
+        # Fallback: simple v4 wrapping (re-run the v3 builder)
+        v3_msgs = self.executor.run_job(job, ctx) or []
+        return [v4_wrap(m, self._v4_seq.next()) for m in v3_msgs]
 
     async def _refresh_radar(self) -> None:
         """Fetch the latest radar composite if we don't have one or it's stale."""

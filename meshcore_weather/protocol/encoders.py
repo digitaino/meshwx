@@ -1224,6 +1224,117 @@ def encode_afd(
     )
 
 
+def encode_afd_fec(
+    wfo: str,
+    afd_text: str,
+    seq_counter,
+    group_id: int = 0,
+) -> list[bytes] | None:
+    """Encode an AFD with FEC: each section is a separate unit.
+
+    Base layer = synopsis (readable immediately).
+    Data units = short term, long term, etc.
+    Parity = XOR recovery of any single missing section.
+
+    Returns v4-framed messages, or None if the AFD is empty.
+    """
+    from meshcore_weather.protocol.fec import fec_build_group
+    from meshcore_weather.protocol.meshwx import MSG_TEXT_CHUNK
+
+    sections = _extract_afd_sections_list(afd_text)
+    if not sections:
+        return None
+
+    # First section (synopsis) becomes the base layer
+    base_text = sections[0]
+    base_msg = pack_text_chunks(
+        subject_type=TEXT_SUBJECT_AFD,
+        loc_type=LOC_WFO,
+        loc_id=wfo,
+        text=base_text,
+    )
+    base_layer = base_msg[0] if base_msg else None
+
+    # Remaining sections become data units
+    data_units: list[bytes] = []
+    for section_text in sections[1:]:
+        msgs = pack_text_chunks(
+            subject_type=TEXT_SUBJECT_AFD,
+            loc_type=LOC_WFO,
+            loc_id=wfo,
+            text=section_text,
+        )
+        if msgs:
+            data_units.append(msgs[0])
+
+    if not data_units:
+        # Only synopsis — no FEC needed, just return the base
+        return base_msg
+
+    return fec_build_group(
+        data_units=data_units,
+        msg_type=MSG_TEXT_CHUNK,
+        group_id=group_id % 4,
+        seq_counter=seq_counter,
+        base_layer=base_layer,
+    )
+
+
+def _extract_afd_sections_list(afd_text: str) -> list[str]:
+    """Extract AFD sections as a list of labeled text strings.
+
+    Returns: ["[SYNOPSIS] ...", "[SHORT TERM] ...", "[LONG TERM] ...", ...]
+    Each entry is a standalone readable section.
+    """
+    lines = afd_text.splitlines()
+    sections: dict[str, list[str]] = {}
+    current_section = ""
+    current_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(".") and "..." in stripped:
+            if current_section and current_lines:
+                sections[current_section] = current_lines
+            header = stripped.lstrip(".").split("...")[0].strip().upper()
+            current_section = header
+            current_lines = []
+            after = stripped.split("...", 1)[1].strip() if "..." in stripped else ""
+            if after:
+                current_lines.append(after)
+        elif stripped.startswith("&&") or stripped.startswith("$$"):
+            if current_section and current_lines:
+                sections[current_section] = current_lines
+            current_section = ""
+            current_lines = []
+        elif current_section and stripped:
+            current_lines.append(stripped)
+
+    if current_section and current_lines:
+        sections[current_section] = current_lines
+
+    # Priority order — synopsis first (base layer), then others
+    priority = [
+        "SYNOPSIS", "WHAT HAS CHANGED",
+        "SHORT TERM", "NEAR TERM",
+        "LONG TERM", "EXTENDED",
+    ]
+
+    result: list[str] = []
+    used: set[str] = set()
+    for section_name in priority:
+        for key in sections:
+            if section_name in key and key not in used:
+                text = re.sub(r"\s+", " ", " ".join(sections[key])).strip()
+                if text:
+                    label = key.split("/")[0].strip()[:20]
+                    result.append(f"[{label}] {text}")
+                    used.add(key)
+                break
+
+    return result
+
+
 def encode_space_weather(
     text: str,
     subject_type: int = TEXT_SUBJECT_SPACE_WEATHER,

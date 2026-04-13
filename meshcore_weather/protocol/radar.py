@@ -17,7 +17,11 @@ from datetime import datetime, timezone
 
 import httpx
 
-from meshcore_weather.protocol.meshwx import REGIONS, pack_radar_grid
+from meshcore_weather.protocol.meshwx import (
+    MSG_RADAR_COMPRESSED, REGIONS, V4SequenceCounter,
+    pack_radar_compressed, pack_radar_grid,
+)
+from meshcore_weather.protocol.fec import fec_build_group
 
 logger = logging.getLogger(__name__)
 
@@ -221,4 +225,125 @@ def build_compressed_radar_messages(
             len(msgs), sum(len(m) for m in msgs),
         )
         messages.extend(msgs)
+    return messages
+
+
+# -- v4 FEC radar: spatial quadrants + XOR parity --
+
+
+def _downsample_grid(grid: list[list[int]], from_size: int, to_size: int) -> list[list[int]]:
+    """Downsample a grid by picking the max value in each block.
+
+    Max-pooling preserves the highest reflectivity in each cell so the
+    base layer preview doesn't hide storm cores.
+    """
+    ratio = from_size // to_size
+    out = [[0] * to_size for _ in range(to_size)]
+    for y in range(to_size):
+        for x in range(to_size):
+            best = 0
+            for dy in range(ratio):
+                for dx in range(ratio):
+                    val = grid[y * ratio + dy][x * ratio + dx]
+                    if val > best:
+                        best = val
+            out[y][x] = best
+    return out
+
+
+def _extract_quadrant(
+    grid: list[list[int]], grid_size: int, quadrant: int,
+) -> list[list[int]]:
+    """Extract a quadrant from a grid.
+
+    quadrant: 0=NW (top-left), 1=NE (top-right), 2=SW (bottom-left), 3=SE (bottom-right)
+    Returns a grid_size/2 × grid_size/2 sub-grid.
+    """
+    half = grid_size // 2
+    row_off = 0 if quadrant < 2 else half
+    col_off = 0 if quadrant % 2 == 0 else half
+    return [
+        [grid[row_off + y][col_off + x] for x in range(half)]
+        for y in range(half)
+    ]
+
+
+def build_fec_radar_messages(
+    img_data: bytes,
+    timestamp_utc_min: int,
+    seq_counter: V4SequenceCounter,
+    region_ids: set[int] | None = None,
+    group_id: int = 0,
+) -> list[bytes]:
+    """Build v4 FEC radar for 64×64 grids with spatial quadrants + XOR parity.
+
+    For each region:
+      - Base layer: 32×32 downsampled from 64×64 (independently useful)
+      - 4 data units: NW/NE/SW/SE quadrants, each 32×32
+      - 1 parity unit: XOR of the 4 quadrant payloads
+
+    Total: 6 messages per region. Client can display the base immediately,
+    fill in quadrants as they arrive, and recover any single missing
+    quadrant via XOR parity.
+
+    Returns v4-framed messages ready for COBS encoding.
+    """
+    messages: list[bytes] = []
+
+    for region_id, region in REGIONS.items():
+        if region_ids is not None and region_id not in region_ids:
+            continue
+
+        # Extract full 64×64 grid
+        grid_64 = extract_region_grid(img_data, region_id, grid_size=64)
+        if grid_64 is None:
+            continue
+
+        # Base layer: downsample 64→32 (max-pool to preserve storm cores)
+        grid_32 = _downsample_grid(grid_64, 64, 32)
+        base_msgs = pack_radar_compressed(
+            region_id=region_id,
+            timestamp_utc_min=timestamp_utc_min,
+            scale_km=region["scale"],
+            grid=grid_32,
+            grid_size=32,
+        )
+        # Base layer is usually a single message; take the first
+        base_msg = base_msgs[0] if base_msgs else None
+
+        # 4 quadrants: each 32×32
+        quadrant_msgs: list[bytes] = []
+        for q in range(4):
+            q_grid = _extract_quadrant(grid_64, 64, q)
+            q_msgs = pack_radar_compressed(
+                region_id=region_id,
+                timestamp_utc_min=timestamp_utc_min,
+                scale_km=region["scale"],
+                grid=q_grid,
+                grid_size=32,
+            )
+            # Each quadrant should fit in one message
+            if q_msgs:
+                quadrant_msgs.append(q_msgs[0])
+
+        if not quadrant_msgs:
+            continue
+
+        # Build FEC group: base + 4 quadrants + parity
+        group = fec_build_group(
+            data_units=quadrant_msgs,
+            msg_type=MSG_RADAR_COMPRESSED,
+            group_id=group_id % 4,
+            seq_counter=seq_counter,
+            base_layer=base_msg,
+        )
+        messages.extend(group)
+
+        nonzero = sum(1 for row in grid_64 for c in row if c > 0)
+        logger.debug(
+            "FEC radar %s (64×64): %d non-zero, %d msgs (base+4Q+parity)",
+            region["name"], nonzero, len(group),
+        )
+        group_id += 1
+
     return messages
