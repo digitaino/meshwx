@@ -276,10 +276,79 @@ The current observation is **15 bytes** in a **136-byte frame** — 89% unused. 
 | pressure | 1B | (inHg - 29.00) × 100 |
 | feels_like_delta | 1B | int8, signed delta from temp |
 
-### Added v4 fields (+8 bytes → 23 bytes total, still easily single-message)
+### Separated cloud cover + weather type (replaces v3 sky_code nibble)
+
+v3 jams cloud cover and precipitation into a single 4-bit nibble. You can't say "overcast with light freezing rain" — it's either `sky=overcast` or `sky=rain`. v4 separates them into two independent bytes.
+
+**Cloud cover byte** (replaces the old sky_code's cloud values):
+
+| Value | METAR | Meaning |
+|---|---|---|
+| 0x0 | SKC/CLR | Clear |
+| 0x1 | FEW | Few clouds |
+| 0x2 | SCT | Scattered |
+| 0x3 | BKN | Broken |
+| 0x4 | OVC | Overcast |
+| 0x5 | VV | Obscured (vertical visibility) |
+
+**Weather byte** (new — carries precip type + intensity + vicinity flag):
+
+```
+bits 7-3: weather_type (5 bits, 0-31)
+bits 2-1: intensity (2 bits)
+bit 0:    vicinity flag
+
+weather_type values:
+  0x00 = none (no significant weather)
+  0x01 = rain (RA)
+  0x02 = snow (SN)
+  0x03 = drizzle (DZ)
+  0x04 = ice pellets / sleet (PL)
+  0x05 = hail (GR)
+  0x06 = small hail / snow pellets (GS)
+  0x07 = snow grains (SG)
+  0x08 = ice crystals (IC)
+  0x09 = thunderstorm (TS)
+  0x0A = showers (SH — convective)
+  0x0B = freezing rain (FZRA)
+  0x0C = freezing drizzle (FZDZ)
+  0x0D = rain+snow mix (RASN)
+  0x0E = fog (FG)
+  0x0F = mist (BR)
+  0x10 = haze (HZ)
+  0x11 = smoke (FU)
+  0x12 = dust (DU)
+  0x13 = sand (SA)
+  0x14 = volcanic ash (VA)
+  0x15 = squall (SQ)
+  0x16 = funnel cloud (FC)
+  0x17 = blowing snow (BLSN)
+  0x18 = blowing dust (BLDU)
+  0x19 = unknown precip (UP)
+
+intensity values:
+  0 = none / not applicable
+  1 = light (METAR "-")
+  2 = moderate (METAR no prefix)
+  3 = heavy (METAR "+")
+
+vicinity flag:
+  0 = at the station
+  1 = in the vicinity (METAR "VC")
+```
+
+Examples:
+- "Light rain":          cloud=BKN(0x3), wx_type=RA(0x01), intensity=light(1), vc=0 → `0x03, 0x0A`
+- "Heavy freezing rain": cloud=OVC(0x4), wx_type=FZRA(0x0B), intensity=heavy(3), vc=0 → `0x04, 0x5E`
+- "Thunderstorm nearby": cloud=SCT(0x2), wx_type=TS(0x09), intensity=mod(2), vc=1 → `0x02, 0x4D`
+- "Clear, no weather":  cloud=CLR(0x0), wx_type=none(0x00), intensity=0, vc=0 → `0x00, 0x00`
+
+### Added v4 fields (+9 bytes → 24 bytes total, still easily single-message)
 
 | Field | Size | What | Source |
 |---|---|---|---|
+| cloud_cover | 1B | uint8 (see cloud cover table above) | METAR/PFM |
+| weather_byte | 1B | type(5) + intensity(2) + vicinity(1) — see above | METAR |
 | humidity_pct | 1B | uint8 0-100, relative humidity | METAR/RWR |
 | pressure_trend | 1B | hi nibble: direction (0=steady, 1=rising, 2=falling, 3=rapid_rise, 4=rapid_fall), lo nibble: change in 0.01 inHg over last 3h | METAR remarks |
 | uv_index | 1B | uint8 0-15, EPA UV index | UVI product |
@@ -289,7 +358,7 @@ The current observation is **15 bytes** in a **136-byte frame** — 89% unused. 
 | wind_chill_f | 1B | int8, actual wind chill. 127 = N/A | derived |
 | snow_depth_in | 1B | uint8, inches on ground. 0 = none | METAR/CLI |
 
-Total: **23 bytes** payload + 6 bytes v4 frame = **29 bytes**. 79% of frame still unused but we've captured every field a weather app typically shows.
+Total: **24 bytes** payload + 6 bytes v4 frame = **30 bytes**. 78% of frame still unused. The old 1-byte `sky_code` nibble is replaced by `cloud_cover` + `weather_byte` (2 bytes) — one extra byte for dramatically richer weather representation.
 
 ---
 
@@ -309,22 +378,26 @@ Current: 7 bytes per period. In v4: **10 bytes per period** with wind gust, dewp
 | 5 | wind_dir (hi nibble) \| wind_speed_5mph (lo nibble) |
 | 6 | condition_flags (8-bit bitfield) |
 
-### v4 period (10 bytes, +3)
+### v4 period (12 bytes, +5)
 
 | Byte | Field | Added |
 |---|---|---|
 | 0 | period_id | |
 | 1 | high_f | |
 | 2 | low_f | |
-| 3 | sky_code | |
-| 4 | precip_pct | |
-| 5 | wind_dir \| wind_speed_5mph | |
-| 6 | condition_flags | |
-| **7** | **wind_gust_5mph** (uint8, 0 = no gust) | **new** |
-| **8** | **dewpoint_f** (int8) | **new** |
-| **9** | **humidity_pct** (uint8 0-100) | **new** |
+| 3 | **cloud_cover** (replaces sky_code — just clouds, no precip) | **changed** |
+| 4 | **weather_byte** (type + intensity + vc — see observation section) | **new** |
+| 5 | precip_pct | |
+| 6 | wind_dir \| wind_speed_5mph | |
+| 7 | condition_flags | |
+| **8** | **wind_gust_5mph** (uint8, 0 = no gust) | **new** |
+| **9** | **dewpoint_f** (int8) | **new** |
+| **10** | **humidity_pct** (uint8 0-100) | **new** |
+| **11** | **qpf_tenth_inch** (uint8, 0.1" units, quantitative precip forecast) | **new** |
 
-7-day forecast: 7 header + 7 × 10 = **77 bytes** + 6 v4 frame = **83 bytes**. Still well under 136. No FEC needed.
+7-day forecast: 7 header + 7 × 12 = **91 bytes** + 6 v4 frame = **97 bytes**. Still under 136. No FEC needed.
+
+Each forecast period can now express "Day 3: broken clouds, moderate snow, 80% PoP, 0.8" QPF, dewpoint 28°F, NW 15 gusting 25" — all in 12 bytes.
 
 ---
 
