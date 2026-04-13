@@ -266,6 +266,19 @@ if onset == 0 || now >= onset {
 
 **Severity nibbles:** 0x1=advisory, 0x2=watch, 0x3=warning, 0x4=emergency
 
+**Warning descriptions:** Each warning message (0x20/0x21) may be followed by one or more 0x40 text chunks containing a detailed description. These include structured data like:
+
+```
+Wind: Southwest at 20 to 30 mph with gusts to 40 mph.
+Humidity: As low as 12 percent.
+Fuels: Dry.
+Impacts: Any fires that develop can spread rapidly.
+```
+
+The client should match description text chunks to their preceding warning by arrival order. Display the description in a detail/expanded view when the user taps a warning.
+
+**Fire warnings (0x7):** These are zone-based (0x21), not polygon-based. The zone codes in the message ARE the location — the client renders them using its preloaded zone polygon geometries. Fire weather zones cover large areas (counties/regions), unlike storm-scale tornado polygons.
+
 ---
 
 ## 5b. Other existing types on v4 channel
