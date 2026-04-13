@@ -799,15 +799,15 @@ def _build_daily_climate(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]
         wfo = job.location_id.strip().upper()
         # Build origs manually for WFO-only lookup
         origs = []
-        for state in ctx.coverage.states:
+        for state in ctx.coverage.explicit_states:
             origs.append(f"{wfo}{state}")
         if not origs:
             origs = [f"{wfo}"]
     else:
         # Coverage-based: try all WFOs in coverage
         origs = []
-        for wfo in ctx.coverage.wfos:
-            for state in ctx.coverage.states:
+        for wfo in ctx.coverage.sources.get("wfos", []):
+            for state in ctx.coverage.explicit_states:
                 origs.append(f"{wfo}{state}")
 
     rtp = ctx.store._find_any_orig("RTP", origs)
@@ -823,7 +823,7 @@ def _build_nowcast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     if job.location_type == "wfo":
         wfo = job.location_id.strip().upper()
         origs = []
-        for state in ctx.coverage.states:
+        for state in ctx.coverage.explicit_states:
             origs.append(f"{wfo}{state}")
         if not origs:
             origs = [f"{wfo}"]
