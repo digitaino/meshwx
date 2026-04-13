@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from meshcore_weather.activity import activity_log
 from meshcore_weather.geodata import resolver
 from meshcore_weather.protocol.coverage import Coverage
 from meshcore_weather.protocol.warnings import extract_active_warnings
@@ -171,6 +172,16 @@ async def list_warnings(request: Request) -> JSONResponse:
 
 # -- EMWIN product browser --
 
+@router.get("/products/filters")
+async def product_filters(request: Request) -> JSONResponse:
+    """Return distinct filter values for the product browser dropdowns."""
+    bot = request.app.state.bot
+    types = sorted({p.product_type for p in bot.store._products.values()})
+    offices = sorted({p.office for p in bot.store._products.values() if p.office})
+    states = sorted({p.state for p in bot.store._products.values() if p.state})
+    return JSONResponse({"types": types, "offices": offices, "states": states})
+
+
 @router.get("/products")
 async def list_products(
     request: Request,
@@ -241,6 +252,8 @@ async def get_status(request: Request) -> JSONResponse:
     """Bot operational status."""
     bot = request.app.state.bot
     broadcaster = getattr(bot, "_broadcaster", None)
+    scheduler = broadcaster.scheduler if broadcaster else None
+    cfg = scheduler.current_config() if scheduler else None
     return JSONResponse({
         "radio": {
             "channel_idx": bot.radio.channel_idx,
@@ -256,7 +269,82 @@ async def get_status(request: Request) -> JSONResponse:
         "contacts": {
             "known": len(bot._known_contacts) if hasattr(bot, "_known_contacts") else 0,
         },
+        "settings": {
+            "radar_grid_size": cfg.radar_grid_size if cfg else 32,
+        },
     })
+
+
+@router.get("/activity")
+async def get_activity(
+    limit: int = Query(100, ge=1, le=500),
+) -> JSONResponse:
+    """Return the most recent activity log entries."""
+    return JSONResponse({"events": activity_log.recent(limit)})
+
+
+@router.get("/activity/stream")
+async def activity_stream():
+    """Server-Sent Events stream of real-time activity log entries.
+
+    The portal's activity feed connects to this endpoint and receives
+    new events as they happen — no polling, no refresh needed. Each
+    SSE event is a JSON-encoded activity log entry.
+
+    Usage in JavaScript:
+        const es = new EventSource('/api/activity/stream');
+        es.onmessage = (e) => {
+            const event = JSON.parse(e.data);
+            appendToActivityLog(event);
+        };
+    """
+    import json
+    from starlette.responses import StreamingResponse
+
+    async def event_generator():
+        async for event in activity_log.subscribe():
+            data = json.dumps(event.to_dict())
+            yield f"data: {data}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # nginx compatibility
+        },
+    )
+
+
+@router.get("/stats")
+async def get_stats(
+    window: int = Query(60, ge=1, le=1440, description="Time window in minutes"),
+) -> JSONResponse:
+    """Return aggregate send stats for the given time window."""
+    windows = [window]
+    # Always include a few standard windows for the UI
+    for w in [5, 15, 60, 360, 1440]:
+        if w not in windows:
+            windows.append(w)
+    windows.sort()
+    return JSONResponse({
+        "stats": [activity_log.stats(w) for w in windows],
+    })
+
+
+@router.post("/settings/radar-grid-size")
+async def set_radar_grid_size(request: Request) -> JSONResponse:
+    """Update the default radar grid size for on-demand requests."""
+    body = await request.json()
+    grid_size = body.get("radar_grid_size")
+    if grid_size not in (16, 32, 64):
+        raise HTTPException(400, "radar_grid_size must be 16, 32, or 64")
+    scheduler = _get_scheduler(request)
+    cfg = scheduler.current_config()
+    cfg.radar_grid_size = grid_size
+    await scheduler.save_config(cfg)
+    return JSONResponse({"ok": True, "radar_grid_size": grid_size})
 
 
 @router.post("/actions/broadcast")
@@ -325,10 +413,44 @@ async def trigger_v2_request(request: Request) -> JSONResponse:
 
 @router.get("/schedule/meta")
 async def schedule_meta() -> JSONResponse:
-    """Return lists of valid product types and location types for form dropdowns."""
+    """Return rich metadata for the job form: products with descriptions,
+    location types, which locations each product supports, and radar options."""
+
+    product_info = {
+        "radar":          {"label": "Radar",                  "desc": "Compressed radar grid (0x11)", "locations": ["coverage", "region"]},
+        "warnings":       {"label": "Warnings (full)",        "desc": "Re-broadcast ALL active warnings (safety net)", "locations": ["coverage"]},
+        "warnings_delta": {"label": "Warnings (delta)",       "desc": "Only new/changed warnings since last cycle", "locations": ["coverage"]},
+        "warnings_near":  {"label": "Warnings near zone",     "desc": "Warnings affecting a specific zone", "locations": ["zone"]},
+        "observation":    {"label": "Observation",            "desc": "Current conditions for a point", "locations": ["city", "station", "zone"]},
+        "forecast":       {"label": "Forecast",              "desc": "Multi-day forecast for a point", "locations": ["city", "zone", "pfm_point"]},
+        "outlook":        {"label": "Hazardous Outlook",     "desc": "Hazardous weather outlook", "locations": ["coverage", "wfo"]},
+        "metar":          {"label": "METAR",                 "desc": "Raw METAR observation for a station", "locations": ["station"]},
+        "taf":            {"label": "TAF",                   "desc": "Terminal aerodrome forecast for a station", "locations": ["station"]},
+        "storm_reports":  {"label": "Storm Reports",         "desc": "Local storm reports (LSR)", "locations": ["coverage", "wfo"]},
+        "rain_obs":       {"label": "Rain Observations",     "desc": "Rain-reporting cities", "locations": ["coverage"]},
+        "afd":            {"label": "Area Forecast Discussion", "desc": "AFD text from a forecast office", "locations": ["wfo"]},
+        "space_weather":  {"label": "Space Weather",         "desc": "SWPC space weather indices", "locations": ["coverage"]},
+    }
+
+    location_info = {
+        "coverage":  {"label": "Coverage area",    "desc": "All zones in the operator's configured coverage", "placeholder": "(leave empty)"},
+        "region":    {"label": "Radar region",     "desc": "MeshWX radar region 0\u20139", "placeholder": "e.g. 3"},
+        "city":      {"label": "City",             "desc": "Resolved to nearest NWS zone", "placeholder": "e.g. Austin TX"},
+        "station":   {"label": "Station (ICAO)",   "desc": "4-letter ICAO code", "placeholder": "e.g. KAUS"},
+        "zone":      {"label": "NWS Zone",         "desc": "6-character UGC zone code", "placeholder": "e.g. TXZ192"},
+        "wfo":       {"label": "Forecast Office",  "desc": "3-letter WFO code", "placeholder": "e.g. EWX"},
+        "pfm_point": {"label": "PFM Point",        "desc": "Numeric index into pfm_points.json", "placeholder": "e.g. 103"},
+    }
+
     return JSONResponse({
         "products": sorted(PRODUCT_TYPES),
         "location_types": sorted(LOCATION_TYPES),
+        "product_info": product_info,
+        "location_info": location_info,
+        "radar_grid_sizes": [
+            {"value": 32, "label": "32x32 (standard)", "desc": "~42 km/cell, 4-5 messages"},
+            {"value": 64, "label": "64x64 (high-res)", "desc": "~21 km/cell, 10-15 messages"},
+        ],
     })
 
 
