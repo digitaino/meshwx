@@ -150,19 +150,16 @@ class WeatherBot:
     async def _handle_channel_message(self, channel: str, sender: str, text: str) -> None:
         """Handle a message received on a channel."""
         ch = int(channel)
-        if ch != self.radio.channel_idx or ch == 0:
+        if ch == 0:
             return
 
         text = text.strip()
         if not text:
             return
 
-        # Binary data requests (WXQ / MWX prefix) work on the text channel
-        # too, not just via DM. This is the multi-hop reliability fallback:
-        # DM routing can be flaky over 1-2 hops but channel flood routing
-        # is more robust. Clients that can't DM (e.g. a future e-ink
-        # receiver) also use this path. Responses still go out on the data
-        # channel regardless of how the request arrived.
+        # WXQ/MWX data requests accepted on both text and data channels.
+        # v4 clients send requests on the data channel; legacy clients
+        # use the text channel.
         if text.startswith("WXQ") and self._broadcaster:
             logger.info("Channel WXQ request from %s (ch %d)", sender, ch)
             await self._handle_meshwx_data_request(text, "", sender)
@@ -170,6 +167,10 @@ class WeatherBot:
         if text.startswith("MWX") and len(text) >= 7 and self._broadcaster:
             logger.info("Channel MWX request from %s (ch %d)", sender, ch)
             await self._handle_meshwx_refresh(text, "", sender)
+            return
+
+        # Text commands only on the text channel — don't parse data channel noise
+        if ch != self.radio.channel_idx:
             return
 
         if not self._rate_check(sender):
