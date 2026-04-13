@@ -1,6 +1,6 @@
 # MeshWX Protocol v4 Design
 
-> **Status: design document, not yet implemented.** This captures the architecture for the next-generation protocol. The current v3 system continues operating on existing channels. v4 will be implemented on new channels alongside v3 with no disruption to existing clients.
+> **Status: partially implemented.** New v4 products (FWF, RTP, NOW, SFT, SPC WOU/SEL, QPF) have parsers, wire encoders, and scheduler integration. The v4 frame header, FEC system, discovery beacon, and multi-bot support are still design-only. The current v3 system continues operating on existing channels.
 
 ---
 
@@ -401,6 +401,260 @@ Each forecast period can now express "Day 3: broken clouds, moderate snow, 80% P
 
 ---
 
+## New v4 Products
+
+v3 broadcasts observation (0x30), forecast (0x31), outlook (0x32), storm reports (0x33), rain obs (0x34), METAR (0x35), TAF (0x36), warnings near (0x37), warning polygons/zones (0x20/0x21), radar (0x10/0x11), and text chunks (0x40). All data sources are EMWIN products received via GOES satellite.
+
+v4 adds six new products — all sourced from EMWIN:
+
+| Product | EMWIN code | Msg type | Description |
+|---|---|---|---|
+| Fire Weather Forecast | FWF | 0x38 | Per-zone fire weather (RH, transport wind, mixing height, Haines) |
+| State Forecast Table | SFT | 0x31 | Alternate forecast source — same wire format as ZFP/PFM |
+| Regional Temp/Precip | RTP | 0x3A | Daily climate summary per city (hi/lo/precip/snow) |
+| SPC Watch Products | WOU/SEL | 0x20/0x21 | Watch polygons — same wire format as existing warnings |
+| QPF Precip Grid | QPF | 0x12 | Gridded precipitation forecast — same encoding as radar |
+| Short Term Forecast | NOW | 0x3C | 1-3 hour nowcast, compact binary + optional text overflow |
+
+### Fire Weather Forecast (0x38) — FWF
+
+Fire weather is critical for the off-grid audience. The FWF product carries per-zone, per-period forecasts with fields not found in standard ZFP/PFM products.
+
+EMWIN source: `FWF<wfo><st>` (e.g., `FWFEWXTX`). Issued 1-2x daily by WFOs with fire weather zones.
+
+```
+0x38 MSG_FIRE_WEATHER
+
+  byte 0       : 0x38
+  bytes 1-N    : location (zone reference)
+  byte N+1     : issued_hours_ago (uint8)
+  byte N+2     : period_count (uint8, 1-7)
+
+  Per period (8 bytes):
+    byte 0     : period_id (same scheme as 0x31: 0=tonight, 1=today, 2=tomorrow...)
+    byte 1     : max_temp_f (int8)
+    byte 2     : min_rh_pct (uint8, 0-100)
+    byte 3     : transport_wind (hi nibble: 16-pt dir, lo nibble: speed in 5mph units)
+    byte 4     : mixing_height_500ft (uint8, ×500ft → 0-127,500 ft range)
+    byte 5     : haines_index (lo nibble: 2-6) | lightning_risk (hi nibble: 0=none, 1=dry, 2=wet)
+    byte 6     : cloud_cover (v4 cloud codes, see observation section)
+    byte 7     : weather_byte (v4 type+intensity+vc, see observation section)
+```
+
+**Size**: 3-day FWF for one zone: 5 loc + 2 header + 3×8 = **31 bytes** + 6 v4 frame = **37 bytes**. Single message, no FEC needed.
+
+**Parser extraction targets** from FWF text:
+- `.TODAY...` / `.TONIGHT...` period headers (same as ZFP)
+- `MIN HUMIDITY...15 TO 25 PERCENT`
+- `TRANSPORT WINDS...WEST 15 TO 25 MPH`
+- `MIXING HEIGHT...8000 TO 10000 FT AGL`
+- `HAINES INDEX...5 TO 6`
+- `CHANCE OF WETTING RAIN...10 PERCENT` (ignore — already in precip %)
+- `SKY/WEATHER...MOSTLY SUNNY` (standard sky classification)
+
+### Regional Temp/Precip (0x3A) — RTP
+
+Daily climate observation summary. Fills the gap between real-time METAR/RWR (current conditions) and forecasts. Gives yesterday's actual high, low, and precipitation — useful for tracking drought/flood conditions over time.
+
+EMWIN source: `RTP<wfo><st>` (e.g., `RTPEWXTX`). Issued daily, typically mid-morning.
+
+```
+0x3A MSG_DAILY_CLIMATE
+
+  byte 0       : 0x3A
+  byte 1       : city_count (uint8, 1-18)
+  byte 2       : report_day_offset (uint8, 0=today so far, 1=yesterday, 2=day before)
+
+  Per city (7 bytes):
+    bytes 0-2  : location ref (uint24 place_id from resolver)
+    byte 3     : max_temp_f (int8, 127 = missing)
+    byte 4     : min_temp_f (int8, 127 = missing)
+    byte 5     : precip_hundredths (uint8, 0.01" units, 0-2.54", 0xFF = trace, 0xFE = missing)
+    byte 6     : snow_tenths (uint8, 0.1" units, 0-25.5", 0xFF = trace, 0xFE = missing)
+```
+
+**Size**: 15 cities: 1 + 2 header + 15×7 = **108 bytes** + 6 v4 frame = **114 bytes**. Single message.
+
+**Batch layout**: RTP is naturally a multi-city table, so batching cities into one message is more airtime-efficient than one message per city. 18 cities is the max that fits in a single 136-byte frame (3 + 18×7 = 129 < 130 payload bytes).
+
+**Parser extraction targets** from RTP text:
+```
+CITY              MAX  MIN  PCPN  SNOW
+AUSTIN            95   72   0.00
+SAN ANTONIO       93   71   T
+DEL RIO           97   74   0.15   0.0
+```
+
+### QPF Precipitation Grid (0x12) — QPF
+
+Quantitative precipitation forecast rendered on the same grid as radar. Reuses the entire sparse/RLE compression pipeline from 0x11 — the only difference is what the 4-bit cell values represent.
+
+EMWIN source: `QPF<wfo><st>` discussion text provides area amounts. For gridded data, the bot samples from the NWS QPF GRIB2 files available via EMWIN image products, or falls back to painting zones from the QPF text discussion.
+
+```
+0x12 MSG_QPF_GRID
+
+  Same wire format as 0x11 (MSG_RADAR_COMPRESSED):
+    byte 0     : 0x12
+    byte 1     : grid_size (32 or 64)
+    byte 2     : encoding (0=sparse, 1=RLE)
+    byte 3     : region_id (same regions.json mapping as radar)
+    byte 4     : valid_period (hi nibble: start offset in 6h units from 00Z,
+                               lo nibble: duration in 6h units)
+    byte 5     : chunk_seq (hi nibble) | total_chunks (lo nibble)
+    bytes 6+   : compressed grid data (sparse or RLE, identical encoding)
+
+  4-bit QPF levels (replaces reflectivity):
+    0x0 = none
+    0x1 = trace - 0.10"
+    0x2 = 0.10 - 0.25"
+    0x3 = 0.25 - 0.50"
+    0x4 = 0.50 - 0.75"
+    0x5 = 0.75 - 1.00"
+    0x6 = 1.00 - 1.50"
+    0x7 = 1.50 - 2.00"
+    0x8 = 2.00 - 2.50"
+    0x9 = 2.50 - 3.00"
+    0xA = 3.00 - 4.00"
+    0xB = 4.00 - 5.00"
+    0xC = 5.00 - 7.00"
+    0xD = 7.00 - 10.00"
+    0xE = 10.00"+
+```
+
+**Advantages of reusing the radar pipeline**: no new compression code, clients already know how to render 4-bit grids, FEC spatial quadrants work identically for 64×64 QPF.
+
+**`valid_period` byte**: differentiates "6h QPF starting at 12Z" from "24h QPF starting at 00Z". High nibble = start offset in 6h blocks from 00Z (0=00Z, 1=06Z, 2=12Z, 3=18Z). Low nibble = duration in 6h blocks (1=6h, 2=12h, 4=24h). Most common: Day 1 24h QPF = `0x04`.
+
+### Short Term Forecast (0x3C) — NOW
+
+The most tactically actionable product for off-grid users: what's happening in the next 1-3 hours. NOWcasts are short, urgent, and time-sensitive.
+
+EMWIN source: `NOW<wfo><st>` (e.g., `NOWEWXTX`). Issued as needed by WFOs, typically during active weather.
+
+```
+0x3C MSG_NOWCAST
+
+  byte 0       : 0x3C
+  bytes 1-N    : location (zone or WFO reference)
+  byte N+1     : valid_hours (uint8, how many hours this covers, typically 1-3)
+  byte N+2     : urgency_flags
+                   bit 0: has_thunder
+                   bit 1: has_flooding
+                   bit 2: has_winter
+                   bit 3: has_fire
+                   bit 4: has_wind
+                   bits 5-7: reserved
+  bytes N+3+   : text payload (UTF-8, truncated to fit frame)
+```
+
+**Size**: With a WFO location (4 bytes), 3 bytes of header fields, and 6 bytes v4 frame overhead: **123 bytes** available for text in a single message. A typical NOW summary fits in 1-2 messages.
+
+**For longer NOWcasts**: if the text exceeds single-frame capacity, overflow uses the existing text chunk system (0x40 with `TEXT_SUBJECT_NOWCAST`). The 0x3C message carries the structured metadata + lead paragraph; additional text chunks carry the rest. This means the critical info arrives first and is independently useful.
+
+**Parser extraction targets** from NOW text:
+```
+SHORT TERM FORECAST
+NATIONAL WEATHER SERVICE AUSTIN/SAN ANTONIO TX
+330 PM CDT SAT APR 12 2025
+
+...STRONG THUNDERSTORMS MOVING EAST ACROSS THE HILL COUNTRY...
+
+SCATTERED STRONG THUNDERSTORMS ARE MOVING EAST AT 30 MPH ACROSS
+THE HILL COUNTRY. THESE STORMS MAY PRODUCE BRIEF HEAVY RAIN AND
+WIND GUSTS TO 50 MPH THROUGH 5 PM.
+```
+
+Urgency flags are set by keyword scan of the text body (same approach as existing condition_flags in forecast encoder).
+
+### State Forecast Table — SFT (data source for 0x31)
+
+SFT is not a new message type — it's an alternate EMWIN data source that produces standard 0x31 forecast messages using the existing wire format.
+
+EMWIN source: `SFT<wfo><st>` (e.g., `SFTUS4KWBC`). Issued by NCEP, covers major cities nationwide.
+
+```
+SFT format (tabular):
+
+CITY              WED      WED NIGHT THU       THU NIGHT FRI
+                  HI  WX   LO  WX    HI  WX   LO  WX    HI  WX
+AUSTIN            95  SU   72  CL    93  SU    71  CL    90  MC
+SAN ANTONIO       93  SU   71  CL    91  SU    70  CL    88  MC
+```
+
+The parser extracts per-city per-period `(high_f, low_f, sky_code, precip_pct)` and feeds them into the existing `pack_forecast()` encoder. SFT provides a nationwide fallback when the local WFO's ZFP or PFM is unavailable or stale.
+
+**Parser priority** (from best to worst data): PFM → ZFP → SFT. The executor tries each in order and uses the first that returns data.
+
+### SPC Watch Products — WOU/SEL (data source for 0x20/0x21)
+
+Watch products are not a new message type — they feed into the existing warning polygon (0x20) and warning zone (0x21) wire formats.
+
+EMWIN sources:
+- **SEL** (Watch definition): polygon coordinates + watch type + expiration
+- **WOU** (Watch Outline Update): zone list updates for existing watches
+
+These map to existing encoding:
+- `warning_type`: `WARN_TORNADO` (0x1) for tornado watches, `WARN_SEVERE_TSTORM` (0x2) for severe thunderstorm watches
+- `severity`: `SEV_WATCH` (0x2) — distinguishes watches from warnings
+
+```
+SEL example:
+   URGENT - IMMEDIATE BROADCAST REQUESTED
+   TORNADO WATCH NUMBER 215
+   NWS STORM PREDICTION CENTER NORMAN OK
+   ...
+   LAT...LON 35289680 35459614 33849495 33029517 33029605
+```
+
+The polygon coordinates use the existing vertex encoding (first vertex int24×10000, deltas int16×0.001°). The parser extracts:
+1. Watch type (tornado vs severe thunderstorm) from header
+2. Watch number (uint16, for tracking/cancellation)
+3. Polygon vertices from `LAT...LON` line
+4. Expiration time
+5. Affected zones from the WOU product
+
+**No new wire format** — just new EMWIN product parsers that feed into `pack_warning_polygon()` and `pack_warning_zones()`.
+
+### Updated beacon flags
+
+The beacon (0xF0) `beacon_flags` byte gains three new capability bits:
+
+```
+byte 5 : beacon_flags
+           bit 0: accepting_requests
+           bit 1: has_radar
+           bit 2: has_warnings
+           bit 3: has_forecasts
+           bit 4: has_fire_weather    ← was: has_space_weather (renamed, EMWIN-sourced)
+           bit 5: has_nowcast         ← new
+           bit 6: has_qpf             ← new
+           bit 7: reserved
+```
+
+`has_space_weather` is renamed to `has_fire_weather` since space weather data is not available through EMWIN.
+
+### Updated single-message products list
+
+These v4 products fit in a single 136-byte frame with no FEC:
+
+```
+Observation (0x30)         — 30 bytes
+Forecast 7-day (0x31)      — 97 bytes (includes SFT-sourced data)
+Fire Weather Forecast (0x38) — 37 bytes (3-day, one zone)
+Daily Climate (0x3A)       — 114 bytes (15 cities)
+Nowcast (0x3C)             — up to 136 bytes (structured header + text)
+TAF (0x36)                 — unchanged
+Warning polygon (0x20)     — unchanged (now also carries SPC watch polygons)
+Warning zones (0x21)       — unchanged (now also carries WOU zone lists)
+Not-available (0x03)       — unchanged
+Beacon (0xF0)              — unchanged
+```
+
+QPF grid (0x12) follows the same chunking/FEC rules as radar (0x11).
+
+---
+
 ## FEC does NOT span across product types
 
 > Design question #2 from the discussion: "Should FEC groups span multiple products?"
@@ -457,6 +711,12 @@ Each forecast period can now express "Day 3: broken clouds, moderate snow, 80% P
 | Miss 1 of N chunks | ❌ total failure | ✅ XOR recovery |
 | Observation fields | 10 (temp, wind, sky, pressure, vis) | 18 (adds humidity, UV, ceiling, precip, trend, heat/wind chill, snow) |
 | Forecast per-period | 7 bytes (no gust/dewpoint/humidity) | 10 bytes (adds gust, dewpoint, humidity) |
+| Fire weather | ❌ not available | ✅ FWF per-zone (0x38): RH, transport wind, mixing height, Haines |
+| Daily climate obs | ❌ not available | ✅ RTP batched cities (0x3A): hi/lo/precip/snow |
+| QPF grid | ❌ not available | ✅ same grid pipeline as radar (0x12), 4-bit precip levels |
+| Nowcast | ❌ not available | ✅ NOW structured + text (0x3C): 1-3 hour tactical forecast |
+| Forecast sources | ZFP, PFM | ZFP, PFM, SFT (nationwide fallback) |
+| Watch products | warnings only | warnings + SPC WOU/SEL watch polygons |
 | Discovery | ❌ manual channel/pubkey config | ✅ beacon on `#meshwx-discover` |
 | Multi-bot | ❌ one channel, one bot | ✅ per-city deployment channels |
 | COBS encoding | ✅ required | ✅ still required (firmware constraint) |
@@ -468,7 +728,14 @@ Each forecast period can now express "Day 3: broken clouds, moderate snow, 80% P
 
 1. **v4 frame format + sequence numbers** — add the 6-byte header to all messages on a new channel. Sequence numbers alone give immediate diagnostic value.
 2. **Expanded observation + forecast fields** — pack richer data into the same single messages. No FEC needed.
-3. **Spatial quadrant radar with XOR parity** — the big reliability win for 64×64.
-4. **FEC for text products** — per-section AFD with parity.
-5. **Discovery beacon** — `#meshwx-discover` with 2-hour beacon interval.
-6. **Multi-bot support** — per-city channels, client roaming.
+3. **New EMWIN parsers + encoders** — FWF, RTP, NOW, SFT, SPC (WOU/SEL), QPF. Each is independent:
+   - a. **FWF parser + 0x38 encoder** — new message type, new parser
+   - b. **RTP parser + 0x3A encoder** — new message type, new parser
+   - c. **NOW parser + 0x3C encoder** — new message type, new parser
+   - d. **SFT parser** — new parser, feeds existing 0x31 encoder
+   - e. **SPC WOU/SEL parser** — new parser, feeds existing 0x20/0x21 encoders
+   - f. **QPF grid (0x12)** — new message type, reuses radar compression pipeline
+4. **Spatial quadrant radar with XOR parity** — the big reliability win for 64×64.
+5. **FEC for text products** — per-section AFD with parity.
+6. **Discovery beacon** — `#meshwx-discover` with 2-hour beacon interval.
+7. **Multi-bot support** — per-city channels, client roaming.

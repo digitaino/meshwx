@@ -75,6 +75,10 @@ MSG_RAIN_OBS = 0x34      # v2: rain city list
 MSG_METAR = 0x35         # v2: raw METAR
 MSG_TAF = 0x36           # v2: TAF forecast
 MSG_WARNINGS_NEAR = 0x37 # v2: warnings near location summary
+MSG_FIRE_WEATHER = 0x38  # v4: fire weather forecast (FWF)
+MSG_DAILY_CLIMATE = 0x3A # v4: daily climate summary (RTP)
+MSG_NOWCAST = 0x3C       # v4: short-term forecast (NOW)
+MSG_QPF_GRID = 0x12      # v4: QPF precipitation grid (same encoding as 0x11)
 MSG_TEXT_CHUNK = 0x40    # v2: compressed text fallback
 
 # -- Warning type nibbles (high nibble of byte 1) --
@@ -1517,6 +1521,241 @@ def unpack_taf(data: bytes) -> dict:
     }
 
 
+# -- Fire Weather Forecast (0x38) — FWF per-zone fire weather ----------------
+
+
+def pack_fire_weather(
+    loc_type: int,
+    loc_id,
+    issued_hours_ago: int,
+    periods: list[dict],
+) -> bytes:
+    """Pack a fire weather forecast message.
+
+    periods: list of dicts with keys:
+      period_id, max_temp_f, min_rh_pct, transport_wind_dir_nibble,
+      transport_wind_speed_5mph, mixing_height_500ft, haines_index,
+      lightning_risk, cloud_cover, weather_byte
+    """
+    def _clamp_i8(v: int) -> int:
+        return max(-128, min(127, int(v)))
+
+    def _clamp_u8(v: int) -> int:
+        return max(0, min(255, int(v)))
+
+    loc_bytes = pack_location(loc_type, loc_id)
+    msg = bytearray()
+    msg.append(MSG_FIRE_WEATHER)
+    msg.extend(loc_bytes)
+    msg.append(_clamp_u8(issued_hours_ago))
+    msg.append(len(periods) & 0xFF)
+
+    for p in periods[:7]:
+        msg.append(p.get("period_id", 0) & 0xFF)
+        msg.append(_clamp_i8(p.get("max_temp_f", 127)) & 0xFF)
+        msg.append(_clamp_u8(p.get("min_rh_pct", 0)))
+        wind_byte = ((p.get("transport_wind_dir_nibble", 0) & 0x0F) << 4) | \
+                    (p.get("transport_wind_speed_5mph", 0) & 0x0F)
+        msg.append(wind_byte)
+        msg.append(_clamp_u8(p.get("mixing_height_500ft", 0)))
+        haines_lightning = ((p.get("lightning_risk", 0) & 0x0F) << 4) | \
+                          (p.get("haines_index", 2) & 0x0F)
+        msg.append(haines_lightning)
+        msg.append(_clamp_u8(p.get("cloud_cover", 0)))
+        msg.append(_clamp_u8(p.get("weather_byte", 0)))
+
+    return bytes(msg)
+
+
+def unpack_fire_weather(data: bytes) -> dict:
+    """Unpack a fire weather forecast message."""
+    if len(data) < 2 or data[0] != MSG_FIRE_WEATHER:
+        raise ValueError("Invalid fire weather message")
+    location, offset = unpack_location(data, 1)
+    if offset + 2 > len(data):
+        raise ValueError("Fire weather truncated")
+    issued_hours_ago = data[offset]
+    period_count = data[offset + 1]
+    offset += 2
+
+    periods = []
+    for _ in range(period_count):
+        if offset + 8 > len(data):
+            break
+        wind_byte = data[offset + 3]
+        haines_lightning = data[offset + 5]
+        periods.append({
+            "period_id": data[offset],
+            "max_temp_f": struct.unpack_from("b", data, offset + 1)[0],
+            "min_rh_pct": data[offset + 2],
+            "transport_wind_dir_nibble": (wind_byte >> 4) & 0x0F,
+            "transport_wind_speed_5mph": wind_byte & 0x0F,
+            "mixing_height_500ft": data[offset + 4],
+            "lightning_risk": (haines_lightning >> 4) & 0x0F,
+            "haines_index": haines_lightning & 0x0F,
+            "cloud_cover": data[offset + 6],
+            "weather_byte": data[offset + 7],
+        })
+        offset += 8
+
+    return {
+        "type": MSG_FIRE_WEATHER,
+        "location": location,
+        "issued_hours_ago": issued_hours_ago,
+        "periods": periods,
+    }
+
+
+# -- Daily Climate (0x3A) — RTP regional temp/precip summary ----------------
+
+
+def pack_daily_climate(
+    report_day_offset: int,
+    cities: list[dict],
+) -> bytes:
+    """Pack a daily climate summary message.
+
+    cities: list of dicts with keys:
+      place_id (uint24), max_temp_f, min_temp_f,
+      precip_hundredths (0xFF=trace, 0xFE=missing),
+      snow_tenths (0xFF=trace, 0xFE=missing)
+    """
+    def _clamp_i8(v: int) -> int:
+        return max(-128, min(127, int(v)))
+
+    def _clamp_u8(v: int) -> int:
+        return max(0, min(255, int(v)))
+
+    msg = bytearray()
+    msg.append(MSG_DAILY_CLIMATE)
+    msg.append(min(18, len(cities)) & 0xFF)
+    msg.append(_clamp_u8(report_day_offset))
+
+    for c in cities[:18]:
+        pid = c.get("place_id", 0)
+        msg.append((pid >> 16) & 0xFF)
+        msg.append((pid >> 8) & 0xFF)
+        msg.append(pid & 0xFF)
+        msg.append(_clamp_i8(c.get("max_temp_f", 127)) & 0xFF)
+        msg.append(_clamp_i8(c.get("min_temp_f", 127)) & 0xFF)
+        msg.append(_clamp_u8(c.get("precip_hundredths", 0xFE)))
+        msg.append(_clamp_u8(c.get("snow_tenths", 0xFE)))
+
+    return bytes(msg)
+
+
+def unpack_daily_climate(data: bytes) -> dict:
+    """Unpack a daily climate summary message."""
+    if len(data) < 3 or data[0] != MSG_DAILY_CLIMATE:
+        raise ValueError("Invalid daily climate message")
+    city_count = data[1]
+    report_day_offset = data[2]
+    offset = 3
+
+    cities = []
+    for _ in range(city_count):
+        if offset + 7 > len(data):
+            break
+        place_id = (data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2]
+        cities.append({
+            "place_id": place_id,
+            "max_temp_f": struct.unpack_from("b", data, offset + 3)[0],
+            "min_temp_f": struct.unpack_from("b", data, offset + 4)[0],
+            "precip_hundredths": data[offset + 5],
+            "snow_tenths": data[offset + 6],
+        })
+        offset += 7
+
+    return {
+        "type": MSG_DAILY_CLIMATE,
+        "city_count": city_count,
+        "report_day_offset": report_day_offset,
+        "cities": cities,
+    }
+
+
+# -- Nowcast (0x3C) — short-term forecast (NOW) -----------------------------
+
+
+def pack_nowcast(
+    loc_type: int,
+    loc_id,
+    valid_hours: int,
+    urgency_flags: int,
+    text: str,
+) -> bytes:
+    """Pack a short-term forecast nowcast message.
+
+    urgency_flags bits: 0=thunder, 1=flooding, 2=winter, 3=fire, 4=wind
+
+    If the text exceeds single-frame capacity, it is truncated. The caller
+    should send overflow via pack_text_chunks() with TEXT_SUBJECT_NOWCAST.
+    """
+    loc_bytes = pack_location(loc_type, loc_id)
+    header_size = 1 + len(loc_bytes) + 2  # msg_type + loc + valid_hours + urgency
+    max_text = 136 - header_size
+
+    encoded_text = text.encode("utf-8", errors="replace")
+    if len(encoded_text) > max_text:
+        encoded_text = encoded_text[:max_text]
+        # Walk back to avoid splitting a UTF-8 codepoint
+        encoded_text = encoded_text.decode("utf-8", errors="ignore").encode("utf-8")
+
+    msg = bytearray()
+    msg.append(MSG_NOWCAST)
+    msg.extend(loc_bytes)
+    msg.append(max(0, min(255, valid_hours)))
+    msg.append(urgency_flags & 0xFF)
+    msg.extend(encoded_text)
+    return bytes(msg)
+
+
+def unpack_nowcast(data: bytes) -> dict:
+    """Unpack a nowcast message."""
+    if len(data) < 2 or data[0] != MSG_NOWCAST:
+        raise ValueError("Invalid nowcast message")
+    location, offset = unpack_location(data, 1)
+    if offset + 2 > len(data):
+        raise ValueError("Nowcast truncated")
+    valid_hours = data[offset]
+    urgency_flags = data[offset + 1]
+    text_payload = data[offset + 2:].decode("utf-8", errors="replace")
+
+    return {
+        "type": MSG_NOWCAST,
+        "location": location,
+        "valid_hours": valid_hours,
+        "urgency_flags": urgency_flags,
+        "has_thunder": bool(urgency_flags & 0x01),
+        "has_flooding": bool(urgency_flags & 0x02),
+        "has_winter": bool(urgency_flags & 0x04),
+        "has_fire": bool(urgency_flags & 0x08),
+        "has_wind": bool(urgency_flags & 0x10),
+        "text": text_payload,
+    }
+
+
+# -- QPF Grid (0x12) — quantitative precipitation forecast grid ----------------
+#
+# Wire format identical to MSG_RADAR_COMPRESSED (0x11), but:
+#   byte 0: 0x12 instead of 0x11
+#   byte 4: valid_period (hi nibble: start offset in 6h units from 00Z,
+#                         lo nibble: duration in 6h units)
+#           instead of: timestamp_utc_min nibble
+#   4-bit cell values: precipitation amount levels (not reflectivity)
+#
+# QPF levels:
+#   0x0 = none,         0x1 = trace-0.10",  0x2 = 0.10-0.25"
+#   0x3 = 0.25-0.50",   0x4 = 0.50-0.75",   0x5 = 0.75-1.00"
+#   0x6 = 1.00-1.50",   0x7 = 1.50-2.00",   0x8 = 2.00-2.50"
+#   0x9 = 2.50-3.00",   0xA = 3.00-4.00",   0xB = 4.00-5.00"
+#   0xC = 5.00-7.00",   0xD = 7.00-10.00",  0xE = 10.00"+
+#
+# Uses the same sparse/RLE encoding and chunking as radar. The only
+# code difference is the message type byte and the semantic meaning
+# of cell values. See pack_radar_compressed() for the encoding logic.
+
+
 # -- Text Chunk (0x40) — arbitrary NWS text products, chunked ----------------
 #
 # Wire format:
@@ -1547,6 +1786,7 @@ TEXT_SUBJECT_FIRE = 0x04           # Fire weather forecast / spot forecast
 TEXT_SUBJECT_MARINE = 0x05         # Coastal/offshore/marine forecast
 TEXT_SUBJECT_GENERAL = 0x06        # General text (PNS, admin, other)
 TEXT_SUBJECT_CLIMATE = 0x07        # Climate data / records
+TEXT_SUBJECT_NOWCAST = 0x08        # Short-term forecast (NOW) overflow
 
 
 def pack_text_chunks(

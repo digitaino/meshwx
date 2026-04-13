@@ -30,6 +30,9 @@ from meshcore_weather.protocol.meshwx import (
     pack_storm_reports,
     pack_rain_obs,
     pack_warning_zones,
+    pack_fire_weather,
+    pack_daily_climate,
+    pack_nowcast,
     wind_dir_to_nibble,
 )
 
@@ -102,6 +105,14 @@ def encode_metar(station_icao: str, metar_text: str, ts_minutes_utc: int) -> byt
     sky_code = SKY_CLEAR
     pressure_inhg = 29.92
 
+    # Stop at RMK — everything after is remarks, not weather data.
+    # Tokens like DSNT (distant) contain "SN" and cause false snow matches.
+    try:
+        rmk_idx = parts.index("RMK")
+        parts = parts[:rmk_idx]
+    except ValueError:
+        pass
+
     for p in parts:
         # Wind: dddffKT or dddffGggKT (dir in degrees, speed in knots)
         m_wind = re.match(r"^(\d{3})(\d{2,3})(?:G(\d{2,3}))?KT$", p)
@@ -143,15 +154,27 @@ def encode_metar(station_icao: str, metar_text: str, ts_minutes_utc: int) -> byt
                 if sky > sky_code:  # pick worst conditions for summary
                     sky_code = sky
                 break
-        # Precipitation codes (RA=rain, SN=snow, TS=thunder, etc.)
-        if "TS" in p:
+        # Present weather codes: standalone or combined (e.g. TS, RA, SN,
+        # -RA, +SN, TSRA, RASN).  Match as regex to avoid substring false
+        # positives (e.g. DSNT matching "SN").
+        if re.match(r"^[+-]?(?:VC)?(?:TS|SH|FZ|MI|PR|BC|DR|BL)*(?:RA|SN|DZ|GR|GS|PL|IC|SG|UP)+(?:RA|SN|DZ|GR|GS|PL|IC|SG|UP)*$", p):
+            if "TS" in p:
+                sky_code = SKY_THUNDERSTORM
+            elif "SN" in p and sky_code < SKY_SNOW:
+                sky_code = SKY_SNOW
+            elif "RA" in p and sky_code < SKY_RAIN:
+                sky_code = SKY_RAIN
+            elif "DZ" in p and sky_code < SKY_DRIZZLE:
+                sky_code = SKY_DRIZZLE
+        elif p in ("TS", "+TS", "-TS", "VCTS"):
             sky_code = SKY_THUNDERSTORM
-        elif "RA" in p and sky_code < SKY_RAIN:
-            sky_code = SKY_RAIN
-        elif "SN" in p and sky_code < SKY_SNOW:
-            sky_code = SKY_SNOW
-        elif "FG" in p and sky_code < SKY_FOG:
-            sky_code = SKY_FOG
+        elif re.match(r"^[+-]?(?:VC)?(?:FG|BR|HZ|FU|SA|DU)$", p):
+            if "FG" in p and sky_code < SKY_FOG:
+                sky_code = SKY_FOG
+            elif "HZ" in p and sky_code < SKY_HAZE:
+                sky_code = SKY_HAZE
+            elif "FU" in p and sky_code < SKY_SMOKE:
+                sky_code = SKY_SMOKE
 
     if temp_f is None:
         return None
@@ -1060,6 +1083,7 @@ from meshcore_weather.protocol.meshwx import (
     TEXT_SUBJECT_MARINE,
     TEXT_SUBJECT_GENERAL,
     TEXT_SUBJECT_CLIMATE,
+    TEXT_SUBJECT_NOWCAST,
     LOC_WFO,
 )
 
@@ -1242,3 +1266,611 @@ def encode_generic_text(
         loc_id=loc_id,
         text=trimmed,
     )
+
+
+# -- Fire Weather Forecast (FWF) encoding --
+
+
+def encode_fwf(
+    zone_code: str,
+    fwf_text: str,
+    issued_hours_ago: int,
+) -> bytes | None:
+    """Parse an FWF product and encode as a 0x38 fire weather message.
+
+    FWF format has periods like:
+        .TODAY...
+        SKY/WEATHER............MOSTLY SUNNY.
+        MAX TEMPERATURE........95 TO 100.
+        MIN HUMIDITY...........10 TO 15 PERCENT.
+        20 FT WINDS............WEST 10 TO 20 MPH.
+        HAINES INDEX...........6.
+        TRANSPORT WINDS........WEST 15 TO 25 MPH.
+        MIXING HEIGHT..........8000 TO 10000 FT AGL.
+    """
+    if not fwf_text:
+        return None
+
+    periods = _parse_fwf_periods(fwf_text)
+    if not periods:
+        return None
+
+    return pack_fire_weather(
+        LOC_ZONE, zone_code,
+        issued_hours_ago=issued_hours_ago,
+        periods=periods,
+    )
+
+
+def _parse_fwf_periods(text: str) -> list[dict]:
+    """Extract structured fire weather periods from FWF text."""
+    raw_periods: list[tuple[str, str]] = []
+    current_name = None
+    current_lines: list[str] = []
+
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            if current_name and current_lines:
+                raw_periods.append((current_name, "\n".join(current_lines)))
+                current_name = None
+                current_lines = []
+            continue
+        if s.startswith(".") and "..." in s:
+            if current_name and current_lines:
+                raw_periods.append((current_name, "\n".join(current_lines)))
+            head, _, rest = s.lstrip(".").partition("...")
+            current_name = head.strip().upper()
+            current_lines = [rest.strip()] if rest.strip() else []
+        elif current_name:
+            current_lines.append(s)
+
+    if current_name and current_lines:
+        raw_periods.append((current_name, "\n".join(current_lines)))
+
+    periods = []
+    for name, body in raw_periods[:7]:
+        period_id = _PERIOD_IDS.get(name, 0)
+        p = _extract_fwf_fields(body)
+        p["period_id"] = period_id
+        periods.append(p)
+
+    return periods
+
+
+def _extract_fwf_fields(text: str) -> dict:
+    """Extract fire weather fields from a single FWF period."""
+    result: dict = {
+        "max_temp_f": 127,
+        "min_rh_pct": 0,
+        "transport_wind_dir_nibble": 0,
+        "transport_wind_speed_5mph": 0,
+        "mixing_height_500ft": 0,
+        "haines_index": 2,
+        "lightning_risk": 0,
+        "cloud_cover": 0,
+        "weather_byte": 0,
+    }
+
+    # MAX TEMPERATURE
+    m = re.search(r"MAX TEMPERATURE[.\s]*(\d{2,3})", text, re.IGNORECASE)
+    if m:
+        result["max_temp_f"] = int(m.group(1))
+
+    # MIN HUMIDITY
+    m = re.search(r"MIN HUMIDITY[.\s]*(\d{1,3})", text, re.IGNORECASE)
+    if m:
+        result["min_rh_pct"] = int(m.group(1))
+
+    # TRANSPORT WINDS (prefer over 20FT WINDS — transport is what matters
+    # for smoke/fire spread). Fall back to 20 FT WINDS if no transport.
+    m = re.search(
+        r"TRANSPORT WINDS?[.\s]*(NORTH|SOUTH|EAST|WEST|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST)\w*\s+(\d+)(?:\s+TO\s+(\d+))?\s*MPH",
+        text, re.IGNORECASE,
+    )
+    if not m:
+        m = re.search(
+            r"20\s*FT\s*WINDS?[.\s]*(NORTH|SOUTH|EAST|WEST|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST)\w*\s+(\d+)(?:\s+TO\s+(\d+))?\s*MPH",
+            text, re.IGNORECASE,
+        )
+    if m:
+        dir_map = {
+            "north": 0, "northeast": 2, "east": 4, "southeast": 6,
+            "south": 8, "southwest": 10, "west": 12, "northwest": 14,
+        }
+        result["transport_wind_dir_nibble"] = dir_map.get(m.group(1).lower(), 0)
+        speed = int(m.group(3) or m.group(2))
+        result["transport_wind_speed_5mph"] = min(15, speed // 5)
+
+    # MIXING HEIGHT
+    m = re.search(r"MIXING HEIGHT[.\s]*(\d{3,6})", text, re.IGNORECASE)
+    if m:
+        result["mixing_height_500ft"] = min(255, int(m.group(1)) // 500)
+
+    # HAINES INDEX
+    m = re.search(r"HAINES\s*(?:INDEX)?[.\s]*(\d)", text, re.IGNORECASE)
+    if m:
+        result["haines_index"] = max(2, min(6, int(m.group(1))))
+
+    # LIGHTNING (DRY vs WET)
+    t = text.lower()
+    if "dry lightning" in t or "dry tstm" in t or "dry thunder" in t:
+        result["lightning_risk"] = 1
+    elif "lightning" in t or "thunder" in t:
+        result["lightning_risk"] = 2
+
+    # SKY/WEATHER
+    m = re.search(r"SKY/WEATHER[.\s]*(.*?)(?:\n|$)", text, re.IGNORECASE)
+    if m:
+        result["cloud_cover"] = _classify_cloud_cover(m.group(1))
+    else:
+        result["cloud_cover"] = _classify_cloud_cover(text)
+
+    return result
+
+
+def _classify_cloud_cover(text: str) -> int:
+    """Map free-form text to v4 cloud cover code (0-5)."""
+    t = text.lower()
+    if "clear" in t or "sunny" in t:
+        return 0  # CLR
+    if "few" in t:
+        return 1  # FEW
+    if "scatter" in t or "partly" in t:
+        return 2  # SCT
+    if "broken" in t or "mostly cloudy" in t:
+        return 3  # BKN
+    if "overcast" in t or "cloudy" in t:
+        return 4  # OVC
+    if "obscur" in t or "fog" in t:
+        return 5  # VV
+    return 0
+
+
+# -- Regional Temp/Precip (RTP) encoding --
+
+
+def encode_rtp(
+    rtp_text: str,
+) -> bytes | None:
+    """Parse an RTP product and encode as a 0x3A daily climate message.
+
+    RTP format is a tabular city list like:
+        CITY              MAX  MIN  PCPN  SNOW
+        AUSTIN            95   72   0.00
+        SAN ANTONIO       93   71   T
+    """
+    if not rtp_text:
+        return None
+
+    cities = _parse_rtp_cities(rtp_text)
+    if not cities:
+        return None
+
+    return pack_daily_climate(
+        report_day_offset=1,  # RTP is typically yesterday's data
+        cities=cities,
+    )
+
+
+def _parse_rtp_cities(text: str) -> list[dict]:
+    """Extract city climate data from RTP tabular format."""
+    cities: list[dict] = []
+    # Find the data section — look for lines with city name + numbers
+    # Typical format:
+    #   CITY NAME         95   72   0.15   0.0
+    # or:
+    #   CITY NAME         95   72   T
+    in_data = False
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("...") or s.startswith("$$"):
+            if in_data:
+                break  # End of data section
+            continue
+
+        # Skip header lines
+        if "MAX" in s and "MIN" in s:
+            in_data = True
+            continue
+        if not in_data:
+            # Also start if we see a line that looks like data
+            if re.match(r"^[A-Z][A-Z\s]+\s+\d{1,3}\s+", s):
+                in_data = True
+            else:
+                continue
+
+        # Parse: CITY NAME    max   min   precip  snow
+        m = re.match(
+            r"^([A-Z][A-Z\s.'-]+?)\s{2,}(-?\d{1,3})\s+(-?\d{1,3})"
+            r"(?:\s+([\d.]+|T|M))?"
+            r"(?:\s+([\d.]+|T|M))?",
+            s,
+        )
+        if not m:
+            continue
+
+        city_name = m.group(1).strip()
+        max_temp = int(m.group(2))
+        min_temp = int(m.group(3))
+
+        # Precip
+        precip_raw = m.group(4) if m.group(4) else "M"
+        if precip_raw == "T":
+            precip_hundredths = 0xFF  # trace
+        elif precip_raw == "M":
+            precip_hundredths = 0xFE  # missing
+        else:
+            try:
+                precip_hundredths = min(254, int(round(float(precip_raw) * 100)))
+            except ValueError:
+                precip_hundredths = 0xFE
+
+        # Snow
+        snow_raw = m.group(5) if m.group(5) else "M"
+        if snow_raw == "T":
+            snow_tenths = 0xFF
+        elif snow_raw == "M":
+            snow_tenths = 0xFE
+        else:
+            try:
+                snow_tenths = min(254, int(round(float(snow_raw) * 10)))
+            except ValueError:
+                snow_tenths = 0xFE
+
+        # Resolve city to place_id
+        place_id = find_place_id_by_name(city_name)
+        if place_id is None:
+            # Try without trailing state abbreviation or period
+            cleaned = re.sub(r"\s+[A-Z]{2}$", "", city_name).strip()
+            place_id = find_place_id_by_name(cleaned)
+        if place_id is None:
+            continue  # skip unresolvable cities
+
+        cities.append({
+            "place_id": place_id,
+            "max_temp_f": max_temp,
+            "min_temp_f": min_temp,
+            "precip_hundredths": precip_hundredths,
+            "snow_tenths": snow_tenths,
+        })
+
+    return cities[:18]  # max 18 cities per frame
+
+
+# -- Nowcast (NOW) encoding --
+
+
+def encode_nowcast(
+    wfo_code: str,
+    now_text: str,
+) -> list[bytes]:
+    """Parse a NOW product and encode as 0x3C nowcast + optional 0x40 overflow.
+
+    Returns a list of messages: first is the 0x3C structured message,
+    remaining (if any) are 0x40 text chunk overflow.
+    """
+    if not now_text:
+        return []
+
+    # Extract the forecast body (skip header lines)
+    body = _extract_now_body(now_text)
+    if not body.strip():
+        return []
+
+    # Scan urgency flags from the full text
+    urgency = _scan_urgency_flags(now_text)
+
+    # Estimate valid hours from the text
+    valid_hours = _extract_now_valid_hours(now_text)
+
+    # Pack the structured message (truncates text to fit single frame)
+    msg = pack_nowcast(
+        LOC_WFO, wfo_code,
+        valid_hours=valid_hours,
+        urgency_flags=urgency,
+        text=body,
+    )
+    messages = [msg]
+
+    # If the body exceeds what fits in the 0x3C frame, send overflow
+    # as text chunks. Estimate how much fit in the primary message.
+    # WFO loc = 4 bytes, header overhead = 1+4+2 = 7, max text ≈ 129 bytes
+    if len(body.encode("utf-8")) > 129:
+        overflow = body[120:]  # approximate overlap to ensure continuity
+        overflow_msgs = pack_text_chunks(
+            subject_type=TEXT_SUBJECT_NOWCAST,
+            loc_type=LOC_WFO,
+            loc_id=wfo_code,
+            text=overflow,
+        )
+        messages.extend(overflow_msgs)
+
+    return messages
+
+
+def _extract_now_body(text: str) -> str:
+    """Extract the forecast body from a NOW product, skipping headers."""
+    lines = text.splitlines()
+    body_lines: list[str] = []
+    past_header = False
+
+    for line in lines:
+        s = line.strip()
+        # Skip blank lines and header boilerplate
+        if not s:
+            if past_header:
+                body_lines.append("")
+            continue
+        # Header ends at the first "..." line (topic/headline) or
+        # after the issuing office + time lines
+        if s.startswith("...") and s.endswith("..."):
+            # Headline — include it
+            body_lines.append(s.strip(".").strip())
+            past_header = True
+            continue
+        if s.startswith("$$"):
+            break
+        if past_header:
+            body_lines.append(s)
+        elif re.match(r"^\d{3,4}\s+(AM|PM)\s+\w+\s+\w+", s):
+            # Timestamp line like "330 PM CDT SAT APR 12 2025"
+            past_header = True
+
+    return "\n".join(body_lines).strip()
+
+
+def _scan_urgency_flags(text: str) -> int:
+    """Scan NOW text for urgency keywords → flags byte."""
+    t = text.lower()
+    flags = 0
+    if "thunder" in t or "lightning" in t or "tstm" in t:
+        flags |= 0x01  # thunder
+    if "flood" in t or "rising water" in t:
+        flags |= 0x02  # flooding
+    if "snow" in t or "ice" in t or "sleet" in t or "freez" in t or "blizzard" in t:
+        flags |= 0x04  # winter
+    if "fire" in t or "smoke" in t:
+        flags |= 0x08  # fire
+    if "wind" in t and ("gust" in t or "mph" in t):
+        flags |= 0x10  # wind
+    return flags
+
+
+def _extract_now_valid_hours(text: str) -> int:
+    """Estimate how many hours the nowcast covers."""
+    t = text.lower()
+    # Look for patterns like "through 5 pm", "next 2 hours", "until 8 pm"
+    m = re.search(r"next\s+(\d+)\s+hours?", t)
+    if m:
+        return min(12, int(m.group(1)))
+    # Default: NOW products typically cover 1-3 hours
+    return 3
+
+
+# -- State Forecast Table (SFT) encoding --
+# SFT uses the existing 0x31 forecast wire format. This parser extracts
+# per-city per-period data from the SFT tabular format and feeds it into
+# pack_forecast(). See _build_forecast() in executor.py for integration.
+
+
+def encode_forecast_from_sft(
+    sft_text: str,
+    city_name: str,
+    issued_hours_ago: int,
+    loc_type: int | None = None,
+    loc_id=None,
+) -> bytes | None:
+    """Parse an SFT product for a specific city and encode as 0x31 forecast.
+
+    SFT format:
+        CITY              WED      WED NIGHT THU
+                          HI  WX   LO  WX    HI  WX
+        AUSTIN            95  SU   72  CL    93  SU
+    """
+    if not sft_text:
+        return None
+
+    periods = _parse_sft_city(sft_text, city_name)
+    if not periods:
+        return None
+
+    if loc_type is None:
+        loc_type = LOC_ZONE
+        loc_id = ""  # SFT doesn't have zone codes; caller must provide
+
+    return pack_forecast(
+        loc_type, loc_id,
+        issued_hours_ago=issued_hours_ago,
+        periods=periods,
+    )
+
+
+# SFT weather abbreviations → sky code
+_SFT_WX_MAP = {
+    "SU": SKY_CLEAR,      # Sunny
+    "CL": SKY_CLEAR,      # Clear
+    "FW": SKY_FEW,        # Few clouds
+    "SC": SKY_SCATTERED,  # Scattered
+    "PC": SKY_SCATTERED,  # Partly cloudy
+    "BK": SKY_BROKEN,     # Broken
+    "MC": SKY_BROKEN,     # Mostly cloudy
+    "OV": SKY_OVERCAST,   # Overcast
+    "FG": SKY_FOG,        # Fog
+    "HZ": SKY_HAZE,       # Haze
+    "SM": SKY_SMOKE,      # Smoke
+    "RA": SKY_RAIN,       # Rain
+    "SN": SKY_SNOW,       # Snow
+    "TS": SKY_THUNDERSTORM,  # Thunderstorm
+    "SH": SKY_RAIN,       # Showers
+    "RS": SKY_SNOW,       # Rain/Snow
+    "IP": SKY_SNOW,       # Ice pellets
+    "ZR": SKY_RAIN,       # Freezing rain
+    "DR": SKY_DRIZZLE,    # Drizzle
+}
+
+
+def _parse_sft_city(text: str, city_name: str) -> list[dict]:
+    """Extract forecast periods for a city from SFT tabular data."""
+    city_upper = city_name.upper().strip()
+    periods: list[dict] = []
+
+    # Find the period header line to know column meanings
+    period_names: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        # Period header line: "WED      WED NIGHT THU      THU NIGHT ..."
+        if re.match(r"^[A-Z]{3}\s", s) and "NIGHT" in s:
+            # Split on 2+ spaces to get period names
+            period_names = re.split(r"\s{2,}", s.strip())
+            break
+        # Alternative: day names on a line
+        if re.match(r"^(MON|TUE|WED|THU|FRI|SAT|SUN)\s", s):
+            period_names = re.split(r"\s{2,}", s.strip())
+            break
+
+    # Find the city data line
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.upper().startswith(city_upper):
+            continue
+        # City line: "AUSTIN            95  SU   72  CL    93  SU"
+        # Extract numbers and wx codes after the city name
+        after_city = s[len(city_upper):].strip()
+        tokens = after_city.split()
+
+        # Parse pairs of (temp, wx_code) for each period
+        i = 0
+        period_idx = 0
+        while i < len(tokens) and period_idx < 7:
+            try:
+                temp = int(tokens[i])
+            except ValueError:
+                i += 1
+                continue
+
+            wx_code = tokens[i + 1].upper() if i + 1 < len(tokens) else ""
+            sky = _SFT_WX_MAP.get(wx_code, SKY_OTHER)
+
+            # Determine period_id from period_names
+            if period_idx < len(period_names):
+                pname = period_names[period_idx].upper()
+                period_id = _PERIOD_IDS.get(pname, period_idx)
+            else:
+                period_id = period_idx
+
+            is_night = period_idx < len(period_names) and \
+                       "NIGHT" in period_names[period_idx].upper()
+
+            periods.append({
+                "period_id": period_id,
+                "high_f": 127 if is_night else temp,
+                "low_f": temp if is_night else 127,
+                "sky_code": sky,
+                "precip_pct": 0,  # SFT doesn't include precip %
+                "wind_dir_nibble": 0,
+                "wind_speed_5mph": 0,
+                "condition_flags": 0,
+            })
+
+            i += 2  # skip temp + wx code
+            period_idx += 1
+
+        break  # found our city
+
+    return periods
+
+
+# -- SPC Watch (WOU/SEL) encoding --
+# Watch products feed into existing warning polygon (0x20) and warning
+# zone (0x21) encoders. The parser extracts watch type, polygon, and
+# zone list from SEL/WOU text, then the executor calls existing
+# pack_warning_polygon() / pack_warning_zones().
+
+
+def parse_sel_watch(text: str) -> dict | None:
+    """Parse an SPC SEL (watch definition) product.
+
+    Returns dict with:
+      watch_type: "tornado" or "severe_thunderstorm"
+      watch_number: int
+      polygon: list of (lat, lon) tuples
+      expires: str (VTEC-style end time)
+    or None if parsing fails.
+    """
+    if not text:
+        return None
+
+    result: dict = {
+        "watch_type": "",
+        "watch_number": 0,
+        "polygon": [],
+        "expires": "",
+    }
+
+    # Watch type from header
+    t = text.upper()
+    if "TORNADO WATCH" in t:
+        result["watch_type"] = "tornado"
+    elif "SEVERE THUNDERSTORM WATCH" in t:
+        result["watch_type"] = "severe_thunderstorm"
+    else:
+        return None
+
+    # Watch number
+    m = re.search(r"WATCH\s+(?:NUMBER\s+)?(\d+)", t)
+    if m:
+        result["watch_number"] = int(m.group(1))
+
+    # Polygon from LAT...LON line
+    from meshcore_weather.parser.weather import extract_warning_polygon
+    result["polygon"] = extract_warning_polygon(text)
+    if not result["polygon"]:
+        return None
+
+    # Expiration from VTEC or text
+    m = re.search(r"VALID\s+(\d{6})Z\s*-\s*(\d{6})Z", t)
+    if m:
+        result["expires"] = m.group(2)
+
+    return result
+
+
+def parse_wou_zones(text: str) -> dict | None:
+    """Parse an SPC WOU (Watch Outline Update) for zone list.
+
+    Returns dict with:
+      watch_number: int
+      zones: list of zone code strings (e.g. ["TXZ192", "TXZ193"])
+      action: "NEW" | "EXT" | "CAN" (new/extended/cancelled)
+    or None if parsing fails.
+    """
+    if not text:
+        return None
+
+    result: dict = {
+        "watch_number": 0,
+        "zones": [],
+        "action": "NEW",
+    }
+
+    t = text.upper()
+    m = re.search(r"WATCH\s+(\d+)", t)
+    if m:
+        result["watch_number"] = int(m.group(1))
+
+    # Extract zones using the existing zone range expander
+    from meshcore_weather.parser.weather import _expand_zone_ranges
+    zones = _expand_zone_ranges(text)
+    result["zones"] = sorted(zones)
+
+    if not result["zones"]:
+        return None
+
+    # Action
+    if "CANCELLED" in t or "CAN " in t:
+        result["action"] = "CAN"
+    elif "EXTENDED" in t or "EXT " in t:
+        result["action"] = "EXT"
+
+    return result

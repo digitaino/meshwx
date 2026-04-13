@@ -18,13 +18,16 @@ PRODUCT_TYPES = {
     "warnings",        # 0x20/0x21 full re-broadcast of ALL active warnings (safety net, slow cycle)
     "warnings_delta",  # 0x20/0x21 only NEW or CHANGED warnings since last cycle (fast cycle)
     "observation",     # 0x30 current conditions for a point
-    "forecast",        # 0x31 multi-day forecast for a point
+    "forecast",        # 0x31 multi-day forecast for a point (PFM → ZFP → SFT)
     "outlook",         # 0x32 hazardous weather outlook
     "storm_reports",   # 0x33 local storm reports
     "rain_obs",        # 0x34 rain-reporting cities
     "metar",           # 0x30 METAR for a station (alias for observation)
     "taf",             # 0x36 TAF for a station
     "warnings_near",   # 0x37 warnings near a specific zone
+    "fire_weather",    # 0x38 fire weather forecast (FWF)
+    "daily_climate",   # 0x3A regional temp/precip (RTP)
+    "nowcast",         # 0x3C short-term forecast (NOW)
     "afd",             # 0x40 Area Forecast Discussion (text chunks)
     "space_weather",   # 0x40 SWPC space weather indices (text chunks)
 }

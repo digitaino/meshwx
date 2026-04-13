@@ -31,20 +31,30 @@ from meshcore_weather.parser.weather import WeatherStore
 from meshcore_weather.protocol.coverage import Coverage
 from meshcore_weather.protocol.encoders import (
     encode_forecast_from_pfm,
+    encode_forecast_from_sft,
     encode_forecast_from_zfp,
+    encode_fwf,
     encode_hwo,
     encode_lsr_reports,
     encode_metar,
+    encode_nowcast,
     encode_rain_cities,
+    encode_rtp,
     encode_rwr_city,
     encode_taf,
     now_utc_minutes,
+    parse_sel_watch,
 )
 from meshcore_weather.protocol.meshwx import (
     LOC_PFM_POINT,
     LOC_STATION,
+    LOC_WFO,
     LOC_ZONE,
     SEV_WARNING,
+    SEV_WATCH,
+    WARN_SEVERE_TSTORM,
+    WARN_TORNADO,
+    pack_warning_polygon,
     pack_warnings_near,
 )
 from meshcore_weather.protocol.radar import (
@@ -356,6 +366,33 @@ def _build_forecast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
             )
             msg = encode_forecast_from_zfp(
                 zone, zfp.raw_text, hours_ago,
+                loc_type=resp_loc_type, loc_id=resp_loc_id,
+            )
+            if msg:
+                return [msg]
+
+    # SFT fallback — nationwide state forecast table
+    city_name = ""
+    if job.location_type == "city":
+        city_name = job.location_id.split(",")[0].strip()
+    elif resolved.get("name"):
+        city_name = resolved["name"].split(",")[0].strip()
+    if city_name:
+        sft = ctx.store._find_any_orig("SFT", origs)
+        if sft:
+            hours_ago = max(
+                0,
+                int(
+                    (
+                        now_utc_minutes()
+                        - sft.timestamp.hour * 60
+                        - sft.timestamp.minute
+                    )
+                    / 60
+                ),
+            )
+            msg = encode_forecast_from_sft(
+                sft.raw_text, city_name, hours_ago,
                 loc_type=resp_loc_type, loc_id=resp_loc_id,
             )
             if msg:
@@ -677,6 +714,92 @@ def _build_space_weather(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]
     return msgs or []
 
 
+def _build_fire_weather(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
+    """Fire weather forecast (0x38 FWF)."""
+    query = _location_to_query(job)
+    if not query:
+        return []
+    resolved = resolver.resolve(query)
+    if not resolved:
+        return []
+    zones = resolved.get("zones") or []
+    if not zones:
+        return []
+    zone = zones[0]
+    origs = ctx.store._build_origs(resolved)
+
+    fwf = ctx.store._find_any_orig("FWF", origs)
+    if fwf is None:
+        return []
+
+    hours_ago = max(
+        0,
+        int(
+            (now_utc_minutes() - fwf.timestamp.hour * 60 - fwf.timestamp.minute) / 60
+        ),
+    )
+    msg = encode_fwf(zone, fwf.raw_text, hours_ago)
+    return [msg] if msg else []
+
+
+def _build_daily_climate(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
+    """Daily climate summary (0x3A RTP).
+
+    Scans the store for RTP products matching the job's coverage area.
+    Unlike most products, RTP is multi-city and produces a single batched
+    message, so the job location is typically 'coverage' or 'wfo'.
+    """
+    if job.location_type == "wfo":
+        wfo = job.location_id.strip().upper()
+        # Build origs manually for WFO-only lookup
+        origs = []
+        for state in ctx.coverage.states:
+            origs.append(f"{wfo}{state}")
+        if not origs:
+            origs = [f"{wfo}"]
+    else:
+        # Coverage-based: try all WFOs in coverage
+        origs = []
+        for wfo in ctx.coverage.wfos:
+            for state in ctx.coverage.states:
+                origs.append(f"{wfo}{state}")
+
+    rtp = ctx.store._find_any_orig("RTP", origs)
+    if rtp is None:
+        return []
+
+    msg = encode_rtp(rtp.raw_text)
+    return [msg] if msg else []
+
+
+def _build_nowcast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
+    """Short-term forecast / nowcast (0x3C NOW)."""
+    if job.location_type == "wfo":
+        wfo = job.location_id.strip().upper()
+        origs = []
+        for state in ctx.coverage.states:
+            origs.append(f"{wfo}{state}")
+        if not origs:
+            origs = [f"{wfo}"]
+    else:
+        query = _location_to_query(job)
+        if not query:
+            return []
+        resolved = resolver.resolve(query)
+        if not resolved:
+            return []
+        origs = ctx.store._build_origs(resolved)
+        wfo = resolved.get("wfos", ["UNK"])[0] if resolved.get("wfos") else "UNK"
+
+    now_prod = ctx.store._find_any_orig("NOW", origs)
+    if now_prod is None:
+        return []
+
+    wfo_code = now_prod.office
+    msgs = encode_nowcast(wfo_code, now_prod.raw_text)
+    return msgs or []
+
+
 # -- Product registry --------------------------------------------------------
 
 
@@ -692,6 +815,9 @@ PRODUCT_BUILDERS: dict[str, Callable[[BroadcastJob, ExecutorContext], list[bytes
     "metar": _build_metar,
     "taf": _build_taf,
     "warnings_near": _build_warnings_near,
+    "fire_weather": _build_fire_weather,
+    "daily_climate": _build_daily_climate,
+    "nowcast": _build_nowcast,
     "afd": _build_afd,
     "space_weather": _build_space_weather,
 }
