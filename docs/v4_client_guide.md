@@ -360,10 +360,35 @@ byte 8     : encoding (hi nibble: 0=sparse, 1=RLE) | total_chunks (lo nibble)
 bytes 9+   : encoded grid data
 ```
 
-The timestamp is now absolute (was uint16 minutes-since-midnight). This enables:
-- **Dedup:** Client checks `(region_id, timestamp)` — if already seen, skip it
-- **Display:** "Radar as of 14:10 UTC" from the actual scan time, not arrival time
-- **Staleness:** Client can show "15 min old" and grey out data older than threshold
+**Breaking change from v3:** Timestamp moved from uint16 (bytes 3-4, minutes since midnight) to uint32 (bytes 3-6, Unix minutes). Header is now 9 bytes instead of 7. All offsets after byte 2 shift by +2.
+
+**Migration:** If the client was parsing the old v3 format:
+```
+// OLD v3: bytes 3-4 = uint16 timestamp, byte 5 = scale, byte 6 = encoding, bytes 7+ = data
+// NEW v4: bytes 3-6 = uint32 timestamp, byte 7 = scale, byte 8 = encoding, bytes 9+ = data
+```
+
+**Dedup (required):** The bot may retransmit the same radar frame on schedule cycles. Without dedup, the client accumulates duplicate frames in a loop. Use `(region_id, timestamp_unix_min)` as the key:
+```swift
+let key = "\(regionId)_\(timestampUnixMin)"
+if radarCache[key] != nil {
+    return  // already have this frame, skip
+}
+radarCache[key] = decodedGrid
+
+// Expire old entries (keep last 30 minutes)
+let cutoff = UInt32(Date().timeIntervalSince1970 / 60) - 30
+radarCache = radarCache.filter { $0.value.timestamp >= cutoff }
+```
+
+**Display timestamp:**
+```swift
+let date = Date(timeIntervalSince1970: Double(timestampUnixMin) * 60)
+let age = Int(Date().timeIntervalSince(date) / 60)
+label.text = "Radar \(age)m ago"  // e.g. "Radar 5m ago"
+```
+
+**Staleness:** Grey out or hide radar data older than 30 minutes. The timestamp reflects the actual NEXRAD scan time, not when the bot sent it.
 
 ---
 
