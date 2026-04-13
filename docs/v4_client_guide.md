@@ -423,6 +423,25 @@ All location refs are type-tagged (first byte = type):
 0x06 LOC_PFM_POINT: 1 + 3 (uint24 index BE) = 4 bytes
 ```
 
+### State index (CRITICAL — must match bot)
+
+Zone codes like `TXZ192` are encoded as `state_idx` (uint8) + `zone_num` (uint16 BE). The `state_idx` is NOT alphabetical — it uses the ordering from `meshcore_weather/geodata/state_index.json` in the repo. **The iOS app MUST bundle and use this file.**
+
+```
+ 0=AL   1=AK   2=AZ   3=AR   4=CA   5=CO   6=CT   7=DE   8=FL   9=GA
+10=HI  11=ID  12=IL  13=IN  14=IA  15=KS  16=KY  17=LA  18=ME  19=MD
+20=MA  21=MI  22=MN  23=MS  24=MO  25=MT  26=NE  27=NV  28=NH  29=NJ
+30=NM  31=NY  32=NC  33=ND  34=OH  35=OK  36=OR  37=PA  38=RI  39=SC
+40=SD  41=TN  42=TX  43=UT  44=VT  45=VA  46=WA  47=WV  48=WI  49=WY
+50=DC  51=PR  52=VI  53=GU  54=AS  55=MP  56=MH  57=FM  58=PW
+59=AN  60=AM  61=GM  62=PK  63=PZ  64=PH  65=CI  66=CN  67=US  68=MX
+69=PM  70=LE  71=LO  72=LH  73=LM  74=LS  75=LC  76=SL  77=PS
+```
+
+Example: `TXZ192` → state_idx=42, zone_num=192 → wire bytes: `0x2A 0x00 0xC0`
+
+Do NOT build your own alphabetical table. The ordering is fixed and append-only — entries 59+ are marine zone prefixes (AN, AM, GM, etc.).
+
 ---
 
 ## 8. Recommended client implementation order
