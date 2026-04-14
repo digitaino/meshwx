@@ -32,7 +32,7 @@ from meshcore_weather.config import settings
 from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.parser.weather import WeatherStore
 from meshcore_weather.protocol.coverage import Coverage
-from meshcore_weather.protocol.meshwx import V4SequenceCounter, cobs_encode, v4_wrap
+from meshcore_weather.protocol.meshwx import V4SequenceCounter, cobs_encode
 
 # Products that get FEC treatment on the v4 channel.
 # For these, the scheduler builds separate FEC messages instead of
@@ -258,17 +258,19 @@ class Scheduler:
                 self._last_bytes[job.id] = 0
                 continue
 
-            # Build v4 messages — FEC for eligible products, v4 wrapping for others
+            # Build wire messages — FEC products get v4 wrapping for group
+            # metadata; everything else sends raw v3 (no v4 overhead) to stay
+            # within the companion radio's 160-byte channel message MTU.
             if job.product in _FEC_PRODUCTS:
-                v4_msgs = self._build_fec_messages(job, ctx)
+                wire_msgs = self._build_fec_messages(job, ctx)
             else:
-                v4_msgs = [v4_wrap(m, self._v4_seq.next()) for m in msgs]
+                wire_msgs = msgs  # v3 messages, no v4 wrapping needed
 
             sent_bytes = 0
-            for v4_msg in v4_msgs:
+            for wire_msg in wire_msgs:
                 try:
-                    await self.radio.send_binary_channel(cobs_encode(v4_msg))
-                    sent_bytes += len(v4_msg)
+                    await self.radio.send_binary_channel(cobs_encode(wire_msg))
+                    sent_bytes += len(wire_msg)
                     total_sent += 1
                     await asyncio.sleep(TX_SPACING)
                 except Exception:
@@ -276,11 +278,11 @@ class Scheduler:
 
             self._last_bytes[job.id] = sent_bytes
             self._total_bytes[job.id] = self._total_bytes.get(job.id, 0) + sent_bytes
-            self._last_msg_count[job.id] = len(v4_msgs)
+            self._last_msg_count[job.id] = len(wire_msgs)
             activity_log.record(EventDir.OUT, "broadcast",
-                f"Job {job.id}: {len(v4_msgs)} msg(s), {sent_bytes}B ({job.product})",
-                {"job_id": job.id, "product": job.product, "messages": len(v4_msgs), "bytes": sent_bytes})
-            activity_log.record_send(len(v4_msgs), sent_bytes)
+                f"Job {job.id}: {len(wire_msgs)} msg(s), {sent_bytes}B ({job.product})",
+                {"job_id": job.id, "product": job.product, "messages": len(wire_msgs), "bytes": sent_bytes})
+            activity_log.record_send(len(wire_msgs), sent_bytes)
             logger.info(
                 "scheduler: %s → %d msg(s), %d bytes (%s)",
                 job.id, len(msgs), sent_bytes, job.product,
@@ -353,9 +355,8 @@ class Scheduler:
             if msgs:
                 return msgs
 
-        # Fallback: simple v4 wrapping (re-run the v3 builder)
-        v3_msgs = self.executor.run_job(job, ctx) or []
-        return [v4_wrap(m, self._v4_seq.next()) for m in v3_msgs]
+        # Fallback: send v3 directly (no v4 wrapping needed for non-FEC)
+        return self.executor.run_job(job, ctx) or []
 
     async def _refresh_radar(self) -> None:
         """Fetch the latest radar composites (IEM + RIDGE) if stale."""
@@ -512,27 +513,27 @@ class Scheduler:
         self._total_runs[job.id] = self._total_runs.get(job.id, 0) + 1
         self._last_msg_count[job.id] = len(msgs)
 
-        # Wrap in v4 frames (FEC for eligible products)
+        # FEC products get v4 wrapping; everything else sends raw v3.
         if job.product in _FEC_PRODUCTS:
-            v4_msgs = self._build_fec_messages(job, ctx)
+            wire_msgs = self._build_fec_messages(job, ctx)
         else:
-            v4_msgs = [v4_wrap(m, self._v4_seq.next()) for m in msgs]
+            wire_msgs = msgs
 
         sent_bytes = 0
-        for v4_msg in v4_msgs:
+        for wire_msg in wire_msgs:
             try:
-                await self.radio.send_binary_channel(cobs_encode(v4_msg))
-                sent_bytes += len(v4_msg)
+                await self.radio.send_binary_channel(cobs_encode(wire_msg))
+                sent_bytes += len(wire_msg)
                 await asyncio.sleep(TX_SPACING)
             except Exception:
                 logger.exception("run_job_now: send failed for %s", job_id)
         self._last_bytes[job.id] = sent_bytes
         self._total_bytes[job.id] = self._total_bytes.get(job.id, 0) + sent_bytes
-        self._last_msg_count[job.id] = len(v4_msgs)
+        self._last_msg_count[job.id] = len(wire_msgs)
         activity_log.record(EventDir.OUT, "broadcast",
-            f"Job {job.id}: {len(v4_msgs)} msg(s), {sent_bytes}B ({job.product})",
-            {"job_id": job.id, "product": job.product, "messages": len(v4_msgs), "bytes": sent_bytes})
-        activity_log.record_send(len(v4_msgs), sent_bytes)
+            f"Job {job.id}: {len(wire_msgs)} msg(s), {sent_bytes}B ({job.product})",
+            {"job_id": job.id, "product": job.product, "messages": len(wire_msgs), "bytes": sent_bytes})
+        activity_log.record_send(len(wire_msgs), sent_bytes)
         logger.info("run_job_now: %s → %d msg(s), %d bytes (%s)",
-                     job.id, len(v4_msgs), sent_bytes, job.product)
-        return len(v4_msgs)
+                     job.id, len(wire_msgs), sent_bytes, job.product)
+        return len(wire_msgs)

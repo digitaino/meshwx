@@ -370,15 +370,13 @@ class MeshWXBroadcaster:
         await self._transmit_response(msg)
 
     async def _transmit_response(self, msg: bytes) -> None:
-        """Send a response on the data channel with v4 framing.
+        """Send a response on the data channel.
 
-        Wraps in a v4 frame (same as scheduled broadcasts) so the client
-        sees a consistent format on the data channel. Sends N times for
-        reliability over multi-hop mesh.
+        Sends the v3 message directly (COBS-encoded) without v4 wrapping
+        to avoid exceeding the companion radio's 160-byte channel MTU.
+        Sends N times for reliability over multi-hop mesh.
         """
-        from meshcore_weather.protocol.meshwx import v4_wrap
-        v4_msg = v4_wrap(msg, self._scheduler._v4_seq.next())
-        cobs_msg = cobs_encode(v4_msg)
+        cobs_msg = cobs_encode(msg)
         for i in range(self._V2_RESEND_COUNT):
             try:
                 await self.radio.send_binary_channel(cobs_msg)
