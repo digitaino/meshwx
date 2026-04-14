@@ -287,6 +287,19 @@ def _extract_quadrant(
     ]
 
 
+# Max v3 message size for FEC-wrapped radar quadrants.
+# FEC adds a 6-byte v4 header (net +5 after stripping the type byte).
+# The parity unit is the tightest constraint: its v3 body includes the
+# length map (9 bytes) plus the XOR of the longest quadrant payload.
+#   parity_v3 = 9 + quadrant_v3
+#   parity_v4 = parity_v3 + 5
+#   COBS(parity_v4) ≤ parity_v4 + 1
+# Non-FEC 32×32 at 136B v3 → 137B COBS works reliably, so the companion
+# radio's effective COBS MTU is ~137 bytes.  Working backwards:
+#   137 ≥ quadrant_v3 + 9 + 5 + 1  →  quadrant_v3 ≤ 122
+_FEC_MAX_V3_SIZE = 122
+
+
 def build_fec_radar_messages(
     img_data: bytes,
     timestamp_utc_min: int,
@@ -326,11 +339,12 @@ def build_fec_radar_messages(
             scale_km=region["scale"],
             grid=grid_32,
             grid_size=32,
+            max_msg_size=_FEC_MAX_V3_SIZE,
         )
         # Base layer is usually a single message; take the first
         base_msg = base_msgs[0] if base_msgs else None
 
-        # 4 quadrants: each 32×32
+        # 4 quadrants: each 32×32, size-limited for v4+COBS overhead
         quadrant_msgs: list[bytes] = []
         for q in range(4):
             q_grid = _extract_quadrant(grid_64, 64, q)
@@ -340,10 +354,17 @@ def build_fec_radar_messages(
                 scale_km=region["scale"],
                 grid=q_grid,
                 grid_size=32,
+                max_msg_size=_FEC_MAX_V3_SIZE,
             )
-            # Each quadrant should fit in one message
             if q_msgs:
-                quadrant_msgs.append(q_msgs[0])
+                msg = bytearray(q_msgs[0])
+                if len(q_msgs) > 1:
+                    # Dense quadrant split into multiple chunks — force
+                    # single-chunk so the client doesn't buffer waiting
+                    # for chunks that won't arrive via FEC.  The base
+                    # layer still provides full 32×32 coverage.
+                    msg[8] = (msg[8] & 0xF0) | 0x01
+                quadrant_msgs.append(bytes(msg))
 
         if not quadrant_msgs:
             continue

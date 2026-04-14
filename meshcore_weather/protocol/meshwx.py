@@ -382,12 +382,18 @@ def pack_radar_compressed(
     scale_km: int,
     grid: list[list[int]],
     grid_size: int = 32,
+    max_msg_size: int = 136,
 ) -> list[bytes]:
     """Pack a compressed radar grid into one or more 0x11 messages.
 
     Picks whichever encoding (sparse vs RLE) is smaller. If the encoded
     data exceeds one frame, splits across multiple messages with
     chunk_seq / total_chunks.
+
+    Args:
+        max_msg_size: Maximum v3 message size in bytes (default 136).
+            Reduce for FEC-wrapped messages to leave room for v4 + COBS
+            overhead within the companion radio's channel MTU.
 
     Returns a list of wire-ready messages (usually 1, occasionally 2-4
     during heavy weather).
@@ -403,8 +409,8 @@ def pack_radar_compressed(
         encoded = rle_data
 
     # Split into chunks that fit in one frame
-    # Header = 9 bytes, max payload per frame = 136 - 9 = 127
-    max_payload = 127
+    # Header = 9 bytes, max payload per frame = max_msg_size - 9
+    max_payload = max_msg_size - 9
     chunks = []
     offset = 0
     while offset < len(encoded):
