@@ -52,6 +52,7 @@ from meshcore_weather.protocol.meshwx import (
     DATA_WX,
     LOC_LATLON,
     LOC_PFM_POINT,
+    LOC_PLACE,
     LOC_STATION,
     LOC_WFO,
     LOC_ZONE,
@@ -424,21 +425,26 @@ class MeshWXBroadcaster:
     def _build_observation(self, loc: dict, query: str) -> bytes | None:
         """Build a 0x30 observation message for the given location.
 
-        For LOC_PFM_POINT requests, the response carries LOC_PFM_POINT in
-        its location field (not LOC_STATION/LOC_ZONE) so the client can
-        correlate the response with its original request — same pattern as
-        _build_forecast().
+        For LOC_PFM_POINT requests, the response carries LOC_PLACE in its
+        location field so the client can display proper city names (from
+        places.json) instead of NWS airport-oriented PFM point names.
         """
         resolved = resolver.resolve(query)
         if not resolved:
             return None
 
-        # Echo back the request's location type so the client can correlate.
+        # For PFM point requests, respond with LOC_PLACE so the client
+        # gets a proper city name from places.json.
         resp_loc_type = None
         resp_loc_id = None
         if loc.get("type") == LOC_PFM_POINT:
-            resp_loc_type = LOC_PFM_POINT
-            resp_loc_id = loc.get("pfm_point_id")
+            lat = resolved.get("lat")
+            lon = resolved.get("lon")
+            if lat is not None and lon is not None:
+                place_idx = resolver.find_place_index(lat, lon)
+                if place_idx is not None:
+                    resp_loc_type = LOC_PLACE
+                    resp_loc_id = place_idx
 
         station = resolved.get("station")
         if station:

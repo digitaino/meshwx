@@ -261,6 +261,22 @@ class LocationResolver:
         dists.sort()
         return [code for _, code in dists[:n]]
 
+    def find_place_index(self, lat: float, lon: float) -> int | None:
+        """Find the index of the nearest place in places.json by coordinates.
+
+        Returns the array index (uint24 place_id for LOC_PLACE) or None if
+        no places are loaded.
+        """
+        self.load()
+        best_idx = None
+        best_d = float("inf")
+        for i, p in enumerate(self._places):
+            d = _haversine(lat, lon, p[2], p[3])
+            if d < best_d:
+                best_d = d
+                best_idx = i
+        return best_idx
+
     def _nearest_station(self, lat: float, lon: float) -> str | None:
         """Find the nearest METAR station."""
         best_d = float("inf")
