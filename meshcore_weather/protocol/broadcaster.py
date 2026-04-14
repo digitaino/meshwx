@@ -422,17 +422,33 @@ class MeshWXBroadcaster:
         return None
 
     def _build_observation(self, loc: dict, query: str) -> bytes | None:
-        """Build a 0x30 observation message for the given location."""
+        """Build a 0x30 observation message for the given location.
+
+        For LOC_PFM_POINT requests, the response carries LOC_PFM_POINT in
+        its location field (not LOC_STATION/LOC_ZONE) so the client can
+        correlate the response with its original request — same pattern as
+        _build_forecast().
+        """
         resolved = resolver.resolve(query)
         if not resolved:
             return None
+
+        # Echo back the request's location type so the client can correlate.
+        resp_loc_type = None
+        resp_loc_id = None
+        if loc.get("type") == LOC_PFM_POINT:
+            resp_loc_type = LOC_PFM_POINT
+            resp_loc_id = loc.get("pfm_point_id")
 
         station = resolved.get("station")
         if station:
             raw = self.store._find_metar_raw(station)
             if raw:
                 metar_text, _ts = raw
-                msg = encode_metar(station, metar_text, now_utc_minutes())
+                msg = encode_metar(
+                    station, metar_text, now_utc_minutes(),
+                    loc_type=resp_loc_type, loc_id=resp_loc_id,
+                )
                 if msg:
                     return msg
 
@@ -447,7 +463,10 @@ class MeshWXBroadcaster:
                     city = resolved["name"].split(",")[0].strip().upper()
                     line = self.store._parse_rwr_city_raw(rwr.raw_text, city)
                     if line:
-                        return encode_rwr_city(zone, line, now_utc_minutes())
+                        return encode_rwr_city(
+                            zone, line, now_utc_minutes(),
+                            loc_type=resp_loc_type, loc_id=resp_loc_id,
+                        )
         return None
 
     def _build_forecast(self, loc: dict, query: str) -> bytes | None:

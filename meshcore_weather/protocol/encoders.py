@@ -86,10 +86,20 @@ def classify_sky(text: str) -> int:
 
 # -- METAR observation encoding --
 
-def encode_metar(station_icao: str, metar_text: str, ts_minutes_utc: int) -> bytes | None:
+def encode_metar(
+    station_icao: str,
+    metar_text: str,
+    ts_minutes_utc: int,
+    loc_type: int | None = None,
+    loc_id=None,
+) -> bytes | None:
     """Build a 0x30 observation from a raw METAR string.
 
     Example METAR: "KAUS 082151Z 17010KT 10SM SCT040 BKN070 28/18 A3010"
+
+    If loc_type/loc_id are provided, uses them as the response location
+    instead of LOC_STATION/station_icao (for echoing LOC_PFM_POINT back
+    to the client on on-demand requests).
     """
     try:
         parts = metar_text.split()
@@ -180,7 +190,8 @@ def encode_metar(station_icao: str, metar_text: str, ts_minutes_utc: int) -> byt
         return None
 
     return pack_observation(
-        LOC_STATION, station_icao,
+        loc_type if loc_type is not None else LOC_STATION,
+        loc_id if loc_id is not None else station_icao,
         timestamp_utc_min=ts_minutes_utc,
         temp_f=temp_f,
         dewpoint_f=dewpoint_f if dewpoint_f is not None else temp_f,
@@ -205,10 +216,16 @@ def encode_rwr_city(
     zone_code: str,
     rwr_line: str,
     ts_minutes_utc: int,
+    loc_type: int | None = None,
+    loc_id=None,
 ) -> bytes | None:
     """Build a 0x30 observation from an RWR line for a specific city.
 
     The caller is responsible for finding the correct line — we parse it.
+
+    If loc_type/loc_id are provided, uses them as the response location
+    instead of LOC_ZONE/zone_code (for echoing LOC_PFM_POINT back to
+    the client on on-demand requests).
     """
     if not rwr_line:
         return None
@@ -254,7 +271,8 @@ def encode_rwr_city(
             break
 
     return pack_observation(
-        LOC_ZONE, zone_code,
+        loc_type if loc_type is not None else LOC_ZONE,
+        loc_id if loc_id is not None else zone_code,
         timestamp_utc_min=ts_minutes_utc,
         temp_f=temp_f,
         dewpoint_f=dewpoint_f,
