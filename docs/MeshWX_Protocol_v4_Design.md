@@ -687,28 +687,24 @@ QPF grid (0x12) follows the same chunking/FEC rules as radar (0x11).
 
 ## Migration Path
 
-### Phase 1: Current system (no changes)
+### Phase 1: v3 only — completed
 
 - v3 on `#wx-broadcast`
-- All current clients continue working
-- Bot operates as today
 
-### Phase 2: Implement v4 alongside v3
+### Phase 2: v4 alongside v3 — current state
 
-- Bot joins `#meshwx-discover` AND `#aus-meshwx-v4`
-- Bot broadcasts on BOTH channels: v3 on `#wx-broadcast`, v4 on `#aus-meshwx-v4`
-- New/updated clients listen on v4, get FEC + sequence numbers + richer fields
-- Old clients stay on v3, still work
-- Airtime roughly doubles during transition (dual broadcast)
+- Bot joins `#meshwx-discover` AND its deployment channel (e.g. `#aus-meshwx-v4`)
+- v4 clients discover bots via beacons, join the deployment channel
+- v3 clients can still receive data (auto-detect by byte 0)
+- The deployment channel carries v4-framed messages
 
-### Phase 3: Deprecate v3
+### Phase 3: Deprecate v3 — future
 
-- Stop broadcasting on `#wx-broadcast`
+- Stop broadcasting on legacy `#wx-broadcast`
 - Old clients lose service (they need to update)
-- Airtime returns to normal
 - Bot can leave `#wx-broadcast`, freeing a channel slot
 
-### Phase 4: Multi-bot
+### Phase 4: Multi-bot — future
 
 - Multiple operators deploy bots in different cities
 - Each gets its own `#<city>-meshwx-v4` channel
@@ -741,18 +737,23 @@ QPF grid (0x12) follows the same chunking/FEC rules as radar (0x11).
 
 ---
 
-## Implementation order (when we build this)
+## Implementation status
 
-1. **v4 frame format + sequence numbers** — add the 6-byte header to all messages on a new channel. Sequence numbers alone give immediate diagnostic value.
-2. **Expanded observation + forecast fields** — pack richer data into the same single messages. No FEC needed.
-3. **New EMWIN parsers + encoders** — FWF, RTP, NOW, SFT, SPC (WOU/SEL), QPF. Each is independent:
-   - a. **FWF parser + 0x38 encoder** — new message type, new parser
-   - b. **RTP parser + 0x3A encoder** — new message type, new parser
-   - c. **NOW parser + 0x3C encoder** — new message type, new parser
-   - d. **SFT parser** — new parser, feeds existing 0x31 encoder
-   - e. **SPC WOU/SEL parser** — new parser, feeds existing 0x20/0x21 encoders
-   - f. **QPF grid (0x12)** — new message type, reuses radar compression pipeline
-4. **Spatial quadrant radar with XOR parity** — the big reliability win for 64×64.
-5. **FEC for text products** — per-section AFD with parity.
-6. **Discovery beacon** — `#meshwx-discover` with 2-hour beacon interval.
-7. **Multi-bot support** — per-city channels, client roaming.
+All core v4 features are implemented and shipping:
+
+1. **v4 frame format + sequence numbers** — shipped. 6-byte header on all messages.
+2. **New EMWIN parsers + encoders** — shipped:
+   - FWF parser + 0x38 encoder
+   - RTP parser + 0x3A encoder
+   - NOW parser + 0x3C encoder
+   - SFT parser (feeds existing 0x31 encoder)
+   - QPF grid (0x12, reuses radar compression pipeline)
+3. **Spatial quadrant radar with XOR parity** — shipped. 64x64 grids with FEC recovery.
+4. **Discovery beacon** — shipped. Ping-response on `#meshwx-discover`.
+
+**Not yet implemented:**
+- Expanded observation fields (cloud_cover + weather_byte separation, humidity, UV, ceiling, etc.)
+- Expanded forecast fields (wind gust, dewpoint, humidity, QPF per period — 12 bytes/period)
+- FEC for text products (per-section AFD with parity)
+- SPC WOU/SEL parser (watch polygons feeding 0x20/0x21)
+- Multi-bot roaming (auto-switching between bots based on signal/location)

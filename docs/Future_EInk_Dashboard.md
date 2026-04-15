@@ -18,7 +18,7 @@ The user-facing pitch: "**A real weather station that doesn't need WiFi or the i
 
 ## Why this is a great fit for the existing protocol
 
-Every architectural decision in MeshWX v3 happens to be exactly what an embedded receiver wants. None of it was deliberately chosen for the e-ink use case, but it falls out of the airtime-first principle:
+Every architectural decision in MeshWX (v3/v4) happens to be exactly what an embedded receiver wants. None of it was deliberately chosen for the e-ink use case, but it falls out of the airtime-first principle:
 
 - **Structured binary fields, not text** — an MCU can decode a `0x30` observation in ~50 lines of C: read 16 bytes, unpack int8s, look up sky code in a static table, render to display. No string parsing, no JSON, no allocations.
 - **Periodic broadcasts at human time scales** — bot pushes a full cycle once per `MCW_MESHWX_BROADCAST_INTERVAL` (default 3600s = 1 hour). E-ink refreshes naturally fit that cadence (1-3 seconds per refresh, ~50,000 refresh lifetime → years of hourly updates).
@@ -27,6 +27,9 @@ Every architectural decision in MeshWX v3 happens to be exactly what an embedded
 - **Tiny per-message size** — observation 16B, forecast 21B, warning 50-100B, radar grid 134B. Whole hourly cycle is well under 1 KB.
 - **Home location proactive broadcasts (commit `50b660f`)** — the bot pushes obs + forecast for the home city automatically. The device doesn't need to send anything; it just listens.
 - **Absolute expiry timestamps (commit `202007e`)** — receiver computes "expired" from its own clock with no server-time math, no wraparound bugs.
+- **v4 sequence numbers** — receiver can detect gaps and measure link quality without any back-chatter.
+- **v4 FEC/XOR parity** — if the receiver misses one radar quadrant, it can recover it from the parity unit. Perfect for lossy multi-hop paths.
+- **v4 discovery beacons** — a new device can find nearby bots by listening on `#meshwx-discover` instead of being pre-configured with a channel name.
 
 The bot we've built is, accidentally on purpose, **already the perfect data source for this device**.
 
@@ -150,8 +153,13 @@ Honestly, almost nothing. Run through the checklist:
 - ✅ Compact binary format with COBS encoding — done in v3
 - ✅ Absolute expiry timestamps so receivers can compute "expired" without server math — done in v3
 - ✅ Proactive nature: receiver doesn't need to send anything — done
+- ✅ FEC/XOR parity for radar quadrants — done in v4
+- ✅ Sequence numbers for gap detection and link quality — done in v4
+- ✅ Discovery beacons on `#meshwx-discover` — done in v4
+- ✅ Fire weather forecasts (FWF) — done in v4
+- ✅ Nowcast (NOW) short-term forecasts — done in v4
 
-**One nice-to-have for embedded receivers: a periodic "heartbeat" broadcast.** Even just a 4-byte message saying "I'm a MeshWX bot, my coverage is TX, next cycle in N seconds" would help a sleeping receiver wake at the right time. Small protocol addition, would benefit power optimization significantly.
+**One nice-to-have for embedded receivers: a periodic heartbeat broadcast.** The v4 discovery beacon (`0xF0`) on `#meshwx-discover` is close to this — a sleeping device could listen on the discover channel for a beacon to know when the next broadcast cycle is coming. A dedicated heartbeat on the data channel with a "next cycle in N seconds" field would be even better for power optimization.
 
 ## Implementation phases (when we come back to this)
 
@@ -171,10 +179,9 @@ MVP through Phase 3 is realistically **2-4 weeks of evening/weekend hacking** fo
 
 These are what I'd want to add to MeshWX before targeting an embedded receiver as a first-class consumer:
 
-1. **Heartbeat broadcast** — small new message type so devices can sync wake windows. Maybe `0x00` or `0x0F`. Carries: bot pubkey prefix, coverage summary tag, next-broadcast-in seconds.
-2. **Single-header C decoder library** — port the relevant pieces of `meshcore_weather/protocol/meshwx.py` to a clean self-contained C/C++ header file (`meshwx.h`) that any Arduino/PlatformIO project can drop in. Keep it allocation-free, no malloc, fixed-size buffers.
+1. **Heartbeat broadcast on data channel** — the v4 discovery beacon exists but only on `#meshwx-discover`. A data-channel heartbeat with "next cycle in N seconds" would let devices sleep more precisely.
+2. **Single-header C decoder library** — port the relevant pieces of `meshcore_weather/protocol/meshwx.py` to a clean self-contained C/C++ header file (`meshwx.h`) that any Arduino/PlatformIO project can drop in. Keep it allocation-free, no malloc, fixed-size buffers. Must handle v4 frame unwrapping + FEC recovery.
 3. **Document the embedded receiver use case** in `docs/` — once it has a real reference implementation, it should be a first-class consumer of the protocol alongside the iOS app, not an afterthought.
-4. **Wind gusts in `0x31` Forecast** — adding 1 byte per period (28B forecast instead of 21B) so the dashboard can show "partly cloudy, SE 12 gusting 25". Useful for marine/aviation/outdoor users.
 
 ## Open questions / decisions for the future-us session
 
@@ -201,12 +208,13 @@ For users who want weather information at a remote cabin, on a boat, in a rural 
 - **Waveshare e-paper modules**: waveshare.com/product/displays/e-paper.htm
 - **GxEPD2 library**: github.com/ZinggJM/GxEPD2 (Arduino e-paper driver, supports most Waveshare displays)
 - **Existing protocol reference**: `meshcore_weather/protocol/meshwx.py` in this repo (the source of truth that the C decoder library would mirror)
-- **Wire format spec**: `docs/MeshWX_Protocol_v3.md` in this repo
+- **Wire format spec**: `docs/MeshWX_Protocol_v4_Design.md` and `docs/v4_client_guide.md` in this repo (v3 doc is legacy reference)
 - **Bot side already-shipped commits relevant to this**:
   - `50b660f` — home city obs + forecast broadcast (the data source the device consumes)
   - `9d08fde` — PFM forecast quality upgrade
   - `1091d57` — `LOC_PFM_POINT` city-search support
   - `202007e` — v3 wire format with absolute expiry timestamps (the foundation that makes embedded clients work without time sync)
+- **v4 protocol additions relevant to this**: FEC/XOR parity (radar recovery), sequence numbers (link quality), discovery beacons (auto-provisioning), fire weather + nowcast (new products)
 
 ---
 

@@ -38,11 +38,12 @@ Message types:
    - Special Weather Statements (SPS — no VTEC) now produce warnings via the UGC line's `ugcexpire`, tagged as `WARN_SPECIAL` (0x9) + `SEV_ADVISORY` (0x1)
    - Expired warnings are dropped at extraction time (3-hour EMWIN bundle retains products ~3h past expiration — v2 rebroadcast them with fake extensions)
 
-**Not yet changed on the wire** (still v2-style, planned for later sessions — see `iOS_Developer_Brief.md`):
+**Still v2-style on the v3 wire** (these are unchanged in v3; some are addressed in v4):
 - `warning_type` nibble still uses the 4-bit codes below, not the 68-entry VTEC phenomenon table
 - No separate fields for VTEC action / ETN / office / urgency / certainty
 - `0x21` still only carries Z-zone codes, not a mix of zones + county FIPS
-- `0x31` forecast source is still ZFP narrative parsing, not PFM structured data
+
+> **Note**: `0x31` forecast now sources from PFM (structured data) with ZFP and SFT fallbacks. The wire format is unchanged but the data quality improved significantly. See v4 design doc for expanded forecast fields.
 
 ## Design principles
 
@@ -584,52 +585,8 @@ Expandable to 256 entries later without breaking compatibility (2-byte dict code
 
 Key insight: **requests are DMs (reliable), responses are broadcasts (shared)**. If three clients all want Austin's forecast within a few seconds, that's 3 DMs in + 1 broadcast out. Rate limit: one response per (data_type, location) per 5 minutes.
 
-## Server implementation plan
+## Versioning and successor
 
-1. **Add message type constants** to `protocol/meshwx.py`: `MSG_REQUEST`, `MSG_OBSERVATION`, `MSG_FORECAST`, `MSG_OUTLOOK`, `MSG_STORM_REPORTS`, `MSG_RAIN_OBS`, `MSG_METAR`, `MSG_TAF`, `MSG_WARNINGS_NEAR`, `MSG_TEXT_CHUNK`.
+v3 is the baseline wire format. **v4** (see `docs/MeshWX_Protocol_v4_Design.md`) adds a 6-byte frame header with sequence numbers, FEC/XOR parity for multi-chunk products, discovery beacons (`0xF0`/`0xF1`), and new message types (`0x38` Fire Weather, `0x3A` Daily Climate, `0x3C` Nowcast, `0x12` QPF Grid). v4 is backward-compatible: byte 0 == `0x04` indicates a v4 frame; byte 0 >= `0x10` is a v3 raw message.
 
-2. **Add pack/unpack functions** for each new type with comprehensive round-trip tests.
-
-3. **Add location encoding module** `protocol/location_ref.py` with `pack_location(type, id)` and `unpack_location(bytes, offset)`.
-
-4. **Build state-index table** at `geodata/state_index.json` (bundled with both client and server).
-
-5. **Build WFO lookup file** `geodata/wfos.json` with office code → name + city.
-
-6. **Build preload bundle generator** `scripts/build_client_data.py` that outputs a `client_data/` directory clients can copy into their app.
-
-7. **Bot-side data extractors** that take the existing parsed text and convert to binary:
-   - `protocol/encode_observation.py` — RWR/METAR → 0x30
-   - `protocol/encode_forecast.py` — ZFP → 0x31
-   - `protocol/encode_outlook.py` — HWO → 0x32
-   - `protocol/encode_storm_reports.py` — LSR → 0x33
-   - `protocol/encode_rain_obs.py` — RWR rain → 0x34
-
-8. **Request handler** in `main.py` `_handle_dm`: detect `0x02`-prefixed DMs (hex-encoded like current `MWX` prefix), parse, dispatch to the right encoder, broadcast response.
-
-9. **Dictionary compression** module `protocol/text_compress.py` with encode/decode + the bundled phrase list.
-
-10. **Broadcast scheduling**: observation + forecast + outlook for bot's home location go out every hour automatically (even without requests) so listeners stay current with the bot's operator area.
-
-## Airtime budget estimate
-
-For a typical operator covering ~300 zones (Texas):
-
-| Message | Count | Size | Per cycle |
-|---------|-------|------|-----------|
-| 0x10 Radar grids | 3 | 134 B | 402 B |
-| 0x20 Warnings | 5 | ~60 B | 300 B |
-| 0x30 Home obs | 1 | 16 B | 16 B |
-| 0x31 Home forecast | 1 | 59 B | 59 B |
-| 0x32 Home outlook | 1 | 42 B | 42 B |
-| **Scheduled total/cycle** | | | **~820 B** |
-
-At 2-second spacing between messages: ~20 seconds of airtime per cycle. One cycle per hour = 0.5% duty cycle. Very sustainable on LoRa.
-
-Per-request responses add only a few messages each and are rate-limited.
-
-## Versioning
-
-Message type byte `0xF0` reserved for protocol version negotiation (future). For now, all v2 messages can coexist with v1 — clients that don't recognize a type byte ignore it harmlessly.
-
-Dictionary version is encoded in the `weather_dict.json` file; clients refuse to decode 0x40 messages with a dictionary version newer than they have bundled.
+All items from the original "Server implementation plan" in this document have been completed and shipped.
