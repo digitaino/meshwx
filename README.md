@@ -398,3 +398,8 @@ Planned:
 ## License
 
 MIT
+
+## Related
+
+- **[meshwx-client](https://github.com/digitaino/meshwx-client)** — Desktop & web client for receiving and displaying MeshWX weather data. Connects via USB or Bluetooth.
+- **[PocketMesh](https://github.com/pesqair/PocketMesh)** — iOS MeshCore client with built-in MeshWX weather decoding.
