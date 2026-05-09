@@ -18,12 +18,14 @@ corescope/
 ├── scripts/
 │   ├── add-observer.sh           # add (or rotate) an observer credential
 │   ├── remove-observer.sh        # revoke
-│   └── list-observers.sh         # show who's online (queries CoreScope API)
+│   ├── list-observers.sh         # show who's online (queries CoreScope API)
+│   └── set-node-location.sh      # manually pin a node's lat/lon
 ├── templates/
 │   ├── observer/                 # bundle: USB-attached radio (Cisien-based)
 │   └── observer-tcp/             # bundle: meshcore-proxy variant
 ├── out/                          # generated bundles (gitignored)
-└── Observer_Onboarding.md        # operator-facing flow doc
+├── Observer_Onboarding.md        # operator-facing flow doc (all variants)
+└── Observer_Setup_Firmware.md    # observer-facing setup for firmware variant
 ```
 
 ## Common commands
@@ -32,11 +34,15 @@ All of these can be run from the repo root or from inside `corescope/` —
 the scripts find their own paths.
 
 ```bash
-# add an observer (USB radio)
+# add an observer (USB radio + Linux host with Docker)
 corescope/scripts/add-observer.sh <username>
 
 # add an observer (already runs meshcore-proxy on their host)
 corescope/scripts/add-observer.sh --proxy <username>
+
+# add an observer (radio runs the agessaman MQTT-bridge firmware fork
+# directly — no host computer; prints a paste-ready `set` block)
+corescope/scripts/add-observer.sh --firmware <username>
 
 # revoke
 corescope/scripts/remove-observer.sh <username>
@@ -45,8 +51,9 @@ corescope/scripts/remove-observer.sh <username>
 corescope/scripts/list-observers.sh
 ```
 
-For the full operator flow (generating a bundle, sending it, what the
-observer does on their Pi) see `Observer_Onboarding.md`.
+For the full operator flow see `Observer_Onboarding.md`. For the
+firmware-flashed observer setup steps, see
+`Observer_Setup_Firmware.md`.
 
 ## Where the bot fits in
 

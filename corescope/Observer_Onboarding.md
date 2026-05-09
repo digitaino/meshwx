@@ -1,23 +1,23 @@
 # Observer Onboarding — AUS Meshcore CoreScope
 
 A Meshcore radio elsewhere can contribute its RX traffic to the AUS Meshcore
-dashboard. The setup on the observer's side is one tarball + one command.
+dashboard. Three onboarding paths, pick whichever fits the observer's setup.
 
 ## For operators (you)
 
 ```bash
-corescope/scripts/add-observer.sh <username> [iata]              # USB-radio variant
-corescope/scripts/add-observer.sh --proxy <username> [iata]      # meshcore-proxy variant
+corescope/scripts/add-observer.sh <username> [iata]              # USB-radio (host computer + Cisien's bridge in Docker)
+corescope/scripts/add-observer.sh --proxy <username> [iata]      # alongside an existing meshcore-proxy
+corescope/scripts/add-observer.sh --firmware <username> [iata]   # radio is the entire observer (no host)
 ```
 
-The `--proxy` variant is for observers who already run
-[`rgregg/meshcore-proxy`](https://github.com/rgregg/meshcore-proxy) on their
-host (e.g. for the Meshcore companion app or Home Assistant). The bundle
-attaches as a second, read-only TCP client to the same proxy — their
-existing setup is untouched, no new radio needed. The default (no flag)
-generates a bundle that talks to a USB-attached radio directly.
+| Variant | When to use it | Hand-off |
+|---|---|---|
+| (default) | Observer has a USB Meshcore radio + a Linux host (Pi etc.) and is happy with Docker. | Tarball with docker-compose. |
+| `--proxy` | Observer already runs [`rgregg/meshcore-proxy`](https://github.com/rgregg/meshcore-proxy) on their host (Meshcore companion app, Home Assistant). We attach a second read-only TCP client. | Tarball with `install.sh` / `run-native.sh`. |
+| `--firmware` | Observer flashed the [agessaman MQTT-bridge firmware fork](https://github.com/agessaman/MeshCore/tree/mqtt-bridge-implementation-flex) onto a Heltec V3/V4, Station G2, or LilyGo. The radio publishes directly over WiFi — no host needed. | Paste-ready `set` block + link to [`Observer_Setup_Firmware.md`](./Observer_Setup_Firmware.md). |
 
-Either way, the script:
+For the bundle variants, the script:
 
 1. Generates a bcrypt-hashed credential and writes it to
    `corescope/mosquitto/passwords` (gitignored).
@@ -31,6 +31,12 @@ Either way, the script:
 Hand the tarball to the observer (any channel — DM, email, drop on a
 shared drive). Don't commit the tarball anywhere — `corescope/out/`
 is gitignored for that reason.
+
+For the **firmware** variant, no bundle is generated; the script prints
+the credential plus a paste-ready block of `set` commands for the
+radio's serial console. Send that block plus the
+[`Observer_Setup_Firmware.md`](./Observer_Setup_Firmware.md) link to
+the observer.
 
 To rotate a password, just run `add-observer.sh` again with the same
 username — `mosquitto_passwd` updates in place. Send the new bundle.
@@ -49,7 +55,8 @@ corescope/scripts/list-observers.sh
 
 ## For observers (whoever you handed the tarball to)
 
-The bundle's `README.md` walks them through it. The short version is:
+For the **bundle variants**, the bundle's own `README.md` walks them
+through it. The short version is:
 
 ```bash
 tar xzf <username>.tar.gz
@@ -61,6 +68,12 @@ docker compose logs -f       # confirm it's connected
 Within ~30 seconds they'll show up on the dashboard under their IATA
 code. The first `docker compose up` builds Cisien's `meshcoretomqtt`
 from GitHub (~2 min); subsequent restarts are instant.
+
+For the **firmware variant**, see
+[`Observer_Setup_Firmware.md`](./Observer_Setup_Firmware.md). The
+observer connects to their radio over USB at 115200 baud, pastes the
+`set` block, runs `save` and `reboot`, and the radio takes over from
+there.
 
 ## What gets published
 

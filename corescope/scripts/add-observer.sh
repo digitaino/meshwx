@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# Add (or rotate) an observer credential and produce a turnkey bundle the
-# operator can hand off.
+# Add (or rotate) an observer credential and produce a hand-off the
+# operator can send to the observer.
 #
-# Two bundle flavors:
+# Three flavors:
 #   (default)  — observer connects directly to a USB radio
-#                (templates/observer/, uses Cisien/meshcoretomqtt)
+#                (templates/observer/, uses Cisien/meshcoretomqtt). Tarball.
 #   --proxy    — observer connects to an existing meshcore-proxy TCP
-#                endpoint (templates/observer-tcp/). Use when the friend
-#                already runs something like rgregg/meshcore-proxy
-#                against their radio for the Meshcore app or HA.
+#                endpoint (templates/observer-tcp/). Tarball.
+#   --firmware — observer is a meshcore radio running the agessaman
+#                MQTT-bridge firmware fork (Heltec V3/V4, Station G2,
+#                LilyGo). No bundle — prints a paste-ready `set` block
+#                for the radio's serial console (see
+#                Observer_Setup_Firmware.md).
 #
 # Usage:
-#   corescope/scripts/add-observer.sh [--proxy] <username> [iata] [password]
+#   corescope/scripts/add-observer.sh [--proxy|--firmware] <username> [iata] [password]
 #
 # Runnable from anywhere — paths are derived from the script's location.
 
@@ -27,10 +30,14 @@ if [[ "${1:-}" == "--proxy" ]]; then
   VARIANT="proxy"
   TEMPLATE_DIR="$COREDIR/templates/observer-tcp"
   shift
+elif [[ "${1:-}" == "--firmware" ]]; then
+  VARIANT="firmware"
+  TEMPLATE_DIR=""   # firmware variant has no bundle
+  shift
 fi
 
 if [[ $# -lt 1 || $# -gt 3 ]]; then
-  echo "usage: $(basename "$0") [--proxy] <username> [iata] [password]" >&2
+  echo "usage: $(basename "$0") [--proxy|--firmware] <username> [iata] [password]" >&2
   exit 1
 fi
 
@@ -45,7 +52,7 @@ if [[ ! -f "$PASSWORD_FILE" ]]; then
   echo "error: $PASSWORD_FILE not found — broker may not be initialized yet." >&2
   exit 1
 fi
-if [[ ! -d "$TEMPLATE_DIR" ]]; then
+if [[ "$VARIANT" != "firmware" && ! -d "$TEMPLATE_DIR" ]]; then
   echo "error: $TEMPLATE_DIR not found." >&2
   exit 1
 fi
@@ -63,6 +70,39 @@ if docker ps --format '{{.Names}}' | grep -q '^mosquitto$'; then
   RELOAD_NOTE="(broker reloaded)"
 else
   RELOAD_NOTE="(mosquitto container not running — start the stack to apply)"
+fi
+
+if [[ "$VARIANT" == "firmware" ]]; then
+  # No bundle. Print a paste-ready block for the radio's serial console.
+  cat <<EOF
+
+Observer added: $USERNAME (iata=$IATA, variant=firmware) $RELOAD_NOTE
+
+  username: $USERNAME
+  password: $PASSWORD
+
+Send the observer this setup guide:
+  https://github.com/digitaino/meshwx/blob/main/corescope/Observer_Setup_Firmware.md
+
+And this paste-ready block — they'll paste it into their radio's
+serial console at 115200 baud (after replacing the WiFi placeholders):
+
+  ───────────────────────  paste from here  ───────────────────────
+  set wifi.ssid YOUR_WIFI_SSID
+  set wifi.pwd  YOUR_WIFI_PASSWORD
+  set mqtt3.preset custom
+  set mqtt3.server mqtt.digitaino.com
+  set mqtt3.port 443
+  set mqtt3.username $USERNAME
+  set mqtt3.password $PASSWORD
+  set mqtt.iata $IATA
+  save
+  reboot
+  ────────────────────────  to here  ──────────────────────────────
+
+Done.
+EOF
+  exit 0
 fi
 
 # Generate the bundle. We copy the whole template tree so any extra files
