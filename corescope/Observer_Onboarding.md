@@ -6,8 +6,8 @@ dashboard. The setup on the observer's side is one tarball + one command.
 ## For operators (you)
 
 ```bash
-./scripts/add-observer.sh <username> [iata]              # USB-radio variant
-./scripts/add-observer.sh --proxy <username> [iata]      # meshcore-proxy variant
+corescope/scripts/add-observer.sh <username> [iata]              # USB-radio variant
+corescope/scripts/add-observer.sh --proxy <username> [iata]      # meshcore-proxy variant
 ```
 
 The `--proxy` variant is for observers who already run
@@ -20,16 +20,17 @@ generates a bundle that talks to a USB-attached radio directly.
 Either way, the script:
 
 1. Generates a bcrypt-hashed credential and writes it to
-   `mosquitto/passwords` (gitignored).
+   `corescope/mosquitto/passwords` (gitignored).
 2. SIGHUPs the broker so the new credential is live without dropping
    existing connections.
-3. Builds a bundle at `out/observer-bundles/<username>/` containing
-   `docker-compose.yml`, a pre-filled `config.toml`, and a `README.md`.
-4. Tars it as `out/observer-bundles/<username>.tar.gz` for hand-off.
+3. Builds a bundle at `corescope/out/observer-bundles/<username>/`
+   with the right files filled in for the chosen variant.
+4. Tars it as `corescope/out/observer-bundles/<username>.tar.gz`
+   for hand-off.
 
 Hand the tarball to the observer (any channel — DM, email, drop on a
-shared drive). Don't commit the tarball anywhere — `out/` is gitignored
-for that reason.
+shared drive). Don't commit the tarball anywhere — `corescope/out/`
+is gitignored for that reason.
 
 To rotate a password, just run `add-observer.sh` again with the same
 username — `mosquitto_passwd` updates in place. Send the new bundle.
@@ -37,13 +38,13 @@ username — `mosquitto_passwd` updates in place. Send the new bundle.
 To revoke:
 
 ```bash
-./scripts/remove-observer.sh <username>
+corescope/scripts/remove-observer.sh <username>
 ```
 
 To see who's online and how many packets they've published:
 
 ```bash
-./scripts/list-observers.sh
+corescope/scripts/list-observers.sh
 ```
 
 ## For observers (whoever you handed the tarball to)
@@ -95,13 +96,13 @@ observer ─wss://mqtt.digitaino.com/─► CF tunnel ─► localhost:9001 ─�
 
 ## Troubleshooting (operator)
 
-- New observer never shows up in `./scripts/list-observers.sh`:
+- New observer never shows up in `corescope/scripts/list-observers.sh`:
   - Check broker logs: `docker logs mosquitto --tail 30`. Auth failures
     show as `Connection from … denied: not authorised`.
   - Check the tunnel: `curl -I https://mqtt.digitaino.com/` should
     return a 426 Upgrade Required from cloudflared (that's fine — it
     means HTTP got there, the next hop wants WebSocket).
-- Observer reports the bundle's docker compose `build:` step failing:
-  upstream Cisien repo may have moved a branch. Edit
-  `templates/observer/docker-compose.yml` to pin a commit, regenerate
-  bundles.
+- Observer reports the bundle's docker compose `build:` step failing
+  (USB-radio variant only): upstream Cisien repo may have moved a
+  branch. Edit `corescope/templates/observer/docker-compose.yml` to
+  pin a commit, then regenerate bundles.

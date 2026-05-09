@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # Add (or rotate) an observer credential and produce a turnkey bundle the
-# operator can hand off. The bundle contains a docker-compose.yml, the
-# pre-filled config (TOML or env), and a README — the observer extracts
-# and runs `docker compose up -d`.
+# operator can hand off.
 #
 # Two bundle flavors:
 #   (default)  — observer connects directly to a USB radio
@@ -13,23 +11,26 @@
 #                against their radio for the Meshcore app or HA.
 #
 # Usage:
-#   ./scripts/add-observer.sh [--proxy] <username> [iata] [password]
+#   corescope/scripts/add-observer.sh [--proxy] <username> [iata] [password]
 #
-# Defaults: iata=AUS, password=$(openssl rand -hex 16).
-# Run from the repo root.
+# Runnable from anywhere — paths are derived from the script's location.
 
 set -euo pipefail
 
+# Locate corescope/ relative to this script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COREDIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 VARIANT="usb"
-TEMPLATE_DIR="templates/observer"
+TEMPLATE_DIR="$COREDIR/templates/observer"
 if [[ "${1:-}" == "--proxy" ]]; then
   VARIANT="proxy"
-  TEMPLATE_DIR="templates/observer-tcp"
+  TEMPLATE_DIR="$COREDIR/templates/observer-tcp"
   shift
 fi
 
 if [[ $# -lt 1 || $# -gt 3 ]]; then
-  echo "usage: $0 [--proxy] <username> [iata] [password]" >&2
+  echo "usage: $(basename "$0") [--proxy] <username> [iata] [password]" >&2
   exit 1
 fi
 
@@ -37,22 +38,22 @@ USERNAME="$1"
 IATA="${2:-AUS}"
 PASSWORD="${3:-$(openssl rand -hex 16)}"
 
-PASSWORD_FILE="mosquitto/passwords"
-BUNDLE_DIR="out/observer-bundles/$USERNAME"
+PASSWORD_FILE="$COREDIR/mosquitto/passwords"
+BUNDLE_DIR="$COREDIR/out/observer-bundles/$USERNAME"
 
 if [[ ! -f "$PASSWORD_FILE" ]]; then
-  echo "error: $PASSWORD_FILE not found — are you in the repo root?" >&2
+  echo "error: $PASSWORD_FILE not found — broker may not be initialized yet." >&2
   exit 1
 fi
 if [[ ! -d "$TEMPLATE_DIR" ]]; then
-  echo "error: $TEMPLATE_DIR not found — are you in the repo root?" >&2
+  echo "error: $TEMPLATE_DIR not found." >&2
   exit 1
 fi
 
 # Add (or update) the user. mosquitto_passwd updates in place if the user
 # already exists, so this doubles as a rotate-password command.
 docker run --rm \
-  -v "$(pwd)/$PASSWORD_FILE:/passwords" \
+  -v "$PASSWORD_FILE:/passwords" \
   eclipse-mosquitto:2 \
   mosquitto_passwd -b /passwords "$USERNAME" "$PASSWORD" >/dev/null
 
@@ -88,8 +89,8 @@ if [[ -f "$BUNDLE_DIR/.env.template" ]]; then
 fi
 
 # Tarball for easy hand-off.
-TARBALL="out/observer-bundles/$USERNAME.tar.gz"
-tar -czf "$TARBALL" -C "out/observer-bundles" "$USERNAME"
+TARBALL="$COREDIR/out/observer-bundles/$USERNAME.tar.gz"
+tar -czf "$TARBALL" -C "$COREDIR/out/observer-bundles" "$USERNAME"
 
 if [[ "$VARIANT" == "proxy" ]]; then
   RUN_HINT='./run-native.sh          # foreground test first

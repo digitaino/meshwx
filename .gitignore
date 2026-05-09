@@ -38,6 +38,9 @@ Thumbs.db
 # Logs
 *.log
 logs/
-corescope-config.json
-mosquitto/passwords
-out/
+
+# CoreScope/observer (live config + secrets + generated bundles)
+corescope/config.json
+corescope/mosquitto/passwords
+corescope/out/
+corescope/.DS_Store

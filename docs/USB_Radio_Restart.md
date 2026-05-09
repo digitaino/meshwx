@@ -79,14 +79,18 @@ USB port or cable.
 
 ## CoreScope MQTT bridge
 
-The stack now includes a `corescope` container alongside `meshcore-weather`.
-It runs CoreScope (a meshcore packet analyzer with web dashboard) and its
-built-in Mosquitto broker. meshcore-weather publishes raw RX packets to that
-broker so CoreScope can decode and visualize them — it's a passive piggyback,
-no extra radio writes.
+The stack also runs `corescope` and `mosquitto` containers alongside
+`meshcore-weather`. CoreScope is a meshcore packet analyzer with a web
+dashboard; Mosquitto is the auth-required broker between them. The weather
+bot publishes raw RX packets to Mosquitto so CoreScope can decode and
+visualize them — passive piggyback, no extra radio writes.
+
+All of CoreScope's config and observer-management tooling lives under
+`corescope/`. See `corescope/README.md` for the layout and
+`corescope/Observer_Onboarding.md` for the full operator flow.
 
 - **Dashboard**: <http://localhost:8082>
-- **Broker**: `corescope:1883` inside the Docker network, also exposed on the
+- **Broker**: `mosquitto:1883` inside the Docker network, also exposed on the
   host as `localhost:1883` for debugging with `mosquitto_sub`.
 - **Topic**: `meshcore/AUS/<radio-pubkey>/packets` — JSON in the
   Cisien/CoreScope format.
@@ -106,8 +110,8 @@ After flipping the value, run `docker compose up --build --force-recreate -d`.
 # stats from CoreScope
 curl -s http://localhost:8082/api/stats | python3 -m json.tool
 
-# raw packets on the broker
-mosquitto_sub -h localhost -t 'meshcore/#' -v
+# raw packets on the broker (you'll need a credential — see corescope/README.md)
+mosquitto_sub -h localhost -u corescope -P "$(grep ^MCW_MQTT_PASSWORD .env | cut -d= -f2)" -t 'meshcore/#' -v
 ```
 
 If the bot ever stops working after enabling MQTT, set

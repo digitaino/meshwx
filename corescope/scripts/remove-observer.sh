@@ -4,22 +4,25 @@
 # to finish in-flight publishes but new connections will fail.
 #
 # Usage:
-#   ./scripts/remove-observer.sh <username>
+#   corescope/scripts/remove-observer.sh <username>
 #
-# Run from the repo root.
+# Runnable from anywhere — paths are derived from the script's location.
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COREDIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 if [[ $# -ne 1 ]]; then
-  echo "usage: $0 <username>" >&2
+  echo "usage: $(basename "$0") <username>" >&2
   exit 1
 fi
 
 USERNAME="$1"
-PASSWORD_FILE="mosquitto/passwords"
+PASSWORD_FILE="$COREDIR/mosquitto/passwords"
 
 if [[ ! -f "$PASSWORD_FILE" ]]; then
-  echo "error: $PASSWORD_FILE not found — are you in the repo root?" >&2
+  echo "error: $PASSWORD_FILE not found — broker may not be initialized yet." >&2
   exit 1
 fi
 
@@ -31,7 +34,7 @@ if ! cut -d: -f1 "$PASSWORD_FILE" | grep -qx "$USERNAME"; then
 fi
 
 docker run --rm \
-  -v "$(pwd)/$PASSWORD_FILE:/passwords" \
+  -v "$PASSWORD_FILE:/passwords" \
   eclipse-mosquitto:2 \
   mosquitto_passwd -D /passwords "$USERNAME" >/dev/null
 
