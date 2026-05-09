@@ -152,6 +152,8 @@ class MeshcoreRadio:
                         topic_prefix=settings.mqtt_topic_prefix,
                         iata=settings.mqtt_iata,
                         pubkey=pubkey,
+                        username=settings.mqtt_username,
+                        password=settings.mqtt_password,
                     )
                     self._mc.subscribe(EventType.RX_LOG_DATA, self._on_rx_log)
                     logger.info("MQTT publishing enabled for pubkey %s", pubkey[:12])

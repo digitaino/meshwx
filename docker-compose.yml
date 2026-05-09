@@ -15,28 +15,59 @@ services:
       - MCW_SERIAL_PORT=tcp://host.docker.internal:4403
       # Use host Ollama (has GPU access, much faster than Docker Ollama)
       - MCW_OLLAMA_URL=http://host.docker.internal:11434/api/generate
-      # MQTT publishing target (CoreScope's built-in broker)
-      - MCW_MQTT_HOST=corescope
+      # Local MQTT broker (mosquitto), reached over the Docker network
+      - MCW_MQTT_HOST=mosquitto
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # No depends_on: corescope. The bot must start (and keep running) even
-    # if CoreScope is down — MQTT publishing is fail-soft.
+    # No depends_on: the bot must start (and keep running) even if MQTT or
+    # CoreScope is down — MQTT publishing is fail-soft.
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      # 1883 — TCP MQTT, exposed on the host for `mosquitto_sub` debugging.
+      # 9001 — MQTT-over-WebSocket. Bound to the host so the host's
+      # cloudflared can forward mqtt.digitaino.com → localhost:9001 to make
+      # the broker reachable to remote observers via wss://.
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/passwords:/mosquitto/config/passwords:ro
+      - mosquitto-data:/mosquitto/data
 
   corescope:
     image: ghcr.io/kpa-clawbot/corescope:latest
     container_name: corescope
     restart: unless-stopped
+    depends_on:
+      - mosquitto
     ports:
       - "8082:80"      # CoreScope web UI (Caddy)
-      - "1883:1883"    # MQTT broker, also reachable on host for mosquitto_sub
     volumes:
       - corescope-data:/app/data
       - ./corescope-config.json:/app/data/config.json:ro
     environment:
       - NODE_ENV=production
-      - DISABLE_MOSQUITTO=false
+      # Use our standalone Mosquitto (with auth) instead of the bundled one.
+      - DISABLE_MOSQUITTO=true
       - DISABLE_CADDY=false
+
+  # NOTE: no cloudflared service here. The host already runs cloudflared
+  # natively (see ~/.cloudflared/config.yml on the iMac). To expose the
+  # broker publicly, add this entry to that config and reload cloudflared:
+  #
+  #   - hostname: mqtt.digitaino.com
+  #     service: http://localhost:9001
+  #
+  # Also create the DNS record:
+  #   cloudflared tunnel route dns <tunnel-id> mqtt.digitaino.com
+  #
+  # WebSocket upgrade is auto-detected by cloudflared, no extra flag needed.
 
 volumes:
   weather-data:
   corescope-data:
+  mosquitto-data:

@@ -37,6 +37,8 @@ class MqttPublisher:
         topic_prefix: str,
         iata: str,
         pubkey: str,
+        username: str = "",
+        password: str = "",
         origin: str = "meshcore-weather",
         max_queued: int = 1000,
     ):
@@ -51,6 +53,8 @@ class MqttPublisher:
             client_id=f"meshcore-weather-{pubkey[:8]}",
             clean_session=True,
         )
+        if username:
+            self._client.username_pw_set(username, password)
         self._client.max_queued_messages_set(max_queued)
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
@@ -59,7 +63,9 @@ class MqttPublisher:
         try:
             self._client.connect_async(host, port, keepalive=60)
             self._client.loop_start()
-            logger.info("MQTT publisher started → %s:%d topic=%s", host, port, self._topic)
+            logger.info("MQTT publisher started → %s:%d topic=%s%s",
+                        host, port, self._topic,
+                        f" auth={username}" if username else " (anon)")
         except Exception:
             logger.exception("MQTT publisher init failed (non-fatal)")
 

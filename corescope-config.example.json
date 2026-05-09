@@ -10,7 +10,9 @@
   "mqttSources": [
     {
       "name": "local",
-      "broker": "mqtt://localhost:1883",
+      "broker": "mqtt://mosquitto:1883",
+      "username": "corescope",
+      "password": "REPLACE_WITH_CORESCOPE_PASSWORD",
       "topics": ["meshcore/#"]
     }
   ],
