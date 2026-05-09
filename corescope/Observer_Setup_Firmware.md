@@ -9,9 +9,12 @@ site.**
 
 If you don't already have this firmware flashed, follow the upstream
 [`MQTT_IMPLEMENTATION.md`](https://github.com/agessaman/MeshCore/blob/mqtt-bridge-implementation-flex/MQTT_IMPLEMENTATION.md)
-to build and flash it first. **Flash the Repeater variant, not
-Companion** — Companion firmware doesn't relay/observe traffic the
-way we need. Come back here for configuration.
+to build and flash it first. The fork's build targets are all named
+`*_repeater_observer_mqtt` — **the radio runs as a repeater (with
+MQTT publishing added), not as a Companion device.** If your radio is
+currently paired to a phone as a Companion, flashing this firmware
+will replace that role; you'd need a second radio if you want to keep
+your Companion. Come back here for configuration.
 
 > The operator gives you two things: the setup-guide URL (this page)
 > and a paste-ready block of `set` commands containing your unique
@@ -159,8 +162,11 @@ key. Nothing about you (your IP, WiFi, etc.) is sent.
 
 - This firmware fork is a branch of the upstream MeshCore project.
   Flashing it replaces the official MeshCore firmware on that radio.
-  Flash the **Repeater** variant — Companion firmware doesn't relay
-  the traffic an observer needs to see.
+  Build targets are all named `*_repeater_observer_mqtt` — the radio
+  becomes a repeater that also publishes RX to MQTT. There's no
+  Companion-firmware build of the bridge; if your radio is currently
+  acting as a Companion (paired to a phone), this firmware will
+  replace that role.
 - WiFi must be available at the deployment site.
 - Memory constraints in the firmware: up to 6 MQTT slots with PSRAM,
   only 2 concurrent TLS/WSS slots without PSRAM. We use slot 3
