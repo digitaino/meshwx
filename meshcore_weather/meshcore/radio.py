@@ -16,7 +16,7 @@ from meshcore_weather.config import settings
 logger = logging.getLogger(__name__)
 
 # How often to re-advertise and refresh contacts (seconds)
-ADVERT_INTERVAL = 900  # 15 minutes
+ADVERT_INTERVAL = 86400  # 24 hours
 CONTACTS_REFRESH = 120  # 2 minutes
 
 
