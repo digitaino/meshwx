@@ -6,15 +6,20 @@ your radio. We attach as a second, **read-only** TCP client to the
 same proxy — nothing about your existing setup changes, no serial
 conflicts, no new radio.
 
-Three install paths, in increasing order of "set and forget":
+Four install paths. Pick whichever fits — they're not exclusive but you
+only need one:
 
 1. **`./run-native.sh`** — quick test in the foreground; Ctrl-C to stop.
-2. **`docker compose up -d`** — Docker, restarts on reboot.
-3. **`sudo ./install.sh`** — production install on a Pi with systemd.
-   Survives reboots, restarts on failure, runs as a hardened
-   non-root system user. **Recommended for permanent use.**
-
-Pick one. They're not exclusive but you only need one.
+   Zero install, no persistence.
+2. **`./install-user.sh`** — **sudoless.** Registers a user-level systemd
+   service under your own account. Survives reboots if you enable
+   linger (one sudo command, optional). Best path if you'd rather not
+   give an installer root.
+3. **`docker compose up -d`** — Docker, restarts on reboot. Needs
+   Docker installed; auto-restart handled by the Docker daemon.
+4. **`sudo ./install.sh`** — system install. Dedicated `aus-observer`
+   system user under `/opt/`, hardened systemd unit. Most robust but
+   needs root once.
 
 ## Option 1: Quick test (foreground)
 
@@ -26,7 +31,37 @@ Pick one. They're not exclusive but you only need one.
 then runs `observer.py`. Use this to confirm everything works before
 committing to a permanent install.
 
-## Option 2: Docker
+## Option 2: Sudoless user-mode systemd (recommended for Pi)
+
+```bash
+./install-user.sh
+```
+
+This registers a user-level systemd unit at
+`~/.config/systemd/user/aus-observer.service` and installs the code +
+venv at `~/.local/share/aus-observer/`. No root, no `/opt`, no system
+user. It restarts automatically on failure and watches journald with:
+
+```bash
+journalctl --user -u aus-observer -f
+systemctl --user status aus-observer
+```
+
+By default user services only run **while you're logged in**. To make
+the service start at boot and survive logouts, enable linger (one
+sudo, only ever once):
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+If you skip lingering, just keep your SSH session open or restart the
+service manually after each reboot with
+`systemctl --user start aus-observer`.
+
+To uninstall: `./uninstall-user.sh`.
+
+## Option 3: Docker
 
 ```bash
 docker compose up -d
@@ -36,7 +71,7 @@ docker compose logs -f
 If meshcore-proxy is on a different machine, edit `docker-compose.yml`
 and change `PROXY_HOST=127.0.0.1` to its IP/hostname.
 
-## Option 3: Production install (recommended for Pi)
+## Option 4: System install with sudo
 
 ```bash
 sudo ./install.sh
