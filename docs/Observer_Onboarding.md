@@ -6,10 +6,18 @@ dashboard. The setup on the observer's side is one tarball + one command.
 ## For operators (you)
 
 ```bash
-./scripts/add-observer.sh <username> [iata]
+./scripts/add-observer.sh <username> [iata]              # USB-radio variant
+./scripts/add-observer.sh --proxy <username> [iata]      # meshcore-proxy variant
 ```
 
-This:
+The `--proxy` variant is for observers who already run
+[`rgregg/meshcore-proxy`](https://github.com/rgregg/meshcore-proxy) on their
+host (e.g. for the Meshcore companion app or Home Assistant). The bundle
+attaches as a second, read-only TCP client to the same proxy — their
+existing setup is untouched, no new radio needed. The default (no flag)
+generates a bundle that talks to a USB-attached radio directly.
+
+Either way, the script:
 
 1. Generates a bcrypt-hashed credential and writes it to
    `mosquitto/passwords` (gitignored).

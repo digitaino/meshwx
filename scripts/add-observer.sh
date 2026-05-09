@@ -1,20 +1,35 @@
 #!/usr/bin/env bash
 # Add (or rotate) an observer credential and produce a turnkey bundle the
-# operator can hand over. The bundle contains a docker-compose.yml, a
-# pre-filled config.toml, and a README — the observer extracts and runs
-# `docker compose up -d`.
+# operator can hand off. The bundle contains a docker-compose.yml, the
+# pre-filled config (TOML or env), and a README — the observer extracts
+# and runs `docker compose up -d`.
+#
+# Two bundle flavors:
+#   (default)  — observer connects directly to a USB radio
+#                (templates/observer/, uses Cisien/meshcoretomqtt)
+#   --proxy    — observer connects to an existing meshcore-proxy TCP
+#                endpoint (templates/observer-tcp/). Use when the friend
+#                already runs something like rgregg/meshcore-proxy
+#                against their radio for the Meshcore app or HA.
 #
 # Usage:
-#   ./scripts/add-observer.sh <username> [iata]
-#   ./scripts/add-observer.sh <username> <iata> <password>   # explicit pwd
+#   ./scripts/add-observer.sh [--proxy] <username> [iata] [password]
 #
 # Defaults: iata=AUS, password=$(openssl rand -hex 16).
 # Run from the repo root.
 
 set -euo pipefail
 
+VARIANT="usb"
+TEMPLATE_DIR="templates/observer"
+if [[ "${1:-}" == "--proxy" ]]; then
+  VARIANT="proxy"
+  TEMPLATE_DIR="templates/observer-tcp"
+  shift
+fi
+
 if [[ $# -lt 1 || $# -gt 3 ]]; then
-  echo "usage: $0 <username> [iata] [password]" >&2
+  echo "usage: $0 [--proxy] <username> [iata] [password]" >&2
   exit 1
 fi
 
@@ -23,7 +38,6 @@ IATA="${2:-AUS}"
 PASSWORD="${3:-$(openssl rand -hex 16)}"
 
 PASSWORD_FILE="mosquitto/passwords"
-TEMPLATE_DIR="templates/observer"
 BUNDLE_DIR="out/observer-bundles/$USERNAME"
 
 if [[ ! -f "$PASSWORD_FILE" ]]; then
@@ -50,18 +64,22 @@ else
   RELOAD_NOTE="(mosquitto container not running — start the stack to apply)"
 fi
 
-# Generate the bundle.
+# Generate the bundle. We copy the whole template tree so any extra files
+# (e.g. observer.py and Dockerfile in the proxy variant) come along.
 rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR"
-cp "$TEMPLATE_DIR/docker-compose.yml" "$BUNDLE_DIR/docker-compose.yml"
-cp "$TEMPLATE_DIR/README.md"          "$BUNDLE_DIR/README.md"
+cp -R "$TEMPLATE_DIR"/. "$BUNDLE_DIR"/
 
-# Fill in the config.toml placeholders.
-sed \
-  -e "s|__USERNAME__|$USERNAME|g" \
-  -e "s|__PASSWORD__|$PASSWORD|g" \
-  -e "s|__IATA__|$IATA|g" \
-  "$TEMPLATE_DIR/config.toml" > "$BUNDLE_DIR/config.toml"
+# Substitute placeholders in every file (config.toml or docker-compose.yml).
+find "$BUNDLE_DIR" -type f \( -name "*.toml" -o -name "docker-compose.yml" \) -print0 |
+  while IFS= read -r -d '' f; do
+    sed -i.bak \
+      -e "s|__USERNAME__|$USERNAME|g" \
+      -e "s|__PASSWORD__|$PASSWORD|g" \
+      -e "s|__IATA__|$IATA|g" \
+      "$f"
+    rm -f "$f.bak"
+  done
 
 # Tarball for easy hand-off.
 TARBALL="out/observer-bundles/$USERNAME.tar.gz"
@@ -69,9 +87,9 @@ tar -czf "$TARBALL" -C "out/observer-bundles" "$USERNAME"
 
 cat <<EOF
 
-Observer added: $USERNAME (iata=$IATA) $RELOAD_NOTE
+Observer added: $USERNAME (iata=$IATA, variant=$VARIANT) $RELOAD_NOTE
 
-  bundle:   $BUNDLE_DIR/   ($BUNDLE_DIR/{docker-compose.yml,config.toml,README.md})
+  bundle:   $BUNDLE_DIR/
   tarball:  $TARBALL
   username: $USERNAME
   password: $PASSWORD
