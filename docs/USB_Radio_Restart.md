@@ -1,0 +1,78 @@
+# USB Radio Restart Guide
+
+When the USB radio is disconnected and reconnected (or the Mac restarts), the
+meshcore-weather container will keep running but silently fail to send messages.
+The symptom is `Binary send failed on data ch 6: {'reason': 'no_event_received'}`
+in the container logs.
+
+## Quick fix
+
+From the `meshcore-weather` project directory:
+
+```bash
+docker compose up --build --force-recreate -d
+```
+
+The `--force-recreate` flag is important — without it Docker may see no image
+changes and skip the restart. The socat bridge (TCP:4403 <-> serial) stays
+running and reconnects automatically when the USB device reappears. Only the
+container needs a recreate to re-establish the connection through socat.
+
+## How to confirm it's working
+
+```bash
+docker logs meshcore-weather --tail 20
+```
+
+You should see:
+
+```
+Connecting to Meshcore radio via TCP host.docker.internal:4403
+Listening on channel 3 (#digitaino-wx-bot)
+Data channel 6 (#aus-meshwx-v4)
+Discovery channel 5 (#meshwx-discover)
+Sent advertisement (flood)
+Meshcore radio connected.
+```
+
+If you see `Sent ch6: XXB` lines appearing every few minutes, data is flowing.
+
+## How to tell it's broken
+
+```bash
+docker logs meshcore-weather --tail 50 | grep -i "warn\|error\|fail"
+```
+
+If you see repeated lines like:
+
+```
+WARNING: Binary send failed on data ch 6: {'reason': 'no_event_received'}
+```
+
+...the serial connection is dead and the container needs a restart.
+
+## If socat also died
+
+The socat bridge is what forwards TCP port 4403 to the USB serial device. It
+normally survives USB reconnects, but if it's not running:
+
+```bash
+# Check if socat is alive
+lsof -i :4403
+
+# If nothing shows up, restart it:
+socat TCP-LISTEN:4403,reuseaddr,fork OPEN:/dev/cu.usbserial-0001,raw,echo=0,ispeed=115200,ospeed=115200 &
+```
+
+Then restart the container as above.
+
+## USB device not showing up at all
+
+If `/dev/cu.usbserial-0001` doesn't exist after reconnecting the cable:
+
+```bash
+ls /dev/cu.usb*
+```
+
+If nothing appears, the radio isn't being recognized by macOS. Try a different
+USB port or cable.
