@@ -76,3 +76,40 @@ ls /dev/cu.usb*
 
 If nothing appears, the radio isn't being recognized by macOS. Try a different
 USB port or cable.
+
+## CoreScope MQTT bridge
+
+The stack now includes a `corescope` container alongside `meshcore-weather`.
+It runs CoreScope (a meshcore packet analyzer with web dashboard) and its
+built-in Mosquitto broker. meshcore-weather publishes raw RX packets to that
+broker so CoreScope can decode and visualize them — it's a passive piggyback,
+no extra radio writes.
+
+- **Dashboard**: <http://localhost:8082>
+- **Broker**: `corescope:1883` inside the Docker network, also exposed on the
+  host as `localhost:1883` for debugging with `mosquitto_sub`.
+- **Topic**: `meshcore/AUS/<radio-pubkey>/packets` — JSON in the
+  Cisien/CoreScope format.
+
+### Toggling MQTT publishing
+
+Set `MCW_MQTT_ENABLED` in `.env`:
+
+- `false` — bot runs as before, no MQTT traffic, CoreScope sees nothing.
+- `true` — bot publishes every received RF packet.
+
+After flipping the value, run `docker compose up --build --force-recreate -d`.
+
+### Verifying it's flowing
+
+```bash
+# stats from CoreScope
+curl -s http://localhost:8082/api/stats | python3 -m json.tool
+
+# raw packets on the broker
+mosquitto_sub -h localhost -t 'meshcore/#' -v
+```
+
+If the bot ever stops working after enabling MQTT, set
+`MCW_MQTT_ENABLED=false` and recreate — MQTT is fail-soft and disabled by
+default, so this is a safe rollback.

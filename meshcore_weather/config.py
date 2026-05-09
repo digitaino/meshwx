@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     # Admin: pubkey prefix of admin user (can run admin DM commands)
     admin_key: str = ""
 
+    # MQTT: optional fire-and-forget publishing of received RF packets to a
+    # broker for downstream consumers (e.g. CoreScope). Disabled by default;
+    # turn on only after verifying the bot still works with mqtt_enabled=False.
+    mqtt_enabled: bool = False
+    mqtt_host: str = "corescope"  # Docker service name of the CoreScope container
+    mqtt_port: int = 1883
+    mqtt_topic_prefix: str = "meshcore"
+    mqtt_iata: str = "AUS"
+
     # Logging
     log_level: str = "INFO"
 

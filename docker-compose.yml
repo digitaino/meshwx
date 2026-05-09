@@ -15,8 +15,27 @@ services:
       - MCW_SERIAL_PORT=tcp://host.docker.internal:4403
       # Use host Ollama (has GPU access, much faster than Docker Ollama)
       - MCW_OLLAMA_URL=http://host.docker.internal:11434/api/generate
+      # MQTT publishing target (CoreScope's built-in broker)
+      - MCW_MQTT_HOST=corescope
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # No depends_on: corescope. The bot must start (and keep running) even
+    # if CoreScope is down — MQTT publishing is fail-soft.
+
+  corescope:
+    image: ghcr.io/kpa-clawbot/corescope:latest
+    container_name: corescope
+    restart: unless-stopped
+    ports:
+      - "8082:80"      # CoreScope web UI (Caddy)
+      - "1883:1883"    # MQTT broker, also reachable on host for mosquitto_sub
+    volumes:
+      - corescope-data:/app/data
+    environment:
+      - NODE_ENV=production
+      - DISABLE_MOSQUITTO=false
+      - DISABLE_CADDY=false
 
 volumes:
   weather-data:
+  corescope-data:

@@ -12,6 +12,7 @@ from typing import Any
 from meshcore import MeshCore, EventType
 
 from meshcore_weather.config import settings
+from meshcore_weather.mqtt import MqttPublisher
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class MeshcoreRadio:
         self._advert_handler: Callable | None = None
         self._advert_task: asyncio.Task | None = None
         self._contacts_task: asyncio.Task | None = None
+        self._mqtt: MqttPublisher | None = None
         # Shared send lock — prevents the scheduler and on-demand
         # request handler from interleaving messages on the data channel.
         # Without this, a client DM triggering respond_to_data_request
@@ -138,6 +140,26 @@ class MeshcoreRadio:
 
         logger.info("Meshcore radio connected. Node: %s", self._mc.self_info.get("adv_name", "?"))
 
+        # Optional MQTT publishing of raw RX packets (CoreScope etc).
+        # Done last so any failure here cannot prevent radio startup.
+        if settings.mqtt_enabled:
+            try:
+                pubkey = self._mc.self_info.get("public_key", "") or ""
+                if pubkey:
+                    self._mqtt = MqttPublisher(
+                        host=settings.mqtt_host,
+                        port=settings.mqtt_port,
+                        topic_prefix=settings.mqtt_topic_prefix,
+                        iata=settings.mqtt_iata,
+                        pubkey=pubkey,
+                    )
+                    self._mc.subscribe(EventType.RX_LOG_DATA, self._on_rx_log)
+                    logger.info("MQTT publishing enabled for pubkey %s", pubkey[:12])
+                else:
+                    logger.warning("MQTT enabled but no pubkey from radio — skipping")
+            except Exception:
+                logger.exception("MQTT setup failed (non-fatal, bot continues)")
+
     async def _create_channel(self, channel_name: str) -> int | None:
         """Create a channel on the first free or reusable slot. Returns index or None."""
         slots: dict[int, str] = {}
@@ -203,6 +225,8 @@ class MeshcoreRadio:
                     pass
         if self._mc:
             await self._mc.disconnect()
+        if self._mqtt:
+            self._mqtt.close()
         logger.info("Meshcore radio disconnected")
 
     # -- Sending --
@@ -361,6 +385,15 @@ class MeshcoreRadio:
                 await self._dm_handler(pubkey_prefix, sender_name, text)
             except Exception:
                 logger.exception("Error in DM handler")
+
+    async def _on_rx_log(self, event) -> None:
+        """Forward a raw RX_LOG_DATA event to MQTT. Never raises."""
+        if self._mqtt is None:
+            return
+        try:
+            self._mqtt.publish_packet(event.payload)
+        except Exception:
+            logger.exception("MQTT publish failed (non-fatal)")
 
     async def _on_advert(self, event) -> None:
         """Handle an incoming advertisement from another node."""

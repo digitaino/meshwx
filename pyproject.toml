@@ -25,6 +25,7 @@ dependencies = [
     # tzdata package for the IANA timezone database.
     "pytz>=2024.1",
     "tzdata>=2024.1",
+    "paho-mqtt>=2.0",
 ]
 
 [project.optional-dependencies]
