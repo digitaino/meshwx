@@ -91,6 +91,14 @@ fi
 TARBALL="out/observer-bundles/$USERNAME.tar.gz"
 tar -czf "$TARBALL" -C "out/observer-bundles" "$USERNAME"
 
+if [[ "$VARIANT" == "proxy" ]]; then
+  RUN_HINT='sudo ./install.sh         # production install (systemd-managed, recommended)
+  # or: docker compose up -d   # if they prefer Docker
+  # or: ./run-native.sh        # foreground test'
+else
+  RUN_HINT='docker compose up -d'
+fi
+
 cat <<EOF
 
 Observer added: $USERNAME (iata=$IATA, variant=$VARIANT) $RELOAD_NOTE
@@ -104,7 +112,7 @@ Send the tarball to the observer. They run:
 
   tar xzf $USERNAME.tar.gz
   cd $USERNAME
-  docker compose up -d
+  $RUN_HINT
 
 Done.
 EOF

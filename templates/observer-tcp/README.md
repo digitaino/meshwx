@@ -6,69 +6,83 @@ your radio. We attach as a second, **read-only** TCP client to the
 same proxy — nothing about your existing setup changes, no serial
 conflicts, no new radio.
 
-You have two ways to run it; pick whichever fits your host. Both
-produce identical behavior.
+Three install paths, in increasing order of "set and forget":
 
-## Option 1: Docker (simplest if you already have Docker)
+1. **`./run-native.sh`** — quick test in the foreground; Ctrl-C to stop.
+2. **`docker compose up -d`** — Docker, restarts on reboot.
+3. **`sudo ./install.sh`** — production install on a Pi with systemd.
+   Survives reboots, restarts on failure, runs as a hardened
+   non-root system user. **Recommended for permanent use.**
+
+Pick one. They're not exclusive but you only need one.
+
+## Option 1: Quick test (foreground)
+
+```bash
+./run-native.sh              # Ctrl-C to stop
+```
+
+`run-native.sh` creates a `.venv/` next to itself on first run (~30s),
+then runs `observer.py`. Use this to confirm everything works before
+committing to a permanent install.
+
+## Option 2: Docker
 
 ```bash
 docker compose up -d
-docker compose logs -f       # confirm it's running
+docker compose logs -f
 ```
 
 If meshcore-proxy is on a different machine, edit `docker-compose.yml`
 and change `PROXY_HOST=127.0.0.1` to its IP/hostname.
 
-## Option 2: Native Python (no Docker)
-
-This is the lightest path on a Pi. Requires Python 3.10+.
+## Option 3: Production install (recommended for Pi)
 
 ```bash
-./run-native.sh              # one-liner: makes a venv, installs, runs
+sudo ./install.sh
 ```
 
-(Your `.env` is already filled in by the operator's bundle generator; no
-manual edits needed unless meshcore-proxy is on a different host.)
+This is the same install pattern Cisien's `meshcoretomqtt` uses
+(`/opt/<service>/`, dedicated system user, hardened systemd unit). It:
 
-`run-native.sh` creates a `.venv/` next to itself on first run (~30s),
-then runs `observer.py` in the foreground. Stop with Ctrl-C.
+- Creates an unprivileged system user `aus-observer` (no shell, no home).
+- Installs the code and a Python venv to `/opt/aus-observer/`.
+- Installs `aus-observer.service` to systemd, hardened with
+  `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`,
+  `PrivateTmp=true`, `LockPersonality=true`, `RestrictRealtime=true`,
+  `RestrictSUIDSGID=true`.
+- Sets `Restart=always`, `RestartSec=10` so transient failures
+  self-heal without manual intervention.
+- Waits for `time-sync.target` and `network-online.target` so the
+  service starts in the right order at boot.
+- Enables and starts the service immediately.
 
-For permanent install on a Pi, create a systemd unit (replace
-`/home/pi/aus-observer` with the actual path):
-
-```ini
-# /etc/systemd/system/aus-observer.service
-[Unit]
-Description=AUS Meshcore observer
-After=network-online.target meshcore-proxy.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/home/pi/aus-observer
-ExecStart=/home/pi/aus-observer/run-native.sh
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Then:
+Logs go to journald:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now aus-observer
-sudo journalctl -u aus-observer -f
+sudo journalctl -u aus-observer -f      # follow live
+sudo systemctl status aus-observer      # current state
+```
+
+To rotate the password later, get a fresh `.env` from the operator
+and replace `/opt/aus-observer/.env`, then:
+
+```bash
+sudo systemctl restart aus-observer
+```
+
+To uninstall (removes service, files, and the system user):
+
+```bash
+sudo ./uninstall.sh
 ```
 
 ## Confirming it works
 
-Whichever option you pick, you should see log lines about:
+Whichever option you picked, the logs should show:
 1. Connecting to the proxy at `127.0.0.1:5000`
 2. Reading the radio's pubkey
-3. "MQTT connected"
+3. `MQTT connected (rc=Success)`
 
 Within ~30 seconds you'll appear on the AUS Meshcore dashboard under
 your IATA code.
@@ -83,6 +97,12 @@ your IATA code.
   `PROXY_HOST:PROXY_PORT`. Verify with `nc -zv 127.0.0.1 5000`.
 - **`Connection Refused: not authorised` (MQTT)**: the operator's
   credential for you is wrong or revoked. Ping them.
+- **Service keeps restarting** (option 3): inspect journald,
+  `sudo journalctl -u aus-observer -n 100`. Most often this is
+  meshcore-proxy not yet up at boot — it'll settle within a couple
+  of `RestartSec` cycles, but you can add an explicit
+  `After=meshcore-proxy.service` to the unit if your meshcore-proxy
+  also runs under systemd.
 
 ## Privacy
 
