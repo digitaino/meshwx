@@ -31,6 +31,7 @@ services:
       - "1883:1883"    # MQTT broker, also reachable on host for mosquitto_sub
     volumes:
       - corescope-data:/app/data
+      - ./corescope-config.json:/app/data/config.json:ro
     environment:
       - NODE_ENV=production
       - DISABLE_MOSQUITTO=false

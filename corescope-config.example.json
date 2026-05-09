@@ -1,0 +1,41 @@
+{
+  "port": 3000,
+  "apiKey": "REPLACE_WITH_OUTPUT_OF_openssl_rand_-hex_24",
+
+  "branding": {
+    "siteName": "AUS Meshcore",
+    "tagline": "Austin Meshcore network analyzer"
+  },
+
+  "mqttSources": [
+    {
+      "name": "local",
+      "broker": "mqtt://localhost:1883",
+      "topics": ["meshcore/#"]
+    }
+  ],
+
+  "channelKeys": {
+    "Public": "8b3387e9c5cdea6ac9e5edbaa115cd72"
+  },
+  "hashChannels": [
+    "#aus-meshwx-v4",
+    "#digitaino-wx-bot",
+    "#meshwx-discover"
+  ],
+
+  "defaultRegion": "AUS",
+  "regions": {
+    "AUS": "Austin, TX"
+  },
+  "mapDefaults": {
+    "center": [30.27, -97.74],
+    "zoom": 10
+  },
+
+  "retention": {
+    "nodeDays": 7,
+    "observerDays": 14,
+    "packetDays": 30
+  }
+}
