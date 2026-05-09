@@ -92,10 +92,8 @@ TARBALL="out/observer-bundles/$USERNAME.tar.gz"
 tar -czf "$TARBALL" -C "out/observer-bundles" "$USERNAME"
 
 if [[ "$VARIANT" == "proxy" ]]; then
-  RUN_HINT='./install-user.sh        # no sudo — user-mode systemd (recommended)
-  # or: sudo ./install.sh      # system-wide install with hardening
-  # or: docker compose up -d   # if they prefer Docker
-  # or: ./run-native.sh        # foreground test'
+  RUN_HINT='./run-native.sh          # foreground test first
+  # then: sudo ./install.sh    # production install (systemd-managed)'
 else
   RUN_HINT='docker compose up -d'
 fi

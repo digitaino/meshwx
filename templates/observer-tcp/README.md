@@ -6,72 +6,31 @@ your radio. We attach as a second, **read-only** TCP client to the
 same proxy — nothing about your existing setup changes, no serial
 conflicts, no new radio.
 
-Four install paths. Pick whichever fits — they're not exclusive but you
-only need one:
+Two install paths:
 
-1. **`./run-native.sh`** — quick test in the foreground; Ctrl-C to stop.
-   Zero install, no persistence.
-2. **`./install-user.sh`** — **sudoless.** Registers a user-level systemd
-   service under your own account. Survives reboots if you enable
-   linger (one sudo command, optional). Best path if you'd rather not
-   give an installer root.
-3. **`docker compose up -d`** — Docker, restarts on reboot. Needs
-   Docker installed; auto-restart handled by the Docker daemon.
-4. **`sudo ./install.sh`** — system install. Dedicated `aus-observer`
-   system user under `/opt/`, hardened systemd unit. Most robust but
-   needs root once.
+1. **`./run-native.sh`** — quick foreground test, Ctrl-C to stop. Use
+   this first to confirm everything works before installing.
+2. **`sudo ./install.sh`** — production install. systemd-managed,
+   restarts on failure, survives reboots, runs as a hardened
+   non-root system user. **The recommended path for permanent use.**
 
-## Option 1: Quick test (foreground)
+## Option 1: Foreground test
 
 ```bash
-./run-native.sh              # Ctrl-C to stop
+./run-native.sh
 ```
 
 `run-native.sh` creates a `.venv/` next to itself on first run (~30s),
-then runs `observer.py`. Use this to confirm everything works before
-committing to a permanent install.
+then runs `observer.py` in the foreground. Stop with Ctrl-C.
 
-## Option 2: Sudoless user-mode systemd (recommended for Pi)
+You should see log lines about:
+1. Connecting to the proxy at `127.0.0.1:5000`
+2. Reading the radio's pubkey
+3. `MQTT connected (rc=Success)`
 
-```bash
-./install-user.sh
-```
+If those appear, you're good — move to option 2 for permanent install.
 
-This registers a user-level systemd unit at
-`~/.config/systemd/user/aus-observer.service` and installs the code +
-venv at `~/.local/share/aus-observer/`. No root, no `/opt`, no system
-user. It restarts automatically on failure and watches journald with:
-
-```bash
-journalctl --user -u aus-observer -f
-systemctl --user status aus-observer
-```
-
-By default user services only run **while you're logged in**. To make
-the service start at boot and survive logouts, enable linger (one
-sudo, only ever once):
-
-```bash
-sudo loginctl enable-linger $USER
-```
-
-If you skip lingering, just keep your SSH session open or restart the
-service manually after each reboot with
-`systemctl --user start aus-observer`.
-
-To uninstall: `./uninstall-user.sh`.
-
-## Option 3: Docker
-
-```bash
-docker compose up -d
-docker compose logs -f
-```
-
-If meshcore-proxy is on a different machine, edit `docker-compose.yml`
-and change `PROXY_HOST=127.0.0.1` to its IP/hostname.
-
-## Option 4: System install with sudo
+## Option 2: Production install
 
 ```bash
 sudo ./install.sh
@@ -99,28 +58,23 @@ sudo journalctl -u aus-observer -f      # follow live
 sudo systemctl status aus-observer      # current state
 ```
 
-To rotate the password later, get a fresh `.env` from the operator
-and replace `/opt/aus-observer/.env`, then:
+## Configuration changes after install
+
+If `meshcore-proxy` is on a different machine, edit `/opt/aus-observer/.env`
+and change `PROXY_HOST=127.0.0.1` to its IP/hostname, then:
 
 ```bash
 sudo systemctl restart aus-observer
 ```
+
+To rotate the password later, replace `/opt/aus-observer/.env` with the
+new contents from the operator and restart the same way.
 
 To uninstall (removes service, files, and the system user):
 
 ```bash
 sudo ./uninstall.sh
 ```
-
-## Confirming it works
-
-Whichever option you picked, the logs should show:
-1. Connecting to the proxy at `127.0.0.1:5000`
-2. Reading the radio's pubkey
-3. `MQTT connected (rc=Success)`
-
-Within ~30 seconds you'll appear on the AUS Meshcore dashboard under
-your IATA code.
 
 ## Troubleshooting
 
@@ -132,12 +86,10 @@ your IATA code.
   `PROXY_HOST:PROXY_PORT`. Verify with `nc -zv 127.0.0.1 5000`.
 - **`Connection Refused: not authorised` (MQTT)**: the operator's
   credential for you is wrong or revoked. Ping them.
-- **Service keeps restarting** (option 3): inspect journald,
+- **Service keeps restarting**: inspect journald,
   `sudo journalctl -u aus-observer -n 100`. Most often this is
   meshcore-proxy not yet up at boot — it'll settle within a couple
-  of `RestartSec` cycles, but you can add an explicit
-  `After=meshcore-proxy.service` to the unit if your meshcore-proxy
-  also runs under systemd.
+  of `RestartSec` cycles.
 
 ## Privacy
 
