@@ -40,3 +40,4 @@ Thumbs.db
 logs/
 corescope-config.json
 mosquitto/passwords
+out/

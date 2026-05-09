@@ -1,0 +1,20 @@
+# AUS Meshcore observer — drop your Meshcore radio in over USB and run:
+#   docker compose up -d
+#
+# This builds Cisien's meshcoretomqtt directly from GitHub on first run
+# (~2 minutes; cached after that). All connection details live in
+# config.toml — no env vars to set.
+#
+# If your radio enumerates as something other than /dev/ttyUSB0 (e.g.
+# /dev/ttyACM0, or on macOS /dev/cu.usbserial-XXXX), edit the
+# `devices:` line below and the `ports = [...]` line in config.toml.
+
+services:
+  observer:
+    build: https://github.com/Cisien/meshcoretomqtt.git#main
+    container_name: aus-mesh-observer
+    restart: unless-stopped
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+    volumes:
+      - ./config.toml:/etc/mctomqtt/config.toml:ro
