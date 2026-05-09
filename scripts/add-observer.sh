@@ -70,8 +70,8 @@ rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR"
 cp -R "$TEMPLATE_DIR"/. "$BUNDLE_DIR"/
 
-# Substitute placeholders in every file (config.toml or docker-compose.yml).
-find "$BUNDLE_DIR" -type f \( -name "*.toml" -o -name "docker-compose.yml" \) -print0 |
+# Substitute placeholders in every file that might carry credentials.
+find "$BUNDLE_DIR" -type f \( -name "*.toml" -o -name "docker-compose.yml" -o -name ".env.template" \) -print0 |
   while IFS= read -r -d '' f; do
     sed -i.bak \
       -e "s|__USERNAME__|$USERNAME|g" \
@@ -80,6 +80,12 @@ find "$BUNDLE_DIR" -type f \( -name "*.toml" -o -name "docker-compose.yml" \) -p
       "$f"
     rm -f "$f.bak"
   done
+
+# If the bundle ships a .env.template, materialize it as .env so the
+# observer can run-native.sh immediately without an extra cp step.
+if [[ -f "$BUNDLE_DIR/.env.template" ]]; then
+  mv "$BUNDLE_DIR/.env.template" "$BUNDLE_DIR/.env"
+fi
 
 # Tarball for easy hand-off.
 TARBALL="out/observer-bundles/$USERNAME.tar.gz"
