@@ -74,20 +74,44 @@ fi
 
 if [[ "$VARIANT" == "firmware" ]]; then
   # No bundle. Print a paste-ready block for the radio's serial console.
+  # We pre-generate an Ed25519 seed and admin password so identity and
+  # remote-management auth are stable from day one. The observer can edit
+  # the WiFi placeholders + the radio name before pasting.
+  PRVKEY=$(openssl rand -hex 32)
+  ADMIN_PWD=$(openssl rand -hex 12)
+  RADIO_NAME="aus-obs-$USERNAME"
+
+  # Austin Meshcore RF parameters: 910.525 MHz / 62.5 kHz / SF7 / CR5.
+  # Override these in the paste block if your local mesh uses different
+  # values. set tx 22 = 22 dBm (max for this hardware).
+  RADIO_RF="910.525,62.5,7,5"
+  RADIO_TX="22"
+
   cat <<EOF
 
 Observer added: $USERNAME (iata=$IATA, variant=firmware) $RELOAD_NOTE
 
-  username: $USERNAME
-  password: $PASSWORD
+  mqtt username:  $USERNAME
+  mqtt password:  $PASSWORD
+  admin password: $ADMIN_PWD     ← needed for any future remote-management
+  ed25519 seed:   $PRVKEY
+                  ↑ keep this if you ever need to re-flash and
+                    preserve the radio's mesh identity (pubkey).
 
 Send the observer this setup guide:
   https://github.com/digitaino/meshwx/blob/main/corescope/Observer_Setup_Firmware.md
 
-And this paste-ready block — they'll paste it into their radio's
-serial console at 115200 baud (after replacing the WiFi placeholders):
+And this paste-ready block — they paste it into their radio's serial
+console at 115200 baud (or via https://config.meshcore.io). They edit
+YOUR_WIFI_SSID and YOUR_WIFI_PASSWORD before pasting; everything else
+is already filled in.
 
   ───────────────────────  paste from here  ───────────────────────
+  set prv.key $PRVKEY
+  set radio $RADIO_RF
+  set tx $RADIO_TX
+  set name $RADIO_NAME
+  set mqtt.iata $IATA
   set wifi.ssid YOUR_WIFI_SSID
   set wifi.pwd  YOUR_WIFI_PASSWORD
   set mqtt3.preset custom
@@ -95,10 +119,16 @@ serial console at 115200 baud (after replacing the WiFi placeholders):
   set mqtt3.port 443
   set mqtt3.username $USERNAME
   set mqtt3.password $PASSWORD
-  set mqtt.iata $IATA
-  save
+  set repeat off
+  password $ADMIN_PWD
   reboot
   ────────────────────────  to here  ──────────────────────────────
+
+After the radio reboots, verify with:
+
+  get wifi.status      → expect: connected, with an IP
+  get mqtt3.preset     → expect: custom
+  get public.key       → tell the operator this so they can find you
 
 Done.
 EOF

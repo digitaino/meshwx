@@ -52,9 +52,15 @@ That's where you'll paste the block. Skip to step 2.
 ## 2. Paste the configuration block
 
 The operator's `add-observer.sh --firmware <your-name>` produces a
-block that looks like this — your block has real credentials:
+block like this — your block has real credentials substituted by the
+script:
 
 ```
+set prv.key <64-hex-Ed25519-seed>
+set radio 910.525,62.5,7,5
+set tx 22
+set name aus-obs-<your-name>
+set mqtt.iata AUS
 set wifi.ssid YOUR_WIFI_SSID
 set wifi.pwd  YOUR_WIFI_PASSWORD
 set mqtt3.preset custom
@@ -62,21 +68,44 @@ set mqtt3.server mqtt.digitaino.com
 set mqtt3.port 443
 set mqtt3.username <your-issued-username>
 set mqtt3.password <your-issued-password>
-set mqtt.iata AUS
-save
+set repeat off
+password <your-issued-admin-password>
 reboot
 ```
 
-**Before pasting, replace `YOUR_WIFI_SSID` and `YOUR_WIFI_PASSWORD`**
-with your actual WiFi credentials. The MQTT credentials you leave as
-the operator gave them.
+What each line does:
 
-Paste the entire block at the prompt. Each `set` line gets
-acknowledged in turn. `save` commits the configuration to flash.
-`reboot` restarts the radio.
+- **`set prv.key`** — pins the radio's Ed25519 keypair to a specific
+  seed so the pubkey (the radio's identity on the mesh) stays
+  stable. If you ever re-flash, paste the same line and your
+  observer entry on the dashboard continues uninterrupted.
+- **`set radio 910.525,62.5,7,5`** — Austin Meshcore RF parameters:
+  frequency `910.525 MHz`, bandwidth `62.5 kHz`, spreading factor
+  `7`, coding rate `5`. Without matching values, the radio joins
+  WiFi and MQTT fine but never overhears any LoRa traffic.
+- **`set tx 22`** — TX power, 22 dBm (max for this hardware).
+- **`set name`** — the radio's advertised name on the mesh. Other
+  nodes will see this when your radio adverts.
+- **`set wifi.ssid` / `set wifi.pwd`** — the only fields you have to
+  edit. WiFi password accepts spaces on the rest of the line:
+  `set wifi.pwd my super secret` works.
+- **`set mqtt3.*`** — points the radio at our broker on slot 3. We
+  use slot 3 so observers can keep slots 1–2 for other presets
+  (LetsMesh etc.) if they want.
+- **`set repeat off`** — the radio observes traffic and publishes
+  it to MQTT, but does NOT forward floods over the air. This keeps
+  the mesh's air time clean — most observer locations have plenty
+  of repeaters around them already. If your deployment is in a
+  coverage gap and the local mesh would benefit from another
+  forwarder, you can flip this to `on` later.
+- **`password`** — sets the radio's admin password, which gates any
+  remote-management commands sent over the mesh later. Note: per
+  the firmware docs, this requires the following `reboot` to take
+  effect.
+- **`reboot`** — restarts the radio so all settings take effect.
 
-If your WiFi password contains a literal space, the firmware accepts
-it on the rest of the line — `set wifi.pwd my super secret` works.
+Paste the entire block. Each `set` line gets acknowledged in turn,
+then the radio reboots.
 
 ## 3. Verify it's running
 
@@ -100,13 +129,19 @@ get mqtt.iata
 
 Expected: `custom`, `mqtt.digitaino.com`, your username, and `AUS`.
 
+```
+get public.key
+```
+
+This is your radio's pubkey — share it with the operator so they can
+find you on the dashboard.
+
 You can also watch the live log stream — the firmware prints `MQTT
 connected` (or equivalent) and then a brief log line per RX packet.
 
 ## 4. Operator confirms on the dashboard
 
-Tell the operator your radio's pubkey (the firmware logs it on boot,
-or you can query `get device.pubkey`). They'll run:
+Tell the operator your `get public.key` value. They'll run:
 
 ```
 corescope/scripts/list-observers.sh
@@ -115,6 +150,22 @@ corescope/scripts/list-observers.sh
 …and within ~30 seconds your row appears with `IATA = AUS`,
 `1H_PKTS` ticking up, and `AGE` in seconds. That's confirmation the
 end-to-end path is working.
+
+## 4a. Re-flashing later (preserve your identity)
+
+If you ever upgrade the firmware (say, a new release of the fork
+fixes a bug), the new image starts with a fresh keypair by default —
+which would make you appear on the dashboard as a brand new observer
+with no history.
+
+To keep continuity, save the `set prv.key <hex>` line from your
+original paste block somewhere safe. After re-flashing, re-paste the
+configuration block (or just the `set prv.key` line, then `reboot`).
+The radio derives the same pubkey from the same seed, so the
+dashboard treats it as the same observer continuing.
+
+If you ever lose the seed and the radio is still booting fine, you
+can read it back: `get prv.key`. Save the result.
 
 ## 5. Permanent deployment
 
@@ -142,10 +193,15 @@ entire observer.
     them; they'll regenerate the block with fresh creds.
 
 - **MQTT connects, but no packets show on the dashboard.**
-  - The radio's RF parameters (frequency, spreading factor,
-    bandwidth) need to match the local mesh, otherwise the radio
-    can't overhear traffic. This is a separate config done via the
-    same serial console; consult the upstream firmware docs.
+  - The radio's RF parameters need to match the local mesh, or
+    the radio can't overhear traffic. Verify with `get radio` —
+    expected for AUS Meshcore: `910.525,62.5,7,5`. Re-run
+    `set radio 910.525,62.5,7,5` if it differs.
+
+- **`get wifi.status` shows connected, broker says authenticated, but
+  the dashboard shows your observer with `1H_PKTS = 0`** — same root
+  cause as above. The radio is online but not on the right
+  frequency/SF/BW.
 
 - **Heltec V4-specific:** confirm the firmware was built with the V4
   variant. V3 firmware on V4 hardware may flash without errors but
