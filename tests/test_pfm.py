@@ -294,3 +294,91 @@ class TestPFMEncoderIntegration:
         from meshcore_weather.protocol.encoders import encode_forecast_from_pfm
         msg = encode_forecast_from_pfm(SAMPLE_PFM, "ZZZ999", issued_hours_ago=0)
         assert msg is None
+
+
+class TestMalformedPoint:
+    """A single malformed point must not abort the whole product (real EWX
+    PFM from 2026-09-13 had "09 1215 18" in one point's UTC header row)."""
+
+    def _product_with_bad_point(self, bad_header: str) -> str:
+        # Duplicate the sample's first point as a second point with a
+        # corrupted UTC header, then keep the real second point after it.
+        first_point = SAMPLE_PFM.split("TXZ192-110900-")[1].split("TXZ")[0]
+        bad_point = "TXZ204-110900-" + first_point.replace(
+            "Austin Bergstrom-Travis TX", "Hondo Airport-Medina TX"
+        )
+        good_utc = [l for l in bad_point.splitlines() if l.startswith("UTC 3hrly")][0]
+        bad_point = bad_point.replace(good_utc, bad_header)
+        head, rest = SAMPLE_PFM.split("TXZ192-110900-", 1)
+        return head + "TXZ192-110900-" + rest.replace("TXZ", bad_point + "TXZ", 1)
+
+    def test_run_together_hours_are_repaired(self):
+        text = self._product_with_bad_point(
+            "UTC 3hrly     21 00 03 06 09 12 15 18 21 00 03 06 09 1215 18 21 00 03 06 09 12"
+        )
+        points = parse_pfm(text)
+        hondo = find_point(points, zone="TXZ204")
+        assert hondo is not None
+        assert len([s for s in hondo.slots if s.interval_hours == 3]) == 22
+        assert find_point(points, zone="TXZ192") is not None
+
+    def test_impossible_hour_skips_only_that_point(self):
+        text = self._product_with_bad_point(
+            "UTC 3hrly     21 00 03 06 09 12 15 18 21 00 03 06 09 99 15 18 21 00 03 06 09 12"
+        )
+        points = parse_pfm(text)
+        assert find_point(points, zone="TXZ204") is None
+        assert find_point(points, zone="TXZ192") is not None
+        assert len(points) == len(parse_pfm(SAMPLE_PFM))
+
+
+class TestRealEWXProduct:
+    """Real KEWX PFM received over GOES-19 HRIT on 2026-09-13 18:51Z, trimmed
+    to the Austin Bergstrom point (clean) and the Hondo point (which has the
+    run-together "09 1215 18" header row). Public-domain NWS data."""
+
+    @pytest.fixture
+    def text(self):
+        from pathlib import Path
+        path = Path(__file__).parent / "fixtures" / "PFMEWX_20260913_1851Z.txt"
+        return path.read_bytes().decode("utf-8")
+
+    def test_both_tables_parsed_for_austin(self, text):
+        austin = find_point(parse_pfm(text), zone="TXZ192")
+        assert austin is not None
+        assert sum(1 for s in austin.slots if s.interval_hours == 3) == 22
+        assert sum(1 for s in austin.slots if s.interval_hours == 6) == 18
+
+    def test_six_hourly_table_anchored_on_its_date_row(self, text):
+        austin = find_point(parse_pfm(text), zone="TXZ192")
+        six = sorted(s.dt for s in austin.slots if s.interval_hours == 6)
+        # "Date 09/16 Thu 09/17/26 ..." / "CDT 6hrly 13 19 ..." / "UTC 6hrly 18 00 ..."
+        assert six[0] == datetime(2026, 9, 16, 18, tzinfo=timezone.utc)
+        assert six[-1] == datetime(2026, 9, 21, 0, tzinfo=timezone.utc)
+        three = sorted(s.dt for s in austin.slots if s.interval_hours == 3)
+        assert three[0] == datetime(2026, 9, 13, 21, tzinfo=timezone.utc)
+        assert three[-1] < six[0]
+
+    def test_seven_day_forecast_from_real_product(self, text):
+        austin = find_point(parse_pfm(text), zone="TXZ192")
+        days = downsample_to_daily(austin)
+        # Sun 9/13 is partial (3 slots); Mon 9/14 .. Sun 9/20 are full days.
+        assert len(days) == 7, f"got {len(days)} daily periods"
+        assert [d.day_offset for d in days] == [0, 1, 2, 3, 4, 5, 6]
+        assert all(d.high_f is not None and d.low_f is not None for d in days)
+
+    def test_glued_date_and_6hrly_header_is_split(self, text):
+        # New Braunfels: NWS dropped the newline between the second "Date"
+        # row and "CDT 6hrly". Before the repair the 6-hourly rows were
+        # applied on top of the 3-hourly columns (temps of 7 and 1 F).
+        nb = find_point(parse_pfm(text), zone="TXZ207")
+        assert nb is not None
+        assert sum(1 for s in nb.slots if s.interval_hours == 6) == 18
+        temps = [s.temp_f for s in nb.slots if s.temp_f is not None]
+        assert min(temps) > 60 and max(temps) <= 101
+        assert len(downsample_to_daily(nb)) == 7
+
+    def test_hondo_point_survives_bad_header(self, text):
+        hondo = find_point(parse_pfm(text), zone="TXZ204")
+        assert hondo is not None
+        assert sum(1 for s in hondo.slots if s.interval_hours == 3) == 22

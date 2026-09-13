@@ -145,9 +145,10 @@ _WARNING_PRODUCT_TYPES = {
     "SMW", "SWO", "DSW", "EWW", "SQW", "CFW",
     # River products (VTEC-based)
     "RVA",  # River Watch/Warning — flood stage warnings with VTEC
-    # SPC watch outlines (VTEC-based, have polygons)
-    "AWW",  # Area Weather Watch — SPC tornado/severe thunderstorm watch areas
+    # SPC watch products (VTEC-based). NOTE: "AWW" is the Airport Weather
+    # Warning (no VTEC, airport ops only) — not an SPC watch; do not add it.
     "WCN",  # Watch County Notification — counties in a watch
+    "WOU",  # Watch Outline Update — zone/county list for an SPC watch
     # Hurricane products (VTEC-based)
     "HLS",  # Hurricane Local Statement
 }
@@ -300,22 +301,34 @@ def _extract_warnings_pyiem(store: WeatherStore) -> list[dict]:
             continue
 
         for seg in parsed.segments:
-            entry = _segment_to_entry(seg, parsed, prod, now)
-            if entry is None:
-                continue
-            if entry["_dedup_key"] in seen:
-                continue
-            seen[entry["_dedup_key"]] = entry
-            del entry["_dedup_key"]
-            results.append(entry)
+            # A single segment can carry several VTEC events (e.g. one
+            # NEW + one CON line in the same NPW). Emit one entry per event;
+            # a segment without VTEC (SPS) yields a single entry.
+            vtecs = list(seg.vtec) if seg.vtec else [None]
+            for idx, vtec in enumerate(vtecs):
+                entry = _segment_to_entry(seg, parsed, prod, now, vtec=vtec, vtec_index=idx)
+                if entry is None:
+                    continue
+                if entry["_dedup_key"] in seen:
+                    continue
+                seen[entry["_dedup_key"]] = entry
+                del entry["_dedup_key"]
+                results.append(entry)
 
     return results
 
 
-def _segment_to_entry(seg, parsed, prod, now: datetime) -> dict | None:
-    """Convert a pyIEM product segment to a warning dict.
+def _segment_to_entry(
+    seg, parsed, prod, now: datetime, vtec=None, vtec_index: int = 0,
+) -> dict | None:
+    """Convert one VTEC event of a pyIEM product segment to a warning dict.
 
-    Returns None if the segment should be skipped (cancelled, expired, no
+    `vtec` selects which of the segment's VTEC lines this entry describes
+    (segments can carry more than one); None means "the first one", or the
+    non-VTEC path for products like SPS. `vtec_index` picks the matching
+    headline when the segment has one headline per event.
+
+    Returns None if the event should be skipped (cancelled, expired, no
     extractable data, etc.).
     """
     ugcs = [str(u) for u in seg.ugcs]
@@ -324,7 +337,8 @@ def _segment_to_entry(seg, parsed, prod, now: datetime) -> dict | None:
 
     # -- VTEC path (most warnings: TOR, SVR, SVS, FFW, WSW, etc.) --
     if seg.vtec:
-        vtec = seg.vtec[0]
+        if vtec is None:
+            vtec = seg.vtec[0]
         if vtec.action in _CANCEL_ACTIONS:
             return None
         expires_at = vtec.endts
@@ -378,7 +392,11 @@ def _segment_to_entry(seg, parsed, prod, now: datetime) -> dict | None:
 
     # Headline: prefer pyIEM's canonical ...HEADLINE... block.
     # Fall back to extracting ...TEXT... from the raw product if empty.
-    headline_raw = seg.headlines[0] if seg.headlines else ""
+    headlines = list(seg.headlines) if seg.headlines else []
+    if len(headlines) > vtec_index:
+        headline_raw = headlines[vtec_index]
+    else:
+        headline_raw = headlines[0] if headlines else ""
     if not headline_raw:
         headline_raw = _extract_headline_from_body(prod.raw_text)
     headline = _shorten_headline(headline_raw)

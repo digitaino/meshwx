@@ -1,0 +1,160 @@
+FOUS54 KEWX 131851
+PFMEWX
+
+Point Forecast Matrices
+National Weather Service Austin/San Antonio TX
+151 PM CDT Sun Sep 13 2026
+
+TXZ192-140900-
+Austin Bergstrom-Travis TX 
+30.19N  97.67W Elev. 462 ft
+151 PM CDT Sun Sep 13 2026
+
+Date           09/13/26      Mon 09/14/26            Tue 09/15/26            Wed
+CDT 3hrly     16 19 22 01 04 07 10 13 16 19 22 01 04 07 10 13 16 19 22 01 04 07
+UTC 3hrly     21 00 03 06 09 12 15 18 21 00 03 06 09 12 15 18 21 00 03 06 09 12
+
+Min/Max                      77         100          77         101          76
+Temp          99 94 86 81 79 78 85 95 99 93 85 81 79 78 85 96100 95 86 81 78 76
+Dewpt         70 71 73 75 76 76 77 72 69 70 73 75 76 76 77 72 69 69 73 75 75 75
+RH            39 47 65 82 91 94 77 48 38 47 67 82 91 94 77 46 37 43 65 82 91 97
+Wind dir       S SE  S  S  S  S  S  S  S SE  S  S  S  S  S  S SE SE SE  S  S SE
+Wind spd       9 11  9  8  5  3  8 10 10 11 11  8  6  4  9  9  9 12 11  6  2  1
+Wind gust                             20 21                      23            
+Clouds        FW SC FW FW SC SC FW FW SC FW CL SC B1 B1 FW CL FW FW FW FW SC B1
+PoP 12hr                      5          10           0           0           0
+QPF 12hr                      0           0           0           0           0
+Snow 12hr                 00-00       00-00       00-00                        
+Rain shwrs     S  S                                                            
+Tstms          S                                                               
+Heat           Y                    Y  Y                                       
+
+
+Date           09/16  Thu 09/17/26  Fri 09/18/26  Sat 09/19/26  Sun 09/20/26
+CDT 6hrly     13 19   01 07 13 19   01 07 13 19   01 07 13 19   01 07 13 19
+UTC 6hrly     18 00   06 12 18 00   06 12 18 00   06 12 18 00   06 12 18 00
+
+Max/Min          99      77    96      74    97      73    97      73    97
+Temp          94 92   82 77 91 89   80 74 93 92   79 73 93 92   79 74 93 91
+Dewpt         72 69   74 74 73 70   71 71 68 64   68 68 67 64   69 70 68 66
+PWind dir        SE      SE     E      SE     E       S    SE       S    SE
+Wind char        LT      LT    LT      LT    LT      LT    LT      LT    LT
+Avg clouds    SC SC   SC SC B1 SC   B1 SC SC FW   FW FW SC FW   FW FW SC FW
+PoP 12hr          5       0    30       5     5       0     5       5    10
+Rain shwrs                   C  S                                          
+Tstms                           S                                          
+
+$$
+TXZ192-140900-
+Austin Camp Mabry-Travis TX 
+30.32N  97.77W Elev. 597 ft
+151 PM CDT Sun Sep 13 2026
+
+Date           09/13/26      Mon 09/14/26            Tue 09/15/26            Wed
+CDT 3hrly     16 19 22 01 04 07 10 13 16 19 22 01 04 07 10 13 16 19 22 01 04 07
+UTC 3hrly     21 00 03 06 09 12 15 18 21 00 03 06 09 12 15 18 21 00 03 06 09 12
+
+Min/Max                      78         101          78         102          77
+Temp          99 95 87 82 79 78 85 96100 94 87 82 79 78 85 96101 96 87 82 79 77
+Dewpt         68 68 71 73 76 77 76 70 67 68 71 74 76 76 75 70 66 67 71 73 75 76
+RH            37 42 59 74 91 97 75 43 34 43 59 77 91 94 72 43 32 39 59 74 88 97
+Wind dir       S SE SE  S  S  S  S  S  S SE  S  S  S  S  S  S  S SE SE  S  S  N
+Wind spd       6  8  8  6  5  3  5  8  8  9  9  6  5  4  6  6  6  9  9  5  3  0
+Wind gust     17 18 18             18 19 20 20             18 18 20 20         
+Clouds        FW SC FW FW SC B1 FW FW FW FW CL SC B1 B1 FW FW FW FW FW CL SC B1
+PoP 12hr                      5          10           0           0           0
+QPF 12hr                      0           0           0           0           0
+Snow 12hr                 00-00       00-00       00-00                        
+Heat           Y                    Y  Y                                       
+
+
+Date           09/16  Thu 09/17/26  Fri 09/18/26Sat 09/19/26  Sun 09/20/26
+CDT 6hrly     13 19   01 07 13 19   01 07 13 19   01 07 13 19   01 07 13 19
+UTC 6hrly     18 00   06 12 18 00   06 12 18 00   06 12 18 00   06 12 18 00
+
+Max/Min         100      77    97      75    98      74    98      74    98
+Temp          94 93   82 77 92 90   80 76 93 92   80 75 94 92   80 75 94 91
+Dewpt         70 67   73 75 72 68   70 71 66 61   66 69 64 61   67 70 66 63
+PWind dir        SE      SE     E      SE    SE       S     S       S    SE
+Wind char        LT      LT    LT      LT    LT      LT    LT      LT    LT
+Avg clouds    SC SC   SC SC B1 SC   SC SC SC FW   FW FW SC FW   FW FW SC FW
+PoP 12hr          5       0    20       5     5       0     5       5    10
+Rain shwrs                   S  S                                          
+Tstms                           S                                          
+
+$$
+TXZ204-140900-
+Hondo Airport-Medina TX 
+29.36N  99.16W Elev. 912 ft
+151 PM CDT Sun Sep 13 2026
+
+Date           09/13/26      Mon 09/14/26            Tue 09/15/26            Wed
+CDT 3hrly     16 19 22 01 04 07 10 13 16 19 22 01 04 07 10 13 16 19 22 01 04 07
+UTC 3hrly     21 00 03 06 09 12 15 18 21 00 03 06 09 1215 18 21 00 03 06 09 12
+
+Min/Max                      75          99          75         100          73
+Temp          98 96 86 81 77 76 83 92 98 96 86 81 77 75 83 94100 98 86 81 75 73
+Dewpt         68 67 71 73 74 75 76 70 67 67 72 73 74 74 75 70 65 63 69 71 73 73
+RH            38 39 61 77 90 97 80 49 37 39 63 77 90 97 77 46 32 32 57 72 94100
+Wind dir      SE SE SE SE SE SE SE  S  S SE SE SE SE SE SE SE SE SE SE SE SE  E
+Wind spd       9 10 11  9  8  5  8  9 10 11 12  9  8  6  9 10 11 11 12  8  5  4
+Wind gust                                                           23         
+Clouds        FW FW FW SC SC SC SC FW FW FW FW FW B1 B1 FW CL FW CL FW CL SC SC
+PoP 12hr                      0           5           0           0           0
+QPF 12hr                      0           0           0           0           0
+Snow 12hr                 00-00       00-00       00-00                        
+
+
+Date           09/16  Thu 09/17/26  Fri 09/18/26  Sat 09/19/26  Sun 09/20/26
+CDT 6hrly     13 19   01 07 13 19   01 07 13 19   01 07 13 19   01 07 13 19
+UTC 6hrly     18 00   06 12 18 00   06 12 18 00   06 12 18 00   06 12 18 00
+
+Max/Min          98      74    95      73    96      71    96      71    96
+Temp          92 94   81 75 90 91   79 74 90 93   79 71 91 94   79 72 91 93
+Dewpt         70 67   71 73 74 70   72 72 70 65   68 68 68 63   67 68 68 64
+PWind dir        SE       E     E       E     E      SE    SE      SE     E
+Wind char        LT      LT    LT      LT    LT      LT    LT      LT    LT
+Avg clouds    SC FW   SC SC B1 SC   SC SC SC FW   FW FW SC FW   FW FW B1 FW
+PoP 12hr          0       5    20      10    10       0     0       5    10
+Rain shwrs                   S                                             
+Tstms                        S                                             
+
+$$
+TXZ207-140900-
+New Braunfels Airport-Guadalupe TX 
+29.71N  98.04W Elev. 699 ft
+151 PM CDT Sun Sep 13 2026
+
+Date           09/13/26      Mon 09/14/26            Tue 09/15/26            Wed
+CDT 3hrly     16 19 22 01 04 07 10 13 16 19 22 01 04 07 10 13 16 19 22 01 04 07
+UTC 3hrly     21 00 03 06 09 12 15 18 21 00 03 06 09 12 15 18 21 00 03 06 09 12
+
+Min/Max                      75          99          75         100          75
+Temp          98 93 84 80 77 76 84 94 98 93 84 80 77 76 84 95100 94 85 80 77 75
+Dewpt         68 69 71 74 75 75 75 70 68 69 72 74 75 75 75 69 65 66 70 73 75 74
+RH            38 46 65 82 94 97 74 46 38 46 67 82 94 97 74 43 32 40 61 79 94 97
+Wind dir       S SE SE  S  S  S  S  S SE SE SE  S  S  S  S  S SE SE SE  S  S  N
+Wind spd      11 12 11 10  8  4  9 11 12 14 13 10  8  5 10 11 11 16 12  8  3  0
+Clouds        SC SC FW FW B1 B1 FW FW SC FW FW SC B1 B1 SC CL FW FW FW FW SC B1
+PoP 12hr                     10          10           0           0           5
+QPF 12hr                   0.06           0           0           0           0
+Snow 12hr                 00-00       00-00       00-00                        
+Rain shwrs     S  S                                                            
+Tstms          S                                                               
+Heat           Y                    Y  Y                                       
+
+
+Date           09/16  Thu 09/17/26  Fri 09/18/26  Sat 09/19/26  Sun 09/20/26CDT 6hrly     13 19   01 07 13 19   01 07 13 19   01 07 13 19   01 07 13 19
+UTC 6hrly     18 00   06 12 18 00   06 12 18 00   06 12 18 00   06 12 18 00
+
+Max/Min          98      75    94      73    96      72    96      72    96
+Temp          93 93   80 76 90 88   77 73 91 91   77 72 91 91   78 72 92 92
+Dewpt         70 68   73 73 71 69   71 71 67 63   67 68 65 62   68 69 67 63
+PWind dir        SE      SE     E      SE     E       S    SE       S     S
+Wind char        LT      LT    GN      LT    LT      LT    LT      LT    LT
+Avg clouds    SC SC   SC SC B2 B1   B1 SC SC FW   FW FW SC FW   FW FW SC FW
+PoP 12hr         10       5    30       5    10       5     5       5    10
+Rain shwrs                   C  C                                          
+Tstms                        S  C                                          
+
+$$

@@ -67,8 +67,10 @@ _ROW_PATTERNS = {
 }
 
 # Detect the hour header rows (local TZ and UTC)
+# Local header: "CDT 3hrly", but Alaska/Guam/Hawaii write "AKDT3hrly" and
+# "ChST3hrly" (4-letter zone, no space), so the gap is optional.
 _HRLY_LOCAL_RE = re.compile(
-    r"^(?P<label>\s*[A-Z]{3,4}\s+(?P<interval>3hrly|6hrly))\s+(?P<hours>.+)$",
+    r"^(?P<label>\s*[A-Z]{3,4}\s*(?P<interval>3hrly|6hrly))\s+(?P<hours>.+)$",
     re.IGNORECASE,
 )
 _HRLY_UTC_RE = re.compile(
@@ -78,8 +80,9 @@ _HRLY_UTC_RE = re.compile(
 
 # Point header: UGC line, then a non-blank name, then a coord line.
 _UGC_RE = re.compile(r"^([A-Z]{2}[ZC]\d{3})(?:[->]\d{3})*-\d{6}-\s*$")
+# "30.19N  97.67W Elev. 462 ft"; Guam is "13.48N 144.79E", Samoa is south.
 _COORD_RE = re.compile(
-    r"^\s*(?P<lat>\d+(?:\.\d+)?)N\s+(?P<lon>\d+(?:\.\d+)?)W"
+    r"^\s*(?P<lat>\d+(?:\.\d+)?)(?P<ns>[NS])\s+(?P<lon>\d+(?:\.\d+)?)(?P<ew>[EW])"
     r"(?:\s+Elev\.?\s+(?P<elev>\d+)\s*ft)?"
 )
 # Product issue time: e.g. "1245 PM CDT Fri Apr 10 2026"
@@ -244,12 +247,15 @@ _TZ_OFFSET = {
     "HST": -10,
     "AST": -4,   # Atlantic (Puerto Rico — no DST)
     "ChST": 10,  # Chamorro (Guam)
+    "CHST": 10,
+    "SST": -11,  # Samoa
+    "HDT": -9,
 }
 
 
 def _build_slot_times(
     utc_hours: list[int], issue_time: datetime, interval: int
-) -> list[datetime]:
+, start_date: date | None = None, first_local_hour: int | None = None) -> list[datetime]:
     """Build a list of UTC datetimes for each time slot.
 
     The UTC hours come out of the PFM header row (e.g. "21 00 03 06 ...").
@@ -258,6 +264,7 @@ def _build_slot_times(
     """
     if not utc_hours:
         return []
+    # (start_date / first_local_hour: see the Date-row anchoring below.)
     # The first slot is the smallest UTC hour >= issue_time's hour, on the
     # issue_time's date (or the next day if it wraps). Actually simpler: the
     # first slot IS the first non-missing value's timestamp, which by
@@ -269,12 +276,22 @@ def _build_slot_times(
     # to group them. So:
     #   - start date = issue_time.date() in UTC
     #   - first hour < issue_time.hour means we've already rolled into tomorrow
-    start = datetime(
-        issue_time.year, issue_time.month, issue_time.day,
-        tzinfo=timezone.utc,
-    )
-    if utc_hours[0] < issue_time.hour:
-        start = start + timedelta(days=1)
+    if start_date is not None:
+        # Anchor from the table's own "Date" row (local calendar date of the
+        # first column). If the first column's UTC hour is smaller than its
+        # local hour, that column has already rolled into the next UTC day.
+        start = datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc)
+        if first_local_hour is not None and utc_hours[0] < first_local_hour:
+            start = start + timedelta(days=1)
+    else:
+        # Legacy fallback: assume the table starts on the issue date. Only
+        # correct for the first (3-hourly) table.
+        start = datetime(
+            issue_time.year, issue_time.month, issue_time.day,
+            tzinfo=timezone.utc,
+        )
+        if utc_hours[0] < issue_time.hour:
+            start = start + timedelta(days=1)
 
     times: list[datetime] = []
     prev_hour = -1
@@ -292,13 +309,33 @@ def _build_slot_times(
 # -- Main parser --------------------------------------------------------------
 
 
+_GLUED_HRLY_RE = re.compile(r"(?<=\S)\s*(?=[A-Z]{3,4}\s+[36]hrly\s)")
+
+
+def _split_glued_headers(lines: list[str]) -> list[str]:
+    """Repair a PFM row where NWS dropped the newline between a "Date" row
+    and the following "<TZ> 6hrly" header (seen in KEWX 2026-09-13: the
+    New Braunfels point's second table was "...Sun 09/20/26CDT 6hrly 13 19").
+    Without this the 6-hourly table is never recognised for that point."""
+    out: list[str] = []
+    for line in lines:
+        if "hrly" in line and not _HRLY_LOCAL_RE.match(line):
+            parts = _GLUED_HRLY_RE.split(line, maxsplit=1)
+            if len(parts) == 2 and _HRLY_LOCAL_RE.match(parts[1]):
+                out.append(parts[0])
+                out.append(parts[1])
+                continue
+        out.append(line)
+    return out
+
+
 def parse_pfm(text: str) -> list[PFMPoint]:
     """Parse a full PFM product into a list of forecast points.
 
     Tolerant of missing rows, label variations, and empty columns.
     Returns one PFMPoint per forecast point in the product.
     """
-    lines = text.splitlines()
+    lines = _split_glued_headers(text.splitlines())
 
     # Find the product-level WFO (from the AFOS line) and issue time
     wfo = ""
@@ -343,8 +380,8 @@ def parse_pfm(text: str) -> list[PFMPoint]:
             # a name/coord pair. Skip past it and keep looking.
             i = k
             continue
-        lat = float(m_coord.group("lat"))
-        lon = -float(m_coord.group("lon"))
+        lat = float(m_coord.group("lat")) * (-1 if m_coord.group("ns") == "S" else 1)
+        lon = float(m_coord.group("lon")) * (-1 if m_coord.group("ew") == "W" else 1)
         elev = _parse_int(m_coord.group("elev")) if m_coord.group("elev") else None
 
         # Per-point issue time line (may be the same as the product issue time)
@@ -381,7 +418,15 @@ def parse_pfm(text: str) -> list[PFMPoint]:
                     tz_offset = _TZ_OFFSET.get(tz, 0)
                 break
 
-        slots = _parse_point_tables(table_lines, point_issue or datetime.now(timezone.utc))
+        # One malformed point must not take down the whole product (seen in
+        # the wild: an NWS PFM with two header columns run together in one
+        # point's table). Skip the point and keep parsing the rest.
+        try:
+            slots = _parse_point_tables(table_lines, point_issue or datetime.now(timezone.utc))
+        except (ValueError, IndexError) as exc:
+            logger.warning("PFM point %s (%s) skipped: %s", zone, name, exc)
+            i = next_ugc
+            continue
 
         points.append(
             PFMPoint(
@@ -399,6 +444,125 @@ def parse_pfm(text: str) -> list[PFMPoint]:
         i = next_ugc
 
     return points
+
+
+_DATE_TOKEN_RE = re.compile(r"(\d{2})/(\d{2})(?:/(\d{2}))?")
+
+
+_DATE_LABEL_RE = re.compile(r"(?:[A-Za-z]{3}\s+)?(\d{2})/(\d{2})(?:/(\d{2}))?")
+
+
+def _slot_times_from_local(
+    local_line: str, date_row: str | None, tz_offset: int, issue_time: datetime,
+) -> list[datetime] | None:
+    """Exact slot timestamps from the LOCAL hour header and the Date row.
+
+    Columns are grouped into local days wherever the local hour wraps
+    (e.g. 22 -> 01). The Date row's labels are CENTRED over each day's
+    columns and the first day may carry no label at all when the table
+    starts with a leftover column from the previous day (Phoenix:
+    "MST 6hrly 23 | 05 11 17 23 ..." under "Date      Wed 09/16/26"). So:
+    find the day group a date label sits over, give it that date, and count
+    days outward. Returns None when the rows can't be interpreted.
+    """
+    if date_row is None:
+        return None
+    hours = _parse_hour_tokens(local_line[_LABEL_END:])
+    positions = _find_column_positions(local_line, _LABEL_END)
+    if not hours or len(positions) != len(hours):
+        return None
+    # Day groups: list of (first_col_pos, last_col_pos, [col indexes])
+    groups: list[list[int]] = [[0]]
+    for k in range(1, len(hours)):
+        if hours[k] <= hours[k - 1]:
+            groups.append([k])
+        else:
+            groups[-1].append(k)
+    labels = []
+    for m in _DATE_LABEL_RE.finditer(date_row):
+        month, day = int(m.group(1)), int(m.group(2))
+        year = 2000 + int(m.group(3)) if m.group(3) else issue_time.year
+        if not m.group(3) and month < issue_time.month - 6:
+            year += 1
+        try:
+            labels.append((m.start(), m.end(), date(year, month, day)))
+        except ValueError:
+            continue
+    if not labels:
+        return None
+    # Which group is the first label over? A label "sits over" a group when
+    # its span overlaps the group's column span (with 2 chars of slack).
+    anchor_group, anchor_date = None, None
+    for start, end, d in labels:
+        for gi, g in enumerate(groups):
+            g_lo = positions[g[0]] - 2
+            g_hi = positions[g[-1]] + 4
+            if start < g_hi and end > g_lo:
+                anchor_group, anchor_date = gi, d
+                break
+        if anchor_group is not None:
+            break
+    if anchor_group is None:
+        anchor_group, anchor_date = 0, labels[0][2]
+    times: list[datetime] = []
+    for gi, g in enumerate(groups):
+        d = anchor_date + timedelta(days=gi - anchor_group)
+        for k in g:
+            local_dt = datetime(d.year, d.month, d.day, hours[k], tzinfo=timezone.utc)
+            times.append(local_dt - timedelta(hours=tz_offset))
+    return times
+
+
+def _table_start_date(lines: list[str], header_idx: int, issue_time: datetime) -> date | None:
+    """Local calendar date of a PFM table's first column, from the "Date" row
+    that sits (usually directly) above the "<TZ> Nhrly" header row.
+
+    Returns None if no Date row is found within a few lines, in which case the
+    caller falls back to the issue date.
+    """
+    for k in range(header_idx - 1, max(-1, header_idx - 4), -1):
+        row = lines[k]
+        if not row.lstrip().lower().startswith("date"):
+            continue
+        m = _DATE_TOKEN_RE.search(row)
+        if not m:
+            return None
+        month, day = int(m.group(1)), int(m.group(2))
+        if m.group(3):
+            year = 2000 + int(m.group(3))
+        else:
+            year = issue_time.year
+            if month < issue_time.month - 6:   # December product, January column
+                year += 1
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_hour_tokens(hours_text: str) -> list[int]:
+    """Turn a PFM hour header ("21 00 03 06 ...") into a list of UTC hours.
+
+    NWS products occasionally run two columns together ("09 1215 18"). Hours
+    are always two digits, so an even-length run of digits is split back into
+    2-digit hours. Anything outside 0..23 raises ValueError so the caller can
+    skip the point rather than build impossible timestamps.
+    """
+    hours: list[int] = []
+    for tok in hours_text.split():
+        if not tok.isdigit():
+            continue
+        if len(tok) > 2 and len(tok) % 2 == 0:
+            parts = [tok[k:k + 2] for k in range(0, len(tok), 2)]
+        else:
+            parts = [tok]
+        for p in parts:
+            h = int(p)
+            if not 0 <= h <= 23:
+                raise ValueError(f"bad UTC hour {p!r} in PFM header: {hours_text.strip()[:40]}")
+            hours.append(h)
+    return hours
 
 
 def _parse_point_tables(lines: list[str], issue_time: datetime) -> list[PFMSlot]:
@@ -429,7 +593,7 @@ def _parse_point_tables(lines: list[str], issue_time: datetime) -> list[PFMSlot]
         if not m_utc:
             i = j
             continue
-        utc_hours = [int(x) for x in m_utc.group("hours").split() if x.isdigit()]
+        utc_hours = _parse_hour_tokens(m_utc.group("hours"))
 
         # Column positions come from the UTC header (it has the same alignment)
         positions = _find_column_positions(lines[j], _LABEL_END)
@@ -437,15 +601,42 @@ def _parse_point_tables(lines: list[str], issue_time: datetime) -> list[PFMSlot]
             # Misaligned — fall back to the local hrly line
             positions = _find_column_positions(lines[i], _LABEL_END)
 
-        # Build timestamps for each slot
-        times = _build_slot_times(utc_hours, issue_time, interval)
+        # Anchor the table on its own "Date" row (the line above the local
+        # hrly header, e.g. "Date           09/16  Thu 09/17/26 ..."). Without
+        # this the 6-hourly table was stamped with the issue date and days
+        # 4-7 landed on top of days 1-4.
+        # Preferred: exact times from the local header + Date row + zone
+        # offset (handles centred labels and unlabeled leading columns).
+        date_row = next(
+            (lines[k] for k in range(i - 1, max(-1, i - 4), -1)
+             if lines[k].lstrip().lower().startswith("date")),
+            None,
+        )
+        tz_label = re.match(r"^\s*([A-Za-z]{3,4})", m_local.group("label"))
+        tz_off = _TZ_OFFSET.get(tz_label.group(1).upper() if tz_label else "", None)
+        if tz_off is None and tz_label:
+            tz_off = _TZ_OFFSET.get(tz_label.group(1))
+        times = None
+        if tz_off is not None:
+            times = _slot_times_from_local(lines[i], date_row, tz_off, issue_time)
+        if times is None or len(times) != len(utc_hours):
+            # Fallback: UTC header anchored on the first Date token.
+            start_date = _table_start_date(lines, i, issue_time)
+            local_tokens = [x for x in m_local.group("hours").split() if x.isdigit()]
+            first_local_hour = int(local_tokens[0][:2]) if local_tokens else None
+            times = _build_slot_times(
+                utc_hours, issue_time, interval,
+                start_date=start_date, first_local_hour=first_local_hour,
+            )
 
         # Scan data rows until we hit another hrly header or run out
         table_slots = [PFMSlot(dt=t, interval_hours=interval) for t in times]
+        next_header: int | None = None
         for k in range(j + 1, len(lines)):
             row = lines[k]
             if _HRLY_LOCAL_RE.match(row) and "UTC" not in row.upper():
-                break  # Next table
+                next_header = k
+                break  # Next table (typically the 6-hourly one)
             row_kind = _classify_row(row)
             if row_kind is None:
                 continue
@@ -453,8 +644,10 @@ def _parse_point_tables(lines: list[str], issue_time: datetime) -> list[PFMSlot]
 
         slots.extend(table_slots)
 
-        # Advance past this table
-        i = k + 1 if k > j else j + 1
+        # Advance to the next table's header so it gets parsed too. (Skipping
+        # past it left every point with only its 3-hourly table, i.e. ~3 days
+        # of forecast instead of 7.)
+        i = next_header if next_header is not None else len(lines)
 
     return slots
 
