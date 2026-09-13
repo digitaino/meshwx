@@ -11,6 +11,10 @@ observer network it ingests from. The weather bot itself lives under
 corescope/
 ├── config.json                   # live CoreScope config (gitignored — has apiKey)
 ├── config.example.json           # sanitized template
+├── broker/                       # signed-token observer broker (obs.digitaino.com)
+│   ├── Dockerfile                # pinned build of michaelhart/meshcore-mqtt-broker
+│   ├── .env.example              # config template
+│   └── .env                      # live config (gitignored — subscriber password)
 ├── mosquitto/
 │   ├── mosquitto.conf            # broker config (anonymous off, TCP+WS)
 │   ├── passwords                 # bcrypt creds (gitignored)
@@ -24,9 +28,28 @@ corescope/
 │   ├── observer/                 # bundle: USB-attached radio (Cisien-based)
 │   └── observer-tcp/             # bundle: meshcore-proxy variant
 ├── out/                          # generated bundles (gitignored)
-├── Observer_Onboarding.md        # operator-facing flow doc (all variants)
+├── Observer_Onboarding_Token.md  # observer-facing: the token broker (preferred)
+├── Observer_Onboarding.md        # operator-facing flow doc (legacy username/password)
 └── Observer_Setup_Firmware.md    # observer-facing setup for firmware variant
 ```
+
+## Two brokers, on purpose
+
+New observers should use the **token broker** at `obs.digitaino.com`. They
+authenticate by signing a token with their node's own Ed25519 key, so there is
+nothing to issue and nothing to revoke — and the broker enforces that a node
+can only publish under its own public key. Send them
+`Observer_Onboarding_Token.md`; you do nothing.
+
+The **legacy broker** at `mqtt.digitaino.com` (Mosquitto, username/password,
+`mosquitto/passwords`) still carries the ~15 observers onboarded before the
+switch. It is deliberately untouched: several of those radios don't reliably
+reconnect after a broker restart, so they get migrated one at a time, whenever
+their operator next has hands on the hardware. The scripts below are for
+maintaining that population — not for new observers.
+
+CoreScope ingests both as two `mqttSources`, so the split is invisible
+downstream and shows up only as two rows in the MQTT sources panel.
 
 ## Common commands
 

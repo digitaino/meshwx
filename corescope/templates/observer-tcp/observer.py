@@ -1,18 +1,28 @@
-"""Read-only meshcore observer: connects to a meshcore-proxy TCP endpoint
-and republishes received RF packets to an MQTT broker in CoreScope's
-expected format. Designed to coexist with an existing meshcore client
-(e.g. the Meshcore companion app) connected to the same proxy — we never
-send commands to the radio, we only listen.
+"""Read-only meshcore observer: republishes received RF packets to an MQTT
+broker in CoreScope's expected format. Two connection modes:
 
-All config is via env vars (set by docker-compose):
+  OBSERVER_MODE=tcp    (default) connects to a meshcore-proxy TCP endpoint;
+                       coexists with an existing client (e.g. Companion app)
+                       on the same proxy.
+  OBSERVER_MODE=serial direct USB connection to the radio. Use when the
+                       observer is the only thing touching the radio
+                       (no proxy, no Companion app sharing it).
 
-  PROXY_HOST, PROXY_PORT      meshcore-proxy TCP endpoint
+We never send commands to the radio in either mode — we only listen.
+
+All config is via env vars:
+
+  OBSERVER_MODE               "tcp" (default) or "serial"
+  PROXY_HOST, PROXY_PORT      meshcore-proxy TCP endpoint (tcp mode)
+  SERIAL_PORT                 e.g. /dev/serial/by-id/usb-... (serial mode)
+  SERIAL_BAUD                 default 115200 (serial mode)
   MQTT_HOST, MQTT_PORT        MQTT broker
   MQTT_USERNAME, MQTT_PASSWORD
   MQTT_TOPIC_PREFIX           default "meshcore"
   MQTT_IATA                   3-letter region code, e.g. AUS
   MQTT_TLS                    "true" to use TLS (set when port=443/8883/etc)
   MQTT_TRANSPORT              "tcp" (default) or "websockets"
+  MESHCORE_TIMEOUT            seconds to wait for APPSTART handshake (default 30)
 """
 
 import asyncio
@@ -100,8 +110,11 @@ class MqttForwarder:
 
 
 async def main() -> int:
+    mode = env("OBSERVER_MODE", "tcp").lower()
     proxy_host = env("PROXY_HOST", "meshcore-proxy")
     proxy_port = int(env("PROXY_PORT", "5000"))
+    serial_port = env("SERIAL_PORT")
+    serial_baud = int(env("SERIAL_BAUD", "115200"))
     mqtt_host = env("MQTT_HOST")
     mqtt_port = int(env("MQTT_PORT", "443"))
     mqtt_user = env("MQTT_USERNAME")
@@ -110,16 +123,47 @@ async def main() -> int:
     mqtt_iata = env("MQTT_IATA", "AUS")
     mqtt_tls = env_bool("MQTT_TLS", True)
     mqtt_transport = env("MQTT_TRANSPORT", "websockets")
+    meshcore_timeout = float(env("MESHCORE_TIMEOUT", "30"))
 
     if not mqtt_host:
         log.error("MQTT_HOST is required")
         return 1
 
-    log.info("Connecting to meshcore-proxy at %s:%d", proxy_host, proxy_port)
-    mc = await MeshCore.create_tcp(proxy_host, proxy_port)
+    if mode == "serial":
+        if not serial_port:
+            log.error("OBSERVER_MODE=serial requires SERIAL_PORT in .env "
+                      "(use a stable /dev/serial/by-id/... path)")
+            return 1
+        log.info("Connecting directly to radio at %s @ %d baud (handshake timeout %.0fs)",
+                 serial_port, serial_baud, meshcore_timeout)
+        mc = await MeshCore.create_serial(serial_port, baudrate=serial_baud,
+                                          default_timeout=meshcore_timeout)
+        if mc is None:
+            log.error("Radio did not respond to APPSTART within %.0fs on %s. "
+                      "Check that the radio is plugged in, the device path is correct, "
+                      "and no other process (meshcore-proxy, Companion app, mc-cli) is "
+                      "holding the serial port.",
+                      meshcore_timeout, serial_port)
+            return 1
+    elif mode == "tcp":
+        log.info("Connecting to meshcore-proxy at %s:%d (handshake timeout %.0fs)",
+                 proxy_host, proxy_port, meshcore_timeout)
+        mc = await MeshCore.create_tcp(proxy_host, proxy_port,
+                                       default_timeout=meshcore_timeout)
+        if mc is None:
+            log.error("Radio did not respond to APPSTART within %.0fs via proxy at %s:%d. "
+                      "Check that meshcore-proxy is connected to a radio and that no other "
+                      "client is monopolizing it. You can raise MESHCORE_TIMEOUT in .env, "
+                      "or switch to OBSERVER_MODE=serial to bypass the proxy entirely.",
+                      meshcore_timeout, proxy_host, proxy_port)
+            return 1
+    else:
+        log.error("OBSERVER_MODE must be 'tcp' or 'serial' (got %r)", mode)
+        return 1
+
     pubkey = mc.self_info.get("public_key", "") or ""
     if not pubkey:
-        log.error("Could not read public_key from radio via proxy — aborting")
+        log.error("Could not read public_key from radio — aborting")
         return 1
     log.info("Radio pubkey: %s", pubkey[:16])
 

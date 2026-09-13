@@ -139,6 +139,8 @@ class MeshcoreRadio:
         self._contacts_task = asyncio.create_task(self._contacts_loop())
 
         logger.info("Meshcore radio connected. Node: %s", self._mc.self_info.get("adv_name", "?"))
+        logger.info("Radio TX: %s", "ENABLED" if settings.tx_enabled
+                    else "DISABLED (receive-only passive observer)")
 
         # Optional MQTT publishing of raw RX packets (CoreScope etc).
         # Done last so any failure here cannot prevent radio startup.
@@ -154,6 +156,7 @@ class MeshcoreRadio:
                         pubkey=pubkey,
                         username=settings.mqtt_username,
                         password=settings.mqtt_password,
+                        origin=settings.mqtt_origin,
                     )
                     self._mc.subscribe(EventType.RX_LOG_DATA, self._on_rx_log)
                     logger.info("MQTT publishing enabled for pubkey %s", pubkey[:12])
@@ -235,6 +238,9 @@ class MeshcoreRadio:
 
     async def send_channel_message(self, channel: int, text: str) -> None:
         """Send a message on our dedicated channel. Never sends on ch 0."""
+        if not settings.tx_enabled:
+            logger.info("TX disabled — suppressed channel message on ch %s", channel)
+            return
         if not self._mc:
             logger.error("Cannot send - not connected")
             return
@@ -259,6 +265,9 @@ class MeshcoreRadio:
         Bypasses send_chan_msg (which UTF-8 encodes) by constructing
         the channel message packet directly with raw bytes.
         """
+        if not settings.tx_enabled:
+            logger.info("TX disabled — suppressed %dB binary broadcast", len(payload))
+            return
         if not self._mc or self._data_channel_idx is None:
             return
         async with self.send_lock:
@@ -282,6 +291,9 @@ class MeshcoreRadio:
 
     async def send_beacon(self, payload: bytes) -> None:
         """Send a beacon on the discovery channel."""
+        if not settings.tx_enabled:
+            logger.info("TX disabled — suppressed discovery beacon")
+            return
         if not self._mc or self._discover_channel_idx is None:
             return
         async with self.send_lock:
@@ -305,6 +317,9 @@ class MeshcoreRadio:
 
     async def send_dm(self, pubkey_prefix: str, text: str) -> bool:
         """Send a direct message to a contact by their public key prefix."""
+        if not settings.tx_enabled:
+            logger.info("TX disabled — suppressed DM to %s", pubkey_prefix[:8])
+            return False
         if not self._mc:
             logger.error("Cannot send DM - not connected")
             return False
@@ -426,6 +441,9 @@ class MeshcoreRadio:
 
     async def _send_advert(self) -> None:
         """Advertise ourselves so other nodes can discover and DM us."""
+        if not settings.tx_enabled:
+            logger.info("TX disabled — suppressed advertisement")
+            return
         try:
             await self._mc.commands.send_advert(flood=True)
             logger.info("Sent advertisement (flood)")

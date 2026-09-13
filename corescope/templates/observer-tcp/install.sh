@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Production install for the AUS Meshcore proxy observer.
+# Production install for the AUS Meshcore observer.
+#
+# Supports both connection modes (set in .env):
+#   OBSERVER_MODE=tcp     via meshcore-proxy on PROXY_HOST:PROXY_PORT
+#   OBSERVER_MODE=serial  direct USB to SERIAL_PORT
 #
 # Idempotent. Re-running upgrades the venv and unit file in place.
 #
@@ -25,10 +29,13 @@ DEST="/opt/aus-observer"
 UNIT_PATH="/etc/systemd/system/aus-observer.service"
 SVC_USER="aus-observer"
 
-# 1. System user (no shell, no home).
+# 1. System user (no shell, no home). Add to dialout for OBSERVER_MODE=serial
+# (harmless if running in tcp mode — group membership has no side effects).
 if ! id "$SVC_USER" >/dev/null 2>&1; then
-  useradd --system --no-create-home --shell /usr/sbin/nologin "$SVC_USER"
-  echo "==> Created system user $SVC_USER"
+  useradd --system --no-create-home --shell /usr/sbin/nologin --groups dialout "$SVC_USER"
+  echo "==> Created system user $SVC_USER (in dialout for serial-port access)"
+else
+  usermod -a -G dialout "$SVC_USER"
 fi
 
 # 2. Layout.
@@ -55,7 +62,7 @@ echo "==> Dependencies installed"
 # 4. Systemd unit. Hardened along the lines of Cisien/meshcoretomqtt.
 cat > "$UNIT_PATH" <<'UNIT'
 [Unit]
-Description=AUS Meshcore observer (meshcore-proxy → MQTT)
+Description=AUS Meshcore observer (radio → MQTT)
 Documentation=https://github.com/digitaino/meshwx
 After=time-sync.target network-online.target
 Wants=time-sync.target network-online.target
@@ -64,6 +71,7 @@ Wants=time-sync.target network-online.target
 Type=exec
 User=aus-observer
 Group=aus-observer
+SupplementaryGroups=dialout
 WorkingDirectory=/opt/aus-observer
 EnvironmentFile=/opt/aus-observer/.env
 ExecStart=/opt/aus-observer/.venv/bin/python /opt/aus-observer/observer.py

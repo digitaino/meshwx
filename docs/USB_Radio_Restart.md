@@ -1,11 +1,44 @@
 # USB Radio Restart Guide
 
 When the USB radio is disconnected and reconnected (or the Mac restarts), the
-meshcore-weather container will keep running but silently fail to send messages.
-The symptom is `Binary send failed on data ch 6: {'reason': 'no_event_received'}`
-in the container logs.
+meshcore-weather container will keep running but silently fail. The Python
+process never exits, so Docker's `restart:` policy never fires — the container
+looks healthy while receiving nothing.
 
-## Quick fix
+## Automatic recovery (installed)
+
+Two launchd agents now supervise the chain. In normal operation you should not
+need to do anything by hand.
+
+| Agent | Job |
+|-------|-----|
+| `com.digitaino.meshcore-socat` | Runs the socat bridge (`/dev/cu.usbserial-0001` <-> TCP :4403). `KeepAlive` respawns it on crash, on unplug/replug, and at login. |
+| `com.digitaino.meshcore-watchdog` | Every 60s checks for an ESTABLISHED connection on :4403. After 3 consecutive misses it runs `docker compose up -d --force-recreate meshcore-weather`, then cools down 5 min. Skips the recreate when the serial device is absent (radio genuinely unplugged). |
+
+Script: `~/.meshcore-bridge/watchdog.sh`
+Logs: `~/Library/Logs/meshcore-socat.log`, `~/Library/Logs/meshcore-watchdog.log`
+
+Check status:
+
+```bash
+launchctl print gui/$(id -u)/com.digitaino.meshcore-socat | grep -E 'state|runs'
+launchctl print gui/$(id -u)/com.digitaino.meshcore-watchdog | grep -E 'state|runs'
+tail -20 ~/Library/Logs/meshcore-watchdog.log
+```
+
+A healthy link looks like this — a LISTEN socket, an ESTABLISHED pair, and a
+socat child holding the serial device:
+
+```bash
+lsof -nP -iTCP:4403        # OrbStack -> socat ESTABLISHED, plus socat LISTEN
+lsof /dev/cu.usbserial-0001 # one socat child
+```
+
+End-to-end recovery from a destroyed bridge takes roughly 3-5 minutes
+(≤10s for socat, up to 3 min for the watchdog to confirm, ~90s for the
+container to reload EMWIN data and reconnect).
+
+## Manual fix (if you've disabled the agents)
 
 From the `meshcore-weather` project directory:
 
@@ -53,18 +86,20 @@ WARNING: Binary send failed on data ch 6: {'reason': 'no_event_received'}
 
 ## If socat also died
 
-The socat bridge is what forwards TCP port 4403 to the USB serial device. It
-normally survives USB reconnects, but if it's not running:
+The socat bridge forwards TCP port 4403 to the USB serial device. It is now
+managed by launchd and should respawn on its own:
 
 ```bash
-# Check if socat is alive
-lsof -i :4403
+# Check the agent
+launchctl print gui/$(id -u)/com.digitaino.meshcore-socat | grep -E 'state|runs'
 
-# If nothing shows up, restart it:
-socat TCP-LISTEN:4403,reuseaddr,fork OPEN:/dev/cu.usbserial-0001,raw,echo=0,ispeed=115200,ospeed=115200 &
+# Kick it manually if needed
+launchctl kickstart -k gui/$(id -u)/com.digitaino.meshcore-socat
 ```
 
-Then restart the container as above.
+Note: after socat restarts, the container's TCP session is dead and the app
+does **not** reconnect by itself — it needs a `--force-recreate`. That is
+exactly what the watchdog agent does automatically.
 
 ## USB device not showing up at all
 
@@ -103,6 +138,9 @@ Set `MCW_MQTT_ENABLED` in `.env`:
 - `true` — bot publishes every received RF packet.
 
 After flipping the value, run `docker compose up --build --force-recreate -d`.
+
+The observer name CoreScope displays comes from `MCW_MQTT_ORIGIN` (published as
+the JSON `origin` field). It is currently `Digitaino Central Observer`.
 
 ### Verifying it's flowing
 

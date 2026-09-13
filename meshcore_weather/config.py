@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     # Admin: pubkey prefix of admin user (can run admin DM commands)
     admin_key: str = ""
 
+    # Radio transmit master switch. False = receive-only passive observer:
+    # every outbound RF path (adverts, channel messages, binary broadcasts,
+    # discovery beacons, DMs) becomes a logged no-op. Receiving, MQTT
+    # publishing and the web portal are unaffected.
+    tx_enabled: bool = True
+
     # MQTT: optional fire-and-forget publishing of received RF packets to a
     # broker for downstream consumers (e.g. CoreScope). Disabled by default;
     # turn on only after verifying the bot still works with mqtt_enabled=False.
@@ -61,6 +67,13 @@ class Settings(BaseSettings):
     mqtt_iata: str = "AUS"
     mqtt_username: str = ""
     mqtt_password: str = ""
+    # "origin" field in each published JSON envelope — this is the
+    # observer name CoreScope and other consumers display.
+    mqtt_origin: str = "meshcore-weather"
+
+    # Local time zone for human-readable replies (IANA name). Wire messages
+    # always carry UTC; only the text renderer uses this.
+    timezone: str = "America/Chicago"
 
     # Logging
     log_level: str = "INFO"

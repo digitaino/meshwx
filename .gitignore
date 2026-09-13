@@ -44,3 +44,6 @@ corescope/config.json
 corescope/mosquitto/passwords
 corescope/out/
 corescope/.DS_Store
+
+# obs-broker subscriber credentials (generated; see broker/.env.example)
+corescope/broker/.env

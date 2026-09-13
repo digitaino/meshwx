@@ -1,12 +1,16 @@
-# AUS Meshcore observer — meshcore-proxy variant
+# AUS Meshcore observer — native variant
 
-Use this bundle if your Pi (or whatever host) is already running
-[`meshcore-proxy`](https://github.com/rgregg/meshcore-proxy) against
-your radio. We attach as a second, **read-only** TCP client to the
-same proxy — nothing about your existing setup changes, no serial
-conflicts, no new radio.
+Two ways this bundle can connect to your radio (set in `.env`):
 
-Two install paths:
+- **`OBSERVER_MODE=tcp`** (default) — connect to an existing
+  [`meshcore-proxy`](https://github.com/rgregg/meshcore-proxy)
+  instance on your host. Use this if you also need the Companion app
+  (or other client) to share the radio.
+- **`OBSERVER_MODE=serial`** — connect directly to the radio over USB.
+  Simplest setup, but the observer is the **sole consumer** of the
+  radio (stop meshcore-proxy / Companion app first).
+
+Two install paths (independent of which mode you pick):
 
 1. **`./run-native.sh`** — quick foreground test, Ctrl-C to stop. Use
    this first to confirm everything works before installing.
@@ -76,19 +80,58 @@ To uninstall (removes service, files, and the system user):
 sudo ./uninstall.sh
 ```
 
+## Switching to direct serial mode
+
+If your radio isn't shared with anything else (no Companion app, no
+other meshcore client on this host), running direct over USB is the
+simplest setup — no meshcore-proxy involved.
+
+1. Stop and disable meshcore-proxy if you have one:
+
+   ```bash
+   sudo systemctl stop meshcore-proxy
+   sudo systemctl disable meshcore-proxy
+   ```
+
+2. Find a stable device path for your radio (don't use `/dev/ttyUSB0`
+   directly — that name can change across reboots):
+
+   ```bash
+   ls -l /dev/serial/by-id/
+   ```
+
+   Pick the entry that points to your meshcore radio.
+
+3. Edit `.env` and set:
+
+   ```
+   OBSERVER_MODE=serial
+   SERIAL_PORT=/dev/serial/by-id/usb-...     # whatever you found above
+   SERIAL_BAUD=115200
+   ```
+
+4. Re-run `./run-native.sh` to test, then `sudo ./install.sh` for the
+   systemd install. The install script automatically adds the service
+   user to the `dialout` group so it can read the serial device.
+
 ## Troubleshooting
 
-- **`Could not read public_key from radio via proxy — aborting`**:
-  meshcore-proxy is reachable but the radio isn't answering. Likely
-  the proxy is up but the USB radio is disconnected or stuck.
-  Restart meshcore-proxy.
-- **`Connection refused`**: meshcore-proxy isn't listening on
-  `PROXY_HOST:PROXY_PORT`. Verify with `nc -zv 127.0.0.1 5000`.
+- **`Radio did not respond to APPSTART within Ns ...`** (tcp mode):
+  observer reached the proxy but the proxy never got a reply from
+  the radio. Tail proxy logs (`sudo journalctl -u meshcore-proxy -f`)
+  while running observer to see what's happening on the proxy side.
+  If you can't get the proxy to forward, switch to serial mode (above).
+- **`Radio did not respond to APPSTART within Ns ...`** (serial mode):
+  the radio is at the wrong path, isn't powered, or another process
+  is holding the serial port. Check `lsof "$SERIAL_PORT"` and confirm
+  meshcore-proxy is fully stopped.
+- **`Connection refused`** (tcp mode): meshcore-proxy isn't listening
+  on `PROXY_HOST:PROXY_PORT`. Verify with `nc -zv 127.0.0.1 5000`.
 - **`Connection Refused: not authorised` (MQTT)**: the operator's
   credential for you is wrong or revoked. Ping them.
-- **Service keeps restarting**: inspect journald,
-  `sudo journalctl -u aus-observer -n 100`. Most often this is
-  meshcore-proxy not yet up at boot — it'll settle within a couple
+- **Service keeps restarting**: inspect journald with
+  `sudo journalctl -u aus-observer -n 100`. Most often this is the
+  proxy or radio not yet up at boot — it'll settle within a couple
   of `RestartSec` cycles.
 
 ## Privacy

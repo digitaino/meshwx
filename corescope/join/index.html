@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Add an observer · Digitaino CoreScope</title>
+<meta name="description" content="Send MeshCore packet data to Digitaino CoreScope, Austin.">
+<style>
+  :root {
+    --bg: #fbfaf8; --panel: #fff; --ink: #1a1a1a; --muted: #5c5c5c;
+    --line: #e2e0dc; --accent: #b0472b; --code-bg: #f4f2ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16150f; --panel: #1e1d17; --ink: #ececea; --muted: #a09d94;
+      --line: #333128; --accent: #e08a63; --code-bg: #12110c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 38px 22px 80px; }
+  header { border-bottom: 2px solid var(--ink); padding-bottom: 16px; margin-bottom: 30px; }
+  h1 { font-size: clamp(26px, 5.5vw, 34px); line-height: 1.15; margin: 0 0 6px; letter-spacing: -.02em; }
+  header p { margin: 0; color: var(--muted); font-size: 15px; }
+  h2 {
+    font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+    margin: 40px 0 14px; padding-bottom: 7px; border-bottom: 1px solid var(--line); font-weight: 650;
+  }
+  h3 { font-size: 17px; margin: 22px 0 6px; letter-spacing: -.01em; }
+  p { margin: 0 0 12px; }
+  ul { margin: 0 0 12px; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: .12em .38em; border-radius: 4px; font-size: .89em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.55; margin: 0 0 12px;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; margin: 0 0 12px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { width: 36%; font-weight: 600; color: var(--muted); font-size: 14px; }
+  .two { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 600px) { .two { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 17px 18px; }
+  .card h3 { margin-top: 0; }
+  .card p, .card ul { font-size: 15px; color: var(--muted); }
+  .card li strong { color: var(--ink); font-weight: 600; }
+  dl { margin: 0; }
+  dt { font-weight: 600; margin-top: 14px; }
+  dd { margin: 3px 0 0; color: var(--muted); font-size: 15px; }
+  footer { margin-top: 52px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Add an observer</h1>
+  <p>Digitaino CoreScope · Austin · <a href="/">the analyzer</a></p>
+</header>
+
+<p>An observer forwards the LoRa packets it hears to the analyzer. Your node keeps its
+normal role on the mesh.</p>
+
+<h2>What you need</h2>
+
+<p>Internet access for the node. Two ways:</p>
+
+<div class="two">
+  <div class="card">
+    <h3>Radio with WiFi</h3>
+    <p>Radio connects by itself. No computer.</p>
+    <ul>
+      <li>Heltec V3 / V4</li>
+      <li>LilyGo T-LoRa</li>
+      <li>Station G2</li>
+      <li>Seeed T1000-E</li>
+      <li>Any ESP32 board</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Radio + computer</h3>
+    <p>Computer reads the radio over USB and stays on.</p>
+    <ul>
+      <li><strong>RAK4631 and other nRF52 boards.</strong> No WiFi, so this is the only
+      option</li>
+      <li>Pi, mini-PC, Mac, or Home Assistant box</li>
+      <li>Also works if you don't want to reflash</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Settings</h2>
+
+<p>Same values for every method.</p>
+
+<table>
+  <tr><th>Broker</th><td><code>obs.digitaino.com</code></td></tr>
+  <tr><th>Port</th><td><code>443</code></td></tr>
+  <tr><th>Transport</th><td>WebSocket, TLS on</td></tr>
+  <tr><th>Auth</th><td>MeshCore auth token</td></tr>
+  <tr><th>Token audience</th><td><code>obs.digitaino.com</code></td></tr>
+  <tr><th>Username / password</th><td>blank</td></tr>
+  <tr><th>IATA</th><td><code>AUS</code></td></tr>
+</table>
+
+<h2>Radio with WiFi</h2>
+
+<p>Flash an observer build at <a href="https://observer.gessaman.com" rel="noopener">observer.gessaman.com</a>.</p>
+
+<p>Open the serial console at 115200 baud, or use
+<a href="https://config.meshcore.io" rel="noopener">config.meshcore.io</a> in Chrome or Edge.
+Paste:</p>
+
+<pre><code>set mqtt1.preset custom
+set mqtt1.server obs.digitaino.com
+set mqtt1.port 443
+set mqtt1.audience obs.digitaino.com
+set mqtt.iata AUS
+reboot</code></pre>
+
+<p>If WiFi isn't set up, add before <code>reboot</code>:</p>
+
+<pre><code>set wifi.ssid YOUR_NETWORK
+set wifi.pwd YOUR_WIFI_PASSWORD</code></pre>
+
+<p>Slots <code>mqtt1</code>–<code>mqtt3</code> run at the same time. If MeshTexas or
+MeshMapper uses <code>mqtt1</code>, use <code>mqtt2</code> or <code>mqtt3</code>.</p>
+
+<h2>Radio + computer</h2>
+
+<p>Pick one. Follow its install docs and add a custom broker.</p>
+
+<dl>
+  <dt>Home Assistant</dt>
+  <dd>MeshCore integration over USB, WiFi, or Bluetooth. Check <em>Use MeshCore Auth
+  Token</em>. Leave username and password blank.</dd>
+
+  <dt>meshcore-packet-capture</dt>
+  <dd>Python, serial. The installer asks for a broker. Choose custom.</dd>
+
+  <dt>meshcoretomqtt (mctomqtt)</dt>
+  <dd>Serial repeaters and room servers, including RAK. Handles several brokers at once.</dd>
+
+  <dt>MeshMonitor</dt>
+  <dd>Analyzer Observer, then <em>Custom</em>. URL <code>wss://obs.digitaino.com</code>, auth
+  <em>Signed token</em>. Needs the node's private key and a Companion device.</dd>
+</dl>
+
+<h2>Check it</h2>
+
+<pre><code>get wifi.status        &rarr; connected, with an IP
+get mqtt1.audience     &rarr; obs.digitaino.com
+get public.key         &rarr; your node's identity</code></pre>
+
+<p>Find your node on <a href="/#/observers">the observers page</a>. Takes a few minutes.</p>
+
+<h2>If it doesn't work</h2>
+
+<dl>
+  <dt>Connects, then drops</dt>
+  <dd>Audience must be exactly <code>obs.digitaino.com</code>. No <code>wss://</code>, no port.</dd>
+
+  <dt>Connects, nothing on the map</dt>
+  <dd>IATA must be <code>AUS</code>.</dd>
+
+  <dt>Drops every minute or two</dt>
+  <dd>Keepalive under 100s. Use 45–60.</dd>
+</dl>
+
+<footer>
+  <p>Unofficial. Run by Digitaino in Austin. Your node can report to other networks at the
+  same time.</p>
+</footer>
+
+</div>
+</body>
+</html>

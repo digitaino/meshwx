@@ -1,0 +1,29 @@
+{
+	servers {
+		trusted_proxies static 127.0.0.1/8 ::1/128 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+		client_ip_headers Cf-Connecting-Ip X-Forwarded-For
+	}
+}
+
+:80 {
+	log {
+		output file /app/data/access.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		format json
+	}
+
+	# Public observer onboarding page (corescope/join/, mounted read-only).
+	# Lives here rather than on its own hostname so it needs no extra
+	# Cloudflare route or certificate, and sits next to the analyzer people
+	# are already looking at.
+	handle_path /join* {
+		root * /app/join
+		file_server
+	}
+
+	handle {
+		reverse_proxy localhost:3000
+	}
+}

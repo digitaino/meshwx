@@ -49,11 +49,35 @@ services:
     volumes:
       - corescope-data:/app/data
       - ./corescope/config.json:/app/data/config.json:ro
+      - ./corescope/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./corescope/join:/app/join:ro
     environment:
       - NODE_ENV=production
       # Use our standalone Mosquitto (with auth) instead of the bundled one.
       - DISABLE_MOSQUITTO=true
       - DISABLE_CADDY=false
+
+  # Signed-token observer broker. Observers authenticate by signing a token
+  # with their own MeshCore Ed25519 key — no credentials are issued, and a
+  # publisher can only write to meshcore/{IATA}/{its own pubkey}/*.
+  #
+  # Deliberately separate from `mosquitto`: the ~15 legacy observers on
+  # username/password keep using mqtt.digitaino.com untouched, and this service
+  # can be built, restarted and debugged without ever interrupting them.
+  # CoreScope ingests both brokers as two mqttSources.
+  obs-broker:
+    build: ./corescope/broker
+    container_name: obs-broker
+    restart: unless-stopped
+    ports:
+      # Published on the LAN so the off-box cloudflared can forward
+      # obs.digitaino.com -> http://<this-host>:8883. Plain ws:// by design;
+      # Cloudflare terminates TLS at the edge.
+      - "8883:8883"
+    env_file:
+      - ./corescope/broker/.env
+    volumes:
+      - obs-broker-data:/data
 
   # NOTE: no cloudflared service here. The host already runs cloudflared
   # natively (see ~/.cloudflared/config.yml on the iMac). To expose the
@@ -69,5 +93,6 @@ services:
 
 volumes:
   weather-data:
+  obs-broker-data:
   corescope-data:
   mosquitto-data:
