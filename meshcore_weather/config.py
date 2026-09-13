@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # Coverage targeting — bot broadcasts only data affecting these areas.
     # Comma-separated lists, all optional, all additive (union). Empty = broadcast everything.
     home_cities: str = ""  # e.g. "Austin TX,San Antonio TX,Dallas TX"
+    # Coverage radius (km) around the FIRST home city. The bot covers every
+    # public forecast zone whose polygon lies within this circle, plus any
+    # extra cities/states/WFOs listed. 0 disables the radius.
+    home_radius_km: int = 120
     home_states: str = ""  # e.g. "TX,OK"
     home_wfos: str = ""    # e.g. "EWX,FWD,HGX"
 

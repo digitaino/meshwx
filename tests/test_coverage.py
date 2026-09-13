@@ -131,3 +131,30 @@ class TestCoverageSummary:
         s = cov.summary()
         assert "zones" in s
         assert "cities" in s or "states" in s or "wfos" in s
+
+
+class TestRadiusCoverage:
+    def test_radius_zones_are_local_only(self):
+        cov = Coverage.from_sources(cities=["Austin TX"], radius_km=120)
+        assert not cov.is_empty()
+        assert cov.center is not None and abs(cov.center[0] - 30.3) < 0.2
+        assert cov.covers_zone("TXZ192")          # Travis
+        assert cov.covers_zone("TXZ173")          # Williamson
+        assert cov.covers_zone("TXZ191")          # Hays
+        assert not cov.covers_zone("TXZ213")      # Houston (Harris) is ~230 km away
+        assert not cov.covers_any(["LAZ040"])     # Lake Charles river floods stay out
+        assert 15 < len(cov.zones) < 60
+
+    def test_wfo_does_not_imply_whole_state(self):
+        cov = Coverage.from_sources(wfos=["EWX"])
+        assert cov.covers_zone("TXZ192")
+        assert not cov.covers_any(["TXZ213"])     # Houston: HGX, not EWX
+        assert not cov.explicit_states
+
+    def test_small_polygon_inside_coverage_is_covered(self):
+        cov = Coverage.from_sources(cities=["Austin TX"], radius_km=120)
+        # A small SVR polygon over south Austin that contains no zone centroid.
+        poly = [(30.20, -97.80), (30.22, -97.72), (30.16, -97.70), (30.15, -97.79)]
+        assert cov.covers_polygon(poly)
+        far = [(29.70, -95.40), (29.72, -95.30), (29.65, -95.30)]   # Houston
+        assert not cov.covers_polygon(far)

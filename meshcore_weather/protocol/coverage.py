@@ -6,6 +6,7 @@ airtime for data that affects the bot's mesh area.
 """
 
 import logging
+import math
 from collections.abc import Iterable
 
 from meshcore_weather.config import settings
@@ -29,6 +30,32 @@ def _point_in_polygon(lat: float, lon: float, polygon: list[tuple[float, float]]
             inside = not inside
         j = i
     return inside
+
+
+def _circle(lat: float, lon: float, radius_km: float):
+    """Approximate geographic circle as a shapely polygon (lon/lat degrees)."""
+    from shapely.geometry import Point
+    from shapely.affinity import scale
+    dlat = radius_km / 111.0
+    dlon = radius_km / (111.0 * max(0.1, math.cos(math.radians(lat))))
+    return scale(Point(lon, lat).buffer(1.0, 64), xfact=dlon, yfact=dlat, origin=(lon, lat))
+
+
+def zones_within_radius(lat: float, lon: float, radius_km: float) -> set[str]:
+    """Public forecast zones whose polygon intersects the circle. Falls back
+    to zone centroids within the radius if shapes are unavailable."""
+    resolver.load()
+    if resolver._load_polygons():
+        circle = _circle(lat, lon, radius_km)
+        out = set()
+        for i in resolver._poly_tree.query(circle):
+            if resolver._poly_geoms[i].intersects(circle):
+                out.add(resolver._poly_codes[i])
+        return out
+    from meshcore_weather.geodata import _haversine
+    return {code for code, z in resolver._zones.items()
+            if _haversine(lat, lon, z["la"], z["lo"]) <= radius_km}
+
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +85,8 @@ class Coverage:
     ):
         self.zones: set[str] = zones or set()
         self.sources: dict = sources or {"cities": [], "states": [], "wfos": []}
+        self.center: tuple[float, float] | None = self.sources.get("center")
+        self.radius_km: float = float(self.sources.get("radius_km") or 0)
         self.bbox: BBox | None = None
         self.region_ids: set[int] = set()
         # States the operator *explicitly* covers (via home_states or via WFOs
@@ -68,18 +97,9 @@ class Coverage:
             if s:
                 self.explicit_states.add(s.upper())
         self._recompute_bbox_and_regions()
-        self._derive_wfo_states()
-
-    def _derive_wfo_states(self) -> None:
-        """For each explicit WFO, add the states it serves to explicit_states."""
-        wfos = {w.upper() for w in self.sources.get("wfos", []) or []}
-        if not wfos:
-            return
-        for z in resolver._zones.values():
-            if z.get("w", "").upper() in wfos:
-                st = z.get("s", "").upper()
-                if st:
-                    self.explicit_states.add(st)
+        # NOTE: listing a WFO no longer implies its whole state. That rule
+        # turned MCW_HOME_WFOS=EWX into "all of Texas" and flooded Austin
+        # with Lake Charles river warnings. Only MCW_HOME_STATES widens.
 
     @classmethod
     def empty(cls) -> "Coverage":
@@ -88,11 +108,13 @@ class Coverage:
 
     @classmethod
     def from_config(cls) -> "Coverage":
-        """Build coverage from current settings.home_cities/states/wfos."""
+        """Build coverage from settings: a radius around the first home city
+        (the normal case), widened by any extra cities/states/WFOs."""
         return cls.from_sources(
             cities=_split_csv(settings.home_cities),
             states=_split_csv(settings.home_states),
             wfos=_split_csv(settings.home_wfos),
+            radius_km=settings.home_radius_km,
         )
 
     @classmethod
@@ -101,20 +123,29 @@ class Coverage:
         cities: list[str] | None = None,
         states: list[str] | None = None,
         wfos: list[str] | None = None,
+        radius_km: float = 0,
     ) -> "Coverage":
-        """Build coverage from explicit lists of cities/states/WFOs."""
+        """Build coverage from explicit lists of cities/states/WFOs, plus a
+        radius (km) around the first city: every public zone whose polygon
+        intersects that circle is covered."""
         cities = cities or []
         states = [s.upper() for s in (states or [])]
         wfos = [w.upper() for w in (wfos or [])]
 
         resolver.load()
         zones: set[str] = set()
+        center: tuple[float, float] | None = None
 
-        # Cities → resolved zones
+        # Cities → the zone each city is in (polygon), plus the radius circle
+        # around the first one.
         for city in cities:
             loc = resolver.resolve(city)
             if loc and loc.get("zones"):
-                zones.update(loc["zones"])
+                zones.add(loc["zones"][0])
+                if center is None:
+                    center = (loc["lat"], loc["lon"])
+        if center is not None and radius_km > 0:
+            zones.update(zones_within_radius(center[0], center[1], radius_km))
 
         # States → all zones in that state
         if states:
@@ -130,7 +161,8 @@ class Coverage:
 
         return cls(
             zones=zones,
-            sources={"cities": cities, "states": states, "wfos": wfos},
+            sources={"cities": cities, "states": states, "wfos": wfos,
+                     "center": center, "radius_km": radius_km if center else 0},
         )
 
     # -- Derived properties --
@@ -206,13 +238,29 @@ class Coverage:
         return False
 
     def covers_polygon(self, vertices: list[tuple[float, float]]) -> bool:
-        """Does any zone centroid fall inside the given polygon?
+        """Does a storm-based polygon touch our area?
 
-        A rough but effective check: if the polygon contains any of our
-        zone centroids, the warning affects us.
+        With a centre/radius: the polygon intersects the coverage circle
+        (exact, and catches small SVR/TOR polygons that contain no zone
+        centroid). Otherwise: it intersects any covered zone's polygon, or,
+        if shapes are unavailable, contains a covered zone centroid.
         """
         if not self.zones or not vertices or len(vertices) < 3:
             return self.is_empty()  # empty coverage = accept
+        try:
+            from shapely.geometry import Polygon
+            poly = Polygon([(lon, lat) for lat, lon in vertices])
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            if self.center and self.radius_km > 0:
+                return poly.intersects(_circle(self.center[0], self.center[1], self.radius_km))
+            if resolver._load_polygons():
+                for i, code in enumerate(resolver._poly_codes):
+                    if code in self.zones and resolver._poly_geoms[i].intersects(poly):
+                        return True
+                return False
+        except Exception:
+            pass
         for code in self.zones:
             z = resolver._zones.get(code)
             if z and _point_in_polygon(z["la"], z["lo"], vertices):
@@ -224,6 +272,8 @@ class Coverage:
         if self.is_empty():
             return "all regions (no filter)"
         parts = []
+        if self.center and self.radius_km:
+            parts.append(f"{self.radius_km:.0f} km around {self.center[0]:.2f},{self.center[1]:.2f}")
         if self.sources.get("cities"):
             parts.append(f"{len(self.sources['cities'])} cities")
         if self.sources.get("states"):
