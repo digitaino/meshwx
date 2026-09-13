@@ -396,3 +396,14 @@ Tested the resolver (`geodata/__init__.py`) against ground truth: true nearest s
 ### What this does not change
 
 The wire format. All of this is server-side resolution; the client still sends a place, station, or zone reference and receives the same messages.
+
+---
+
+## 10. Wire changes already landed (2026-09-13)
+
+Ahead of the full v5 layout, and since no clients exist to break:
+
+- **Warning event byte.** 0x20, 0x21 and 0x37 carry a one-byte VTEC event code at byte 1 instead of the 4-bit type/severity nibble. Codes come from the append-only table in `core/vtec_names.py`, exported to `client_data/protocol.json` as `events` (code → `"HT.Y"`), with `event_names` (short/long) for display. 0 = unknown. Severity is derived from the significance letter (W/A/Y/S). This is the v5 event table, shipped early.
+- `protocol.json` version 6 drops `warning_types` and `severities`.
+
+Everything else in the v4 wire format is unchanged until the v5 transport (GRP_DATA) lands.

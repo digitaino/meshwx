@@ -82,15 +82,21 @@ Kyle, TX (San Marcos Airport 10km): Mon 98/77 | Tue 101/77 | Wed 94/77 | …    
 Springfield, LA (also AR/MO/CO; add state) 1:55PM (KREG 47km): 93F …
 ```
 
-## 3. What is still disjoint (do next, in order)
+## 3. Section-3 list, resolved (2026-09-13, second pass)
 
-1. **Warnings-near still uses the v3 4-bit type nibble** (`WARN_OTHER` for a heat advisory). The text side already names events from `vtec_names.py`; the wire side gets the same table in v5. Until then, apps see "other/advisory" where humans see "HEAT ADV".
-2. **Outlook, storm reports, rain obs, METAR/TAF raw, fire weather, nowcast, climate** still have text and binary implementations that do not share code. They are request-only products in the v5 plan; port each to a service when its v5 message is designed, not before.
-3. **The channel text path** (`_respond_channel`, nudges, reactive adverts) still exists. It is dead under the no-channel-replies rule and should be deleted with the v5 request grammar.
-4. **Coverage** should be rebuilt on the resolver's polygon lookup: a centre and radius, expanded to the set of zones whose polygons intersect the circle. Today it is still zone-set-by-state.
-5. **`WeatherStore.get_summary/get_warnings/get_forecast`** and their regex helpers are now unused by the bot for places (still used for state/national overviews and by two old tests). Delete once the overviews move to the services.
-6. **Places table needs population.** Home proximity resolves local ambiguity; a far-away bare name is flagged rather than guessed. With population in `places.json` the flag could become a good guess.
-7. **Observation has no city-roundup fallback** any more. In Central Texas every town has a reporting airport within 40 km, and a stale roundup row is worse than "no obs within 2 h". If a deployment needs it, add it as a lower-ranked source inside `observation_for`, not as a separate path.
+| # | Was | Now |
+|---|---|---|
+| 1 | Warnings-near used the v3 4-bit type nibble | **One-byte VTEC event code** on 0x20, 0x21 and 0x37 (byte 1), from the append-only table in `core/vtec_names.py`, exported as `events` in `client_data/protocol.json` (76 codes). Severity is implied by the significance letter. Text and wire now name the same event. |
+| 2 | Outlook, storm reports, rain, METAR/TAF raw, nowcast had separate text and binary code | All are `core.services` objects (`Outlook`, `StormReports`, `RainObs`, `Nowcast`, `Taf`, `raw_metar_for`) with `to_bytes()` and a `render_text` function. Text commands, scheduler builders and on-demand builders call them. Fire weather and daily climate remain scheduler-only (no text command exists for them). |
+| 3 | Channel reply path, nudges, reactive adverts | Deleted. Replies are DM-only; a channel command from a sender with no DM path is logged and ignored; a failed DM is dropped, never retried on a channel. |
+| 4 | Coverage was zone-set-by-state; a WFO implied its whole state | `MCW_HOME_RADIUS_KM` (default 120) around the first home city: every public zone whose polygon intersects the circle. Storm polygons are tested against the circle itself, so a small SVR that contains no zone centroid is still caught. A WFO now adds only its zones; only `MCW_HOME_STATES` widens to a state. |
+| 5 | Old regex text helpers in `WeatherStore` | Deleted (1,160 → 400 lines). State and national overviews come from `core/overview.py` on the pyIEM extraction; marine UGC prefixes are excluded from state counts. |
+| 6 | Places table had no population and no territories | `scripts/build_places.py` merges GeoNames cities500 (population, PR/GU/VI/AS/MP) with the Census list (34,937 rows). Resolver ranks local candidates by distance, non-local by population, and still flags ambiguity. `wx hagatna` and `wx charlotte amalie` resolve. |
+| 7 | Observation had no roundup fallback | Left out deliberately; a station must be within 150 km and have reported within 2 h, otherwise the reply says so. |
+
+Verified through the real command dispatcher on the production cache (12,133 products): `wx`, `wx TX`, `warn`, `warn TX`, `outlook`, `storm TX`, `rain TX`, `metar kyle tx`, `taf round rock`, `wx springfield` (→ MO by population, alternatives listed), `wx hagatna`, `wx charlotte amalie`, `forecast san juan pr`. 161 tests pass.
+
+Still open, smaller: Guam has no METAR station in `stations.json` (PGUM missing from the source list), so `wx hagatna` reports no observation; the SPC day-1 outlook product; population-aware ranking for *local* duplicates is distance-first, which is right for a city bot but could surprise a state-wide deployment.
 
 ## 4. Rules going forward
 
