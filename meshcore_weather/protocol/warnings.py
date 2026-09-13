@@ -25,6 +25,7 @@ from pathlib import Path
 from pyiem.nws.products import parser as pyiem_parser
 from pyiem.nws.ugc import UGC, UGCProvider
 
+from meshcore_weather.core.vtec_names import event_code
 from meshcore_weather.parser.weather import (
     WeatherStore,
     _expand_zone_ranges,
@@ -361,6 +362,7 @@ def _segment_to_entry(
             "vtec_office": vtec.office,
             "vtec_etn": vtec.etn,
         }
+        event = event_code(vtec.phenomena, vtec.significance)
     # -- Non-VTEC path (SPS, rare others) --
     elif prod.product_type in _NON_VTEC_TYPES:
         expires_at = getattr(seg, "ugcexpire", None)
@@ -379,6 +381,7 @@ def _segment_to_entry(
             "vtec_office": prod.office,
             "vtec_etn": None,
         }
+        event = event_code(None, None)   # SPS
     else:
         return None
 
@@ -412,6 +415,7 @@ def _segment_to_entry(
         # Wire-format fields (consumed by warnings_to_binary)
         "warning_type": wtype,
         "severity": severity,
+        "event_code": event,
         "onset_at": onset_at,          # when the warning becomes active (None = immediate)
         "onset_unix_min": onset_unix_min,
         "expires_at": expires_at,      # canonical absolute expiry (NWS-authoritative)
@@ -582,8 +586,7 @@ def warnings_to_binary(warnings: list[dict], prefer_zones: bool = True) -> list[
             zones = w.get("zones", [])
             if prefer_zones and zones:
                 msg = pack_warning_zones(
-                    warning_type=w["warning_type"],
-                    severity=w["severity"],
+                    event=w.get("event_code", 0),
                     expires_unix_min=expires_unix_min,
                     zones=zones,
                     headline=w["headline"],
@@ -591,8 +594,7 @@ def warnings_to_binary(warnings: list[dict], prefer_zones: bool = True) -> list[
                 )
             elif w.get("vertices"):
                 msg = pack_warning_polygon(
-                    warning_type=w["warning_type"],
-                    severity=w["severity"],
+                    event=w.get("event_code", 0),
                     expires_unix_min=expires_unix_min,
                     vertices=w["vertices"],
                     headline=w["headline"],

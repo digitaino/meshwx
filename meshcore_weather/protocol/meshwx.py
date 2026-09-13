@@ -8,6 +8,10 @@ which the MeshCore firmware's companion protocol truncates at.
 
 import json
 import struct
+
+from meshcore_weather.core.vtec_names import (
+    event_from_code, event_key, severity_for,
+)
 from pathlib import Path
 
 
@@ -537,11 +541,28 @@ def _fit_headline(headline: str, max_bytes: int) -> bytes:
     return (truncated + "...").encode("utf-8")
 
 
+
+def _event_fields(event: int) -> dict:
+    """Decode a wire event code into the fields clients and the portal use.
+    warning_type/severity are derived for the legacy 4-bit consumers."""
+    ph, sig = event_from_code(event)
+    key = event_key(event)
+    from meshcore_weather.protocol.warnings import VTEC_PHENOMENON_TO_WARN_TYPE  # noqa: E402
+    return {
+        "event": event,
+        "event_key": key,
+        "phenomenon": ph,
+        "significance": sig,
+        "warning_type": VTEC_PHENOMENON_TO_WARN_TYPE.get(ph, WARN_OTHER) if ph else (WARN_SPECIAL if key == "SPS" else WARN_OTHER),
+        "severity": severity_for(sig),
+    }
+
+
 # -- Warning Polygon (0x20) v4 -- variable, max 136 bytes --
 #
 # Wire format (v4 — adds onset time):
 #   byte 0     : MSG_WARNING (0x20)
-#   byte 1     : warning_type (hi nibble) | severity (lo nibble)
+#   byte 1     : event code (uint8; protocol.json "events": HT.Y, SV.W, ...)
 #   bytes 2-5  : expires_unix_min (uint32 BE, minutes since Unix epoch)
 #   bytes 6-9  : onset_unix_min (uint32 BE, when warning becomes active)
 #                Client: if now < onset → "upcoming", if now >= onset → "active"
@@ -551,8 +572,7 @@ def _fit_headline(headline: str, max_bytes: int) -> bytes:
 #   remainder  : headline, UTF-8, truncated at word boundary with "..."
 
 def pack_warning_polygon(
-    warning_type: int,
-    severity: int,
+    event: int,
     expires_unix_min: int,
     vertices: list[tuple[float, float]],
     headline: str,
@@ -561,8 +581,8 @@ def pack_warning_polygon(
     """Pack a warning polygon into wire format (max 136 bytes).
 
     Args:
-        warning_type: 4-bit type nibble (WARN_TORNADO, WARN_SEVERE_TSTORM, ...).
-        severity: 4-bit severity nibble (SEV_ADVISORY/WATCH/WARNING/EMERGENCY).
+        event: 1-byte VTEC event code (core.vtec_names.event_code; the
+            "events" table in protocol.json). Byte 1 on the wire.
         expires_unix_min: NWS expiry as uint32 Unix minutes (minutes since 1970).
         vertices: list of (lat, lon) in decimal degrees.
         headline: short text for the client to display.
@@ -570,7 +590,7 @@ def pack_warning_polygon(
     """
     msg = bytearray()
     msg.append(MSG_WARNING)
-    msg.append(((warning_type & 0x0F) << 4) | (severity & 0x0F))
+    msg.append(event & 0xFF)
     msg.extend(struct.pack(">I", expires_unix_min & 0xFFFFFFFF))
     msg.extend(struct.pack(">I", onset_unix_min & 0xFFFFFFFF))
     msg.append(len(vertices) & 0xFF)
@@ -601,8 +621,7 @@ def unpack_warning_polygon(data: bytes) -> dict:
     """Unpack a warning polygon message."""
     if len(data) < 11 or data[0] != MSG_WARNING:
         raise ValueError("Invalid warning polygon message")
-    warning_type = (data[1] >> 4) & 0x0F
-    severity = data[1] & 0x0F
+    event = data[1]
     expires_unix_min = struct.unpack_from(">I", data, 2)[0]
     onset_unix_min = struct.unpack_from(">I", data, 6)[0]
     vertex_count = data[10]
@@ -624,8 +643,7 @@ def unpack_warning_polygon(data: bytes) -> dict:
     headline = data[offset:].decode("utf-8", errors="replace").rstrip("\x00")
     return {
         "type": MSG_WARNING,
-        "warning_type": warning_type,
-        "severity": severity,
+        **_event_fields(event),
         "expires_unix_min": expires_unix_min,
         "onset_unix_min": onset_unix_min,
         "vertices": vertices,
@@ -1119,8 +1137,7 @@ def unpack_forecast(data: bytes) -> dict:
 # artifacts entirely since geometry is canonical.
 
 def pack_warning_zones(
-    warning_type: int,
-    severity: int,
+    event: int,
     expires_unix_min: int,
     zones: list[str],
     headline: str,
@@ -1130,7 +1147,7 @@ def pack_warning_zones(
 
     Wire format:
       byte 0      : MSG_WARNING_ZONES (0x21)
-      byte 1      : warning_type (hi nibble) | severity (lo nibble)
+      byte 1      : event code (uint8; protocol.json "events")
       bytes 2-5   : expires_unix_min (uint32 BE)
       bytes 6-9   : onset_unix_min (uint32 BE, 0 = effective immediately)
       byte 10     : zone_count (max 28)
@@ -1142,7 +1159,7 @@ def pack_warning_zones(
     """
     msg = bytearray()
     msg.append(MSG_WARNING_ZONES)
-    msg.append(((warning_type & 0x0F) << 4) | (severity & 0x0F))
+    msg.append(event & 0xFF)
     msg.extend(struct.pack(">I", expires_unix_min & 0xFFFFFFFF))
     msg.extend(struct.pack(">I", onset_unix_min & 0xFFFFFFFF))
     msg.append(min(len(zones), 28))
@@ -1170,8 +1187,7 @@ def unpack_warning_zones(data: bytes) -> dict:
     """Unpack a zone-coded warning message."""
     if len(data) < 11 or data[0] != MSG_WARNING_ZONES:
         raise ValueError("Invalid zone-coded warning")
-    warning_type = (data[1] >> 4) & 0x0F
-    severity = data[1] & 0x0F
+    event = data[1]
     expires_unix_min = struct.unpack_from(">I", data, 2)[0]
     onset_unix_min = struct.unpack_from(">I", data, 6)[0]
     zone_count = data[10]
@@ -1190,8 +1206,7 @@ def unpack_warning_zones(data: bytes) -> dict:
     headline = data[offset:].decode("utf-8", errors="replace").rstrip("\x00")
     return {
         "type": MSG_WARNING_ZONES,
-        "warning_type": warning_type,
-        "severity": severity,
+        **_event_fields(event),
         "expires_unix_min": expires_unix_min,
         "onset_unix_min": onset_unix_min,
         "zones": zones,
@@ -1451,8 +1466,8 @@ def pack_warnings_near(
 ) -> bytes:
     """Pack a 0x37 'warnings near location' summary (v3).
 
-    warnings: list of {"warning_type", "severity", "expires_unix_min", "zone"}
-    where zone is an optional 6-char NWS zone code for quick lookup.
+    warnings: list of {"event", "expires_unix_min", "zone"} where event is
+    the 1-byte VTEC event code and zone an optional 6-char NWS zone code.
     """
     loc_bytes = pack_location(loc_type, loc_id)
     msg = bytearray()
@@ -1461,7 +1476,7 @@ def pack_warnings_near(
     max_entries = (136 - 2 - len(loc_bytes)) // 8
     msg.append(min(len(warnings), max_entries))
     for w in warnings[:max_entries]:
-        msg.append(((w.get("warning_type", WARN_OTHER) & 0x0F) << 4) | (w.get("severity", 0) & 0x0F))
+        msg.append(w.get("event", 0) & 0xFF)
         msg.extend(struct.pack(">I", w.get("expires_unix_min", 0) & 0xFFFFFFFF))
         zone = w.get("zone", "")
         if len(zone) == 6 and zone[2] == "Z":
@@ -1490,15 +1505,14 @@ def unpack_warnings_near(data: bytes) -> dict:
     for _ in range(count):
         if offset + 8 > len(data):
             break
-        type_sev = data[offset]
+        event = data[offset]
         expires_unix_min = struct.unpack_from(">I", data, offset + 1)[0]
         state_idx = data[offset + 5]
         zone_num = struct.unpack_from(">H", data, offset + 6)[0]
         state = idx_to_state(state_idx)
         zone = f"{state}Z{zone_num:03d}" if state != "??" else ""
         warnings.append({
-            "warning_type": (type_sev >> 4) & 0x0F,
-            "severity": type_sev & 0x0F,
+            **_event_fields(event),
             "expires_unix_min": expires_unix_min,
             "zone": zone,
         })

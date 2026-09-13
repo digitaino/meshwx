@@ -102,3 +102,45 @@ def long_name(phenomenon: str | None, significance: str | None) -> str:
         return VTEC_NAMES["SPS"][1]
     key = f"{phenomenon}.{significance}"
     return VTEC_NAMES.get(key, (key, key))[1]
+
+
+# -- Wire event codes -----------------------------------------------------------
+#
+# One byte per warning on the wire. Code = position in VTEC_NAMES + 1, so the
+# table above is APPEND-ONLY: never reorder or delete an entry, or every
+# client's decode table shifts. 0 = unknown event. Exported to
+# client_data/protocol.json as "events" by scripts/build_client_data.py.
+
+EVENT_CODES: list[str] = list(VTEC_NAMES.keys())
+_EVENT_INDEX: dict[str, int] = {k: i + 1 for i, k in enumerate(EVENT_CODES)}
+EVENT_UNKNOWN = 0
+
+# Severity is derived from the VTEC significance on the client side; these
+# mirror protocol.meshwx SEV_* so the server can fill legacy fields.
+_SIG_SEVERITY = {"W": 3, "A": 2, "Y": 1, "S": 1}
+
+
+def event_code(phenomenon: str | None, significance: str | None) -> int:
+    """Wire code for a VTEC phenomenon.significance pair (SPS when None)."""
+    key = f"{phenomenon}.{significance}" if phenomenon else "SPS"
+    return _EVENT_INDEX.get(key, EVENT_UNKNOWN)
+
+
+def event_key(code: int) -> str | None:
+    """'HT.Y' for a wire code, or None for unknown."""
+    if 1 <= code <= len(EVENT_CODES):
+        return EVENT_CODES[code - 1]
+    return None
+
+
+def event_from_code(code: int) -> tuple[str | None, str | None]:
+    """(phenomenon, significance) for a wire code; (None, None) for SPS/unknown."""
+    key = event_key(code)
+    if not key or "." not in key:
+        return None, None
+    ph, sig = key.split(".", 1)
+    return ph, sig
+
+
+def severity_for(significance: str | None) -> int:
+    return _SIG_SEVERITY.get(significance or "", 1)

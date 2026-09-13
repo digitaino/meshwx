@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "messages": {
     "refresh_request": 1,
     "data_request": 2,
@@ -46,24 +46,6 @@
     "marine": 5,
     "general": 6,
     "climate": 7
-  },
-  "warning_types": {
-    "tornado": 1,
-    "severe_thunder": 2,
-    "flash_flood": 3,
-    "flood": 4,
-    "winter_storm": 5,
-    "high_wind": 6,
-    "fire": 7,
-    "marine": 8,
-    "special": 9,
-    "other": 15
-  },
-  "severities": {
-    "advisory": 1,
-    "watch": 2,
-    "warning": 3,
-    "emergency": 4
   },
   "sky_codes": {
     "clear": 0,
@@ -136,5 +118,396 @@
     "snow": 6,
     "freezing": 7,
     "mix": 8
-  }
+  },
+  "events": {
+    "TO.W": 1,
+    "TO.A": 2,
+    "SV.W": 3,
+    "SV.A": 4,
+    "EW.W": 5,
+    "FF.W": 6,
+    "FF.A": 7,
+    "FA.W": 8,
+    "FA.Y": 9,
+    "FA.A": 10,
+    "FL.W": 11,
+    "FL.Y": 12,
+    "FL.A": 13,
+    "HT.Y": 14,
+    "EH.W": 15,
+    "EH.A": 16,
+    "XH.W": 17,
+    "WI.Y": 18,
+    "HW.W": 19,
+    "HW.A": 20,
+    "LW.Y": 21,
+    "FW.W": 22,
+    "FW.A": 23,
+    "WS.W": 24,
+    "WS.A": 25,
+    "WW.Y": 26,
+    "BZ.W": 27,
+    "IS.W": 28,
+    "LE.W": 29,
+    "ZR.Y": 30,
+    "ZF.Y": 31,
+    "FZ.W": 32,
+    "FZ.A": 33,
+    "FR.Y": 34,
+    "HZ.W": 35,
+    "HZ.A": 36,
+    "CW.Y": 37,
+    "EC.W": 38,
+    "WC.Y": 39,
+    "WC.W": 40,
+    "FG.Y": 41,
+    "SM.Y": 42,
+    "DS.W": 43,
+    "DU.Y": 44,
+    "DU.W": 45,
+    "AF.Y": 46,
+    "AS.Y": 47,
+    "SQ.W": 48,
+    "TR.W": 49,
+    "TR.A": 50,
+    "HU.W": 51,
+    "HU.A": 52,
+    "SS.W": 53,
+    "SS.A": 54,
+    "CF.W": 55,
+    "CF.Y": 56,
+    "CF.A": 57,
+    "LS.W": 58,
+    "LS.Y": 59,
+    "SU.Y": 60,
+    "SU.W": 61,
+    "RP.S": 62,
+    "BH.S": 63,
+    "SC.Y": 64,
+    "GL.W": 65,
+    "GL.A": 66,
+    "SR.W": 67,
+    "SE.W": 68,
+    "SE.A": 69,
+    "HF.W": 70,
+    "MA.W": 71,
+    "MF.Y": 72,
+    "TS.W": 73,
+    "TS.A": 74,
+    "TS.Y": 75,
+    "SPS": 76
+  },
+  "event_names": {
+    "TO.W": {
+      "short": "TORNADO WRN",
+      "long": "Tornado Warning"
+    },
+    "TO.A": {
+      "short": "TORNADO WATCH",
+      "long": "Tornado Watch"
+    },
+    "SV.W": {
+      "short": "SVR TSTM WRN",
+      "long": "Severe Thunderstorm Warning"
+    },
+    "SV.A": {
+      "short": "SVR TSTM WATCH",
+      "long": "Severe Thunderstorm Watch"
+    },
+    "EW.W": {
+      "short": "EXTREME WIND WRN",
+      "long": "Extreme Wind Warning"
+    },
+    "FF.W": {
+      "short": "FLASH FLOOD WRN",
+      "long": "Flash Flood Warning"
+    },
+    "FF.A": {
+      "short": "FLASH FLOOD WATCH",
+      "long": "Flash Flood Watch"
+    },
+    "FA.W": {
+      "short": "FLOOD WRN",
+      "long": "Flood Warning"
+    },
+    "FA.Y": {
+      "short": "FLOOD ADV",
+      "long": "Flood Advisory"
+    },
+    "FA.A": {
+      "short": "FLOOD WATCH",
+      "long": "Flood Watch"
+    },
+    "FL.W": {
+      "short": "RIVER FLOOD WRN",
+      "long": "River Flood Warning"
+    },
+    "FL.Y": {
+      "short": "RIVER FLOOD ADV",
+      "long": "River Flood Advisory"
+    },
+    "FL.A": {
+      "short": "RIVER FLOOD WATCH",
+      "long": "River Flood Watch"
+    },
+    "HT.Y": {
+      "short": "HEAT ADV",
+      "long": "Heat Advisory"
+    },
+    "EH.W": {
+      "short": "EXTREME HEAT WRN",
+      "long": "Extreme Heat Warning"
+    },
+    "EH.A": {
+      "short": "EXTREME HEAT WATCH",
+      "long": "Extreme Heat Watch"
+    },
+    "XH.W": {
+      "short": "EXTREME HEAT WRN",
+      "long": "Extreme Heat Warning"
+    },
+    "WI.Y": {
+      "short": "WIND ADV",
+      "long": "Wind Advisory"
+    },
+    "HW.W": {
+      "short": "HIGH WIND WRN",
+      "long": "High Wind Warning"
+    },
+    "HW.A": {
+      "short": "HIGH WIND WATCH",
+      "long": "High Wind Watch"
+    },
+    "LW.Y": {
+      "short": "LAKE WIND ADV",
+      "long": "Lake Wind Advisory"
+    },
+    "FW.W": {
+      "short": "RED FLAG WRN",
+      "long": "Red Flag Warning"
+    },
+    "FW.A": {
+      "short": "FIRE WX WATCH",
+      "long": "Fire Weather Watch"
+    },
+    "WS.W": {
+      "short": "WINTER STORM WRN",
+      "long": "Winter Storm Warning"
+    },
+    "WS.A": {
+      "short": "WINTER STORM WATCH",
+      "long": "Winter Storm Watch"
+    },
+    "WW.Y": {
+      "short": "WINTER WX ADV",
+      "long": "Winter Weather Advisory"
+    },
+    "BZ.W": {
+      "short": "BLIZZARD WRN",
+      "long": "Blizzard Warning"
+    },
+    "IS.W": {
+      "short": "ICE STORM WRN",
+      "long": "Ice Storm Warning"
+    },
+    "LE.W": {
+      "short": "LAKE SNOW WRN",
+      "long": "Lake Effect Snow Warning"
+    },
+    "ZR.Y": {
+      "short": "FRZ RAIN ADV",
+      "long": "Freezing Rain Advisory"
+    },
+    "ZF.Y": {
+      "short": "FRZ FOG ADV",
+      "long": "Freezing Fog Advisory"
+    },
+    "FZ.W": {
+      "short": "FREEZE WRN",
+      "long": "Freeze Warning"
+    },
+    "FZ.A": {
+      "short": "FREEZE WATCH",
+      "long": "Freeze Watch"
+    },
+    "FR.Y": {
+      "short": "FROST ADV",
+      "long": "Frost Advisory"
+    },
+    "HZ.W": {
+      "short": "HARD FREEZE WRN",
+      "long": "Hard Freeze Warning"
+    },
+    "HZ.A": {
+      "short": "HARD FREEZE WATCH",
+      "long": "Hard Freeze Watch"
+    },
+    "CW.Y": {
+      "short": "COLD WX ADV",
+      "long": "Cold Weather Advisory"
+    },
+    "EC.W": {
+      "short": "EXTREME COLD WRN",
+      "long": "Extreme Cold Warning"
+    },
+    "WC.Y": {
+      "short": "WIND CHILL ADV",
+      "long": "Wind Chill Advisory"
+    },
+    "WC.W": {
+      "short": "WIND CHILL WRN",
+      "long": "Wind Chill Warning"
+    },
+    "FG.Y": {
+      "short": "DENSE FOG ADV",
+      "long": "Dense Fog Advisory"
+    },
+    "SM.Y": {
+      "short": "DENSE SMOKE ADV",
+      "long": "Dense Smoke Advisory"
+    },
+    "DS.W": {
+      "short": "DUST STORM WRN",
+      "long": "Dust Storm Warning"
+    },
+    "DU.Y": {
+      "short": "BLOWING DUST ADV",
+      "long": "Blowing Dust Advisory"
+    },
+    "DU.W": {
+      "short": "BLOWING DUST WRN",
+      "long": "Blowing Dust Warning"
+    },
+    "AF.Y": {
+      "short": "ASHFALL ADV",
+      "long": "Ashfall Advisory"
+    },
+    "AS.Y": {
+      "short": "AIR STAGNATION",
+      "long": "Air Stagnation Advisory"
+    },
+    "SQ.W": {
+      "short": "SNOW SQUALL WRN",
+      "long": "Snow Squall Warning"
+    },
+    "TR.W": {
+      "short": "TROP STORM WRN",
+      "long": "Tropical Storm Warning"
+    },
+    "TR.A": {
+      "short": "TROP STORM WATCH",
+      "long": "Tropical Storm Watch"
+    },
+    "HU.W": {
+      "short": "HURRICANE WRN",
+      "long": "Hurricane Warning"
+    },
+    "HU.A": {
+      "short": "HURRICANE WATCH",
+      "long": "Hurricane Watch"
+    },
+    "SS.W": {
+      "short": "STORM SURGE WRN",
+      "long": "Storm Surge Warning"
+    },
+    "SS.A": {
+      "short": "STORM SURGE WATCH",
+      "long": "Storm Surge Watch"
+    },
+    "CF.W": {
+      "short": "COASTAL FLOOD WRN",
+      "long": "Coastal Flood Warning"
+    },
+    "CF.Y": {
+      "short": "COASTAL FLOOD ADV",
+      "long": "Coastal Flood Advisory"
+    },
+    "CF.A": {
+      "short": "COASTAL FLOOD WATCH",
+      "long": "Coastal Flood Watch"
+    },
+    "LS.W": {
+      "short": "LAKESHORE FLD WRN",
+      "long": "Lakeshore Flood Warning"
+    },
+    "LS.Y": {
+      "short": "LAKESHORE FLD ADV",
+      "long": "Lakeshore Flood Advisory"
+    },
+    "SU.Y": {
+      "short": "HIGH SURF ADV",
+      "long": "High Surf Advisory"
+    },
+    "SU.W": {
+      "short": "HIGH SURF WRN",
+      "long": "High Surf Warning"
+    },
+    "RP.S": {
+      "short": "RIP CURRENT",
+      "long": "Rip Current Statement"
+    },
+    "BH.S": {
+      "short": "BEACH HAZARD",
+      "long": "Beach Hazards Statement"
+    },
+    "SC.Y": {
+      "short": "SMALL CRAFT ADV",
+      "long": "Small Craft Advisory"
+    },
+    "GL.W": {
+      "short": "GALE WRN",
+      "long": "Gale Warning"
+    },
+    "GL.A": {
+      "short": "GALE WATCH",
+      "long": "Gale Watch"
+    },
+    "SR.W": {
+      "short": "STORM WRN",
+      "long": "Storm Warning"
+    },
+    "SE.W": {
+      "short": "HAZ SEAS WRN",
+      "long": "Hazardous Seas Warning"
+    },
+    "SE.A": {
+      "short": "HAZ SEAS WATCH",
+      "long": "Hazardous Seas Watch"
+    },
+    "HF.W": {
+      "short": "HURR FORCE WIND",
+      "long": "Hurricane Force Wind Warning"
+    },
+    "MA.W": {
+      "short": "SPECIAL MARINE",
+      "long": "Special Marine Warning"
+    },
+    "MF.Y": {
+      "short": "MARINE FOG ADV",
+      "long": "Marine Dense Fog Advisory"
+    },
+    "TS.W": {
+      "short": "TSUNAMI WRN",
+      "long": "Tsunami Warning"
+    },
+    "TS.A": {
+      "short": "TSUNAMI WATCH",
+      "long": "Tsunami Watch"
+    },
+    "TS.Y": {
+      "short": "TSUNAMI ADV",
+      "long": "Tsunami Advisory"
+    },
+    "SPS": {
+      "short": "SPECIAL WX STMT",
+      "long": "Special Weather Statement"
+    }
+  },
+  "event_severity_from_significance": {
+    "W": "warning",
+    "A": "watch",
+    "Y": "advisory",
+    "S": "statement"
+  },
+  "notes": " Warning messages (0x20, 0x21, 0x37) carry a 1-byte VTEC event code at byte 1 (see 'events'); severity is implied by the significance letter. 0 = unknown event."
 }
