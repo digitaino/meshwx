@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 OBS_MAX_AGE_MIN = 120
 # A forecast point farther than this is not "your" forecast.
 FORECAST_MAX_KM = 80.0
+# A station farther than this is not "your" observation (Guam's nearest
+# entry in stations.json was Hawaii, 5,966 km away).
+STATION_MAX_KM = 150.0
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -93,6 +96,8 @@ def observation_for(
     now = datetime.now(timezone.utc)
     candidates = loc.get("stations") or ([(loc["station"], loc.get("station_km") or 0.0)] if loc.get("station") else [])
     for icao, km in candidates:
+        if km > STATION_MAX_KM:
+            break
         raw = store._find_metar_raw(icao)
         if not raw:
             continue
@@ -233,3 +238,334 @@ def warnings_for(store: WeatherStore, loc: dict, all_active: list[dict] | None =
     sev_rank = {"W": 0, "A": 1, "Y": 2, "S": 3}
     out.sort(key=lambda w: (sev_rank.get(w.get("vtec_significance") or "S", 3), w["expires_at"]))
     return out
+
+
+# -- Hazardous Weather Outlook ----------------------------------------------------
+
+
+@dataclass
+class Outlook:
+    zone: str
+    product: EMWINProduct
+
+    @property
+    def issued_at(self) -> datetime:
+        return self.product.timestamp
+
+    def summary_text(self) -> str:
+        return hwo_summary(self.product.raw_text)
+
+    def to_bytes(self) -> bytes | None:
+        from meshcore_weather.protocol.encoders import encode_hwo
+        issued_min = self.product.timestamp.hour * 60 + self.product.timestamp.minute
+        return encode_hwo(self.zone, self.product.raw_text, issued_min)
+
+
+def outlook_for(store: WeatherStore, loc: dict) -> Outlook | None:
+    """Latest HWO covering the location's zone: first by the zone's office,
+    then any HWO whose UGC line lists the zone."""
+    from meshcore_weather.parser.weather import _expand_zone_ranges
+    zones = loc.get("zones") or []
+    if not zones:
+        return None
+    zone = zones[0]
+    hwo = store._find_any_orig("HWO", store._build_origs(loc))
+    if hwo is None:
+        loc_zones = set(zones)
+        for prod in store._products.values():
+            if prod.product_type != "HWO":
+                continue
+            if loc_zones & _expand_zone_ranges(prod.raw_text):
+                if hwo is None or prod.timestamp > hwo.timestamp:
+                    hwo = prod
+    return Outlook(zone=zone, product=hwo) if hwo else None
+
+
+def hwo_summary(text: str) -> str:
+    """Compact the Day 1 / Days 2-7 sections of an HWO into one string."""
+    import re
+    parts: list[str] = []
+    collecting = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith(".DAY"):
+            section = s.lstrip(".").strip()
+            section = (section.replace("DAYS TWO THROUGH SEVEN...", "D2-7:")
+                              .replace("DAY ONE...", "Today:"))
+            parts.append(section)
+            collecting = True
+            continue
+        if s.startswith(".SPOTTER") or s.startswith("$$") or s.startswith("&&"):
+            if collecting:
+                break
+            continue
+        if not collecting or not s:
+            continue
+        if re.match(r"^[A-Z]{2}[ZC]\d{3}", s) or re.match(r"^\d{3,4}\s+(AM|PM)\s+\w+", s):
+            continue
+        if s.startswith("See the Graphical") or s.startswith("http"):
+            continue
+        if re.match(r"^(RISK|AREA|ONSET|DISCUSSION)\.\.\.", s):
+            s = s.replace("...", ": ", 1).rstrip(".")
+        parts.append(s)
+    if not parts:
+        return "No hazards identified."
+    out: list[str] = []
+    for p in parts:
+        if p.endswith(":"):
+            out.append(("\n" if out else "") + p)
+        elif out and out[-1].endswith(":"):
+            out.append(" " + p)
+        else:
+            out.append(" " + p if out else p)
+    return "".join(out)
+
+
+# -- Local Storm Reports ------------------------------------------------------------
+
+
+@dataclass
+class StormReports:
+    zone: str
+    state: str
+    entries: list[dict] = field(default_factory=list)   # time, event, location, mag, state
+
+    def to_bytes(self) -> bytes | None:
+        from meshcore_weather.protocol.encoders import encode_lsr_reports, now_utc_minutes
+        return encode_lsr_reports(self.zone, self.entries, now_utc_minutes())
+
+
+def parse_lsr_entries(text: str) -> list[dict]:
+    """Individual reports from an LSR product (fixed-width two-line entries)."""
+    import re
+    entries = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines) - 1:
+        m = re.match(r"^(\d{4}\s+[AP]M)\s+(\S.*\S)\s{2,}(.*?)\s+\d{2,3}\.\d{2}[NS]", lines[i])
+        if m:
+            mag = ""
+            state = ""
+            for j in range(i + 1, min(i + 3, len(lines))):
+                line2 = lines[j].strip()
+                if not line2:
+                    continue
+                m2 = re.match(r"\d{2}/\d{2}/\d{4}\s+(\S+.*?)\s{2,}(\S.*?)\s+([A-Z]{2})\s", line2)
+                if m2:
+                    mag = m2.group(1).strip()
+                    state = m2.group(3)
+                break
+            entries.append({
+                "time": m.group(1).strip(),
+                "event": m.group(2).strip(),
+                "location": m.group(3).strip(),
+                "mag": mag,
+                "state": state,
+            })
+        i += 1
+    return entries
+
+
+def product_state(prod: EMWINProduct) -> str:
+    """State a warning-type product actually affects: the first UGC line's
+    prefix (offices near borders issue for neighbouring states)."""
+    import re
+    for line in prod.raw_text.splitlines()[:25]:
+        m = re.match(r"^([A-Z]{2})[ZC]\d{3}", line.strip())
+        if m:
+            return m.group(1)
+    return prod.state
+
+
+def storm_reports_for(store: WeatherStore, loc: dict | None = None, state: str | None = None,
+                      limit: int = 16) -> StormReports | None:
+    """Deduplicated recent LSR entries for a state (the location's state by
+    default), newest products first."""
+    if state is None:
+        zones = (loc or {}).get("zones") or []
+        if not zones:
+            return None
+        state = zones[0][:2]
+        zone = zones[0]
+    else:
+        zone = f"{state}Z000"
+    state = state.upper()
+    seen: set[str] = set()
+    entries: list[dict] = []
+    for prod in sorted(store._products.values(), key=lambda p: p.timestamp, reverse=True):
+        if prod.product_type != "LSR":
+            continue
+        if prod.state != state and product_state(prod) != state:
+            continue
+        for e in parse_lsr_entries(prod.raw_text):
+            if e.get("state") and e["state"] != state:
+                continue
+            key = f"{e['time']}_{e['event']}_{e['location']}"
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(e)
+            if len(entries) >= limit:
+                break
+        if len(entries) >= limit:
+            break
+    return StormReports(zone=zone, state=state, entries=entries) if entries else None
+
+
+# -- Nowcast (NOW) ----------------------------------------------------------------
+
+
+@dataclass
+class Nowcast:
+    wfo: str
+    product: EMWINProduct
+
+    def body(self) -> str:
+        from meshcore_weather.protocol.encoders import _extract_now_body
+        return _extract_now_body(self.product.raw_text)
+
+    def to_bytes(self) -> list[bytes]:
+        from meshcore_weather.protocol.encoders import encode_nowcast
+        return encode_nowcast(self.wfo, self.product.raw_text) or []
+
+
+def nowcast_for(store: WeatherStore, loc: dict) -> Nowcast | None:
+    prod = store._find_any_orig("NOW", store._build_origs(loc))
+    return Nowcast(wfo=prod.office, product=prod) if prod else None
+
+
+# -- Raw METAR / TAF ------------------------------------------------------------------
+
+
+def raw_metar_for(store: WeatherStore, loc: dict, max_age_min: int = OBS_MAX_AGE_MIN) -> tuple[str, float, str] | None:
+    """(station, km, raw METAR line) from the nearest reporting station."""
+    now = datetime.now(timezone.utc)
+    for icao, km in loc.get("stations") or []:
+        if km > STATION_MAX_KM:
+            break
+        raw = store._find_metar_raw(icao)
+        if raw and (now - raw[1]) <= timedelta(minutes=max_age_min):
+            return icao, float(km), raw[0]
+    return None
+
+
+@dataclass
+class Taf:
+    station: str
+    distance_km: float
+    product: EMWINProduct
+    text: str          # the station's TAF block, joined on one line
+
+    def to_bytes(self) -> bytes | None:
+        from meshcore_weather.protocol.encoders import encode_taf, now_utc_minutes
+        hours_ago = max(0, int((now_utc_minutes() - self.product.timestamp.hour * 60
+                                - self.product.timestamp.minute) / 60))
+        return encode_taf(self.station, self.product.raw_text, hours_ago)
+
+
+def _taf_block(text: str, station: str) -> str | None:
+    import re
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith(f"TAF {station}") or s.startswith(f"TAF AMD {station}") or (
+            s.startswith(station + " ") and re.match(r"^[A-Z]{4}\s+\d{6}Z", s)
+        ):
+            block = [s]
+            for j in range(i + 1, min(i + 15, len(lines))):
+                nxt = lines[j].strip()
+                if not nxt or nxt.startswith("=") or nxt.startswith("TAF ") or re.match(r"^[A-Z]{4}\s+\d{6}Z", nxt):
+                    break
+                block.append(nxt)
+            return " ".join(block)
+    return None
+
+
+def taf_for(store: WeatherStore, loc: dict) -> Taf | None:
+    """Latest TAF for the nearest station that has one (TAFs are issued for
+    ~700 airports, so the nearest METAR station may not have one)."""
+    for icao, km in loc.get("stations") or []:
+        if km > STATION_MAX_KM:
+            break
+        for prod in sorted(store._products.values(), key=lambda p: p.timestamp, reverse=True):
+            if prod.product_type != "TAF":
+                continue
+            block = _taf_block(prod.raw_text, icao)
+            if block:
+                return Taf(station=icao, distance_km=float(km), product=prod, text=block)
+    return None
+
+
+# -- Rain observations (RWR) --------------------------------------------------------------
+
+
+_RAIN_WORDS = {"RAIN", "LGT RAIN", "HVY RAIN", "TSTORM", "T-STORM", "DRIZZLE", "SHOWERS", "SHOWER", "SNOW"}
+_SKY_WORDS = _RAIN_WORDS | {"SUNNY", "MOSUNNY", "PTSUNNY", "CLEAR", "MOCLDY", "PTCLDY", "CLOUDY",
+                            "FAIR", "FOG", "HAZE", "WINDY", "LGT", "HVY", "N/A", "NOT", "AVBL"}
+
+
+@dataclass
+class RainObs:
+    zone: str
+    state: str
+    cities: list[dict] = field(default_factory=list)   # name, state, rain_text, temp_f
+
+    def to_bytes(self) -> bytes | None:
+        from meshcore_weather.protocol.encoders import encode_rain_cities, now_utc_minutes
+        return encode_rain_cities(self.zone, self.cities, now_utc_minutes())
+
+
+def rain_for(store: WeatherStore, loc: dict | None = None, state: str | None = None) -> RainObs | None:
+    """Cities in the RWR roundups currently reporting precipitation, for the
+    location's state (or an explicit state)."""
+    if state is None:
+        zones = (loc or {}).get("zones") or []
+        if not zones:
+            return None
+        state, zone = zones[0][:2], zones[0]
+    else:
+        state = state.upper()
+        zone = f"{state}Z000"
+    rainy: list[dict] = []
+    seen: set[str] = set()
+    for prod in store._products.values():
+        if prod.product_type != "RWR" or prod.state != state:
+            continue
+        in_table = False
+        for line in prod.raw_text.splitlines():
+            s = line.strip()
+            if "SKY/WX" in s and "TMP" in s:
+                in_table = True
+                continue
+            if not in_table or not s:
+                continue
+            if s.startswith("$$"):
+                in_table = False
+                continue
+            up = s.upper()
+            if not any(k in up for k in _RAIN_WORDS):
+                continue
+            parts = s.split()
+            if parts and parts[0].startswith("*"):
+                parts[0] = parts[0][1:]
+            city_parts: list[str] = []
+            wx = ""
+            temp = 60
+            for p in parts:
+                if p.upper() in _SKY_WORDS:
+                    wx = p
+                    break
+                if p.lstrip("-").isdigit():
+                    break
+                city_parts.append(p)
+            if wx in parts:
+                for tp in parts[parts.index(wx) + 1:]:
+                    if tp.lstrip("-").isdigit():
+                        temp = int(tp)
+                        break
+            name = " ".join(city_parts).title().strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            rainy.append({"name": name, "state": state, "rain_text": wx or "rain", "temp_f": temp})
+    return RainObs(zone=zone, state=state, cities=rainy) if rainy else None

@@ -490,230 +490,35 @@ class MeshWXBroadcaster:
         )
 
     def _build_metar(self, loc: dict, query: str) -> bytes | None:
-        """Build a 0x35 METAR message (uses 0x30 observation format)."""
-        # For now, same as observation for station queries
+        """0x35 METAR: the observation service (same 0x30 wire format)."""
         return self._build_observation(loc, query)
 
     def _build_outlook(self, loc: dict, query: str) -> bytes | None:
-        """Build a 0x32 Hazardous Weather Outlook for the given location.
-
-        Looks up the latest HWO product for the location's WFO and runs
-        encode_hwo() to produce the outlook message. HWOs are typically
-        issued once daily by each WFO and cover days 1-7.
-        """
+        from meshcore_weather.core import services
         resolved = resolver.resolve(query)
-        if not resolved:
-            return None
-        zones = resolved.get("zones") or []
-        if not zones:
-            return None
-        zone = zones[0]
-
-        origs = self.store._build_origs(resolved)
-        hwo = self.store._find_any_orig("HWO", origs)
-        if hwo is None:
-            # Wider fallback: any HWO whose UGC line covers our zone
-            from meshcore_weather.parser.weather import _expand_zone_ranges
-            loc_zones = set(zones)
-            best = None
-            for prod in self.store._products.values():
-                if prod.product_type != "HWO":
-                    continue
-                if loc_zones & _expand_zone_ranges(prod.raw_text):
-                    if best is None or prod.timestamp > best.timestamp:
-                        best = prod
-            hwo = best
-        if hwo is None:
-            return None
-
-        issued_min = hwo.timestamp.hour * 60 + hwo.timestamp.minute
-        return encode_hwo(zone, hwo.raw_text, issued_min)
+        ol = services.outlook_for(self.store, resolved) if resolved else None
+        return ol.to_bytes() if ol else None
 
     def _build_storm_reports(self, loc: dict, query: str) -> bytes | None:
-        """Build a 0x33 Local Storm Reports message for the location.
-
-        Walks LSR products in the store, filters to entries from the
-        location's state, and runs encode_lsr_reports() to pack up to 16
-        most recent reports into the wire format.
-        """
+        from meshcore_weather.core import services
         resolved = resolver.resolve(query)
-        if not resolved:
-            return None
-        zones = resolved.get("zones") or []
-        if not zones:
-            return None
-        zone = zones[0]
-        state = zone[:2]
-
-        # Collect deduplicated entries from LSR products newest first
-        seen: set[str] = set()
-        entries: list[dict] = []
-        for prod in sorted(
-            self.store._products.values(), key=lambda p: p.timestamp, reverse=True
-        ):
-            if prod.product_type != "LSR":
-                continue
-            # Filter by state. We accept either an exact filename-state match
-            # or a text-derived affected state, since LSR filenames don't
-            # always agree with the state of the actual report.
-            if prod.state != state:
-                affected = self.store._affected_state(prod)
-                if affected != state:
-                    continue
-            for entry in self.store._parse_lsr_entries(prod.raw_text):
-                # Filter to reports actually in the requested state
-                if entry.get("state") and entry["state"] != state:
-                    continue
-                key = f"{entry.get('time','')}_{entry.get('event','')}_{entry.get('location','')}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                entries.append(entry)
-                if len(entries) >= 16:
-                    break
-            if len(entries) >= 16:
-                break
-
-        if not entries:
-            return None
-        return encode_lsr_reports(zone, entries, now_utc_minutes())
+        sr = services.storm_reports_for(self.store, resolved) if resolved else None
+        return sr.to_bytes() if sr else None
 
     def _build_rain_obs(self, loc: dict, query: str) -> bytes | None:
-        """Build a 0x34 rain observations message for the location's region.
-
-        Scans RWR (Regional Weather Roundup) products from the location's
-        WFO for cities currently reporting any form of precipitation.
-        Encodes the list as 0x34 with each city referenced by its place_id.
-        """
+        from meshcore_weather.core import services
         resolved = resolver.resolve(query)
-        if not resolved:
-            return None
-        zones = resolved.get("zones") or []
-        if not zones:
-            return None
-        zone = zones[0]
-
-        origs = self.store._build_origs(resolved)
-        rwr = self.store._find_any_orig("RWR", origs)
-        if rwr is None:
-            return None
-
-        # Scan the RWR table for cities with precipitation. Reuses the same
-        # heuristic as WeatherStore.scan_rain but extracts structured data
-        # instead of pre-formatted text.
-        rain_keywords = {
-            "RAIN", "LGT RAIN", "HVY RAIN", "TSTORM", "T-STORM",
-            "DRIZZLE", "SHOWERS", "SHOWER", "SNOW",
-        }
-        rainy: list[dict] = []
-        seen_names: set[str] = set()
-        in_table = False
-        for line in rwr.raw_text.splitlines():
-            stripped = line.strip()
-            if "SKY/WX" in stripped and "TMP" in stripped:
-                in_table = True
-                continue
-            if not in_table or not stripped:
-                continue
-            if stripped.startswith("$$"):
-                break
-            upper = stripped.upper()
-            if not any(kw in upper for kw in rain_keywords):
-                continue
-            parts = stripped.split()
-            # Strip the leading "*" flag (NWS RWR uses it to mark significant
-            # weather rows) from the first part so the city name is clean
-            # for the place_id lookup.
-            if parts and parts[0].startswith("*"):
-                parts[0] = parts[0][1:]
-            # Walk forward extracting city name until we hit a sky-word or a number
-            sky_words = rain_keywords | {
-                "SUNNY", "MOSUNNY", "PTSUNNY", "CLEAR", "MOCLDY", "PTCLDY",
-                "CLOUDY", "FAIR", "FOG", "HAZE", "WINDY", "LGT", "HVY",
-            }
-            city_parts: list[str] = []
-            rain_text = ""
-            temp_f = 60
-            for p in parts:
-                if p.upper() in sky_words:
-                    rain_text = p
-                    break
-                if p.lstrip("-").isdigit():
-                    break
-                city_parts.append(p)
-            # First number after the sky word is the temperature
-            if rain_text:
-                idx = parts.index(rain_text) if rain_text in parts else -1
-                for tp in parts[idx + 1 :]:
-                    if tp.lstrip("-").isdigit():
-                        try:
-                            temp_f = int(tp)
-                        except ValueError:
-                            pass
-                        break
-            city_name = " ".join(city_parts).title().strip()
-            if not city_name or city_name in seen_names:
-                continue
-            seen_names.add(city_name)
-            rainy.append({
-                "name": city_name,
-                "state": zone[:2],
-                "rain_text": rain_text or "rain",
-                "temp_f": temp_f,
-            })
-
-        if not rainy:
-            return None
-        return encode_rain_cities(zone, rainy, now_utc_minutes())
+        ro = services.rain_for(self.store, resolved) if resolved else None
+        return ro.to_bytes() if ro else None
 
     def _build_taf(self, loc: dict, query: str) -> bytes | None:
-        """Build a 0x36 TAF (Terminal Aerodrome Forecast) message.
-
-        TAF is keyed to a station ICAO. Walks the store for any TAF product
-        that contains a TAF block for the requested station, then runs
-        encode_taf() to extract the BASE forecast group and pack it as 0x36.
-        """
-        # TAF is station-keyed. Resolve the location to a station.
-        if loc.get("type") == LOC_STATION:
-            station = loc.get("station")
+        from meshcore_weather.core import services
+        if loc.get("type") == LOC_STATION and loc.get("station"):
+            resolved = resolver.resolve(loc["station"])
         else:
             resolved = resolver.resolve(query)
-            if not resolved:
-                return None
-            station = resolved.get("station")
-        if not station:
-            return None
-
-        # Find a product whose text contains a TAF block for this station.
-        # NWS TAF products use AFOS like "TAFEWX" with multiple stations
-        # in one file, so we have to scan rather than direct-lookup.
-        target_marker = f"TAF {station}"
-        amend_marker = f"TAF AMD {station}"
-        candidate = None
-        for prod in sorted(
-            self.store._products.values(), key=lambda p: p.timestamp, reverse=True
-        ):
-            if prod.product_type != "TAF":
-                continue
-            text = prod.raw_text
-            if target_marker in text or amend_marker in text or f"\n{station} " in text:
-                candidate = prod
-                break
-        if candidate is None:
-            return None
-
-        issued_hours_ago = max(
-            0,
-            int(
-                (
-                    now_utc_minutes()
-                    - candidate.timestamp.hour * 60
-                    - candidate.timestamp.minute
-                )
-                / 60
-            ),
-        )
-        return encode_taf(station, candidate.raw_text, issued_hours_ago)
+        tf = services.taf_for(self.store, resolved) if resolved else None
+        return tf.to_bytes() if tf else None
 
     def _build_warnings_near(self, loc: dict, query: str) -> bytes | None:
         """0x37 warnings-near via core.services.warnings_for. A bare zone
@@ -734,8 +539,7 @@ class MeshWXBroadcaster:
             entry_zone = zone if zone in ugcs else (sorted(ugcs)[0] if ugcs else "")
             expires_at = w.get("expires_at")
             nearby.append({
-                "warning_type": w.get("warning_type", 0),
-                "severity": w.get("severity", SEV_WARNING),
+                "event": w.get("event_code", 0),
                 "expires_unix_min": int(expires_at.timestamp() / 60) if expires_at else 0,
                 "zone": entry_zone if len(entry_zone) == 6 and entry_zone[2] == "Z" else "",
             })

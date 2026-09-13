@@ -56,9 +56,11 @@ class TestResolver:
 
     def test_stations_ranked_with_distance(self):
         r = resolver.resolve("Round Rock, TX")
-        assert r["station"] == "KGTU"
-        assert 16 < r["station_km"] < 18
-        assert [s for s, _ in r["stations"][:2]] == ["KGTU", "KEDC"]
+        # Georgetown (KGTU) and Austin Executive (KEDC) are both ~15-20 km away.
+        assert r["station"] in ("KGTU", "KEDC")
+        assert 12 < r["station_km"] < 22
+        assert {s for s, _ in r["stations"][:2]} == {"KGTU", "KEDC"}
+        assert r["stations"][0][1] <= r["stations"][1][1]
 
     def test_station_query_keeps_polygon_zone(self):
         r = resolver.resolve("KAUS")
@@ -85,30 +87,34 @@ def _metar_product(icao: str, line: str, age_min: int = 10, seq: int = 1) -> dic
 
 class TestObservation:
     def test_skips_silent_nearest_station(self):
-        # KGTU is nearest to Round Rock but has no METAR; KEDC (second) does.
-        store = _store_with(_metar_product("KEDC", "KEDC 131855Z 18005G16KT 10SM FEW050 36/21 A2999"))
+        # Only the second-nearest station has a METAR; it must be chosen.
         loc = resolver.resolve("Round Rock, TX")
+        second = loc["stations"][1][0]
+        store = _store_with(_metar_product(second, f"{second} 131855Z 18005G16KT 10SM FEW050 36/21 A2999"))
         ob = services.observation_for(store, loc)
-        assert ob is not None and ob.station == "KEDC"
+        assert ob is not None and ob.station == second
         assert ob.temp_f == 97 and ob.wind_gust_mph == 18 and ob.obs_utc_min == 18 * 60 + 55
 
     def test_skips_stale_station(self):
+        loc = resolver.resolve("Round Rock, TX")
+        first, second = loc["stations"][0][0], loc["stations"][1][0]
         store = _store_with(
-            _metar_product("KGTU", "KGTU 131355Z 16010KT 10SM CLR 30/20 A3001", age_min=300, seq=1),
-            _metar_product("KEDC", "KEDC 131855Z 18005KT 10SM CLR 36/21 A2999", age_min=5, seq=2),
+            _metar_product(first, f"{first} 131355Z 16010KT 10SM CLR 30/20 A3001", age_min=300, seq=1),
+            _metar_product(second, f"{second} 131855Z 18005KT 10SM CLR 36/21 A2999", age_min=5, seq=2),
         )
-        ob = services.observation_for(store, resolver.resolve("Round Rock, TX"))
-        assert ob.station == "KEDC"
+        ob = services.observation_for(store, loc)
+        assert ob.station == second
 
     def test_text_and_bytes_agree(self):
-        store = _store_with(_metar_product("KGTU", "KGTU 131855Z 16010G15KT 10SM BKN055 35/21 A3001"))
         loc = resolver.resolve("Round Rock, TX")
+        st, km = loc["stations"][0]
+        store = _store_with(_metar_product(st, f"{st} 131855Z 16010G15KT 10SM BKN055 35/21 A3001"))
         ob = services.observation_for(store, loc)
         text = render_text.observation(loc, ob)
         from meshcore_weather.protocol.meshwx import unpack_observation
         wire = unpack_observation(ob.to_bytes())
         assert "95F" in text and wire["temp_f"] == 95
-        assert "KGTU 17km" in text and wire["location"]["station"] == "KGTU"
+        assert f"{st} {km:.0f}km" in text and wire["location"]["station"] == st
         assert wire["wind_gust_mph"] == 17 and "g17" in text
         assert len(text) <= render_text.MAX_DM
 

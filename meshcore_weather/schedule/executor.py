@@ -413,222 +413,53 @@ def _build_forecast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
 
 
 def _build_outlook(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """Hazardous Weather Outlook (0x32)."""
+    """Hazardous Weather Outlook (0x32) via core.services.outlook_for."""
+    from meshcore_weather.core import services
     query = _location_to_query(job)
-    if not query:
-        return []
-    resolved = resolver.resolve(query)
+    resolved = resolver.resolve(query) if query else None
     if not resolved:
         return []
-    zones = resolved.get("zones") or []
-    if not zones:
-        return []
-    zone = zones[0]
-
-    origs = ctx.store._build_origs(resolved)
-    hwo = ctx.store._find_any_orig("HWO", origs)
-    if hwo is None:
-        from meshcore_weather.parser.weather import _expand_zone_ranges
-        loc_zones = set(zones)
-        best = None
-        for prod in ctx.store._products.values():
-            if prod.product_type != "HWO":
-                continue
-            if loc_zones & _expand_zone_ranges(prod.raw_text):
-                if best is None or prod.timestamp > best.timestamp:
-                    best = prod
-        hwo = best
-    if hwo is None:
-        return []
-
-    issued_min = hwo.timestamp.hour * 60 + hwo.timestamp.minute
-    msg = encode_hwo(zone, hwo.raw_text, issued_min)
+    ol = services.outlook_for(ctx.store, resolved)
+    msg = ol.to_bytes() if ol else None
     return [msg] if msg else []
-
 
 def _build_storm_reports(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """Local Storm Reports (0x33)."""
+    """Local Storm Reports (0x33) via core.services.storm_reports_for."""
+    from meshcore_weather.core import services
     query = _location_to_query(job)
-    if not query:
-        return []
-    resolved = resolver.resolve(query)
+    resolved = resolver.resolve(query) if query else None
     if not resolved:
         return []
-    zones = resolved.get("zones") or []
-    if not zones:
-        return []
-    zone = zones[0]
-    state = zone[:2]
-
-    seen: set[str] = set()
-    entries: list[dict] = []
-    for prod in sorted(
-        ctx.store._products.values(), key=lambda p: p.timestamp, reverse=True
-    ):
-        if prod.product_type != "LSR":
-            continue
-        if prod.state != state:
-            affected = ctx.store._affected_state(prod)
-            if affected != state:
-                continue
-        for entry in ctx.store._parse_lsr_entries(prod.raw_text):
-            if entry.get("state") and entry["state"] != state:
-                continue
-            key = f"{entry.get('time','')}_{entry.get('event','')}_{entry.get('location','')}"
-            if key in seen:
-                continue
-            seen.add(key)
-            entries.append(entry)
-            if len(entries) >= 16:
-                break
-        if len(entries) >= 16:
-            break
-
-    if not entries:
-        return []
-    msg = encode_lsr_reports(zone, entries, now_utc_minutes())
+    sr = services.storm_reports_for(ctx.store, resolved)
+    msg = sr.to_bytes() if sr else None
     return [msg] if msg else []
-
 
 def _build_rain_obs(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """Rain observations (0x34)."""
+    """Rain observations (0x34) via core.services.rain_for."""
+    from meshcore_weather.core import services
     query = _location_to_query(job)
-    if not query:
-        return []
-    resolved = resolver.resolve(query)
+    resolved = resolver.resolve(query) if query else None
     if not resolved:
         return []
-    zones = resolved.get("zones") or []
-    if not zones:
-        return []
-    zone = zones[0]
-
-    origs = ctx.store._build_origs(resolved)
-    rwr = ctx.store._find_any_orig("RWR", origs)
-    if rwr is None:
-        return []
-
-    rain_keywords = {
-        "RAIN", "LGT RAIN", "HVY RAIN", "TSTORM", "T-STORM",
-        "DRIZZLE", "SHOWERS", "SHOWER", "SNOW",
-    }
-    rainy: list[dict] = []
-    seen_names: set[str] = set()
-    in_table = False
-    for line in rwr.raw_text.splitlines():
-        stripped = line.strip()
-        if "SKY/WX" in stripped and "TMP" in stripped:
-            in_table = True
-            continue
-        if not in_table or not stripped:
-            continue
-        if stripped.startswith("$$"):
-            break
-        upper = stripped.upper()
-        if not any(kw in upper for kw in rain_keywords):
-            continue
-        parts = stripped.split()
-        if parts and parts[0].startswith("*"):
-            parts[0] = parts[0][1:]
-        sky_words = rain_keywords | {
-            "SUNNY", "MOSUNNY", "PTSUNNY", "CLEAR", "MOCLDY", "PTCLDY",
-            "CLOUDY", "FAIR", "FOG", "HAZE", "WINDY", "LGT", "HVY",
-        }
-        city_parts: list[str] = []
-        rain_text = ""
-        temp_f = 60
-        for p in parts:
-            if p.upper() in sky_words:
-                rain_text = p
-                break
-            if p.lstrip("-").isdigit():
-                break
-            city_parts.append(p)
-        if rain_text and rain_text in parts:
-            idx2 = parts.index(rain_text)
-            for tp in parts[idx2 + 1 :]:
-                if tp.lstrip("-").isdigit():
-                    try:
-                        temp_f = int(tp)
-                    except ValueError:
-                        pass
-                    break
-        city_name = " ".join(city_parts).title().strip()
-        if not city_name or city_name in seen_names:
-            continue
-        seen_names.add(city_name)
-        rainy.append({
-            "name": city_name,
-            "state": zone[:2],
-            "rain_text": rain_text or "rain",
-            "temp_f": temp_f,
-        })
-
-    if not rainy:
-        return []
-    msg = encode_rain_cities(zone, rainy, now_utc_minutes())
+    ro = services.rain_for(ctx.store, resolved)
+    msg = ro.to_bytes() if ro else None
     return [msg] if msg else []
-
 
 def _build_metar(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """METAR current conditions for a station. Same wire format as 0x30
-    observation — this exists as a separate product so operators can
-    schedule METAR-specific station broadcasts."""
-    if job.location_type != "station":
-        # Fall back to the same observation path for non-station locations
-        return _build_observation(job, ctx)
-    station = job.location_id.strip().upper()
-    if not station:
-        return []
-    raw = ctx.store._find_metar_raw(station)
-    if not raw:
-        return []
-    metar_text, _ts = raw
-    msg = encode_metar(station, metar_text, now_utc_minutes())
-    return [msg] if msg else []
-
+    """METAR for a station: the observation service keyed on that station
+    (same 0x30 wire format; exists so operators can schedule stations)."""
+    return _build_observation(job, ctx)
 
 def _build_taf(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """TAF forecast (0x36)."""
-    if job.location_type == "station":
-        station = job.location_id.strip().upper()
-    else:
-        query = _location_to_query(job)
-        resolved = resolver.resolve(query) if query else None
-        station = (resolved or {}).get("station", "") if resolved else ""
-    if not station:
+    """TAF forecast (0x36) via core.services.taf_for."""
+    from meshcore_weather.core import services
+    query = _location_to_query(job)
+    resolved = resolver.resolve(query) if query else None
+    if not resolved:
         return []
-
-    target_marker = f"TAF {station}"
-    amend_marker = f"TAF AMD {station}"
-    candidate = None
-    for prod in sorted(
-        ctx.store._products.values(), key=lambda p: p.timestamp, reverse=True
-    ):
-        if prod.product_type != "TAF":
-            continue
-        if (target_marker in prod.raw_text
-            or amend_marker in prod.raw_text
-            or f"\n{station} " in prod.raw_text):
-            candidate = prod
-            break
-    if candidate is None:
-        return []
-
-    hours_ago = max(
-        0,
-        int(
-            (
-                now_utc_minutes()
-                - candidate.timestamp.hour * 60
-                - candidate.timestamp.minute
-            )
-            / 60
-        ),
-    )
-    msg = encode_taf(station, candidate.raw_text, hours_ago)
+    tf = services.taf_for(ctx.store, resolved)
+    msg = tf.to_bytes() if tf else None
     return [msg] if msg else []
-
 
 def _build_warnings_near(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     """Warnings-near-location summary (0x37) via core.services.warnings_for."""
@@ -647,8 +478,7 @@ def _build_warnings_near(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]
         entry_zone = zone if zone in ugcs else (sorted(ugcs)[0] if ugcs else "")
         expires_at = w.get("expires_at")
         nearby.append({
-            "warning_type": w.get("warning_type", 0),
-            "severity": w.get("severity", SEV_WARNING),
+            "event": w.get("event_code", 0),
             "expires_unix_min": int(expires_at.timestamp() / 60) if expires_at else 0,
             "zone": entry_zone if len(entry_zone) == 6 and entry_zone[2] == "Z" else "",
         })
@@ -763,32 +593,22 @@ def _build_daily_climate(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]
 
 
 def _build_nowcast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """Short-term forecast / nowcast (0x3C NOW)."""
+    """Short-term forecast / nowcast (0x3C) via core.services.nowcast_for."""
+    from meshcore_weather.core import services
     if job.location_type == "wfo":
         wfo = job.location_id.strip().upper()
-        origs = []
-        for state in ctx.coverage.explicit_states:
-            origs.append(f"{wfo}{state}")
-        if not origs:
-            origs = [f"{wfo}"]
-    else:
-        query = _location_to_query(job)
-        if not query:
-            return []
-        resolved = resolver.resolve(query)
-        if not resolved:
-            return []
-        origs = ctx.store._build_origs(resolved)
-        wfo = resolved.get("wfos", ["UNK"])[0] if resolved.get("wfos") else "UNK"
-
-    now_prod = ctx.store._find_any_orig("NOW", origs)
-    if now_prod is None:
+        prod = None
+        for p in sorted(ctx.store._products.values(), key=lambda p: p.timestamp, reverse=True):
+            if p.product_type == "NOW" and p.office == wfo:
+                prod = p
+                break
+        return services.Nowcast(wfo=wfo, product=prod).to_bytes() if prod else []
+    query = _location_to_query(job)
+    resolved = resolver.resolve(query) if query else None
+    if not resolved:
         return []
-
-    wfo_code = now_prod.office
-    msgs = encode_nowcast(wfo_code, now_prod.raw_text)
-    return msgs or []
-
+    nc = services.nowcast_for(ctx.store, resolved)
+    return nc.to_bytes() if nc else []
 
 # -- Product registry --------------------------------------------------------
 

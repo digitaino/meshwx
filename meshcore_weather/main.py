@@ -68,11 +68,7 @@ class WeatherBot:
         # Names where DM has failed — don't try again until they re-advert
         self._dm_blocked: set[str] = set()
         # Track channel usage for unknown contacts
-        self._channel_uses: dict[str, int] = {}  # sender_name -> count
-        self._max_channel_replies = 3  # free channel replies before cutoff
         # Track consecutive channel msgs from known contacts (DM may not be working)
-        self._dm_misses: dict[str, int] = {}  # sender_name -> consecutive ch msgs without DM
-        self._max_dm_misses = 2  # after this many, assume DM isn't working
         self._load_known_contacts()
 
     async def start(self) -> None:
@@ -178,29 +174,15 @@ class WeatherBot:
 
         command, location = await self._parse(text)
 
-        # Try to resolve sender for DM; if unknown, advert so they can discover us
+        # Replies go by DM only. A channel reply is a flood through every
+        # repeater; a DM with a known path costs only the repeaters on it.
+        # If we cannot DM this sender we stay silent — no channel reply, no
+        # nudge, no reactive advert (an advert is itself a flood).
         pubkey = self._resolve_sender_key(sender)
         if not pubkey:
-            await self.radio._send_advert()
-        if pubkey:
-            # Track consecutive channel msgs — if they keep using the channel
-            # instead of DM, they probably aren't receiving our DMs
-            misses = self._dm_misses.get(sender, 0) + 1
-            self._dm_misses[sender] = misses
-
-            if misses > self._max_dm_misses:
-                # DM isn't working — block until they re-advert
-                logger.info("%s sent %d channel msgs without DMing back — blocking DM, using channel",
-                            sender, misses)
-                self._dm_blocked.add(sender)
-                self._known_contacts.pop(sender, None)
-                self._dm_misses.pop(sender, None)
-                await self._respond_channel(ch, sender, command, location)
-            else:
-                self._channel_uses.pop(sender, None)
-                await self._respond_dm(pubkey, sender, command, location)
-        else:
-            await self._respond_channel(ch, sender, command, location)
+            logger.info("Channel command from %s but no DM path known — ignoring", sender)
+            return
+        await self._respond_dm(pubkey, sender, command, location)
 
     async def _handle_dm(self, pubkey_prefix: str, sender_name: str, text: str) -> None:
         """Handle a direct message."""
@@ -236,11 +218,9 @@ class WeatherBot:
         if sender_name and sender_name != "unknown":
             is_new = sender_name not in self._known_contacts
             self._known_contacts[sender_name] = prefix
-            self._dm_misses.pop(sender_name, None)
             self._dm_blocked.discard(sender_name)
             if is_new:
                 self._save_known_contacts()
-            self._channel_uses.pop(sender_name, None)
 
         # MeshWX refresh request (e.g. "MWX310000")
         if text.startswith("MWX") and len(text) >= 7 and self._broadcaster:
@@ -274,22 +254,9 @@ class WeatherBot:
             self._known_contacts[contact_name] = prefix
             self._save_known_contacts()
 
-        # Unblock DM if they were blocked
-        was_blocked = contact_name in self._dm_blocked
+        # Unblock DM if they were blocked. No re-advert and no welcome DM:
+        # both are unsolicited airtime. They will DM us when they want data.
         self._dm_blocked.discard(contact_name)
-
-        # Only welcome users who were hitting the channel (they needed to advert)
-        uses = self._channel_uses.pop(contact_name, 0)
-        if uses > 0 or was_blocked:
-            # Re-advert so the user's device picks us up too
-            await self.radio._send_advert()
-            await asyncio.sleep(2)
-            logger.info("Advert from channel user %s — sending DM welcome", contact_name)
-            await self.radio.send_dm(
-                prefix,
-                f"Hi {contact_name}! I can now reply via DM.\n"
-                "Send me wx/forecast/warn commands here."
-            )
 
     async def _handle_meshwx_refresh(self, text: str, prefix: str, sender_name: str) -> None:
         """Handle a MeshWX refresh request DM (e.g. 'MWX310000')."""
@@ -482,49 +449,6 @@ class WeatherBot:
 
     # -- Response methods --
 
-    async def _respond_channel(self, channel: int, sender: str, command: str, location: str) -> None:
-        """Send response on the channel for unknown contacts.
-
-        Allows a few free replies, then asks them to advert for DM.
-        Every reply includes a DM nudge that gets more insistent.
-        """
-        uses = self._channel_uses.get(sender, 0) + 1
-        self._channel_uses[sender] = uses
-
-        if uses > self._max_channel_replies:
-            await self.radio.send_channel_message(
-                channel,
-                f"@[{sender}] Please send an advert so I can DM you. "
-                "Channel replies are limited to reduce spam."
-            )
-            return
-
-        response, sender_key, already_paginated = self._get_response(command, location, sender)
-        if not response:
-            return
-
-        if already_paginated:
-            chunk = response
-        else:
-            chunk, offset, has_more = paginate(response, 0)
-            if has_more:
-                self._paging[sender_key] = {"full": response, "offset": offset, "ts": time.time()}
-            elif sender_key in self._paging:
-                del self._paging[sender_key]
-
-        logger.info("Response to %s (ch %d/%d): %s",
-                     sender, uses, self._max_channel_replies,
-                     chunk.replace("\n", " | "))
-        await self.radio.send_channel_message(channel, chunk)
-
-        # Append DM nudge after a brief delay (radio needs time between sends)
-        await asyncio.sleep(2)
-        if uses == 1:
-            nudge = f"@[{sender}] Tip: send an advert & DM me for private replies"
-        else:
-            nudge = f"@[{sender}] Send an advert so I can reply via DM ({self._max_channel_replies - uses} ch replies left)"
-        logger.info("Nudge to %s: %s", sender, nudge)
-        await self.radio.send_channel_message(channel, nudge)
 
     async def _respond_dm(self, pubkey_prefix: str, sender_name: str, command: str, location: str) -> None:
         """Send response as a DM. Falls back to channel if DM fails."""
@@ -546,18 +470,11 @@ class WeatherBot:
         if success:
             logger.info("Response to %s (DM): %s", sender_name, chunk.replace("\n", " | "))
         else:
-            # DM failed — block further DM attempts until they re-advert
-            logger.info("DM to %s failed, blocking DM and falling back to channel", sender_name)
+            # DM failed: drop it. The user will retry; no channel fallback,
+            # no advert. Forget the stale mapping so a fresh advert re-learns it.
+            logger.info("DM to %s failed — dropping reply (no channel fallback)", sender_name)
             self._dm_blocked.add(sender_name)
             self._known_contacts.pop(sender_name, None)
-            self._dm_misses.pop(sender_name, None)
-            await self.radio._send_advert()
-            await self.radio.send_channel_message(self.radio.channel_idx, chunk)
-            await asyncio.sleep(2)
-            await self.radio.send_channel_message(
-                self.radio.channel_idx,
-                f"@[{sender_name}] Send an advert so I can reply via DM"
-            )
 
     def _get_response(self, command: str, location: str, sender_key: str) -> tuple[str | None, str, bool]:
         """Process command and handle pagination.
@@ -670,29 +587,56 @@ class WeatherBot:
             return render_text.warnings(loc, services.warnings_for(self.store, loc))
         if kind == "forecast":
             return render_text.forecast(loc, services.forecast_for(self.store, loc))
+        if kind == "outlook":
+            return render_text.outlook(loc, services.outlook_for(self.store, loc))
+        if kind == "metar":
+            return render_text.raw_metar(loc, services.raw_metar_for(self.store, loc))
+        if kind == "taf":
+            return render_text.taf(loc, services.taf_for(self.store, loc))
         ob = services.observation_for(self.store, loc)
         ws = services.warnings_for(self.store, loc)
         fc = services.forecast_for(self.store, loc)
         return render_text.summary(loc, ob, ws, fc)
 
+    def _area_reply(self, kind: str, location: str) -> str:
+        """rain / storm: for a state code, or the state of a place, or the
+        bot's home state when nothing is given."""
+        from meshcore_weather.core import render_text, services
+        state = self._to_state_code(location) if location else None
+        label = ""
+        if state is None:
+            target = location or (settings.home_cities.split(",")[0].strip() if settings.home_cities else "")
+            loc = resolver.resolve(target) if target else None
+            if not loc or not loc.get("zones"):
+                return f"Unknown location: {location}" if location else "Usage: rain <ST or city ST>"
+            state = loc["zones"][0][:2]
+            label = f"in {state}"
+        else:
+            label = f"in {state}"
+        if kind == "rain":
+            return render_text.rain(label, services.rain_for(self.store, state=state))
+        return render_text.storm_reports(label, services.storm_reports_for(self.store, state=state))
+
     def _process_command(self, command: str, location: str) -> str | None:
         if command == "help":
             return HELP_TEXT
 
+        from meshcore_weather.core import overview
+
         if command == "wx":
             if not location:
-                return self.store.national_overview()
+                return overview.national(self.store)
             state = self._to_state_code(location)
             if state:
-                return self.store.state_overview(state)
+                return overview.state(self.store, state)
             return self._place_reply("wx", location)
 
         if command == "warn":
             if not location:
-                return self.store.warn_summary()
+                return overview.warnings_summary(self.store)
             state = self._to_state_code(location)
             if state:
-                return self.store.scan_warnings(state)
+                return overview.warnings_in_state(self.store, state)
             return self._place_reply("warn", location)
 
         if command == "forecast":
@@ -703,25 +647,23 @@ class WeatherBot:
         if command == "outlook":
             if not location:
                 return "Usage: outlook <city ST>"
-            return self.store.get_outlook(location)
+            return self._place_reply("outlook", location)
 
         if command == "rain":
-            state = self._to_state_code(location) if location else ""
-            return self.store.scan_rain(state or location)
+            return self._area_reply("rain", location)
 
         if command == "storm":
-            state = self._to_state_code(location) if location else ""
-            return self.store.get_storm_reports(state or location)
+            return self._area_reply("storm", location)
 
         if command == "metar":
             if not location:
-                return "Usage: metar <ICAO>\nEx: metar KAUS"
-            return self.store.get_raw_metar(location)
+                return "Usage: metar <ICAO or city ST>"
+            return self._place_reply("metar", location)
 
         if command == "taf":
             if not location:
-                return "Usage: taf <ICAO>\nEx: taf KJFK"
-            return self.store.get_raw_taf(location)
+                return "Usage: taf <ICAO or city ST>"
+            return self._place_reply("taf", location)
 
         return None
 

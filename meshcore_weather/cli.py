@@ -69,7 +69,9 @@ def cmd_query(location: str):
         print(f"Loaded {len(products)} products\n")
 
         print(f"--- Weather for: {location} ---")
-        print(store.get_summary(location))
+        bot = WeatherBot()
+        bot.store = store
+        print(bot._process_command("wx", location))
 
     asyncio.run(_run())
 

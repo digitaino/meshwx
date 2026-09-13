@@ -73,27 +73,6 @@ $$"""
         assert "Clear" in result
         assert "68F" in result
 
-    def test_get_summary_austin(self):
-        store = WeatherStore()
-        store.ingest([
-            _make_emwin("ZFPEWXTX", """TXZ192-080100-
-.TONIGHT...Clear. Low 55. North wind 5 mph.
-$$"""),
-            _make_emwin("RWREWXTX", """SOUTH TEXAS REGIONAL WEATHER ROUNDUP
-
-CITY           SKY/WX    TMP DP  RH WIND       PRES
-AUSTIN         CLEAR     68  45  43 N5        30.12
-$$"""),
-        ])
-        summary = store.get_summary("Austin TX")
-        assert "Austin" in summary
-        assert "Clear" in summary or "FCST" in summary
-
-    def test_get_summary_unknown_location(self):
-        store = WeatherStore()
-        summary = store.get_summary("Zzxqvw")
-        assert "Unknown" in summary
-
 
 class TestLocationResolver:
     def test_resolve_station(self):

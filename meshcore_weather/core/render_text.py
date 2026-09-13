@@ -141,3 +141,62 @@ def summary(loc: dict, ob: Observation | None, ws: list[dict], fc: Forecast | No
     if not bits:
         return _cap(f"{place_label(loc)}: no data yet")
     return _cap(f"{place_label(loc)}: " + " | ".join(bits))
+
+
+# -- Request-only products ------------------------------------------------------------
+
+
+def outlook(loc: dict, ol) -> str:
+    if ol is None:
+        return _cap(f"{place_label(loc)}: no hazardous weather outlook on file")
+    age = max(0, int((datetime.now(timezone.utc) - ol.issued_at).total_seconds() / 3600))
+    body = ol.summary_text().replace("\n", " ")
+    return _cap(f"{place_label(loc)} HWO ({age}h ago): {body}")
+
+
+_LSR_SHORT = {
+    "Non-Tstm Wnd Gst": "Wind", "Tstm Wnd Gst": "T-Wind", "Tstm Wnd Dmg": "T-Wind Dmg",
+    "Funnel Cloud": "Funnel", "Flash Flood": "FlashFld", "Heavy Rain": "HvyRain",
+}
+
+
+def storm_reports(label: str, sr, limit: int = 6) -> str:
+    if sr is None or not sr.entries:
+        return _cap(f"No storm reports {label}")
+    items = []
+    for e in sr.entries[:limit]:
+        ev = e["event"]
+        for k, v in _LSR_SHORT.items():
+            ev = ev.replace(k, v)
+        mag = f" {e['mag']}" if e.get("mag") else ""
+        items.append(f"{ev}{mag} {e['location']}")
+    more = f" +{len(sr.entries) - limit}" if len(sr.entries) > limit else ""
+    return _cap(f"{len(sr.entries)} storm rpts {label}: " + "; ".join(items) + more)
+
+
+def nowcast(loc: dict, nc) -> str:
+    if nc is None:
+        return _cap(f"{place_label(loc)}: no short-term forecast on file")
+    return _cap(f"{place_label(loc)} NOW ({nc.wfo}): " + " ".join(nc.body().split()))
+
+
+def raw_metar(loc: dict, found) -> str:
+    if not found:
+        return _cap(f"{place_label(loc)}: no METAR within 2h from nearby stations")
+    icao, km, line = found
+    return _cap(f"METAR {line}" if km == 0 else f"METAR ({icao} {km:.0f}km) {line}")
+
+
+def taf(loc: dict, tf) -> str:
+    if tf is None:
+        return _cap(f"{place_label(loc)}: no TAF for nearby stations")
+    head = "" if tf.distance_km == 0 else f"({tf.station} {tf.distance_km:.0f}km) "
+    return _cap(head + tf.text)
+
+
+def rain(label: str, ro, limit: int = 8) -> str:
+    if ro is None or not ro.cities:
+        return _cap(f"No rain reported {label}")
+    items = [f"{c['name']} {c['rain_text'].lower()} {c['temp_f']}F" for c in ro.cities[:limit]]
+    more = f" +{len(ro.cities) - limit}" if len(ro.cities) > limit else ""
+    return _cap(f"Rain {label} ({len(ro.cities)}): " + "; ".join(items) + more)
