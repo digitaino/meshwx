@@ -300,40 +300,19 @@ def _build_warnings_delta(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes
 
 
 def _build_observation(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """Current-conditions observation (0x30). Prefers a METAR station
-    for the location; falls back to an RWR city row."""
+    """Current-conditions observation (0x30) from the nearest station that
+    actually reported in the last 2 hours (core.services.observation_for)."""
+    from meshcore_weather.core import services
     query = _location_to_query(job)
     if not query:
         return []
     resolved = resolver.resolve(query)
     if not resolved:
         return []
-
-    # Try METAR first (most accurate)
-    station = resolved.get("station")
-    if station:
-        raw = ctx.store._find_metar_raw(station)
-        if raw:
-            metar_text, _ts = raw
-            msg = encode_metar(station, metar_text, now_utc_minutes())
-            if msg:
-                return [msg]
-
-    # Fall back: RWR city row via the location's WFO
-    zones = resolved.get("zones") or []
-    if zones:
-        zone = zones[0]
-        origs = ctx.store._build_origs(resolved)
-        rwr = ctx.store._find_any_orig("RWR", origs)
-        if rwr:
-            city = resolved["name"].split(",")[0].strip().upper()
-            line = ctx.store._parse_rwr_city_raw(rwr.raw_text, city)
-            if line:
-                msg = encode_rwr_city(zone, line, now_utc_minutes())
-                if msg:
-                    return [msg]
-    return []
-
+    ob = services.observation_for(ctx.store, resolved)
+    if ob is None:
+        return []
+    return [ob.to_bytes()]
 
 def _build_forecast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     """Multi-day forecast (0x31). Prefers PFM data; falls back to ZFP."""
@@ -373,26 +352,12 @@ def _build_forecast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
 
     origs = ctx.store._build_origs(resolved)
 
-    # PFM primary path
-    pfm = ctx.store._find_any_orig("PFM", origs)
-    if pfm:
-        hours_ago = max(
-            0,
-            int(
-                (
-                    now_utc_minutes()
-                    - pfm.timestamp.hour * 60
-                    - pfm.timestamp.minute
-                )
-                / 60
-            ),
-        )
-        msg = encode_forecast_from_pfm(
-            pfm.raw_text, zone, hours_ago,
-            loc_type=resp_loc_type, loc_id=resp_loc_id,
-        )
-        if msg:
-            return [msg]
+    # PFM primary path: nearest forecast point by distance across every PFM
+    # in the store (core.services.forecast_for) — zone equality not required.
+    from meshcore_weather.core import services
+    fc = services.forecast_for(ctx.store, resolved)
+    if fc is not None:
+        return [fc.to_bytes(loc_type=resp_loc_type, loc_id=resp_loc_id)]
 
     # ZFP fallback
     zfp = ctx.store._find_any_orig("ZFP", origs)
@@ -666,51 +631,30 @@ def _build_taf(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
 
 
 def _build_warnings_near(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """Warnings-near-location summary (0x37)."""
-    # Accept a bare zone directly for land + marine zone support
-    zone = ""
+    """Warnings-near-location summary (0x37) via core.services.warnings_for."""
+    from meshcore_weather.core import services
     if job.location_type == "zone":
-        zone = job.location_id.strip().upper()
+        resolved = resolver.resolve(job.location_id.strip().upper())
     else:
         query = _location_to_query(job)
         resolved = resolver.resolve(query) if query else None
-        if resolved:
-            zones = resolved.get("zones") or []
-            if zones:
-                zone = zones[0]
-    if not zone:
+    if not resolved or not resolved.get("zones"):
         return []
-
-    all_warnings = extract_active_warnings(ctx.store, coverage=None)
-    z_meta = resolver._zones.get(zone, {})
-    z_lat = z_meta.get("la", 0.0)
-    z_lon = z_meta.get("lo", 0.0)
-
+    zone = resolved["zones"][0]
     nearby: list[dict] = []
-    for w in all_warnings:
+    for w in services.warnings_for(ctx.store, resolved):
         ugcs = set(w.get("ugcs") or w.get("zones", []))
-        in_zone = zone in ugcs
-        if not in_zone and w.get("vertices"):
-            from meshcore_weather.protocol.coverage import _point_in_polygon
-            if _point_in_polygon(z_lat, z_lon, w["vertices"]):
-                in_zone = True
-        if not in_zone:
-            continue
         entry_zone = zone if zone in ugcs else (sorted(ugcs)[0] if ugcs else "")
         expires_at = w.get("expires_at")
-        expires_unix_min = int(expires_at.timestamp() / 60) if expires_at else 0
         nearby.append({
             "warning_type": w.get("warning_type", 0),
             "severity": w.get("severity", SEV_WARNING),
-            "expires_unix_min": expires_unix_min,
+            "expires_unix_min": int(expires_at.timestamp() / 60) if expires_at else 0,
             "zone": entry_zone if len(entry_zone) == 6 and entry_zone[2] == "Z" else "",
         })
-
     if not nearby:
         return []
-    msg = pack_warnings_near(LOC_ZONE, zone, nearby)
-    return [msg]
-
+    return [pack_warnings_near(LOC_ZONE, zone, nearby)]
 
 def _build_afd(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     """Area Forecast Discussion (0x40 text chunks).

@@ -86,20 +86,14 @@ def classify_sky(text: str) -> int:
 
 # -- METAR observation encoding --
 
-def encode_metar(
-    station_icao: str,
-    metar_text: str,
-    ts_minutes_utc: int,
-    loc_type: int | None = None,
-    loc_id=None,
-) -> bytes | None:
-    """Build a 0x30 observation from a raw METAR string.
+def parse_metar(metar_text: str) -> dict | None:
+    """Decode the fields MeshWX carries from a raw METAR line.
 
-    Example METAR: "KAUS 082151Z 17010KT 10SM SCT040 BKN070 28/18 A3010"
-
-    If loc_type/loc_id are provided, uses them as the response location
-    instead of LOC_STATION/station_icao (for echoing LOC_PFM_POINT back
-    to the client on on-demand requests).
+    Returns a dict with temp_f, dewpoint_f, wind_dir_deg, wind_speed_mph,
+    wind_gust_mph, visibility_mi, sky_code, pressure_inhg, obs_utc_min
+    (minutes since midnight UTC from the ddhhmmZ group), or None when the
+    line has no temperature group. This is the ONE METAR decoder; the text
+    renderer and the binary encoder both consume its output.
     """
     try:
         parts = metar_text.split()
@@ -114,6 +108,7 @@ def encode_metar(
     visibility_mi = 10
     sky_code = SKY_CLEAR
     pressure_inhg = 29.92
+    obs_utc_min = 0
 
     # Stop at RMK — everything after is remarks, not weather data.
     # Tokens like DSNT (distant) contain "SN" and cause false snow matches.
@@ -124,6 +119,10 @@ def encode_metar(
         pass
 
     for p in parts:
+        m_time = re.match(r"^\d{2}(\d{2})(\d{2})Z$", p)
+        if m_time:
+            obs_utc_min = int(m_time.group(1)) * 60 + int(m_time.group(2))
+            continue
         # Wind: dddffKT or dddffGggKT (dir in degrees, speed in knots)
         m_wind = re.match(r"^(\d{3})(\d{2,3})(?:G(\d{2,3}))?KT$", p)
         if m_wind:
@@ -132,11 +131,13 @@ def encode_metar(
             if m_wind.group(3):
                 wind_gust_mph = round(int(m_wind.group(3)) * 1.15078)
             continue
-        # Variable wind: VRBxxKT
-        m_vrb = re.match(r"^VRB(\d{2,3})KT$", p)
+        # Variable wind: VRBxxKT or VRBxxGyyKT
+        m_vrb = re.match(r"^VRB(\d{2,3})(?:G(\d{2,3}))?KT$", p)
         if m_vrb:
             wind_dir_deg = 0
             wind_speed_mph = round(int(m_vrb.group(1)) * 1.15078)
+            if m_vrb.group(2):
+                wind_gust_mph = round(int(m_vrb.group(2)) * 1.15078)
             continue
         # Visibility: NNSM or N/NSM
         m_vis = re.match(r"^(\d{1,2})(?:/(\d))?SM$", p)
@@ -188,19 +189,47 @@ def encode_metar(
 
     if temp_f is None:
         return None
+    return {
+        "temp_f": temp_f,
+        "dewpoint_f": dewpoint_f if dewpoint_f is not None else temp_f,
+        "wind_dir_deg": wind_dir_deg if wind_dir_deg is not None else 0,
+        "wind_speed_mph": wind_speed_mph,
+        "wind_gust_mph": wind_gust_mph,
+        "visibility_mi": visibility_mi,
+        "sky_code": sky_code,
+        "pressure_inhg": pressure_inhg,
+        "obs_utc_min": obs_utc_min,
+    }
 
+
+def encode_metar(
+    station_icao: str,
+    metar_text: str,
+    ts_minutes_utc: int,
+    loc_type: int | None = None,
+    loc_id=None,
+) -> bytes | None:
+    """Build a 0x30 observation from a raw METAR string (see parse_metar).
+
+    If loc_type/loc_id are provided, uses them as the response location
+    instead of LOC_STATION/station_icao (for echoing LOC_PFM_POINT back
+    to the client on on-demand requests).
+    """
+    f = parse_metar(metar_text)
+    if f is None:
+        return None
     return pack_observation(
         loc_type if loc_type is not None else LOC_STATION,
         loc_id if loc_id is not None else station_icao,
         timestamp_utc_min=ts_minutes_utc,
-        temp_f=temp_f,
-        dewpoint_f=dewpoint_f if dewpoint_f is not None else temp_f,
-        wind_dir_deg=wind_dir_deg if wind_dir_deg is not None else 0,
-        sky_code=sky_code,
-        wind_speed_mph=wind_speed_mph,
-        wind_gust_mph=wind_gust_mph,
-        visibility_mi=visibility_mi,
-        pressure_inhg=pressure_inhg,
+        temp_f=f["temp_f"],
+        dewpoint_f=f["dewpoint_f"],
+        wind_dir_deg=f["wind_dir_deg"],
+        sky_code=f["sky_code"],
+        wind_speed_mph=f["wind_speed_mph"],
+        wind_gust_mph=f["wind_gust_mph"],
+        visibility_mi=f["visibility_mi"],
+        pressure_inhg=f["pressure_inhg"],
     )
 
 
@@ -1064,7 +1093,7 @@ def encode_forecast_from_pfm(
     try:
         points = parse_pfm(pfm_text)
     except Exception as exc:
-        logger.debug("PFM parse failed: %s", exc)
+        logger.warning("PFM parse failed for zone %s: %s", zone_code, exc)
         return None
 
     point = find_point(points, zone=zone_code)

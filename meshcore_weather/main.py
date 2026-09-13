@@ -81,7 +81,7 @@ class WeatherBot:
         logger.info("  EMWIN source: %s", settings.emwin_source)
         logger.info("  Channel: %s", settings.meshcore_channel)
 
-        resolver.load()
+        resolver.load()   # also sets the resolver home from MCW_HOME_CITIES
         self.radio.on_channel_message(self._handle_channel_message)
         self.radio.on_dm(self._handle_dm)
         self.radio.on_advert(self._handle_advert)
@@ -449,6 +449,9 @@ class WeatherBot:
             if ch is None:
                 await self.radio.send_dm(prefix, "No data channel configured.")
                 return "no ch"
+            if not settings.tx_enabled:
+                await self.radio.send_dm(prefix, "TX disabled — test ping suppressed.")
+                return "tx-disabled"
             await self.radio._mc.commands.send_chan_msg(ch, "MeshWX test ping")
             await self.radio.send_dm(prefix, f"Sent text test on ch {ch}.")
             return "test"
@@ -652,6 +655,26 @@ class WeatherBot:
             return STATE_NAMES[name]
         return None
 
+    # -- Place replies via the core service layer -----------------------------
+    #
+    # wx / warn / forecast for a place all go through core.services so the
+    # text a human reads and the bytes an app decodes come from the same
+    # parse of the same products.
+
+    def _place_reply(self, kind: str, location: str) -> str:
+        from meshcore_weather.core import render_text, services
+        loc = resolver.resolve(location)
+        if not loc:
+            return f"Unknown location: {location}"
+        if kind == "warn":
+            return render_text.warnings(loc, services.warnings_for(self.store, loc))
+        if kind == "forecast":
+            return render_text.forecast(loc, services.forecast_for(self.store, loc))
+        ob = services.observation_for(self.store, loc)
+        ws = services.warnings_for(self.store, loc)
+        fc = services.forecast_for(self.store, loc)
+        return render_text.summary(loc, ob, ws, fc)
+
     def _process_command(self, command: str, location: str) -> str | None:
         if command == "help":
             return HELP_TEXT
@@ -662,7 +685,7 @@ class WeatherBot:
             state = self._to_state_code(location)
             if state:
                 return self.store.state_overview(state)
-            return self.store.get_summary(location)
+            return self._place_reply("wx", location)
 
         if command == "warn":
             if not location:
@@ -670,12 +693,12 @@ class WeatherBot:
             state = self._to_state_code(location)
             if state:
                 return self.store.scan_warnings(state)
-            return self.store.get_warnings(location)
+            return self._place_reply("warn", location)
 
         if command == "forecast":
             if not location:
                 return "Usage: forecast <city ST>"
-            return self.store.get_forecast(location)
+            return self._place_reply("forecast", location)
 
         if command == "outlook":
             if not location:

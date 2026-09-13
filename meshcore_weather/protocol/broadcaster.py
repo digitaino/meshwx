@@ -431,135 +431,63 @@ class MeshWXBroadcaster:
         return None
 
     def _build_observation(self, loc: dict, query: str) -> bytes | None:
-        """Build a 0x30 observation message for the given location.
-
-        For LOC_PFM_POINT requests, the response carries LOC_PLACE in its
-        location field so the client can display proper city names (from
-        places.json) instead of NWS airport-oriented PFM point names.
-        """
+        """0x30 observation via core.services (same parse as the scheduler
+        and the text commands). Echoes LOC_PLACE back for place/PFM-point
+        requests so the client shows a city name."""
+        from meshcore_weather.core import services
         resolved = resolver.resolve(query)
         if not resolved:
             return None
+        resp_loc_type, resp_loc_id = self._echo_location(loc)
+        ob = services.observation_for(self.store, resolved)
+        if ob is None:
+            return None
+        return ob.to_bytes(loc_type=resp_loc_type, loc_id=resp_loc_id)
 
-        # For LOC_PLACE requests, echo back the exact place_id from the
-        # request so the client displays the correct city name.
-        # For LOC_PFM_POINT, resolve the PFM point's coords to nearest place.
-        resp_loc_type = None
-        resp_loc_id = None
+    def _echo_location(self, loc: dict) -> tuple[int | None, object]:
+        """Location to echo in a response: the exact place_id for LOC_PLACE
+        requests, the nearest place for LOC_PFM_POINT, else None (station)."""
         loc_type = loc.get("type")
         if loc_type == LOC_PLACE:
-            resp_loc_type = LOC_PLACE
-            resp_loc_id = loc.get("place_id")
-        elif loc_type == LOC_PFM_POINT:
+            return LOC_PLACE, loc.get("place_id")
+        if loc_type == LOC_PFM_POINT:
             idx = loc.get("pfm_point_id")
             points = self._scheduler._pfm_points
             if idx is not None and 0 <= idx < len(points):
                 pt = points[idx]
                 place_idx = resolver.find_place_index(pt["lat"], pt["lon"])
                 if place_idx is not None:
-                    resp_loc_type = LOC_PLACE
-                    resp_loc_id = place_idx
-
-        station = resolved.get("station")
-        if station:
-            raw = self.store._find_metar_raw(station)
-            if raw:
-                metar_text, _ts = raw
-                msg = encode_metar(
-                    station, metar_text, now_utc_minutes(),
-                    loc_type=resp_loc_type, loc_id=resp_loc_id,
-                )
-                if msg:
-                    return msg
-
-        # Fall back: try RWR via WFO
-        zones = resolved.get("zones", [])
-        if zones:
-            zone = zones[0]
-            for wfo in resolved.get("wfos", []):
-                state = zone[:2]
-                rwr = self.store._find("RWR", f"{wfo}{state}")
-                if rwr:
-                    city = resolved["name"].split(",")[0].strip().upper()
-                    line = self.store._parse_rwr_city_raw(rwr.raw_text, city)
-                    if line:
-                        return encode_rwr_city(
-                            zone, line, now_utc_minutes(),
-                            loc_type=resp_loc_type, loc_id=resp_loc_id,
-                        )
-        return None
+                    return LOC_PLACE, place_idx
+        return None, None
 
     def _build_forecast(self, loc: dict, query: str) -> bytes | None:
-        """Build a 0x31 forecast message for the given location.
-
-        Tries PFM (canonical NWS Point Forecast Matrix, structured numeric
-        data) first via encode_forecast_from_pfm, then falls back to ZFP
-        narrative parsing if no PFM product is available for the zone.
-        Same 0x31 wire format on the output regardless of source — the
-        client sees no difference, just better data quality when PFM is
-        available.
-
-        For LOC_PFM_POINT requests, the response carries LOC_PFM_POINT in
-        its location field (not LOC_ZONE) so the client can correlate the
-        broadcast with its original request.
-
-        Uses _build_origs() + _find_any_orig() to handle the SJU→JSJ
-        (San Juan PR) and GUM→GUA (Guam) AWIPS aliases — the resolver
-        returns the canonical WFO code but EMWIN product filenames use
-        the AWIPS alias.
-        """
+        """0x31 forecast via core.services.forecast_for (nearest PFM point by
+        distance). Falls back to the scheduler's ZFP/SFT path if no PFM
+        point is within range."""
+        from meshcore_weather.core import services
         resolved = resolver.resolve(query)
         if not resolved:
             return None
-        zones = resolved.get("zones", [])
-        if not zones:
-            return None
-        zone = zones[0]
+        resp_loc_type, resp_loc_id = self._echo_location(loc)
+        fc = services.forecast_for(self.store, resolved)
+        if fc is not None:
+            return fc.to_bytes(loc_type=resp_loc_type, loc_id=resp_loc_id)
+        # Fallback: reuse the scheduler builder (ZFP narrative / SFT table).
+        from meshcore_weather.schedule.executor import _build_forecast as _exec_forecast
+        from meshcore_weather.schedule.models import BroadcastJob
+        job = BroadcastJob(id="ondemand", name="ondemand", product="forecast",
+                           location_type="city", location_id=query, interval_minutes=1)
+        msgs = _exec_forecast(job, self._scheduler_ctx())
+        return msgs[0] if msgs else None
 
-        # Echo back the client's location type so it can correlate responses.
-        resp_loc_type = None
-        resp_loc_id = None
-        loc_type = loc.get("type")
-        if loc_type == LOC_PLACE:
-            resp_loc_type = LOC_PLACE
-            resp_loc_id = loc.get("place_id")
-        elif loc_type == LOC_PFM_POINT:
-            resp_loc_type = LOC_PFM_POINT
-            resp_loc_id = loc.get("pfm_point_id")
-
-        origs = self.store._build_origs(resolved)
-
-        # Primary path: PFM (structured numeric forecast data)
-        pfm = self.store._find_any_orig("PFM", origs)
-        if pfm:
-            hours_ago = int(
-                (now_utc_minutes() - pfm.timestamp.hour * 60 - pfm.timestamp.minute) / 60
-            )
-            msg = encode_forecast_from_pfm(
-                pfm.raw_text, zone, max(0, hours_ago),
-                loc_type=resp_loc_type,
-                loc_id=resp_loc_id,
-            )
-            if msg is not None:
-                logger.debug("forecast: PFM source for %s", zone)
-                return msg
-            logger.debug("forecast: PFM found for %s but no usable data", zone)
-
-        # Fallback: ZFP narrative parsing
-        zfp = self.store._find_any_orig("ZFP", origs)
-        if zfp:
-            zone_text = self.store._parse_zfp_zone(zfp.raw_text, zone)
-            if zone_text:
-                hours_ago = int(
-                    (now_utc_minutes() - zfp.timestamp.hour * 60 - zfp.timestamp.minute) / 60
-                )
-                logger.debug("forecast: ZFP fallback for %s", zone)
-                return encode_forecast_from_zfp(
-                    zone, zfp.raw_text, max(0, hours_ago),
-                    loc_type=resp_loc_type,
-                    loc_id=resp_loc_id,
-                )
-        return None
+    def _scheduler_ctx(self):
+        from meshcore_weather.schedule.executor import ExecutorContext
+        s = self._scheduler
+        return ExecutorContext(
+            store=self.store, coverage=s._coverage, pfm_points=s._pfm_points,
+            latest_radar=s._latest_radar, latest_ridge=s._latest_ridge,
+            last_broadcast_warnings=s._warning_tracking,
+        )
 
     def _build_metar(self, loc: dict, query: str) -> bytes | None:
         """Build a 0x35 METAR message (uses 0x30 observation format)."""
@@ -788,63 +716,29 @@ class MeshWXBroadcaster:
         return encode_taf(station, candidate.raw_text, issued_hours_ago)
 
     def _build_warnings_near(self, loc: dict, query: str) -> bytes | None:
-        """Build a 0x37 'warnings near location' summary.
-
-        Pulls all currently-active warnings from extract_active_warnings(),
-        filters to those that affect the requested location's zone, and packs
-        them as a compact 0x37 reply with type/severity/expiry per entry.
-
-        Works for both land zones (which the resolver knows about via
-        zones.json) AND marine zones (PMZ###, GMZ###, etc. which aren't
-        in the resolver but ARE valid UGC codes that pyIEM extracts from
-        warning products). For marine zones we skip the polygon fallback
-        and rely purely on UGC code matching.
-        """
-        # If the request was for a bare zone code, use it directly without
-        # going through the resolver — that lets us serve marine zones
-        # (PMZ172 etc.) which aren't in zones.json.
-        zone: str = ""
-        if loc.get("type") == LOC_ZONE:
-            zone = loc.get("zone", "")
-        if not zone:
+        """0x37 warnings-near via core.services.warnings_for. A bare zone
+        code (including marine zones not in zones.json) is honoured directly."""
+        from meshcore_weather.core import services
+        resolved = None
+        if loc.get("type") == LOC_ZONE and loc.get("zone"):
+            z = loc["zone"]
+            resolved = resolver.resolve(z) or {"zones": [z], "lat": None, "lon": None, "name": z}
+        if resolved is None:
             resolved = resolver.resolve(query)
-            if not resolved:
-                return None
-            zones_list = resolved.get("zones") or []
-            if not zones_list:
-                return None
-            zone = zones_list[0]
-
-        all_warnings = extract_active_warnings(self.store, coverage=None)
-        # Filter to warnings whose UGCs include our zone (or whose polygon
-        # contains the zone's centroid as a fallback for land zones).
+        if not resolved or not resolved.get("zones"):
+            return None
+        zone = resolved["zones"][0]
         nearby: list[dict] = []
-        z_meta = resolver._zones.get(zone, {})
-        z_lat = z_meta.get("la", 0.0)
-        z_lon = z_meta.get("lo", 0.0)
-        for w in all_warnings:
+        for w in services.warnings_for(self.store, resolved):
             ugcs = set(w.get("ugcs") or w.get("zones", []))
-            in_zone = zone in ugcs
-            if not in_zone and w.get("vertices"):
-                # Polygon containment check (point-in-polygon for the zone centroid)
-                from meshcore_weather.protocol.coverage import _point_in_polygon
-                if _point_in_polygon(z_lat, z_lon, w["vertices"]):
-                    in_zone = True
-            if not in_zone:
-                continue
-            # Pick a representative zone for the per-entry zone reference
             entry_zone = zone if zone in ugcs else (sorted(ugcs)[0] if ugcs else "")
             expires_at = w.get("expires_at")
-            expires_unix_min = (
-                int(expires_at.timestamp() / 60) if expires_at else 0
-            )
             nearby.append({
                 "warning_type": w.get("warning_type", 0),
                 "severity": w.get("severity", SEV_WARNING),
-                "expires_unix_min": expires_unix_min,
+                "expires_unix_min": int(expires_at.timestamp() / 60) if expires_at else 0,
                 "zone": entry_zone if len(entry_zone) == 6 and entry_zone[2] == "Z" else "",
             })
-
         if not nearby:
             return None
         return pack_warnings_near(LOC_ZONE, zone, nearby)
