@@ -47,7 +47,7 @@ class LocationResolver:
 
     def __init__(self):
         self._zones: dict = {}      # zone_code -> {n, w, s, la, lo, c}
-        self._places: list = []     # [[NAME, STATE, lat, lon], ...]
+        self._places: list = []     # [[NAME, STATE, lat, lon, population], ...]
         self._stations: dict = {}   # ICAO -> {n, s, la, lo}
         self._loaded = False
         self._home: tuple[float, float] | None = None   # bot coverage centre
@@ -283,11 +283,20 @@ class LocationResolver:
         mention. Empty when the choice is unambiguous."""
         if len(matches) <= 1:
             return matches, []
+        pop = lambda p: p[4] if len(p) > 4 and isinstance(p[4], (int, float)) else 0  # noqa: E731
         if self._home is None:
-            ordered = list(matches)
+            ordered = sorted(matches, key=lambda p: -pop(p))
         else:
             hlat, hlon = self._home
-            ordered = sorted(matches, key=lambda p: _haversine(hlat, hlon, p[2], p[3]))
+            local = [p for p in matches if _haversine(hlat, hlon, p[2], p[3]) <= self.LOCAL_KM]
+            if local:
+                # Local candidates: nearest first (Round Rock TX over AZ).
+                ordered = sorted(local, key=lambda p: _haversine(hlat, hlon, p[2], p[3]))
+                ordered += sorted([p for p in matches if p not in local], key=lambda p: -pop(p))
+            else:
+                # Nothing local: the biggest place wins (Springfield MO over AR),
+                # and the reply still lists the alternatives.
+                ordered = sorted(matches, key=lambda p: -pop(p))
         chosen = ordered[0]
         others = []
         for p in ordered[1:]:
@@ -295,8 +304,8 @@ class LocationResolver:
                 continue   # same place listed twice
             if p[1] not in others and p[1] != chosen[1]:
                 others.append(p[1])
-        # If the chosen candidate is itself not local, the user needs to know
-        # the name was ambiguous; if it is local, the choice is safe.
+        # A local choice is safe. A non-local choice by population is a good
+        # guess, but the reply must say the name was ambiguous.
         if self._home is not None:
             hlat, hlon = self._home
             if _haversine(hlat, hlon, chosen[2], chosen[3]) <= self.LOCAL_KM:
