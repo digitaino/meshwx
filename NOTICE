@@ -1,0 +1,10 @@
+MeshWX / meshcore-weather
+Copyright 2026 Rafael Pesquera
+
+This product includes software developed by Rafael Pesquera
+(https://github.com/digitaino) for delivering NWS EMWIN weather products
+over MeshCore LoRa mesh networks.
+
+Weather data is derived from National Weather Service EMWIN products
+(public domain, US federal government). NWS text products are parsed with
+pyIEM (MIT License, Copyright Iowa State University / Daryl Herzmann).

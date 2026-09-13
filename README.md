@@ -211,6 +211,7 @@ All settings are environment variables prefixed with `MCW_`. See `.env.example` 
 |----------|---------|-------------|
 | `MCW_SERIAL_PORT` | `/dev/cu.usbserial-0001` | Serial port or `tcp://host:port` for a networked radio |
 | `MCW_SERIAL_BAUD` | `115200` | Serial baud rate |
+| `MCW_TX_ENABLED` | `true` | `false` = receive-only passive observer: suppresses all RF transmission (adverts, channel messages, binary broadcasts, beacons, DMs). RX and MQTT continue |
 | `MCW_MESHCORE_CHANNEL` | `#digitaino-wx-bot` | Channel for text commands (never `0`/public) |
 | `MCW_MESHWX_CHANNEL` | *(empty)* | Channel for v4 binary data broadcasts (e.g. `#aus-meshwx-v4`) |
 | `MCW_MESHWX_DISCOVER_CHANNEL` | `#meshwx-discover` | Discovery beacon channel |
@@ -424,7 +425,11 @@ Planned:
 
 ## License
 
-MIT
+Apache License 2.0. Copyright 2026 Rafael Pesquera. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+## Authors
+
+Created and maintained by Rafael Pesquera ([@digitaino](https://github.com/digitaino)). Contributions from the Austin mesh community are welcome; see the open protocol docs under `docs/`.
 
 ## Related
 
