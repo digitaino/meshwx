@@ -64,6 +64,9 @@ class ChannelFakeRadio:
     def peer_bots(self):
         return self.peers
 
+    def channel_text_budget(self):
+        return 147
+
     def find_contact_by_name(self, name):
         return self.contacts.get(name)
 

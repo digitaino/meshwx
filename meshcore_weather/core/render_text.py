@@ -8,6 +8,7 @@ the same parse.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -15,7 +16,11 @@ from meshcore_weather.config import settings
 from meshcore_weather.core.services import Forecast, Observation
 from meshcore_weather.core.vtec_names import short_name
 
-MAX_DM = 160
+# One MeshCore text message. The firmware clips a channel message at 160
+# bytes of "name: text" (plus 5 bytes of header), so with a name like
+# WX-AUS about 147 characters of text survive; a DM has a similar budget.
+# Everything rendered here aims below that so nothing is ever cut mid-word.
+MAX_DM = 147
 
 _SKY = {0: "clear", 1: "few", 2: "sct", 3: "bkn", 4: "ovc", 5: "fog", 6: "smoke",
         7: "haze", 8: "rain", 9: "snow", 10: "tstm", 11: "drzl", 12: "mist",
@@ -58,6 +63,40 @@ def _dir(deg: int) -> str:
 
 def _cap(s: str) -> str:
     return s if len(s) <= MAX_DM else s[: MAX_DM - 1].rstrip() + "…"
+
+
+def _title(name: str | None) -> str:
+    """'HEAT ADV' -> 'Heat Adv'; keeps short all-caps tokens like 'SVR' readable."""
+    if not name:
+        return "?"
+    return " ".join(w.capitalize() for w in name.split())
+
+
+def fit_list(head: str, items: list[str], cap: int = MAX_DM, sep: str = "; ", tail: str = "") -> str:
+    """head + as many items as fit in `cap`, then ' +N more'. Never cuts an item."""
+    out = head
+    used = 0
+    for i, item in enumerate(items):
+        piece = ("" if i == 0 else sep) + item
+        rest = len(items) - i - 1
+        suffix = f" +{rest + 1} more" if rest >= 0 else ""
+        # Would this item fit, allowing for a '+N more' note if it is not the last?
+        need = len(out) + len(piece) + (len(f" +{rest} more") if rest else 0) + len(tail)
+        if need > cap:
+            break
+        out += piece
+        used += 1
+    if used < len(items):
+        out += f" +{len(items) - used} more"
+    return out + tail
+
+
+def _group(items: list[str]) -> list[str]:
+    """Collapse repeats in order: [a, b, a] -> ['a x2', 'b']."""
+    counts: dict[str, int] = {}
+    for it in items:
+        counts[it] = counts.get(it, 0) + 1
+    return [f"{k} x{n}" if n > 1 else k for k, n in counts.items()]
 
 
 def place_label(loc: dict) -> str:
@@ -109,7 +148,7 @@ def warnings(loc: dict, ws: list[dict]) -> str:
         return _cap(f"No active warnings for {place_label(loc)}")
     items = []
     for w in ws:
-        name = short_name(w.get("vtec_phenomenon"), w.get("vtec_significance"))
+        name = _title(short_name(w.get("vtec_phenomenon"), w.get("vtec_significance")))
         exp = w.get("expires_at")
         onset = w.get("onset_at")
         now = datetime.now(timezone.utc)
@@ -118,7 +157,7 @@ def warnings(loc: dict, ws: list[dict]) -> str:
         else:
             items.append(f"{name} til {_when(exp)}")
     head = f"{len(ws)} active, {place_label(loc)}: " if len(ws) > 1 else f"{place_label(loc)}: "
-    return _cap(head + "; ".join(items))
+    return fit_list(head, items)
 
 
 def summary(loc: dict, ob: Observation | None, ws: list[dict], fc: Forecast | None) -> str:
@@ -126,7 +165,7 @@ def summary(loc: dict, ob: Observation | None, ws: list[dict], fc: Forecast | No
     bits = []
     if ws:
         w = ws[0]
-        bits.append(f"!{short_name(w.get('vtec_phenomenon'), w.get('vtec_significance'))} til {_when(w['expires_at'])}")
+        bits.append(f"!{_title(short_name(w.get('vtec_phenomenon'), w.get('vtec_significance')))} til {_when(w['expires_at'])}")
     if ob:
         wind = "calm" if ob.wind_speed_mph == 0 else f"{_dir(ob.wind_dir_deg)}{ob.wind_speed_mph}"
         if ob.wind_gust_mph:
@@ -155,23 +194,28 @@ def outlook(loc: dict, ol) -> str:
 
 
 _LSR_SHORT = {
-    "Non-Tstm Wnd Gst": "Wind", "Tstm Wnd Gst": "T-Wind", "Tstm Wnd Dmg": "T-Wind Dmg",
+    "Non-Tstm Wnd Gst": "Wind", "Tstm Wnd Gst": "T-Wind", "Tstm Wnd Dmg": "Wind Dmg",
     "Funnel Cloud": "Funnel", "Flash Flood": "FlashFld", "Heavy Rain": "HvyRain",
+    "Marine Tstm Wind": "Marine Wind", "Non-Tstm Wnd Dmg": "Wind Dmg",
 }
+_LSR_DIST_RE = re.compile(r"^\d+\s+[NSEW]{1,3}\s+", re.I)
 
 
-def storm_reports(label: str, sr, limit: int = 6) -> str:
+def storm_reports(label: str, sr, state: str | None = None) -> str:
+    """'16 storm reports NY: FlashFld Little Falls, Paterson NJ x3; Hail 1.00 Albany +9 more'."""
     if sr is None or not sr.entries:
         return _cap(f"No storm reports {label}")
     items = []
-    for e in sr.entries[:limit]:
+    for e in sr.entries:
         ev = e["event"]
         for k, v in _LSR_SHORT.items():
             ev = ev.replace(k, v)
-        mag = f" {e['mag']}" if e.get("mag") else ""
-        items.append(f"{ev}{mag} {e['location']}")
-    more = f" +{len(sr.entries) - limit}" if len(sr.entries) > limit else ""
-    return _cap(f"{len(sr.entries)} storm rpts {label}: " + "; ".join(items) + more)
+        town = _LSR_DIST_RE.sub("", " ".join(e["location"].split())).strip().title()
+        st = (e.get("state") or "").strip().upper()
+        where = f"{town} {st}" if st and state and st != state.upper() else town
+        mag = f" {' '.join(str(e['mag']).split())}" if str(e.get("mag") or "").strip() else ""
+        items.append(f"{ev}{mag} {where}")
+    return fit_list(f"{len(sr.entries)} storm reports {label}: ", _group(items))
 
 
 def nowcast(loc: dict, nc) -> str:
@@ -194,9 +238,8 @@ def taf(loc: dict, tf) -> str:
     return _cap(head + tf.text)
 
 
-def rain(label: str, ro, limit: int = 8) -> str:
+def rain(label: str, ro) -> str:
     if ro is None or not ro.cities:
         return _cap(f"No rain reported {label}")
-    items = [f"{c['name']} {c['rain_text'].lower()} {c['temp_f']}F" for c in ro.cities[:limit]]
-    more = f" +{len(ro.cities) - limit}" if len(ro.cities) > limit else ""
-    return _cap(f"Rain {label} ({len(ro.cities)}): " + "; ".join(items) + more)
+    items = [f"{c['name'].title()} {c['rain_text'].lower()} {c['temp_f']}F" for c in ro.cities]
+    return fit_list(f"Rain {label} ({len(ro.cities)}): ", items)

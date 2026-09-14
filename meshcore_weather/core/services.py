@@ -336,33 +336,34 @@ class StormReports:
 
 
 def parse_lsr_entries(text: str) -> list[dict]:
-    """Individual reports from an LSR product (fixed-width two-line entries)."""
+    """Individual reports from an LSR product.
+
+    Each report is two fixed-width lines, columns separated by runs of
+    spaces:  time | event | location | lat lon   and on the next line
+    date | [magnitude] | county | ST | source.  Splitting on 2+ spaces and
+    anchoring on the coordinate and the two-letter state keeps this robust
+    when a column is empty (most flash-flood reports have no magnitude).
+    """
     import re
     entries = []
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines) - 1:
-        m = re.match(r"^(\d{4}\s+[AP]M)\s+(\S.*\S)\s{2,}(.*?)\s+\d{2,3}\.\d{2}[NS]", lines[i])
-        if m:
-            mag = ""
-            state = ""
-            for j in range(i + 1, min(i + 3, len(lines))):
-                line2 = lines[j].strip()
-                if not line2:
-                    continue
-                m2 = re.match(r"\d{2}/\d{2}/\d{4}\s+(\S+.*?)\s{2,}(\S.*?)\s+([A-Z]{2})\s", line2)
-                if m2:
-                    mag = m2.group(1).strip()
-                    state = m2.group(3)
-                break
-            entries.append({
-                "time": m.group(1).strip(),
-                "event": m.group(2).strip(),
-                "location": m.group(3).strip(),
-                "mag": mag,
-                "state": state,
-            })
-        i += 1
+    lines = [l.rstrip() for l in text.splitlines()]
+    for i, line in enumerate(lines):
+        parts = re.split(r"\s{2,}", line.strip())
+        if len(parts) < 4 or not re.match(r"^\d{4} [AP]M$", parts[0]) or not re.match(r"^\d{1,3}\.\d{2}[NS] ", parts[-1]):
+            continue
+        entry = {"time": parts[0], "event": parts[1], "location": " ".join(parts[2:-1]), "mag": "", "state": "",
+                 "county": ""}
+        for j in range(i + 1, min(i + 3, len(lines))):
+            p2 = re.split(r"\s{2,}", lines[j].strip())
+            if len(p2) < 3 or not re.match(r"^\d{2}/\d{2}/\d{4}$", p2[0]):
+                continue
+            k = next((n for n, tok in enumerate(p2) if n >= 2 and re.match(r"^[A-Z]{2}$", tok)), None)
+            if k is not None:
+                entry["state"] = p2[k]
+                entry["county"] = p2[k - 1]
+                entry["mag"] = " ".join(p2[1:k - 1]).strip()
+            break
+        entries.append(entry)
     return entries
 
 

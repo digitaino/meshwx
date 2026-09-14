@@ -310,6 +310,10 @@ class MeshcoreRadio:
         if channel == 0 or channel != self._channel_idx:
             logger.warning("Blocked send on ch %d (our ch is %d)", channel, self._channel_idx)
             return
+        budget = self.channel_text_budget()
+        if len(text) > budget:
+            logger.warning("Channel text of %d chars exceeds the %d-char budget; clipping", len(text), budget)
+            text = text[:budget]
         try:
             await self._mc.commands.send_chan_msg(channel, text)
             logger.info("Sent on ch %d (flood): %s", channel, text[:80])
@@ -798,6 +802,12 @@ class MeshcoreRadio:
             except Exception:
                 out[label] = None
         return out
+
+    def channel_text_budget(self) -> int:
+        """Characters of text that survive in one channel message: the
+        firmware clips 'name: text' at 160 bytes."""
+        name = ((self._mc.self_info if self._mc else None) or {}).get("name") or "WX-XXX"
+        return max(100, 160 - len(name.encode()) - 2)
 
     @property
     def public_key(self) -> str:

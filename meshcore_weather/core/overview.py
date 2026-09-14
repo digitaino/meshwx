@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections import Counter
 
 from meshcore_weather.core import render_text, services
+from meshcore_weather.core.render_text import _title, fit_list
 from meshcore_weather.core.vtec_names import short_name
 from meshcore_weather.parser.weather import WeatherStore
 from meshcore_weather.protocol.warnings import extract_active_warnings
@@ -28,12 +29,11 @@ def _by_state(warnings: list[dict]) -> dict[str, list[dict]]:
 def national(store: WeatherStore) -> str:
     ws = extract_active_warnings(store, coverage=None)
     by_state = _by_state(ws)
-    kinds = Counter(short_name(w.get("vtec_phenomenon"), w.get("vtec_significance")) for w in ws)
-    top = ", ".join(f"{k} {n}" for k, n in kinds.most_common(4))
     if not ws:
-        return render_text._cap("US: no active warnings. Send wx <city ST> or <ST>")
-    states = " ".join(sorted(by_state))
-    return render_text._cap(f"US: {len(ws)} active ({top}). States: {states}")
+        return render_text._cap("US: no active warnings. Try wx <city ST> or wx <ST>")
+    kinds = Counter(_title(short_name(w.get("vtec_phenomenon"), w.get("vtec_significance"))) for w in ws)
+    top = ", ".join(f"{k} {n}" for k, n in kinds.most_common(3))
+    return fit_list(f"US: {len(ws)} active warnings ({top}) in ", sorted(by_state), sep=" ")
 
 
 def state(store: WeatherStore, st: str) -> str:
@@ -43,15 +43,17 @@ def state(store: WeatherStore, st: str) -> str:
     ro = services.rain_for(store, state=st)
     bits = []
     if ws:
-        kinds = Counter(short_name(w.get("vtec_phenomenon"), w.get("vtec_significance")) for w in ws)
-        bits.append(f"{len(ws)} warn: " + ", ".join(f"{k} {n}" for k, n in kinds.most_common(4)))
+        kinds = Counter(_title(short_name(w.get("vtec_phenomenon"), w.get("vtec_significance"))) for w in ws)
+        kinds_txt = ", ".join(f"{k}" if n == 1 else f"{k} x{n}" for k, n in kinds.most_common(3))
+        bits.append(f"{len(ws)} warning{'s' if len(ws) != 1 else ''}: {kinds_txt}")
     else:
         bits.append("no warnings")
     if sr:
-        bits.append(f"{len(sr.entries)} storm rpts")
+        bits.append(f"{len(sr.entries)} storm report{'s' if len(sr.entries) != 1 else ''}")
     if ro:
-        bits.append(f"rain in {len(ro.cities)}")
-    return render_text._cap(f"{st}: " + " | ".join(bits) + ". warn/storm/rain <ST> for lists")
+        bits.append(f"rain at {len(ro.cities)} station{'s' if len(ro.cities) != 1 else ''}")
+    hint = f"Try warn {st}, storm {st}, rain {st}"
+    return render_text._cap(f"{st}: " + " | ".join(bits) + f". {hint}")
 
 
 def warnings_in_state(store: WeatherStore, st: str, limit: int = 8) -> str:
@@ -61,15 +63,14 @@ def warnings_in_state(store: WeatherStore, st: str, limit: int = 8) -> str:
         return render_text._cap(f"No active warnings in {st}")
     sev = {"W": 0, "A": 1, "Y": 2, "S": 3}
     ws.sort(key=lambda w: (sev.get(w.get("vtec_significance") or "S", 3), w["expires_at"]))
-    # Collapse identical (event, expiry) lines: "HEAT ADV til 7:00PM x3".
+    # Collapse identical (event, expiry) lines: "Heat Adv til 7:00PM x3".
     groups: dict[str, int] = {}
     for w in ws:
-        name = short_name(w.get("vtec_phenomenon"), w.get("vtec_significance"))
+        name = _title(short_name(w.get("vtec_phenomenon"), w.get("vtec_significance")))
         key = f"{name} til {render_text._when(w['expires_at'])}"
         groups[key] = groups.get(key, 0) + 1
-    items = [f"{k} x{n}" if n > 1 else k for k, n in list(groups.items())[:limit]]
-    more = f" +{len(groups) - limit}" if len(groups) > limit else ""
-    return render_text._cap(f"{st} {len(ws)} active: " + "; ".join(items) + more)
+    items = [f"{k} x{n}" if n > 1 else k for k, n in groups.items()]
+    return fit_list(f"{st}: {len(ws)} active: ", items)
 
 
 def warnings_summary(store: WeatherStore) -> str:
@@ -79,5 +80,5 @@ def warnings_summary(store: WeatherStore) -> str:
     counts = Counter()
     for st, lst in _by_state(ws).items():
         counts[st] = len(lst)
-    body = " ".join(f"{st}({n})" if n > 1 else st for st, n in sorted(counts.items()))
-    return render_text._cap(f"{len(ws)} warnings in {len(counts)} states: {body}. warn <ST> for list")
+    body = [f"{st}({n})" if n > 1 else st for st, n in sorted(counts.items())]
+    return fit_list(f"{len(ws)} warnings in {len(counts)} states: ", body, sep=" ", tail=". warn <ST> for a list")

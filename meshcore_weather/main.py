@@ -20,13 +20,10 @@ logger = logging.getLogger(__name__)
 
 RADIO_RETRY_SECONDS = 60
 
+# One message, under the channel budget, no newlines (phones wrap it).
 HELP_TEXT = (
-    "GOES-E EMWIN off-grid weather\n"
-    "wx = overview | wx <ST> = state\n"
-    "wx/forecast/warn <city ST>\n"
-    "outlook/rain/storm | space\n"
-    "metar/taf <ICAO> | more\n"
-    "DM me for private replies"
+    "Weather bot: wx/forecast/warn <city ST> | warn/storm/rain <ST> | "
+    "metar <ICAO> | space | more. DM me for private replies"
 )
 
 
@@ -48,6 +45,23 @@ STATE_NAMES = {
 }
 
 VALID_STATES = set(STATE_NAMES.values())
+
+
+def channel_fit(text: str, budget: int) -> str:
+    """One channel message: the whole reply if it fits, else the reply cut at
+    a list boundary with a note. Never cut mid-word, never overflow."""
+    text = text.replace("\n", " ").strip()
+    if len(text) <= budget:
+        return text
+    note = " … DM me for all"
+    room = budget - len(note)
+    cut = text[:room]
+    for sep in ("; ", " | ", ", ", " "):
+        i = cut.rfind(sep)
+        if i > room * 3 // 5:
+            cut = cut[:i]
+            break
+    return cut.rstrip(" ;|,") + note
 
 
 class WeatherBot:
@@ -365,9 +379,7 @@ class WeatherBot:
         response, _, _ = self._get_response(command, location, f"ch:{sender}")
         if not response:
             return
-        chunk, _, has_more = paginate(response, 0)
-        if has_more:
-            chunk = chunk.rstrip() + " (DM me for the rest)"
+        chunk = channel_fit(response, self.radio.channel_text_budget())
         if not forced:
             self._channel_reply_by_sender[sender] = now
             self._channel_replies.append(now)
@@ -796,7 +808,7 @@ class WeatherBot:
             label = f"in {state}"
         if kind == "rain":
             return render_text.rain(label, services.rain_for(self.store, state=state))
-        return render_text.storm_reports(label, services.storm_reports_for(self.store, state=state))
+        return render_text.storm_reports(label, services.storm_reports_for(self.store, state=state), state=state)
 
     def _process_command(self, command: str, location: str) -> str | None:
         if command == "help":

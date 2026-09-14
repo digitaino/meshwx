@@ -172,6 +172,6 @@ class TestWarnings:
         ws = services.warnings_for(store, loc)
         assert [w["vtec_etn"] for w in ws] == [10, 11]  # in-effect first, then upcoming
         text = render_text.warnings(loc, ws)
-        assert text.startswith("2 active, Round Rock, TX: HEAT ADV til ")
+        assert text.startswith("2 active, Round Rock, TX: Heat Adv til ")
         assert len(text) <= render_text.MAX_DM
         assert services.warnings_for(store, resolver.resolve("Paris TX")) == []
