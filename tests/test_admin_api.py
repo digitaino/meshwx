@@ -158,7 +158,7 @@ def test_radio_offline(client):
 def test_console_matches_dm_path(client):
     c, bot = client
     d = c.post("/api/console", json={"text": "help"}).json()
-    assert d["command"] == "help" and "wx" in d["reply"] and d["chunks"]
+    assert d["command"] == "help" and "wx" in d["reply"] and d["has_more"] is False and d["chars"] == len(d["reply"])
     d = c.post("/api/console", json={"text": "wx round rock tx"}).json()
     assert d["command"] == "wx" and d["location"] == "round rock tx"
     assert d["reply"].startswith("Round Rock, TX")

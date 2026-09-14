@@ -327,19 +327,16 @@ async def console(request: Request) -> JSONResponse:
     if not text:
         raise HTTPException(400, "text required")
     bot = _bot(request)
-    from meshcore_weather.parser.weather import paginate
     t0 = time.monotonic()
     command, location = await bot._parse(text)
-    reply = bot._process_command(command, location)
-    chunks = []
-    if reply:
-        offset, more = 0, True
-        while more and len(chunks) < 6:
-            chunk, offset, more = paginate(reply, offset)
-            chunks.append(chunk)
+    # Exactly the DM path, with the browser as the "sender": one message
+    # per command, "more" continues the last long reply.
+    sender_key = "console:" + (request.client.host if request.client else "local")
+    chunk, has_more = bot.reply_chunk(command, location, sender_key)
     return JSONResponse({
         "text": text, "command": command, "location": location,
-        "reply": reply, "chunks": chunks, "ms": int((time.monotonic() - t0) * 1000),
+        "reply": chunk, "has_more": has_more, "chars": len(chunk or ""),
+        "ms": int((time.monotonic() - t0) * 1000),
     })
 
 

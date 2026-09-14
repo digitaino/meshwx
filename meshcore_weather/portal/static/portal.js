@@ -1382,11 +1382,9 @@ Portal.textbot = {
     apiJson("/api/console", { method: "POST", body: { text: text } }).then(function (d) {
       var el = document.getElementById(id);
       var meta = '<span class="text-muted">[' + escapeHtml(d.command) + (d.location ? " · " + escapeHtml(d.location) : "") + " · " + d.ms + "ms]</span> ";
-      var chunks = d.chunks && d.chunks.length ? d.chunks : [d.reply || "(no reply)"];
       el.className = "";
-      el.innerHTML = chunks.map(function (c, i) {
-        return '<div style="margin:2px 0 8px 0"><span class="badge badge-muted">DM ' + (i + 1) + "/" + chunks.length + " · " + c.length + "ch</span> " + escapeHtml(c) + "</div>";
-      }).join("") + meta;
+      el.innerHTML = '<div style="margin:2px 0 8px 0"><span class="badge badge-muted">DM · ' + d.chars + 'ch</span> ' +
+        escapeHtml(d.reply || "(no reply)") + (d.has_more ? ' <span class="badge badge-warning">more available — send "more"</span>' : "") + "</div>" + meta;
       log.scrollTop = log.scrollHeight;
     }).catch(function (e) { document.getElementById(id).textContent = "error: " + e.message; });
   },

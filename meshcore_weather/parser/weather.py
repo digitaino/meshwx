@@ -24,7 +24,7 @@ from meshcore_weather.geodata import resolver
 logger = logging.getLogger(__name__)
 
 # Meshcore channel messages: 300 byte frame, 7 bytes overhead = 293 usable
-MAX_MSG_BYTES = 136
+MAX_MSG_BYTES = 147   # one MeshCore DM/channel text; same budget as render_text.MAX_DM
 
 
 def _fit_message(text: str) -> str:

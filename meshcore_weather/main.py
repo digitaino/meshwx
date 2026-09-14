@@ -643,21 +643,27 @@ class WeatherBot:
     # -- Response methods --
 
 
-    async def _respond_dm(self, pubkey_prefix: str, sender_name: str, command: str, location: str) -> None:
-        """Send response as a DM. Falls back to channel if DM fails."""
-        sender_key = pubkey_prefix
+    def reply_chunk(self, command: str, location: str, sender_key: str) -> tuple[str | None, bool]:
+        """The one message a sender gets for this command, and whether a
+        'more' would fetch another. Owns the per-sender paging state, so the
+        DM path, the channel path and the portal console all behave alike."""
         response, sender_key, already_paginated = self._get_response(command, location, sender_key)
         if not response:
-            return
-
+            return None, False
         if already_paginated:
-            chunk = response
-        else:
-            chunk, offset, has_more = paginate(response, 0)
-            if has_more:
-                self._paging[sender_key] = {"full": response, "offset": offset, "ts": time.time()}
-            elif sender_key in self._paging:
-                del self._paging[sender_key]
+            return response, sender_key in self._paging
+        chunk, offset, has_more = paginate(response, 0)
+        if has_more:
+            self._paging[sender_key] = {"full": response, "offset": offset, "ts": time.time()}
+        elif sender_key in self._paging:
+            del self._paging[sender_key]
+        return chunk, has_more
+
+    async def _respond_dm(self, pubkey_prefix: str, sender_name: str, command: str, location: str) -> None:
+        """Send the reply as a DM."""
+        chunk, _ = self.reply_chunk(command, location, pubkey_prefix)
+        if not chunk:
+            return
 
         success = await self.radio.send_dm(pubkey_prefix, chunk)
         if success:
@@ -752,6 +758,9 @@ class WeatherBot:
         intent = await parse_intent(text)
         command = intent["command"]
         location = intent["location"]
+        # "warn more", "wx more": the user wants the next page, not Skidmore, TX.
+        if location.strip().lower() in ("more", "next") and command != "more":
+            command, location = "more", ""
         location = "".join(c for c in location if c.isalnum() or c in " ,.-'")[:50]
         return command, location
 
