@@ -69,6 +69,12 @@ class TestResolver:
         assert {s for s, _ in r["stations"][:2]} == {"KGTU", "KEDC"}
         assert r["stations"][0][1] <= r["stations"][1][1]
 
+    def test_bare_word_is_not_a_substring_match(self):
+        r = resolver.resolve("more")                        # was Skidmore, TX (substring)
+        assert r is None or r["name"].upper().startswith("MORE")   # a prefix match (Moreno Valley) is fine
+        assert resolver.resolve("san marc")["name"] == "San Marcos, TX"
+        assert resolver.resolve("georget")["name"].startswith("Georgetown")
+
     def test_station_query_keeps_polygon_zone(self):
         r = resolver.resolve("KAUS")
         assert r["zones"][0] == "TXZ192"

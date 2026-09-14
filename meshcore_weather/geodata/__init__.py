@@ -408,8 +408,13 @@ class LocationResolver:
     def _resolve_city(self, city: str) -> dict | None:
         city_n = _normalize(city)
         matches = [p for p in self._places if _normalize(p[0]) == city_n]
-        if not matches:
-            matches = [p for p in self._places if city_n in _normalize(p[0])]
+        if not matches and len(city_n) >= 3:
+            # Prefix of the name or of one of its words ("san marc" -> SAN
+            # MARCOS, "rock" -> ROUND ROCK / ROCKDALE), never a substring
+            # ("more" used to resolve to SKIDMORE).
+            matches = [p for p in self._places
+                       if _normalize(p[0]).startswith(city_n)
+                       or any(w.startswith(city_n) for w in _normalize(p[0]).split())]
         if not matches:
             return None
         ordered, others = self._rank_candidates(matches)

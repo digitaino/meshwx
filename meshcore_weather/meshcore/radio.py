@@ -804,10 +804,16 @@ class MeshcoreRadio:
         return out
 
     def channel_text_budget(self) -> int:
-        """Characters of text that survive in one channel message: the
-        firmware clips 'name: text' at 160 bytes."""
+        """Characters of text that survive in one channel message.
+
+        Firmware (BaseChatMesh.cpp): plaintext = timestamp(4) + txt_type(1)
+        + "<name>: " + text, clipped at 160 bytes. So the text gets
+        160 - 5 - len(name) - 2 = 153 - len(name): 147 for "WX-AUS". A DM
+        has no name (timestamp + flags + text, 160) so its budget is 155;
+        replies are rendered to 147 and fit either way.
+        """
         name = ((self._mc.self_info if self._mc else None) or {}).get("name") or "WX-XXX"
-        return max(100, 160 - len(name.encode()) - 2)
+        return max(100, 153 - len(name.encode()))
 
     @property
     def public_key(self) -> str:
