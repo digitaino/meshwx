@@ -25,6 +25,7 @@ from pathlib import Path
 import httpx
 
 from meshcore_weather.config import settings
+from meshcore_weather.emwin.retention import is_expired, longest_hours, max_age_hours
 
 logger = logging.getLogger(__name__)
 
@@ -168,12 +169,12 @@ class InternetSource(EMWINSource):
         return new_count
 
     def _expire_old(self) -> None:
-        """Remove products older than max_age_hours."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.emwin_max_age_hours)
+        """Remove products past their retention (warnings keep longer)."""
+        now = datetime.now(timezone.utc)
         before = len(self._products)
         self._products = {
             k: v for k, v in self._products.items()
-            if v.get("timestamp", datetime.now(timezone.utc)) > cutoff
+            if not is_expired((v.get("awips_id") or "")[:3], v.get("timestamp") or now, now)
         }
         removed = before - len(self._products)
         if removed:
@@ -183,7 +184,7 @@ class InternetSource(EMWINSource):
         """Load products from disk cache on startup."""
         if not CACHE_FILE.exists():
             return
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.emwin_max_age_hours)
+        now = datetime.now(timezone.utc)
         count = 0
         try:
             with open(CACHE_FILE, "r") as f:
@@ -193,7 +194,7 @@ class InternetSource(EMWINSource):
                         continue
                     rec = json.loads(line)
                     rec["timestamp"] = datetime.fromisoformat(rec["timestamp"])
-                    if rec["timestamp"] < cutoff:
+                    if is_expired((rec.get("awips_id") or "")[:3], rec["timestamp"], now):
                         continue
                     fname = rec.get("filename", "")
                     if fname and fname not in self._products:
@@ -305,7 +306,7 @@ class SDRSource(EMWINSource):
 
     def _candidate_dirs(self, now: datetime) -> list[Path]:
         """Date directories that can still contain unexpired products."""
-        cutoff_day = (now - timedelta(hours=settings.emwin_max_age_hours + 24)).date()
+        cutoff_day = (now - timedelta(hours=longest_hours() + 24)).date()
         dirs = []
         for d in self.root.iterdir():
             if not d.is_dir():
@@ -321,7 +322,7 @@ class SDRSource(EMWINSource):
     def scan(self, now: datetime | None = None) -> int:
         """Pick up new .TXT files, drop expired ones. Returns the number added."""
         now = now or datetime.now(timezone.utc)
-        cutoff = now - timedelta(hours=settings.emwin_max_age_hours)
+        oldest = now - timedelta(hours=longest_hours())
         settle = now.timestamp() - 2          # skip files goesproc may still be writing
         added = 0
         notable: list[str] = []
@@ -337,7 +338,8 @@ class SDRSource(EMWINSource):
                             ts = datetime.strptime(m_ts.group(1), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
                         except ValueError:
                             ts = None
-                        if ts is not None and ts < cutoff:
+                        ptype = name.rsplit("-", 1)[-1][:3].upper()
+                        if ts is not None and (ts < oldest or ts < now - timedelta(hours=max_age_hours(ptype))):
                             self._seen.add(name)      # too old, never look again
                             continue
                     try:
@@ -364,7 +366,8 @@ class SDRSource(EMWINSource):
         self._seen_initial = True      # the first scan is the backlog, not news
         # Expire
         before = len(self._products)
-        self._products = {k: v for k, v in self._products.items() if v["timestamp"] > cutoff}
+        self._products = {k: v for k, v in self._products.items()
+                          if not is_expired((v.get("awips_id") or "")[:3], v["timestamp"], now)}
         if before != len(self._products):
             logger.debug("SDR source: expired %d products", before - len(self._products))
         return added

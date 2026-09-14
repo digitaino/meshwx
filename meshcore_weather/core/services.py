@@ -10,6 +10,8 @@ text lives in `core.render_text`; rendering to bytes uses the packers in
 
 from __future__ import annotations
 
+import re
+
 import logging
 import math
 from dataclasses import dataclass, field
@@ -352,11 +354,12 @@ def parse_lsr_entries(text: str) -> list[dict]:
         if len(parts) < 4 or not re.match(r"^\d{4} [AP]M$", parts[0]) or not re.match(r"^\d{1,3}\.\d{2}[NS] ", parts[-1]):
             continue
         entry = {"time": parts[0], "event": parts[1], "location": " ".join(parts[2:-1]), "mag": "", "state": "",
-                 "county": ""}
+                 "county": "", "date": ""}
         for j in range(i + 1, min(i + 3, len(lines))):
             p2 = re.split(r"\s{2,}", lines[j].strip())
             if len(p2) < 3 or not re.match(r"^\d{2}/\d{2}/\d{4}$", p2[0]):
                 continue
+            entry["date"] = p2[0]
             k = next((n for n, tok in enumerate(p2) if n >= 2 and re.match(r"^[A-Z]{2}$", tok)), None)
             if k is not None:
                 entry["state"] = p2[k]
@@ -378,10 +381,34 @@ def product_state(prod: EMWINProduct) -> str:
     return prod.state
 
 
+_TZ_ABBR_OFFSET = {"EST": -5, "EDT": -4, "CST": -6, "CDT": -5, "MST": -7, "MDT": -6, "PST": -8, "PDT": -7,
+                   "AKST": -9, "AKDT": -8, "HST": -10, "AST": -4, "CHST": 10, "SST": -11, "HDT": -9}
+_LSR_HDR_RE = re.compile(r"^\d{3,4} [AP]M ([A-Z]{3,4}) \w{3} \w{3} \d{1,2} \d{4}", re.M)
+LSR_RECENT_HOURS = 6
+
+
+def _lsr_entry_time(entry: dict, tz_abbr: str | None) -> datetime | None:
+    """UTC time of one report from its line-2 date, line-1 time and the
+    product's timezone abbreviation."""
+    d, tm = entry.get("date"), entry.get("time")
+    if not d or not tm:
+        return None
+    try:
+        local = datetime.strptime(f"{d} {tm}", "%m/%d/%Y %I%M %p")
+    except ValueError:
+        return None
+    off = _TZ_ABBR_OFFSET.get((tz_abbr or "").upper(), 0)
+    return (local - timedelta(hours=off)).replace(tzinfo=timezone.utc)
+
+
 def storm_reports_for(store: WeatherStore, loc: dict | None = None, state: str | None = None,
-                      limit: int = 16) -> StormReports | None:
-    """Deduplicated recent LSR entries for a state (the location's state by
-    default), newest products first."""
+                      limit: int = 16, max_age_hours: int = LSR_RECENT_HOURS) -> StormReports | None:
+    """Deduplicated LSR reports for a state (the location's state by default)
+    whose report time is within `max_age_hours`, newest report first.
+
+    LSR products are re-issued as next-day summaries, so a product received
+    an hour ago can describe yesterday morning; the report's own timestamp
+    is what makes it current (checked against IEM on 2026-09-14)."""
     if state is None:
         zones = (loc or {}).get("zones") or []
         if not zones:
@@ -391,6 +418,7 @@ def storm_reports_for(store: WeatherStore, loc: dict | None = None, state: str |
     else:
         zone = f"{state}Z000"
     state = state.upper()
+    now = datetime.now(timezone.utc)
     seen: set[str] = set()
     entries: list[dict] = []
     for prod in sorted(store._products.values(), key=lambda p: p.timestamp, reverse=True):
@@ -398,18 +426,22 @@ def storm_reports_for(store: WeatherStore, loc: dict | None = None, state: str |
             continue
         if prod.state != state and product_state(prod) != state:
             continue
+        m = _LSR_HDR_RE.search(prod.raw_text.replace("\r", ""))
+        tz_abbr = m.group(1) if m else None
         for e in parse_lsr_entries(prod.raw_text):
             if e.get("state") and e["state"] != state:
                 continue
-            key = f"{e['time']}_{e['event']}_{e['location']}"
+            when = _lsr_entry_time(e, tz_abbr)
+            if when is None or when < now - timedelta(hours=max_age_hours) or when > now + timedelta(hours=1):
+                continue
+            key = f"{e['date']}_{e['time']}_{e['event']}_{e['location']}"
             if key in seen:
                 continue
             seen.add(key)
+            e["at"] = when
             entries.append(e)
-            if len(entries) >= limit:
-                break
-        if len(entries) >= limit:
-            break
+    entries.sort(key=lambda e: e["at"], reverse=True)
+    entries = entries[:limit]
     return StormReports(zone=zone, state=state, entries=entries) if entries else None
 
 
@@ -516,6 +548,20 @@ class RainObs:
         return encode_rain_cities(self.zone, self.cities, now_utc_minutes())
 
 
+_STATE_NAMES = {
+    "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR", "CALIFORNIA": "CA", "COLORADO": "CO",
+    "CONNECTICUT": "CT", "DELAWARE": "DE", "FLORIDA": "FL", "GEORGIA": "GA", "HAWAII": "HI", "IDAHO": "ID",
+    "ILLINOIS": "IL", "INDIANA": "IN", "IOWA": "IA", "KANSAS": "KS", "KENTUCKY": "KY", "LOUISIANA": "LA",
+    "MAINE": "ME", "MARYLAND": "MD", "MASSACHUSETTS": "MA", "MICHIGAN": "MI", "MINNESOTA": "MN",
+    "MISSISSIPPI": "MS", "MISSOURI": "MO", "MONTANA": "MT", "NEBRASKA": "NE", "NEVADA": "NV",
+    "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ", "NEW MEXICO": "NM", "NEW YORK": "NY", "NORTH CAROLINA": "NC",
+    "NORTH DAKOTA": "ND", "OHIO": "OH", "OKLAHOMA": "OK", "OREGON": "OR", "PENNSYLVANIA": "PA",
+    "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC", "SOUTH DAKOTA": "SD", "TENNESSEE": "TN", "TEXAS": "TX",
+    "UTAH": "UT", "VERMONT": "VT", "VIRGINIA": "VA", "WASHINGTON": "WA", "WEST VIRGINIA": "WV",
+    "WISCONSIN": "WI", "WYOMING": "WY", "PUERTO RICO": "PR", "GUAM": "GU",
+}
+
+
 def rain_for(store: WeatherStore, loc: dict | None = None, state: str | None = None) -> RainObs | None:
     """Cities in the RWR roundups currently reporting precipitation, for the
     location's state (or an explicit state)."""
@@ -533,10 +579,17 @@ def rain_for(store: WeatherStore, loc: dict | None = None, state: str | None = N
         if prod.product_type != "RWR" or prod.state != state:
             continue
         in_table = False
+        section_ok = True
         for line in prod.raw_text.splitlines():
             s = line.strip()
+            if s.startswith("...") and s.endswith("..."):
+                # "...OTHER LOCATIONS IN NEW MEXICO..." — a roundup filed under
+                # one state often carries a neighbour's stations too.
+                named = {abbr for name, abbr in _STATE_NAMES.items() if name in s.upper()}
+                section_ok = (state in named) if named else True
+                continue
             if "SKY/WX" in s and "TMP" in s:
-                in_table = True
+                in_table = section_ok
                 continue
             if not in_table or not s:
                 continue

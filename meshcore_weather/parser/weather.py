@@ -157,12 +157,14 @@ class WeatherStore:
             if prod:
                 self._products[prod.filename] = prod
                 count += 1
-        # Expire old products from the store
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=12)
+        # Expire old products from the store (warnings live longer: see
+        # emwin/retention.py)
+        from meshcore_weather.emwin.retention import is_expired
+        now = datetime.now(timezone.utc)
         before = len(self._products)
         self._products = {
             k: v for k, v in self._products.items()
-            if v.timestamp > cutoff
+            if not is_expired(v.product_type, v.timestamp, now)
         }
         expired = before - len(self._products)
         logger.info("Ingested %d/%d products%s",

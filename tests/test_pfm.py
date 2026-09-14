@@ -382,3 +382,15 @@ class TestRealEWXProduct:
         hondo = find_point(parse_pfm(text), zone="TXZ204")
         assert hondo is not None
         assert sum(1 for s in hondo.slots if s.interval_hours == 3) == 22
+
+
+def test_highs_and_lows_come_from_the_min_max_row():
+    """Checked 2026-09-14 against forecast.weather.gov's PFM for the same
+    issuance: sampled 3-hourly temps ran 2-6 F below the forecast max."""
+    from pathlib import Path
+    from meshcore_weather.parser.pfm import parse_pfm, downsample_to_daily
+    pts = parse_pfm((Path(__file__).parent / "fixtures" / "PFMEWX_20260913_1851Z.txt").read_bytes().decode())
+    mabry = [p for p in pts if p.name.startswith("Austin Camp Mabry")][0]
+    days = [(d.high_f, d.low_f) for d in downsample_to_daily(mabry)]
+    # Mon..Sat from the Min/Max (3-hourly) and Max/Min (6-hourly) rows
+    assert days[:6] == [(101, 78), (102, 77), (100, 77), (97, 75), (98, 74), (98, 74)]

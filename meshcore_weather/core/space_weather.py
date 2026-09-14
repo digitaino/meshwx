@@ -60,6 +60,7 @@ class SpaceWeather:
     ssn: int | None = None
     xray_bkgd: str | None = None          # e.g. "B3.0"
     indices_date: str | None = None
+    first_day: object = None              # date of the first forecast column
     # Alert state "now", from the SWPC alert envelope (0 = nothing active)
     kp_now: int = 0          # observed K-index from a live ALTKnn (4..9)
     kp_expected: int = 0     # WARKnn in its valid window, or a watch (G+4)
@@ -182,6 +183,12 @@ def parse_3day_forecast(text: str) -> dict:
         for i, v in enumerate(vals[:3]):
             per_day[i].append(float(v))
     out["kp_forecast"] = [max(d) if d else 0.0 for d in per_day]
+    # "NOAA Kp index breakdown Sep 14-Sep 16 2026": the three columns start on
+    # the first date, which is the issue date (not the day after).
+    m = re.search(r"Kp index breakdown\s+(\w{3})\s+(\d{1,2})-\w{3}\s+\d{1,2}\s+(\d{4})", t)
+    out["first_day"] = None
+    if m and _MONTHS.get(m.group(1).title()):
+        out["first_day"] = datetime(int(m.group(3)), _MONTHS[m.group(1).title()], int(m.group(2)), tzinfo=timezone.utc).date()
     out["g_forecast"] = [g_scale_for_kp(k) for k in out["kp_forecast"]]
     out["s1_prob"] = _pct_row(t, "S1 or greater")
     out["r12_prob"] = _pct_row(t, "R1-R2")
@@ -375,6 +382,7 @@ def space_weather_for(store: WeatherStore, now: datetime | None = None) -> Space
         ssn=i.get("ssn"),
         xray_bkgd=i.get("xray_bkgd"),
         indices_date=i.get("indices_date"),
+        first_day=f.get("first_day"),
         kp_now=al["kp_now"],
         kp_expected=al["kp_expected"],
         xray_alert=al["xray_alert"],
@@ -404,7 +412,10 @@ def render(sw: SpaceWeather | None) -> str:
     if sw is None:
         return "No space weather products on file"
     from meshcore_weather.core.render_text import _cap, _local
-    days = [(_local(sw.issued_at) + timedelta(days=n + 1)).strftime("%a") for n in range(3)]
+    if sw.first_day is not None:
+        days = [(datetime.combine(sw.first_day, datetime.min.time()) + timedelta(days=n)).strftime("%a") for n in range(3)]
+    else:
+        days = [(_local(sw.issued_at) + timedelta(days=n)).strftime("%a") for n in range(3)]
     bits = []
     live = alert_text(sw)
     if live:
@@ -416,7 +427,7 @@ def render(sw: SpaceWeather | None) -> str:
         if gmax:
             when = days[sw.g_forecast.index(gmax)]
             gtxt = f" (G{gmax} {when})"
-        bits.append(f"Kp now {sw.kp_max_24h:.1f}, next 3d {kps}{gtxt}")
+        bits.append(f"Kp 24h max {sw.kp_max_24h:.0f}, next 3d {kps}{gtxt}")
     else:
         bits.append("Kp forecast not received yet")
     solar = []

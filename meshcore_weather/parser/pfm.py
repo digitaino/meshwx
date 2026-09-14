@@ -114,6 +114,9 @@ class PFMSlot:
     rain: str = ""                    # C / L / S / D likelihood
     tstm: str = ""
     obvis: str = ""                   # obstruction code (PF / F / BS / ...)
+    minmax_f: int | None = None       # Min/Max (Max/Min) row value at this column:
+                                      # the daytime max sits at the evening column,
+                                      # the overnight min at the morning column
 
 
 @dataclass
@@ -706,9 +709,11 @@ def _apply_row(kind: str, row: str, positions: list[int], slots: list[PFMSlot]) 
             slot.tstm = val
         elif kind == "obvis":
             slot.obvis = val
-        # snow12, min_max, max_min, wind_char intentionally not applied —
-        # we derive highs/lows from the Temp row instead, which gives us
-        # better granularity.
+        elif kind in ("min_max", "max_min"):
+            n = _parse_int(val)
+            if n is not None:
+                slot.minmax_f = n
+        # snow12 and wind_char are not applied.
 
 
 # -- Utilities ----------------------------------------------------------------
@@ -886,8 +891,13 @@ def downsample_to_daily(
     slots aren't in the PFM yet).
 
     For each day:
-      high_f        = max Temp across daytime slots (local hour 6-18)
-      low_f         = min Temp across nighttime slots (rest of the day)
+      high_f        = the Min/Max row's daytime value (evening column) when the
+                      product has one — it is the forecast max, which the
+                      3-hourly Temp samples miss by several degrees — else
+                      max Temp across daytime slots (local hour 6-18)
+      low_f         = the Min/Max row's overnight value at the next morning
+                      (the night that follows this day) when present, else
+                      min Temp across nighttime slots
       sky_code      = most severe weather condition during daytime
       precip_pct    = max 12hr PoP value that falls inside the day
       wind_dir_nibble = most common direction during daytime
@@ -936,6 +946,17 @@ def downsample_to_daily(
 
         high_f = max(daytime_temps) if daytime_temps else max(all_temps)
         low_f = min(night_temps) if night_temps else min(all_temps)
+        # Prefer the forecast's own Min/Max row.
+        row_max = [s.minmax_f for s in day_slots if s.minmax_f is not None and point.local_hour(s.dt) >= 12]
+        if row_max:
+            high_f = max(row_max)
+        next_day = d + timedelta(days=1)
+        row_min = [s.minmax_f for s in by_local_date.get(next_day, [])
+                   if s.minmax_f is not None and point.local_hour(s.dt) < 12]
+        if row_min:
+            low_f = min(row_min)
+        if low_f > high_f:
+            low_f, high_f = high_f, low_f
 
         # Sky/wind derivations prefer daytime values; fall back to whole day.
         sky_src = daytime if daytime else day_slots

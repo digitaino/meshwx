@@ -67,7 +67,7 @@ def warnings_in_state(store: WeatherStore, st: str, limit: int = 8) -> str:
     groups: dict[str, int] = {}
     for w in ws:
         name = _title(short_name(w.get("vtec_phenomenon"), w.get("vtec_significance")))
-        key = f"{name} til {render_text._when(w['expires_at'])}"
+        key = f"{name} til {render_text._when(w['expires_at'], render_text.tz_for_state(st))}"
         groups[key] = groups.get(key, 0) + 1
     items = [f"{k} x{n}" if n > 1 else k for k, n in groups.items()]
     return fit_list(f"{st}: {len(ws)} active: ", items)

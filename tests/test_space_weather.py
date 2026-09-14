@@ -56,7 +56,7 @@ def test_service_bytes_and_text_agree():
     assert back.r12_prob == [10, 10, 10] and back.s1_prob == [1, 1, 1]
     assert back.sfi == 114 and back.ssn == 77 and back.xray_bkgd == "B3.0"
     text = sw.render(obj)
-    assert text.startswith("Kp now 3.0, next 3d 3.7/3.7/4.7 (G1 ")
+    assert text.startswith("Kp 24h max 3, next 3d 3.7/3.7/4.7 (G1 Wed)")   # issued Sep 14: columns Sep 14-16, G1 on the 16th
     assert "SFI 114 SSN 77 xray B3.0" in text
     assert "R1-2 10%" in text
     assert len(text) <= 160
@@ -179,7 +179,7 @@ def test_alert_nibbles_round_trip_and_text():
     back = sw.SpaceWeather.from_bytes(wire)
     assert (back.kp_now, back.kp_expected, back.xray_alert, back.proton_alert) == (7, 5, 2, 3)
     text = sw.render(obj)
-    assert text.startswith("!G3 storm now (K7) !R3 radio blackout !S2+ proton event. Kp now 3.0")
+    assert text.startswith("!G3 storm now (K7) !R3 radio blackout !S2+ proton event. Kp 24h max 3")
     assert len(text) <= 160
 
 
