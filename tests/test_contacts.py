@@ -109,16 +109,21 @@ def test_housekeeping_off_touches_nothing(monkeypatch):
     assert r._mc.commands.removed == [] and "bb" * 32 in r._mc.contacts
 
 
-class PendingMC(FakeMC):
-    def __init__(self, contacts, pending):
+class EventMC(FakeMC):
+    def __init__(self, contacts):
         super().__init__(contacts)
-        self._pending_contacts = pending
+        self._pending_contacts = {}
 
     async def ensure_contacts(self, follow=False):
         pass
 
 
-def test_pending_adverts_are_handled_once_and_only_for_companions():
+class _Ev:
+    def __init__(self, payload):
+        self.payload = payload
+
+
+def test_new_contacts_and_readverts_reach_the_bot_only_for_companions():
     r = MeshcoreRadio()
     seen = []
 
@@ -126,9 +131,14 @@ def test_pending_adverts_are_handled_once_and_only_for_companions():
         seen.append((name, prefix))
 
     r.on_advert(handler)
-    r._mc = PendingMC({}, {"aa" * 32: _c("Newcomer", 1), "bb" * 32: _c("Some Repeater", 2), "cc" * 32: _c("A Room", 3)})
-    asyncio.run(r._on_advert(None))
-    assert seen == [("Newcomer", "aa" * 6)]
-    assert r._mc._pending_contacts == {}                 # consumed: the next advert does not replay them
-    asyncio.run(r._on_advert(None))
-    assert seen == [("Newcomer", "aa" * 6)]
+    r._mc = EventMC({"aa" * 32: {**_c("Digitaino", 1), "public_key": "aa" * 32},
+                     "bb" * 32: {**_c("Old Repeater", 2), "public_key": "bb" * 32}})
+    # PUSH_CODE_NEW_ADVERT: a newcomer, a repeater the node did not store, a room
+    asyncio.run(r._on_new_contact(_Ev({"public_key": "cc" * 32, "adv_name": "Newcomer", "type": 1})))
+    asyncio.run(r._on_new_contact(_Ev({"public_key": "dd" * 32, "adv_name": "Some Repeater", "type": 2})))
+    asyncio.run(r._on_new_contact(_Ev({"public_key": "ee" * 32, "adv_name": "A Room", "type": 3})))
+    # PUSH_CODE_ADVERT: known contacts adverting again
+    asyncio.run(r._on_advert(_Ev({"public_key": "aa" * 32})))
+    asyncio.run(r._on_advert(_Ev({"public_key": "bb" * 32})))
+    assert seen == [("Newcomer", "cc" * 6), ("Digitaino", "aa" * 6)]
+    assert r._mc._pending_contacts == {}

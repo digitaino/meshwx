@@ -228,7 +228,8 @@ class MeshcoreRadio:
         # Subscribe to channel messages, DMs, and new adverts
         self._mc.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_msg)
         self._mc.subscribe(EventType.CONTACT_MSG_RECV, self._on_dm)
-        self._mc.subscribe(EventType.ADVERTISEMENT, self._on_advert)
+        self._mc.subscribe(EventType.ADVERTISEMENT, self._on_advert)       # a node we know adverted again
+        self._mc.subscribe(EventType.NEW_CONTACT, self._on_new_contact)     # a node we did not know
 
         # Start auto-fetching messages from the device
         await self._mc.start_auto_message_fetching()
@@ -569,38 +570,47 @@ class MeshcoreRadio:
         except Exception:
             logger.exception("MQTT publish failed (non-fatal)")
 
-    async def _on_advert(self, event) -> None:
-        """Handle an incoming advertisement from another node."""
-        # Refresh contacts to pick up the new node
+    async def _on_new_contact(self, event) -> None:
+        """PUSH_CODE_NEW_ADVERT: the node discovered a contact it did not have.
+        In manual-add mode this arrives for every discovered node, stored or
+        not; only companions (the people who can DM us) reach the bot."""
+        c = event.payload or {}
+        key = str(c.get("public_key", ""))
+        if self._mc is not None:
+            self._mc._pending_contacts.pop(key, None)
+        name = clean_text(c.get("adv_name", "unknown"), 40) or "unknown"
+        ctype = c.get("type")
+        if ctype not in (None, 1):
+            logger.debug("Advert from %s %s: not stored", CONTACT_TYPE_NAMES.get(ctype, ctype), name)
+            return
         try:
             await self._mc.ensure_contacts(follow=True)
         except Exception:
             pass
+        logger.info("New advert from %s (%s)", name, key[:12])
+        await self._notify_advert(name, key[:12].lower())
 
+    async def _on_advert(self, event) -> None:
+        """PUSH_CODE_ADVERT: a contact the node already has adverted again."""
+        key = str((event.payload or {}).get("public_key", ""))
+        try:
+            await self._mc.ensure_contacts(follow=True)
+        except Exception:
+            pass
+        contact = (self._mc.contacts or {}).get(key) if self._mc else None
+        name = clean_text((contact or {}).get("adv_name", "unknown"), 40) or "unknown"
+        if contact is not None and contact.get("type") not in (None, 1):
+            return
+        logger.debug("Advert from %s (%s)", name, key[:12])
+        await self._notify_advert(name, key[:12].lower())
+
+    async def _notify_advert(self, name: str, prefix: str) -> None:
         if not self._advert_handler:
             return
-
-        # Try to identify who just adverted
-        # The event marks contacts dirty; after ensure_contacts we can check
-        # We don't get the name directly from the event, but we can check
-        # pending contacts
-        # Each pending entry is handled once. In manual-add mode the node
-        # pushes every discovered node here, stored or not; only companions
-        # (the people who can DM) reach the bot.
-        pending = self._mc._pending_contacts
-        for key, contact in list(pending.items()):
-            pending.pop(key, None)
-            name = clean_text(contact.get("adv_name", "unknown"), 40) or "unknown"
-            prefix = str(key)[:12].lower()
-            ctype = contact.get("type")
-            if ctype not in (None, 1):
-                logger.debug("Advert from %s %s (%s): not stored", CONTACT_TYPE_NAMES.get(ctype, ctype), name, prefix)
-                continue
-            logger.info("New advert from %s (%s)", name, prefix)
-            try:
-                await self._advert_handler(name, prefix)
-            except Exception:
-                logger.exception("Error in advert handler")
+        try:
+            await self._advert_handler(name, prefix)
+        except Exception:
+            logger.exception("Error in advert handler")
 
     # -- Periodic tasks --
 
