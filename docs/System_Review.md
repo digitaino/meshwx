@@ -98,6 +98,17 @@ Verified through the real command dispatcher on the production cache (12,133 pro
 
 Still open, smaller: Guam has no METAR station in `stations.json` (PGUM missing from the source list), so `wx hagatna` reports no observation; the SPC day-1 outlook product; population-aware ranking for *local* duplicates is distance-first, which is right for a city bot but could surprise a state-wide deployment.
 
+
+### Space weather (added 2026-09-14)
+
+The `space_weather` job type used to dump the newest SWPC file as 0x40 text chunks; on real data it shipped 132 bytes of header plus "No Data." It is now a structured product in `core/space_weather.py`: the SWPC 3-Day Forecast (max Kp last 24 h, max Kp per day for three days, G scale, S1+ and R1-R2/R3+ probabilities) merged with the Daily Indices (sunspot number, 10.7 cm flux, X-ray background). 25 bytes on the wire (message 0x3E, request type 9), one DM line via the `space` / `swx` / `solar` command:
+
+```
+Kp now 3.0, next 3d 3.7/3.7/4.7 (G1 Tue). SFI 114 SSN 77 xray B3.0. R1-2 10%
+```
+
+Both products arrive on the satellite feed daily around 22:00Z and 00:30Z. Whether SWPC's storm-time watches, warnings and alerts also come down over HRIT is unverified until the next active period.
+
 ## 4. Rules going forward
 
 - A product is parsed in exactly one place, into one object. Text and bytes are renderings.
