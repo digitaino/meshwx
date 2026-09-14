@@ -1,4 +1,21 @@
 // Meshcore Weather Portal — SPA controller + MapLibre helpers.
+
+// Every state-changing request carries a header a cross-site page cannot
+// add without a CORS preflight (which the server never grants). The server
+// refuses POST/PUT/DELETE without it.
+(function () {
+  var nativeFetch = window.fetch;
+  window.fetch = function (url, opts) {
+    opts = opts || {};
+    var method = (opts.method || "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD" && typeof url === "string" && url.charAt(0) === "/") {
+      var h = new Headers(opts.headers || {});
+      h.set("X-Requested-With", "meshcore-portal");
+      opts.headers = h;
+    }
+    return nativeFetch.call(window, url, opts);
+  };
+})();
 // All map data served from /static/geo/ — fully offline.
 
 // ---------------------------------------------------------------------------

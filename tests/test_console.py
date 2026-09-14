@@ -166,3 +166,32 @@ def test_nearest_bot_answers_place_requests(bot):
     bot._rate_limit.clear()
     asyncio.run(bot._handle_channel_message("1", "User", "help", 0))      # no place: everyone answers by DM
     assert len(bot.radio.dms) == 2
+
+
+def test_over_the_air_strings_are_cleaned():
+    from meshcore_weather.meshcore.radio import clean_text
+    assert clean_text("Bob\n2026-09-14 [ERROR] fake line", 40) == "Bob2026-09-14 [ERROR] fake line"
+    assert clean_text("\x1b[31mred\x1b[0m", 40) == "[31mred[0m"
+    assert len(clean_text("x" * 500, 200)) == 200
+
+
+def test_per_sender_and_global_reply_budgets(bot):
+    bot.radio.contacts["Tommy"] = {"public_key": "ab" * 32, "adv_name": "Tommy"}
+    for i in range(WeatherBot.REPLIES_PER_SENDER_PER_HOUR + 5):
+        bot._rate_limit.clear()                     # defeat only the 5-second spacing
+        asyncio.run(bot._handle_channel_message("1", "Tommy", "help", 0))
+    assert len(bot.radio.dms) == WeatherBot.REPLIES_PER_SENDER_PER_HOUR
+    # Global budget: many different senders
+    bot._all_replies = [time.time()] * WeatherBot.REPLIES_PER_HOUR
+    bot._rate_limit.clear()
+    asyncio.run(bot._handle_channel_message("1", "Tommy", "help", 0))
+    assert len(bot.radio.dms) == WeatherBot.REPLIES_PER_SENDER_PER_HOUR
+
+
+def test_bad_coordinates_are_ignored(bot):
+    bot.radio.contacts["Tommy"] = {"public_key": "ab" * 32, "adv_name": "Tommy"}
+    asyncio.run(bot._handle_dm("ab" * 6, "Tommy", "@999,-97.7 wx"))
+    assert getattr(bot, "_user_locations", {}) == {}
+    bot._rate_limit.clear()                     # the 5-second spacing, not what is under test
+    asyncio.run(bot._handle_dm("ab" * 6, "Tommy", "@30.27,-97.74 help"))
+    assert bot._user_locations[bot._normalize_key("ab" * 6)] == (30.27, -97.74)

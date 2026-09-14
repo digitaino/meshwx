@@ -49,6 +49,16 @@ async def _open_serial(port: str, baud: int) -> MeshCore | None:
     return None
 
 
+def clean_text(value: str, max_len: int) -> str:
+    """Strip control characters (log forging, terminal escapes) and cap the
+    length of anything that arrived over the air before it is logged or
+    handled. Names are 32 bytes by protocol, text is at most 160."""
+    if not isinstance(value, str):
+        value = str(value)
+    value = "".join(c for c in value if c.isprintable() or c == " ")
+    return value[:max_len]
+
+
 class MeshcoreRadio:
     """Interface to a Meshcore radio device using the official library."""
 
@@ -442,6 +452,8 @@ class MeshcoreRadio:
         sender = "unknown"
         if ": " in text:
             sender, text = text.split(": ", 1)
+        sender = clean_text(sender, 40) or "unknown"
+        text = clean_text(text, 200)
 
         hops = payload.get("path_len")
         hops = int(hops) if isinstance(hops, int) and hops >= 0 else None
@@ -463,7 +475,9 @@ class MeshcoreRadio:
         sender_name = "unknown"
         contact = self.find_contact_by_key(pubkey_prefix)
         if contact:
-            sender_name = contact.get("adv_name", "unknown")
+            sender_name = clean_text(contact.get("adv_name", "unknown"), 40) or "unknown"
+        text = clean_text(text, 200)
+        pubkey_prefix = "".join(c for c in str(pubkey_prefix) if c in "0123456789abcdefABCDEF")[:64]
 
         logger.info("DM from %s (%s): %s", sender_name, pubkey_prefix[:8], text[:80])
 
@@ -499,8 +513,8 @@ class MeshcoreRadio:
         # pending contacts
         pending = self._mc._pending_contacts
         for key, contact in list(pending.items()):
-            name = contact.get("adv_name", "unknown")
-            prefix = key[:12].lower()
+            name = clean_text(contact.get("adv_name", "unknown"), 40) or "unknown"
+            prefix = str(key)[:12].lower()
             logger.info("New advert from %s (%s)", name, prefix)
             try:
                 await self._advert_handler(name, prefix)

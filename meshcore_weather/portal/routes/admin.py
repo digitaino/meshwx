@@ -67,6 +67,8 @@ def _write_env(updates: dict[str, str]) -> None:
     lines = env_path.read_text().splitlines() if env_path.exists() else []
     for key, val in updates.items():
         val = str(val).strip()
+        if len(val) > 200 or any(not c.isprintable() for c in val):
+            raise HTTPException(400, f"{key}: value must be one printable line")
         for i, line in enumerate(lines):
             if line.startswith(f"{key}=") or line.startswith(f"# {key}="):
                 lines[i] = f"{key}={val}" if val != "" else f"# {key}="

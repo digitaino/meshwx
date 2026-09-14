@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -41,6 +42,17 @@ def create_app(bot: Any) -> FastAPI:
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     app.state.bot = bot
     app.state.templates = templates
+
+    # Any state-changing request must carry a header that a cross-site page
+    # cannot set without a CORS preflight (which we never answer). This is
+    # what stops a web page someone on the LAN opens from flipping transmit
+    # on or rewriting .env through their browser.
+    @app.middleware("http")
+    async def _require_xhr_header(request: Request, call_next):
+        if request.method in ("POST", "PUT", "DELETE") and request.headers.get("x-requested-with") != "meshcore-portal":
+            return Response('{"detail":"missing X-Requested-With: meshcore-portal"}', status_code=403,
+                            media_type="application/json")
+        return await call_next(request)
 
     # Mount static files (served from local disk, no CDN)
     app.mount(

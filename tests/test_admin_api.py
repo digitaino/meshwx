@@ -112,7 +112,8 @@ def client(tmp_path, monkeypatch):
     bot = WeatherBot()
     bot.store = WeatherStore()
     bot.radio = FakeRadio()
-    return TestClient(create_app(bot)), bot
+    c = TestClient(create_app(bot), headers={"X-Requested-With": "meshcore-portal"})
+    return c, bot
 
 
 def test_radio_state_and_edits(client):
@@ -220,3 +221,21 @@ def test_env_settings_apply_live_where_possible(client, tmp_path, monkeypatch):
     assert r["applied"] == ["MCW_TIMEZONE"] and r["restart_needed"] == ["MCW_EMWIN_SOURCE"]
     assert settings.timezone == "America/New_York"
     assert "MCW_TIMEZONE=America/New_York" in (tmp_path / ".env").read_text()
+
+
+def test_mutations_need_the_portal_header(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    bot = WeatherBot()
+    bot.radio = FakeRadio()
+    bare = TestClient(create_app(bot))                       # no X-Requested-With: a cross-site page
+    assert bare.get("/api/system").status_code == 200
+    assert bare.post("/api/radio/tx", json={"enabled": True}).status_code == 403
+    assert bare.post("/api/settings/env", json={"MCW_TIMEZONE": "UTC"}).status_code == 403
+    assert settings.tx_enabled is False
+
+
+def test_env_values_are_single_printable_lines(client, tmp_path):
+    c, _ = client
+    r = c.post("/api/settings/env", json={"MCW_TIMEZONE": "America/Chicago\nMCW_TX_ENABLED=true"})
+    assert r.status_code == 400
+    assert "MCW_TX_ENABLED=true" not in (tmp_path / ".env").read_text() if (tmp_path / ".env").exists() else True

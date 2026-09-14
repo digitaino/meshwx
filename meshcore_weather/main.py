@@ -82,6 +82,8 @@ class WeatherBot:
         self._portal = None  # PortalServer, created if portal enabled
         self._paging: dict[str, dict] = {}  # sender_key -> {full, offset, ts}
         self._rate_limit: dict[str, float] = {}
+        self._reply_history: dict[str, list[float]] = {}
+        self._all_replies: list[float] = []
         self._channel_reply_by_sender: dict[str, float] = {}
         self._channel_replies: list[float] = []
         self._sdr_monitor = None
@@ -412,13 +414,19 @@ class WeatherBot:
         # Parse @lat,lng prefix for location-aware commands
         loc_match = re.match(r"^@(-?\d+\.?\d*),(-?\d+\.?\d*)\s+(.*)", text)
         if loc_match:
-            lat = float(loc_match.group(1))
-            lon = float(loc_match.group(2))
+            try:
+                lat = float(loc_match.group(1))
+                lon = float(loc_match.group(2))
+            except ValueError:
+                lat = lon = None
             text = loc_match.group(3)
-            if not hasattr(self, "_user_locations"):
-                self._user_locations = {}
-            self._user_locations[prefix] = (lat, lon)
-            logger.info("Cached location for %s: %.4f, %.4f", sender_name, lat, lon)
+            if lat is not None and -90 <= lat <= 90 and -180 <= lon <= 180:
+                if not hasattr(self, "_user_locations"):
+                    self._user_locations = {}
+                if len(self._user_locations) > 2000:
+                    self._user_locations.clear()
+                self._user_locations[prefix] = (lat, lon)
+                logger.info("Cached location for %s: %.4f, %.4f", sender_name, lat, lon)
 
         # They're DMing us — DMs work both ways, clear all blocks
         if sender_name and sender_name != "unknown":
@@ -455,8 +463,10 @@ class WeatherBot:
         if contact_name in self._known_contacts:
             return
 
-        # Remember this new contact
+        # Remember this new contact (bounded: names are attacker-chosen)
         if contact_name and contact_name != "unknown":
+            if len(self._known_contacts) > 2000:
+                self._known_contacts = dict(list(self._known_contacts.items())[-1000:])
             self._known_contacts[contact_name] = prefix
             self._save_known_contacts()
 
@@ -490,7 +500,7 @@ class WeatherBot:
         try:
             payload = bytes.fromhex(text[3:].strip())
             req = unpack_data_request(payload)
-        except (ValueError, IndexError) as e:
+        except Exception as e:      # struct.error, UnicodeDecodeError, anything malformed
             logger.warning("Bad WXQ request from %s: %s", sender_name, e)
             return
 
@@ -744,12 +754,35 @@ class WeatherBot:
         except Exception:
             logger.debug("Could not save known contacts")
 
+    # Reply budgets: one every 5 s per sender, at most this many per sender
+    # and in total per hour. Every reply costs airtime; a script hammering
+    # the channel must not be able to spend the mesh's.
+    REPLIES_PER_SENDER_PER_HOUR = 40
+    REPLIES_PER_HOUR = 400
+
     def _rate_check(self, sender_key: str) -> bool:
         now = time.time()
         last = self._rate_limit.get(sender_key, 0)
         if now - last < 5:
             return False
+        hour_ago = now - 3600
+        hist = [ts for ts in self._reply_history.get(sender_key, []) if ts > hour_ago]
+        self._reply_history[sender_key] = hist
+        if len(hist) >= self.REPLIES_PER_SENDER_PER_HOUR:
+            logger.warning("Rate limit: %s has had %d replies this hour — ignoring", sender_key[:20], len(hist))
+            return False
+        self._all_replies = [ts for ts in self._all_replies if ts > hour_ago]
+        if len(self._all_replies) >= self.REPLIES_PER_HOUR:
+            logger.warning("Rate limit: %d replies this hour overall — ignoring", len(self._all_replies))
+            return False
         self._rate_limit[sender_key] = now
+        hist.append(now)
+        self._all_replies.append(now)
+        # Bounded state: a flood of made-up sender names must not grow memory.
+        if len(self._rate_limit) > 5000:
+            self._rate_limit = {k: v for k, v in self._rate_limit.items() if now - v < 3600}
+            self._reply_history = {k: v for k, v in self._reply_history.items() if v and v[-1] > hour_ago}
+            self._channel_reply_by_sender = {k: v for k, v in self._channel_reply_by_sender.items() if now - v < 3600}
         return True
 
     async def _parse(self, text: str) -> tuple[str, str]:
