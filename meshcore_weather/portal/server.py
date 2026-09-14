@@ -3,7 +3,7 @@
 Runs alongside the bot as an asyncio task. Serves:
 - Static assets (all bundled locally, no CDN)
 - Config UI (region targeting)
-- Live data viewer (warnings, radar)
+- Live data viewer (warnings)
 - EMWIN product browser
 - Bot status dashboard
 """

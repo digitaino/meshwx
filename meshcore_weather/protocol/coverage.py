@@ -280,4 +280,4 @@ class Coverage:
             parts.append(f"states={','.join(self.sources['states'])}")
         if self.sources.get("wfos"):
             parts.append(f"wfos={','.join(self.sources['wfos'])}")
-        return f"{len(self.zones)} zones ({', '.join(parts)}); {len(self.region_ids)} radar regions"
+        return f"{len(self.zones)} zones ({', '.join(parts)})"

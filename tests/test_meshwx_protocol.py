@@ -4,8 +4,6 @@ from meshcore_weather.core.vtec_names import event_code
 from meshcore_weather.protocol.meshwx import (
     cobs_encode,
     cobs_decode,
-    pack_radar_grid,
-    unpack_radar_grid,
     pack_warning_polygon,
     unpack_warning_polygon,
     pack_refresh_request,
@@ -32,7 +30,6 @@ from meshcore_weather.protocol.meshwx import (
     DATA_FORECAST,
     SKY_CLEAR,
     SKY_RAIN,
-    MSG_RADAR,
     MSG_WARNING,
     MSG_REFRESH,
     MSG_OBSERVATION,
@@ -43,37 +40,6 @@ from meshcore_weather.protocol.meshwx import (
 )
 
 EV_TO_W = event_code("TO", "W")
-
-
-class TestRadarGrid:
-    def test_pack_size(self):
-        grid = [[0] * 16 for _ in range(16)]
-        msg = pack_radar_grid(0x3, 0, 720, 55, grid)
-        assert len(msg) == 133
-
-    def test_round_trip(self):
-        grid = [[0] * 16 for _ in range(16)]
-        grid[0][0] = 0xA  # heavy rain
-        grid[7][7] = 0x4  # light rain
-        grid[15][15] = 0xE  # extreme
-        msg = pack_radar_grid(0x3, 2, 720, 55, grid)
-        result = unpack_radar_grid(msg)
-        assert result["type"] == MSG_RADAR
-        assert result["region_id"] == 0x3
-        assert result["frame_seq"] == 2
-        assert result["timestamp_utc_min"] == 720
-        assert result["scale_km"] == 55
-        assert result["grid"][0][0] == 0xA
-        assert result["grid"][7][7] == 0x4
-        assert result["grid"][15][15] == 0xE
-        assert result["grid"][0][1] == 0  # untouched cell
-
-    def test_nibble_packing(self):
-        grid = [[0] * 16 for _ in range(16)]
-        grid[0][0] = 0xF
-        grid[0][1] = 0x1
-        msg = pack_radar_grid(0, 0, 0, 12, grid)
-        assert msg[5] == 0xF1  # high nibble = col0, low nibble = col1
 
 
 class TestWarningPolygon:
@@ -185,14 +151,6 @@ class TestCOBS:
         data = bytes([0x20, 0x13, 0x00, 0x3C, 0x05])
         assert cobs_decode(cobs_encode(data)) == data
 
-    def test_round_trip_radar(self):
-        grid = [[0] * 16 for _ in range(16)]
-        grid[5][5] = 0xA
-        msg = pack_radar_grid(0x3, 0, 720, 55, grid)
-        encoded = cobs_encode(msg)
-        assert 0x00 not in encoded
-        assert cobs_decode(encoded) == msg
-
     def test_round_trip_warning(self):
         vertices = [(30.5, -97.75), (30.6, -97.6), (30.4, -97.6)]
         msg = pack_warning_polygon(EV_TO_W, 29_500_000, vertices, "TEST")
@@ -211,14 +169,6 @@ class TestCOBS:
         encoded = cobs_encode(data)
         assert 0x00 not in encoded
         assert cobs_decode(encoded) == data
-
-    def test_overhead_is_minimal(self):
-        # 133-byte radar with many nulls should add at most ~2 bytes
-        grid = [[0] * 16 for _ in range(16)]
-        msg = pack_radar_grid(0x0, 0, 0, 55, grid)
-        encoded = cobs_encode(msg)
-        assert len(encoded) <= len(msg) + 3
-
 
 class TestStateIndex:
     def test_common_states(self):

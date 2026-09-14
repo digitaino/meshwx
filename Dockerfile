@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml .
 COPY meshcore_weather/ meshcore_weather/
 
-RUN pip install --no-cache-dir ".[radar,portal]"
+RUN pip install --no-cache-dir ".[portal]"
 
 EXPOSE 8080
 

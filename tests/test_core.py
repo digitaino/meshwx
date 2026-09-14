@@ -19,6 +19,13 @@ AUSTIN = (30.27, -97.74)
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def fresh(filename: str) -> str:
+    """Re-stamp a fixture's KWIN receipt time to now: the store drops products
+    older than 12 h, and the fixtures are real files from a fixed date."""
+    import re
+    return re.sub(r"_C_KWIN_\d{14}", f"_C_KWIN_{datetime.now(timezone.utc):%Y%m%d%H%M%S}", filename)
+
+
 @pytest.fixture(autouse=True)
 def _home():
     resolver.load()
@@ -124,7 +131,7 @@ class TestForecast:
     def store(self):
         raw = (FIXTURES / "PFMEWX_20260913_1851Z.txt").read_bytes().decode("utf-8")
         return _store_with({
-            "filename": "A_FOUS54KEWX131851_C_KWIN_20260913185129_315409-3-PFMEWXTX.TXT",
+            "filename": fresh("A_FOUS54KEWX131851_C_KWIN_20260913185129_315409-3-PFMEWXTX.TXT"),
             "raw_text": raw,
         })
 

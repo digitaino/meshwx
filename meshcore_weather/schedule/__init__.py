@@ -5,7 +5,7 @@ Runtime-editable schedule of broadcast jobs, each defined as:
     BroadcastJob(
         id: str,              # stable unique identifier
         name: str,            # display label
-        product: str,         # "radar" / "observation" / "forecast" / ...
+        product: str,         # "observation" / "forecast" / "warnings" / ...
         location_type: str,   # "station" / "zone" / "wfo" / "pfm_point" / "region" / "coverage"
         location_id: str,     # e.g. "KAUS", "TXZ192", "EWX", "103", "3", ""
         interval_minutes: int,

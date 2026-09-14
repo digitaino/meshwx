@@ -57,12 +57,6 @@ from meshcore_weather.protocol.meshwx import (
     pack_warning_polygon,
     pack_warnings_near,
 )
-from meshcore_weather.protocol.radar import (
-    build_compressed_radar_messages,
-    build_radar_messages,
-    extract_region_grid,
-    fetch_radar_composite,
-)
 from meshcore_weather.protocol.warnings import (
     extract_active_warnings,
     warnings_to_binary,
@@ -87,8 +81,6 @@ class ExecutorContext:
     store: WeatherStore
     coverage: Coverage
     pfm_points: list[dict]           # from pfm_points.json (or empty if unavailable)
-    latest_radar: tuple[bytes, int] | None  # IEM CONUS (image_bytes, timestamp_utc_min)
-    latest_ridge: dict = field(default_factory=dict)  # RIDGE images by source key
     # Warning change tracking — persists across ticks via the scheduler.
     # Key: warning identity string (VTEC key or SPS dedup key)
     # Value: (expires_unix_min, headline_hash) — for detecting changes
@@ -96,111 +88,6 @@ class ExecutorContext:
 
 
 # -- Builders ----------------------------------------------------------------
-
-
-def _build_radar(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """Radar grid broadcast with configurable resolution.
-
-    The job's `location_id` can optionally include a grid size suffix
-    to control resolution:
-      - "3" or "0x3"          → single region, default 32×32
-      - "3:64"                → single region, 64×64 high-res
-      - "" (empty, coverage)  → all coverage regions, default 32×32
-
-    Uses IEM for CONUS regions (0x0-0x6) and RIDGE for non-CONUS
-    (PR, Hawaii, Alaska, Guam). Falls back to RIDGE for CONUS if
-    IEM is unavailable.
-    """
-    from meshcore_weather.protocol.meshwx import pack_radar_compressed, REGIONS
-    from meshcore_weather.protocol.ridge import (
-        REGION_TO_RIDGE, extract_ridge_grid,
-    )
-
-    # Parse optional grid_size from location_id (e.g., "3:64" or just "3")
-    grid_size = 32  # default
-    loc_id = job.location_id.strip()
-    if ":" in loc_id:
-        parts = loc_id.split(":", 1)
-        loc_id = parts[0].strip()
-        try:
-            grid_size = int(parts[1].strip())
-            if grid_size not in (16, 32, 64):
-                logger.warning("radar job %s: invalid grid_size %d, using 32", job.id, grid_size)
-                grid_size = 32
-        except ValueError:
-            pass
-
-    if job.location_type == "region" and loc_id:
-        try:
-            region_id = int(loc_id, 0)
-        except (ValueError, TypeError):
-            logger.warning("radar job %s: bad region id %r", job.id, loc_id)
-            return []
-        region = REGIONS.get(region_id)
-        if not region:
-            return []
-
-        grid = None
-        ts_min = 0
-
-        # Try IEM first for CONUS regions (cleaner data)
-        ridge_src = REGION_TO_RIDGE.get(region_id, "conus")
-        if ridge_src == "conus" and ctx.latest_radar is not None:
-            img, ts_min = ctx.latest_radar
-            grid = extract_region_grid(img, region_id, grid_size=grid_size)
-
-        # Fall back to RIDGE (or use it for non-CONUS regions)
-        if grid is None and ridge_src in ctx.latest_ridge:
-            ridge_img, ts_min = ctx.latest_ridge[ridge_src]
-            grid = extract_ridge_grid(ridge_img, ridge_src, region, grid_size=grid_size)
-            if grid:
-                logger.info("Using RIDGE %s for region 0x%X", ridge_src, region_id)
-
-        if grid is None:
-            return []
-        return pack_radar_compressed(
-            region_id=region_id,
-            timestamp_utc_min=ts_min,
-            scale_km=region["scale"],
-            grid=grid,
-            grid_size=grid_size,
-        )
-
-    # coverage (default): emit compressed grids for all coverage regions
-    messages = []
-    region_ids = ctx.coverage.region_ids if not ctx.coverage.is_empty() else set(REGIONS.keys())
-    for region_id in sorted(region_ids):
-        region = REGIONS.get(region_id)
-        if not region:
-            continue
-
-        grid = None
-        ts_min = 0
-        ridge_src = REGION_TO_RIDGE.get(region_id, "conus")
-
-        # IEM for CONUS
-        if ridge_src == "conus" and ctx.latest_radar is not None:
-            img, ts_min = ctx.latest_radar
-            grid = extract_region_grid(img, region_id, grid_size=grid_size)
-
-        # RIDGE for non-CONUS or IEM fallback
-        if grid is None and ridge_src in ctx.latest_ridge:
-            ridge_img, ts_min = ctx.latest_ridge[ridge_src]
-            grid = extract_ridge_grid(ridge_img, ridge_src, region, grid_size=grid_size)
-
-        if grid is None:
-            continue
-
-        msgs = pack_radar_compressed(
-            region_id=region_id,
-            timestamp_utc_min=ts_min,
-            scale_km=region["scale"],
-            grid=grid,
-            grid_size=grid_size,
-        )
-        messages.extend(msgs)
-
-    return messages
 
 
 def _warning_identity(w: dict) -> str:
@@ -599,7 +486,6 @@ def _build_nowcast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
 
 
 PRODUCT_BUILDERS: dict[str, Callable[[BroadcastJob, ExecutorContext], list[bytes]]] = {
-    "radar": _build_radar,
     "warnings": _build_warnings_full,      # full re-broadcast (safety net, slow cycle)
     "warnings_delta": _build_warnings_delta,  # delta only (new/changed, fast cycle)
     "observation": _build_observation,

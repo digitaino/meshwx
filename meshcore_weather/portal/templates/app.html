@@ -219,29 +219,6 @@
       <div class="card">
         <div class="card-header">
           <div>
-            <div class="card-title">Radar Settings</div>
-            <div class="card-subtitle">Default resolution for on-demand radar requests from clients</div>
-          </div>
-        </div>
-        <div class="grid grid-2 mb-4">
-          <div>
-            <label class="form-label">On-demand Radar Resolution</label>
-            <select class="input" id="sys-radar-grid" onchange="Portal.system.saveRadarGrid()">
-              <option value="32">32x32 (standard, ~42 km/cell)</option>
-              <option value="64">64x64 (high-res, ~21 km/cell)</option>
-            </select>
-            <span class="form-hint">When a client requests radar for a region, this resolution is used. Broadcast jobs have their own per-job setting.</span>
-          </div>
-          <div>
-            <div class="form-label">Status</div>
-            <div id="sys-radar-status" class="text-small text-muted"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <div>
             <div class="card-title">Radio Channels</div>
             <div class="card-subtitle">Channel names for text commands, v3 data, and v4 deployment</div>
           </div>
@@ -255,7 +232,7 @@
           <div>
             <label class="form-label">v4 Data (iOS App)</label>
             <input type="text" class="input" id="sys-ch-data" placeholder="#aus-meshwx-v4">
-            <span class="form-hint">Binary broadcasts — radar, forecasts, warnings</span>
+            <span class="form-hint">Binary broadcasts — warnings, forecasts, observations</span>
           </div>
           <div>
             <label class="form-label">Discovery</label>
@@ -267,7 +244,7 @@
           <button class="btn btn-primary" onclick="Portal.system.saveChannels(this)">Save Channels</button>
           <span id="sys-ch-status" class="text-small text-muted"></span>
         </div>
-        <div class="text-small text-muted">Requires restart. All broadcasts use v4 framing with FEC for radar and text products.</div>
+        <div class="text-small text-muted">Requires restart. Text products use v4 framing with FEC.</div>
       </div>
 
       <div class="card">

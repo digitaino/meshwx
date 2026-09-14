@@ -5,11 +5,9 @@ to a `BroadcastExecutor` that actually builds the wire messages. On
 each `tick()`, it:
 
   1. Reloads the config from disk (picks up portal edits without restart)
-  2. Fetches the latest radar composite (once per tick, shared by all
-     radar jobs in this cycle)
-  3. Walks each enabled job and runs any whose interval has elapsed
-  4. Sends each built message on the data channel via the radio
-  5. Tracks per-job last-run and total-bytes-sent stats
+  2. Walks each enabled job and runs any whose interval has elapsed
+  3. Sends each built message on the data channel via the radio
+  4. Tracks per-job last-run and total-bytes-sent stats
 
 The scheduler is the ONLY place that talks to the radio for proactive
 broadcasts. The separate `respond_to_data_request()` reactive path is
@@ -25,8 +23,6 @@ import logging
 import time
 from pathlib import Path
 
-import httpx
-
 from meshcore_weather.activity import EventDir, activity_log
 from meshcore_weather.config import settings
 from meshcore_weather.meshcore.radio import MeshcoreRadio
@@ -37,8 +33,7 @@ from meshcore_weather.protocol.meshwx import V4SequenceCounter, cobs_encode
 # Products that get FEC treatment on the v4 channel.
 # For these, the scheduler builds separate FEC messages instead of
 # just wrapping v3 messages with the v4 header.
-_FEC_PRODUCTS = {"radar", "afd"}
-from meshcore_weather.protocol.radar import fetch_radar_composite
+_FEC_PRODUCTS = {"afd"}
 from meshcore_weather.schedule.executor import BroadcastExecutor, ExecutorContext
 from meshcore_weather.schedule.models import BroadcastConfig, BroadcastJob
 from meshcore_weather.schedule.store import CONFIG_PATH, load_config, save_config
@@ -81,9 +76,6 @@ class Scheduler:
         self._config_mtime: float = 0.0
         self._config_lock = asyncio.Lock()
 
-        self._http_client: httpx.AsyncClient | None = None
-        self._latest_radar: tuple[bytes, int] | None = None  # IEM CONUS composite
-        self._latest_ridge: dict[str, tuple[bytes, int]] = {}  # RIDGE images by source key
 
         # Warning change tracking — persists across ticks so the delta
         # builder can compare current vs last-broadcast warning sets.
@@ -101,7 +93,6 @@ class Scheduler:
 
     async def start(self) -> None:
         """Load config + coverage + PFM points, then start the tick loop."""
-        self._http_client = httpx.AsyncClient(timeout=30.0)
         self.reload_coverage()
         self._load_pfm_points()
         await self._reload_config()
@@ -121,8 +112,6 @@ class Scheduler:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        if self._http_client:
-            await self._http_client.aclose()
 
     # -- Coverage ------------------------------------------------------------
 
@@ -212,22 +201,15 @@ class Scheduler:
 
         Each call:
           1. Reloads config from disk if it's been modified
-          2. Refreshes radar (once, shared across all radar jobs this tick)
-          3. Walks all enabled jobs and runs due ones
-          4. Transmits their messages with TX_SPACING between
+          2. Walks all enabled jobs and runs due ones
+          3. Transmits their messages with TX_SPACING between
         """
         await self._reload_config()
-
-        # Refresh radar once per tick. If any radar jobs are due, they
-        # use the cached composite from this tick.
-        await self._refresh_radar()
 
         ctx = ExecutorContext(
             store=self.store,
             coverage=self._coverage,
             pfm_points=self._pfm_points,
-            latest_radar=self._latest_radar,
-            latest_ridge=self._latest_ridge,
             last_broadcast_warnings=self._warning_tracking,
         )
 
@@ -295,46 +277,9 @@ class Scheduler:
     ) -> list[bytes]:
         """Build FEC-wrapped v4 messages for products that benefit from it.
 
-        Radar 64×64 → spatial quadrants + XOR parity (6 msgs per region)
         AFD → per-section + XOR parity
         Falls back to simple v4 wrapping if FEC can't be applied.
         """
-        if job.product == "radar" and ctx.latest_radar is not None:
-            # Only apply FEC to 64×64 radar jobs
-            loc_id = job.location_id.strip()
-            grid_size = 32
-            if ":" in loc_id:
-                parts = loc_id.split(":", 1)
-                loc_id = parts[0].strip()
-                try:
-                    grid_size = int(parts[1].strip())
-                except ValueError:
-                    pass
-
-            if grid_size == 64:
-                from meshcore_weather.protocol.radar import build_fec_radar_messages
-                img, ts_min = ctx.latest_radar
-                # Use the specific region from the job, not all coverage regions
-                if job.location_type == "region" and loc_id:
-                    try:
-                        region_ids = {int(loc_id, 0)}
-                    except (ValueError, TypeError):
-                        region_ids = None
-                else:
-                    region_ids = (
-                        ctx.coverage.region_ids
-                        if not ctx.coverage.is_empty()
-                        else None
-                    )
-                msgs = build_fec_radar_messages(
-                    img, ts_min, self._v4_seq,
-                    region_ids=region_ids,
-                )
-                if msgs:
-                    logger.info("FEC radar: %d messages for region(s) %s",
-                                len(msgs), region_ids)
-                    return msgs
-
         if job.product == "afd":
             from meshcore_weather.protocol.encoders import encode_afd_fec
             from meshcore_weather.geodata import resolver
@@ -358,41 +303,6 @@ class Scheduler:
         # Fallback: send v3 directly (no v4 wrapping needed for non-FEC)
         return self.executor.run_job(job, ctx) or []
 
-    async def _refresh_radar(self) -> None:
-        """Fetch the latest radar composites (IEM + RIDGE) if stale."""
-        if self._http_client is None:
-            return
-        # IEM CONUS composite (high-res, data-only, CONUS regions 0x0-0x6)
-        # Only update if the product timestamp changed (avoids re-broadcasting
-        # the same image with a different timestamp)
-        result = await fetch_radar_composite(self._http_client)
-        if result:
-            _, new_ts = result
-            old_ts = self._latest_radar[1] if self._latest_radar else None
-            if new_ts != old_ts:
-                self._latest_radar = result
-
-        # RIDGE images for non-CONUS regions (PR, Hawaii, Alaska, Guam)
-        # and as a fallback/alternative for CONUS regions
-        from meshcore_weather.protocol.ridge import (
-            REGION_TO_RIDGE, fetch_ridge_image,
-        )
-        needed_sources = set()
-        region_ids = (
-            self._coverage.region_ids
-            if not self._coverage.is_empty()
-            else set(REGION_TO_RIDGE.keys())
-        )
-        for rid in region_ids:
-            src = REGION_TO_RIDGE.get(rid)
-            if src and src != "conus":  # always fetch non-CONUS RIDGE
-                needed_sources.add(src)
-
-        for src_key in needed_sources:
-            result = await fetch_ridge_image(self._http_client, src_key)
-            if result:
-                self._latest_ridge[src_key] = result
-
     # -- Discovery ping/response -----------------------------------------------
 
     async def respond_to_discovery_ping(self) -> None:
@@ -410,14 +320,12 @@ class Scheduler:
         from meshcore_weather.protocol.meshwx import (
             BEACON_ACCEPTING_REQUESTS, BEACON_HAS_FORECASTS,
             BEACON_HAS_FIRE_WEATHER, BEACON_HAS_NOWCAST,
-            BEACON_HAS_QPF, BEACON_HAS_RADAR, BEACON_HAS_WARNINGS,
+            BEACON_HAS_QPF, BEACON_HAS_WARNINGS,
             cobs_encode, pack_beacon,
         )
 
         # Build beacon flags from what products the bot actually has
         flags = BEACON_ACCEPTING_REQUESTS | BEACON_HAS_FORECASTS | BEACON_HAS_WARNINGS
-        if self._latest_radar is not None:
-            flags |= BEACON_HAS_RADAR
         # Check if we have FWF/NOW/QPF products in the store
         for prod in self.store._products.values():
             if prod.product_type == "FWF":
@@ -498,13 +406,10 @@ class Scheduler:
         job = self._config.get_job(job_id)
         if job is None:
             return 0
-        await self._refresh_radar()
         ctx = ExecutorContext(
             store=self.store,
             coverage=self._coverage,
             pfm_points=self._pfm_points,
-            latest_radar=self._latest_radar,
-            latest_ridge=self._latest_ridge,
             last_broadcast_warnings=self._warning_tracking,
         )
         msgs = self.executor.run_job(job, ctx)

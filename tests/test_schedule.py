@@ -27,7 +27,7 @@ class TestBroadcastJobValidation:
         job = BroadcastJob(
             id="test-1",
             name="Test job",
-            product="radar",
+            product="observation",
             location_type="coverage",
             interval_minutes=15,
         )
@@ -39,7 +39,7 @@ class TestBroadcastJobValidation:
         job = BroadcastJob(
             id="UPPER-CASE",
             name="x",
-            product="radar",
+            product="observation",
             location_type="coverage",
             interval_minutes=5,
         )
@@ -50,7 +50,7 @@ class TestBroadcastJobValidation:
             BroadcastJob(
                 id="has space",
                 name="x",
-                product="radar",
+                product="observation",
                 location_type="coverage",
                 interval_minutes=5,
             )
@@ -60,7 +60,7 @@ class TestBroadcastJobValidation:
             BroadcastJob(
                 id="has/slash",
                 name="x",
-                product="radar",
+                product="observation",
                 location_type="coverage",
                 interval_minutes=5,
             )
@@ -80,7 +80,7 @@ class TestBroadcastJobValidation:
             BroadcastJob(
                 id="ok",
                 name="x",
-                product="radar",
+                product="observation",
                 location_type="not_a_real_type",
                 interval_minutes=5,
             )
@@ -90,7 +90,7 @@ class TestBroadcastJobValidation:
             BroadcastJob(
                 id="ok",
                 name="x",
-                product="radar",
+                product="observation",
                 location_type="coverage",
                 interval_minutes=0,
             )
@@ -100,7 +100,7 @@ class TestBroadcastJobValidation:
             BroadcastJob(
                 id="ok",
                 name="x",
-                product="radar",
+                product="observation",
                 location_type="coverage",
                 interval_minutes=-5,
             )
@@ -122,7 +122,7 @@ class TestBroadcastJobValidation:
             job = BroadcastJob(
                 id=f"test-{lt}",
                 name=lt,
-                product="radar",
+                product="observation",
                 location_type=lt,
                 interval_minutes=60,
             )
@@ -135,7 +135,7 @@ class TestBroadcastConfigMutations:
         job = BroadcastJob(
             id="a",
             name="A",
-            product="radar",
+            product="observation",
             location_type="coverage",
             interval_minutes=5,
         )
@@ -149,7 +149,7 @@ class TestBroadcastConfigMutations:
             BroadcastJob(
                 id="a",
                 name="A",
-                product="radar",
+                product="observation",
                 location_type="coverage",
                 interval_minutes=5,
             )
@@ -158,7 +158,7 @@ class TestBroadcastConfigMutations:
             BroadcastJob(
                 id="a",
                 name="A prime",
-                product="radar",
+                product="observation",
                 location_type="coverage",
                 interval_minutes=15,
             )
@@ -173,7 +173,7 @@ class TestBroadcastConfigMutations:
             BroadcastJob(
                 id="a",
                 name="A",
-                product="radar",
+                product="observation",
                 location_type="coverage",
                 interval_minutes=5,
             )
@@ -189,7 +189,7 @@ class TestBroadcastConfigMutations:
                 BroadcastJob(
                     id=f"job-{i}",
                     name=f"Job {i}",
-                    product="radar",
+                    product="observation",
                     location_type="coverage",
                     interval_minutes=15 + i,
                 )
@@ -240,9 +240,8 @@ class TestStorePersistence:
 
         cfg = store_module.load_config()
         # Corrupt file → falls back to default_config_for_bootstrap, which
-        # always emits at least the radar + warnings-delta + warnings-full.
+        # always emits at least warnings-delta + warnings-full.
         ids = {j.id for j in cfg.jobs}
-        assert "radar-coverage" in ids
         assert "warnings-delta" in ids
         assert "warnings-full" in ids
 
@@ -254,7 +253,7 @@ class TestStorePersistence:
         cfg = store_module.load_config()
         # Default bootstrap ran and the result was persisted
         assert tmp_cfg.exists()
-        assert len(cfg.jobs) >= 2  # at minimum radar + warnings
+        assert len(cfg.jobs) >= 2  # at minimum warnings delta + full
 
     def test_atomic_write_does_not_leave_tmp(self, tmp_path, monkeypatch):
         """save_config should use temp-then-rename so no .tmp files survive."""
@@ -275,7 +274,6 @@ class TestBootstrap:
         cfg = store_module.default_config_for_bootstrap()
         ids = {j.id for j in cfg.jobs}
         # Radar + warnings-delta + warnings-full always present
-        assert "radar-coverage" in ids
         assert "warnings-delta" in ids
         assert "warnings-full" in ids
 
@@ -291,11 +289,11 @@ class TestBootstrap:
         assert "obs-dallas-tx" in ids
         assert "forecast-dallas-tx" in ids
 
-    def test_bootstrap_with_no_home_cities_still_has_radar_and_warnings(self, monkeypatch):
+    def test_bootstrap_with_no_home_cities_still_has_warnings(self, monkeypatch):
         from meshcore_weather.config import settings
         monkeypatch.setattr(settings, "home_cities", "")
         cfg = store_module.default_config_for_bootstrap()
-        assert len(cfg.jobs) == 3  # radar + warnings-delta + warnings-full
+        assert len(cfg.jobs) == 2  # warnings-delta + warnings-full
 
 
 # -- Scheduler semantics -----------------------------------------------------
@@ -336,8 +334,6 @@ class TestSchedulerTick:
         await sched._reload_config()
         # Fake "already ran this tick"
         sched._last_run["far-future"] = time.time()
-        # Prevent radar fetch from hitting the network
-        sched._latest_radar = None
         sched._http_client = None
 
         sent_count = await sched.tick()
@@ -375,7 +371,6 @@ class TestSchedulerTick:
         sched = Scheduler(store, radio)
 
         await sched._reload_config()
-        sched._latest_radar = None
         sched._http_client = None
 
         sent_count = await sched.tick()
@@ -432,7 +427,6 @@ class TestSchedulerTick:
         radio.send_binary_channel = AsyncMock()
         sched = Scheduler(store, radio)
         await sched._reload_config()
-        sched._latest_radar = None
         sched._http_client = None
 
         # Both jobs should execute — the exception is caught per-job

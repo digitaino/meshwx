@@ -202,106 +202,14 @@ def build_dictionary(out_dir: Path) -> None:
 
 
 def build_protocol_codes(out_dir: Path) -> None:
-    """Export message type + code constants for client use."""
-    out = {
-        "version": 5,
-        "messages": {
-            "refresh_request": 0x01,
-            "data_request": 0x02,
-            "not_available": 0x03,
-            "radar_grid": 0x10,
-            "radar_compressed": 0x11,
-            "warning_polygon": 0x20,
-            "warning_zones": 0x21,
-            "observation": 0x30,
-            "forecast": 0x31,
-            "outlook": 0x32,
-            "storm_reports": 0x33,
-            "rain_obs": 0x34,
-            "metar": 0x35,
-            "taf": 0x36,
-            "warnings_near": 0x37,
-            "text_chunk": 0x40,
-        },
-        "location_types": {
-            "zone": 0x01,
-            "station": 0x02,
-            "place": 0x03,
-            "latlon": 0x04,
-            "wfo": 0x05,
-            "pfm_point": 0x06,
-        },
-        "radar_encoding": {
-            "sparse": 0x0,
-            "rle": 0x1,
-        },
-        "not_available_reasons": {
-            "no_data": 0x0,
-            "location_unresolvable": 0x1,
-            "product_unsupported": 0x2,
-            "bot_error": 0x3,
-            "unknown": 0xF,
-        },
-        "text_subjects": {
-            "afd": 0x0,
-            "space_weather": 0x1,
-            "tropical": 0x2,
-            "river": 0x3,
-            "fire": 0x4,
-            "marine": 0x5,
-            "general": 0x6,
-            "climate": 0x7,
-        },
-        "warning_types": {
-            "tornado": 0x1,
-            "severe_thunder": 0x2,
-            "flash_flood": 0x3,
-            "flood": 0x4,
-            "winter_storm": 0x5,
-            "high_wind": 0x6,
-            "fire": 0x7,
-            "marine": 0x8,
-            "special": 0x9,
-            "other": 0xF,
-        },
-        "severities": {
-            "advisory": 0x1,
-            "watch": 0x2,
-            "warning": 0x3,
-            "emergency": 0x4,
-        },
-        "sky_codes": {
-            "clear": 0x0, "few": 0x1, "scattered": 0x2, "broken": 0x3,
-            "overcast": 0x4, "fog": 0x5, "smoke": 0x6, "haze": 0x7,
-            "rain": 0x8, "snow": 0x9, "thunderstorm": 0xA, "drizzle": 0xB,
-            "mist": 0xC, "squall": 0xD, "sand": 0xE, "other": 0xF,
-        },
-        "hazard_types": {
-            "thunderstorm": 0x0, "severe_thunder": 0x1, "tornado": 0x2,
-            "flood": 0x3, "flash_flood": 0x4, "excessive_heat": 0x5,
-            "winter_storm": 0x6, "blizzard": 0x7, "ice": 0x8,
-            "high_wind": 0x9, "fire_weather": 0xA, "dense_fog": 0xB,
-            "rip_current": 0xC, "hurricane": 0xD, "marine": 0xE, "other": 0xF,
-        },
-        "risk_levels": {
-            "none": 0, "slight": 1, "limited": 2, "enhanced": 3,
-            "moderate": 4, "high": 5, "extreme": 6,
-        },
-        "event_types": {
-            "tornado": 0x0, "funnel": 0x1, "hail": 0x2, "wind_damage": 0x3,
-            "non_tstm_wind": 0x4, "tstm_wind": 0x5, "flood": 0x6,
-            "flash_flood": 0x7, "heavy_rain": 0x8, "snow": 0x9, "ice": 0xA,
-            "lightning": 0xB, "debris_flow": 0xC, "other": 0xF,
-        },
-        "rain_types": {
-            "light": 0x0, "moderate": 0x1, "heavy": 0x2, "shower": 0x3,
-            "tstorm": 0x4, "drizzle": 0x5, "snow": 0x6, "freezing": 0x7, "mix": 0x8,
-        },
-    }
+    """protocol.json is maintained by hand next to the wire code (see
+    protocol/meshwx.py, core/space_weather.py, core/vtec_names.py) and is
+    versioned with it. The builder only checks it parses and reports size,
+    so a rebuild can never roll the file back to an older layout."""
     path = out_dir / "protocol.json"
-    path.write_text(json.dumps(out, indent=2))
+    data = json.loads(path.read_text())
     size = path.stat().st_size / 1024
-    print(f"  protocol.json: {size:.1f} KB")
+    print(f"  protocol.json: v{data.get('version')} kept ({size:.1f} KB)")
 
 
 def _load_pfm_products() -> list[tuple[str, str]]:

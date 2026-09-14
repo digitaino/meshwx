@@ -388,18 +388,6 @@ class WeatherBot:
                 await self.radio.send_dm(prefix, f"Broadcast error: {e}")
             return "broadcast"
 
-        if cmd == "radar":
-            if not self._broadcaster:
-                await self.radio.send_dm(prefix, "MeshWX broadcast not enabled.")
-                return "disabled"
-            await self.radio.send_dm(prefix, "Running radar job now...")
-            try:
-                sent = await self._broadcaster.scheduler.run_job_now("radar-coverage")
-                await self.radio.send_dm(prefix, f"Sent {sent} radar grid(s).")
-            except Exception as e:
-                await self.radio.send_dm(prefix, f"Radar error: {e}")
-            return "radar"
-
         if cmd == "warnings-broadcast":
             if not self._broadcaster:
                 await self.radio.send_dm(prefix, "MeshWX broadcast not enabled.")
@@ -431,8 +419,7 @@ class WeatherBot:
                 "clear-contacts - remove all\n"
                 "advert - send advert now\n"
                 "refresh - reload contacts\n"
-                "broadcast - send radar+warnings\n"
-                "radar - send radar only\n"
+                "broadcast - run a scheduler tick now\n"
                 "warnings-broadcast - send warnings"
             )
             await self._send_dm_paginated(prefix, sender_name, reply)

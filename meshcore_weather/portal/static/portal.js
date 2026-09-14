@@ -268,15 +268,11 @@ var Portal = {
 
     render: function (boot) {
       var zoneCount = boot.zone_count || 0;
-      var regionCount = boot.region_count || 0;
       var el = document.getElementById("overview-stats");
       el.innerHTML =
         '<div class="stat"><div class="stat-label">Coverage Zones</div>' +
           '<div class="stat-value">' + (zoneCount || "All") + '</div>' +
           '<div class="stat-hint">' + (zoneCount ? "Filtered broadcast" : "No filter set") + '</div></div>' +
-        '<div class="stat"><div class="stat-label">Radar Regions</div>' +
-          '<div class="stat-value">' + (regionCount || "10") + '</div>' +
-          '<div class="stat-hint">MeshWX grids</div></div>' +
         '<div class="stat"><div class="stat-label">EMWIN Products</div>' +
           '<div class="stat-value">' + boot.product_count + '</div>' +
           '<div class="stat-hint">In store (last 12h)</div></div>' +
@@ -446,13 +442,6 @@ var Portal = {
       return info ? info.label : key;
     },
 
-    // Parse radar location_id "3:64" → { locId: "3", gridSize: 64 }
-    _parseRadarLoc: function (locId) {
-      if (!locId || locId.indexOf(":") === -1) return { locId: locId || "", gridSize: 32 };
-      var parts = locId.split(":");
-      return { locId: parts[0].trim(), gridSize: parseInt(parts[1], 10) || 32 };
-    },
-
     loadJobs: function () {
       var self = this;
       fetch("/api/schedule/jobs").then(function (r) {
@@ -469,14 +458,6 @@ var Portal = {
           var prodLabel = self._productLabel(j.product);
           var locLabel = self._locationLabel(j.location_type);
           var locDetail = j.location_id ? ": " + escapeHtml(j.location_id) : "";
-          // For radar, show grid size if non-default
-          if (j.product === "radar" && j.location_id && j.location_id.indexOf(":") !== -1) {
-            var parsed = self._parseRadarLoc(j.location_id);
-            locDetail = parsed.locId ? ": region " + escapeHtml(parsed.locId) : "";
-            locDetail += ' <span class="badge badge-muted">' + parsed.gridSize + 'x' + parsed.gridSize + '</span>';
-          } else if (j.product === "radar" && !j.location_id) {
-            locDetail = ' <span class="badge badge-muted">32x32</span>';
-          }
           return '<tr>' +
             '<td><strong>' + escapeHtml(j.name) + '</strong><br><code class="text-muted">' + escapeHtml(j.id) + '</code></td>' +
             '<td>' + escapeHtml(prodLabel) + '</td>' +
@@ -504,14 +485,7 @@ var Portal = {
       var lInfo = meta.location_info || {};
       var isEdit = mode === "edit" && job;
 
-      // For radar edit, split location_id into locId + gridSize
       var editLocId = isEdit ? (job.location_id || "") : "";
-      var editGridSize = 32;
-      if (isEdit && job.product === "radar") {
-        var parsed = this._parseRadarLoc(job.location_id);
-        editLocId = parsed.locId;
-        editGridSize = parsed.gridSize;
-      }
 
       var selectedProduct = isEdit ? job.product : (meta.products || [])[0] || "";
       var productOpts = (meta.products || []).map(function (p) {
@@ -532,13 +506,6 @@ var Portal = {
 
       var locPlaceholder = (lInfo[selectedLoc] || {}).placeholder || "";
       var showLocId = selectedLoc !== "coverage";
-      var showRadarGrid = selectedProduct === "radar";
-
-      // Radar grid size options
-      var gridOpts = (meta.radar_grid_sizes || []).map(function (g) {
-        return '<option value="' + g.value + '"' + (g.value === editGridSize ? ' selected' : '') +
-          '>' + escapeHtml(g.label) + '</option>';
-      }).join("");
 
       var html =
         '<h2>' + (isEdit ? "Edit broadcast job" : "New broadcast job") + '</h2>' +
@@ -569,13 +536,6 @@ var Portal = {
             '<label>Location ID' +
               '<input type="text" id="jf-locid" placeholder="' + escapeHtml(locPlaceholder) + '"' +
               ' value="' + escapeHtml(editLocId) + '">' +
-            '</label>' +
-          '</div>' +
-
-          '<div id="jf-grid-group"' + (showRadarGrid ? '' : ' style="display:none"') + '>' +
-            '<label>Radar Resolution' +
-              '<select id="jf-grid">' + gridOpts + '</select>' +
-              '<span class="form-hint">Higher resolution uses more airtime per broadcast</span>' +
             '</label>' +
           '</div>' +
 
@@ -619,10 +579,6 @@ var Portal = {
         locSel.value = currentLoc;
       }
 
-      // Show/hide radar grid size
-      var gridGroup = document.getElementById("jf-grid-group");
-      gridGroup.style.display = product === "radar" ? "" : "none";
-
       this._onLocTypeChange();
     },
 
@@ -646,19 +602,6 @@ var Portal = {
       var mode = document.getElementById("jf-mode").value;
       var product = document.getElementById("jf-product").value;
       var locId = document.getElementById("jf-locid").value.trim();
-
-      // For radar jobs, encode grid size into location_id
-      if (product === "radar") {
-        var gridSize = parseInt(document.getElementById("jf-grid").value, 10) || 32;
-        if (gridSize !== 32 && locId) {
-          locId = locId + ":" + gridSize;
-        } else if (gridSize !== 32 && !locId) {
-          // Coverage mode with non-default grid: store as ":64" — executor
-          // handles this (empty region part + grid suffix)
-          locId = ":" + gridSize;
-        }
-        // If gridSize === 32 (default), don't append — keep location_id clean
-      }
 
       var body = {
         id: document.getElementById("jf-id").value.trim(),
@@ -925,7 +868,6 @@ var Portal = {
         this._initialized = true;
         this.render(window.__BOOT__);
         this.initPreviewMap();
-        this.loadRadarGrid();
         this.loadChannels();
       }
     },
@@ -980,34 +922,6 @@ var Portal = {
         }
       }).catch(function () {
         document.getElementById("sys-preview-summary").textContent = "Preview failed";
-      });
-    },
-
-    loadRadarGrid: function () {
-      fetch("/api/status").then(function (r) { return r.json(); }).then(function (data) {
-        var gridSize = (data.settings || {}).radar_grid_size || 32;
-        document.getElementById("sys-radar-grid").value = String(gridSize);
-        document.getElementById("sys-radar-status").textContent =
-          "Current: " + gridSize + "x" + gridSize;
-      });
-    },
-
-    saveRadarGrid: function () {
-      var gridSize = parseInt(document.getElementById("sys-radar-grid").value, 10);
-      var statusEl = document.getElementById("sys-radar-status");
-      statusEl.textContent = "Saving\u2026";
-      fetch("/api/settings/radar-grid-size", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ radar_grid_size: gridSize }),
-      }).then(function (r) {
-        if (!r.ok) return r.json().then(function (d) { throw new Error(d.detail || r.status); });
-        return r.json();
-      }).then(function () {
-        statusEl.innerHTML = '<span style="color:var(--color-success);">Saved: ' + gridSize + 'x' + gridSize + '</span>';
-        Portal.ui.showToast("Radar resolution updated to " + gridSize + "x" + gridSize);
-      }).catch(function (e) {
-        statusEl.innerHTML = '<span style="color:var(--color-danger);">' + escapeHtml(e.message) + '</span>';
       });
     },
 

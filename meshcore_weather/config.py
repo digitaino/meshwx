@@ -35,7 +35,6 @@ class Settings(BaseSettings):
     meshwx_discover_channel: str = "#meshwx-discover"
     meshwx_broadcast_interval: int = 3600  # seconds between broadcasts
     meshwx_refresh_cooldown: int = 300    # min seconds between refresh per region
-    meshwx_radar_grid_size: int = 32      # default grid size for on-demand radar (16, 32, or 64)
 
     # Coverage targeting — bot broadcasts only data affecting these areas.
     # Comma-separated lists, all optional, all additive (union). Empty = broadcast everything.

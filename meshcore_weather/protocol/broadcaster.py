@@ -68,11 +68,6 @@ from meshcore_weather.protocol.meshwx import (
     pack_not_available,
     pack_warnings_near,
 )
-from meshcore_weather.protocol.radar import (
-    build_radar_messages,
-    extract_region_grid,
-    fetch_radar_composite,
-)
 from meshcore_weather.protocol.warnings import extract_active_warnings, warnings_to_binary
 
 logger = logging.getLogger(__name__)
@@ -134,7 +129,7 @@ class MeshWXBroadcaster:
         use 0x02 data requests instead; this handler remains for backward
         compat with v1 clients.
 
-        request_type: 1=radar only, 2=warnings only, 3=both.
+        request_type: 2 or 3 = warnings (1, the old radar-only request, sends nothing).
         """
         now = time.time()
         last = self._last_refresh.get(region_id, 0)
@@ -151,34 +146,6 @@ class MeshWXBroadcaster:
             return
         self._last_refresh[region_id] = now
 
-        # Reuse the scheduler's cached radar composite when available;
-        # otherwise refresh it via a one-off fetch.
-        if request_type in (1, 3):
-            await self._scheduler._refresh_radar()
-            if self._scheduler._latest_radar is not None:
-                from meshcore_weather.protocol.meshwx import pack_radar_compressed, REGIONS
-                img_data, ts_min = self._scheduler._latest_radar
-                # Use the broadcast config's grid size (portal-editable),
-                # falling back to the env-var default.
-                cfg = self._scheduler.current_config()
-                grid_size = getattr(cfg, "radar_grid_size", None) or settings.meshwx_radar_grid_size
-                if grid_size not in (16, 32, 64):
-                    grid_size = 32
-                grid = extract_region_grid(img_data, region_id, grid_size=grid_size)
-                if grid:
-                    region = REGIONS[region_id]
-                    msgs = pack_radar_compressed(
-                        region_id=region_id,
-                        timestamp_utc_min=ts_min,
-                        scale_km=region["scale"],
-                        grid=grid,
-                        grid_size=grid_size,
-                    )
-                    for i, msg in enumerate(msgs):
-                        await self.radio.send_binary_channel(cobs_encode(msg))
-                        if i + 1 < len(msgs):
-                            await asyncio.sleep(TX_SPACING)
-
         if request_type in (2, 3):
             # Broadcast all active warnings in the scheduler's coverage
             warnings = extract_active_warnings(
@@ -190,7 +157,7 @@ class MeshWXBroadcaster:
                 if i + 1 < len(msgs):
                     await asyncio.sleep(TX_SPACING)
 
-        req_label = {1: "radar", 2: "warnings", 3: "radar+warnings"}.get(request_type, str(request_type))
+        req_label = {1: "radar (retired)", 2: "warnings", 3: "warnings"}.get(request_type, str(request_type))
         activity_log.record(EventDir.IN, "v1_refresh",
             f"Region 0x{region_id:X} refresh ({req_label})",
             {"region_id": region_id, "request_type": request_type})
@@ -490,7 +457,6 @@ class MeshWXBroadcaster:
         s = self._scheduler
         return ExecutorContext(
             store=self.store, coverage=s._coverage, pfm_points=s._pfm_points,
-            latest_radar=s._latest_radar, latest_ridge=s._latest_ridge,
             last_broadcast_warnings=s._warning_tracking,
         )
 

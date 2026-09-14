@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 
 from meshcore_weather.config import settings
-from meshcore_weather.schedule.models import BroadcastConfig, BroadcastJob
+from meshcore_weather.schedule.models import PRODUCT_TYPES, BroadcastConfig, BroadcastJob
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,15 @@ def load_config() -> BroadcastConfig:
     try:
         raw = CONFIG_PATH.read_text()
         data = json.loads(raw)
+        # Jobs for retired products (radar) are dropped, not fatal: the
+        # operator keeps every other job they configured.
+        if isinstance(data, dict) and isinstance(data.get("jobs"), list):
+            kept = [j for j in data["jobs"] if j.get("product") in PRODUCT_TYPES]
+            if len(kept) != len(data["jobs"]):
+                logger.warning("Dropping %d broadcast job(s) for retired products",
+                               len(data["jobs"]) - len(kept))
+            data["jobs"] = kept
+        data.pop("radar_grid_size", None)
         return BroadcastConfig(**data)
     except Exception as exc:
         logger.warning(
@@ -82,10 +91,9 @@ def default_config_for_bootstrap() -> BroadcastConfig:
     default jobs exactly mirror what the old hardcoded
     `_broadcast_all()` used to do:
 
-    1. Radar for the operator's coverage area, every 15 minutes
-    2. Warning delta — only NEW or CHANGED warnings, every 2 minutes
-    3. Warning full — all active warnings as a safety net, every 2 hours
-    4. Observation + forecast for each configured home city, every
+    1. Warning delta — only NEW or CHANGED warnings, every 2 minutes
+    2. Warning full — all active warnings as a safety net, every 2 hours
+    3. Observation + forecast for each configured home city, every
        60 minutes
 
     Operators can edit / delete / add to this via the /schedule portal
@@ -95,17 +103,6 @@ def default_config_for_bootstrap() -> BroadcastConfig:
     jobs: list[BroadcastJob] = []
 
     # Coverage-wide jobs
-    jobs.append(
-        BroadcastJob(
-            id="radar-coverage",
-            name="Radar (coverage regions)",
-            product="radar",
-            location_type="coverage",
-            location_id="",
-            interval_minutes=15,
-            enabled=True,
-        )
-    )
     jobs.append(
         BroadcastJob(
             id="warnings-delta",

@@ -1,14 +1,14 @@
 # Meshcore Weather
 
-**Off-grid weather data infrastructure for [Meshcore](https://meshcore.co) LoRa mesh networks.** Fetches NWS EMWIN weather products (forecasts, warnings, radar, observations, storm reports, etc.), parses them with canonical NWS tooling, and broadcasts them on a LoRa mesh channel as compact structured binary messages that any subscribed client — phone apps, web clients, standalone hardware displays — can decode offline, without the internet.
+**Off-grid weather data infrastructure for [Meshcore](https://meshcore.co) LoRa mesh networks.** Fetches NWS EMWIN weather products (forecasts, warnings, observations, storm reports, etc.), parses them with canonical NWS tooling, and broadcasts them on a LoRa mesh channel as compact structured binary messages that any subscribed client — phone apps, web clients, standalone hardware displays — can decode offline, without the internet.
 
 ```
 ┌──────────────┐     ┌─────────────────┐     ┌──────────────────┐
 │  GOES-16     │     │                 │     │  #aus-meshwx-v4  │     ┌─────────────┐
 │  (future SDR)├────►│  meshcore-      ├────►│  LoRa channel    ├────►│  iOS app    │
 └──────────────┘     │  weather        │     │                  │     └─────────────┘
-                     │                 │     │  0x11 Radar      │     ┌─────────────┐
-┌──────────────┐     │  • fetch        │     │  0x12 QPF        ├────►│  Web client │
+                     │                 │     │  0x21 Zone Warn  │     ┌─────────────┐
+┌──────────────┐     │  • fetch        │     │  0x3E Space Wx   ├────►│  Web client │
 │  NOAA EMWIN  │     │  • parse (pyIEM)│     │  0x20 Warning    │     └─────────────┘
 │  internet    ├────►│  • schedule     │     │  0x30 Obs        │     ┌─────────────┐
 └──────────────┘     │  • broadcast    │     │  0x31 Forecast   ├────►│  E-ink      │
@@ -24,9 +24,9 @@
 ## What this gives you
 
 - **A working operator node** that can run on a Raspberry Pi or any Linux/macOS box with a LoRa serial radio attached. Docker-compose one-liner.
-- **A structured binary protocol** (MeshWX v4) designed for one-way broadcast to passive receivers. Small messages ship as single frames; large products (64x64 radar) are split into FEC-protected quadrants with XOR parity recovery. Every message is COBS-encoded so the firmware's companion protocol doesn't truncate at null bytes.
+- **A structured binary protocol** (MeshWX v4) designed for one-way broadcast to passive receivers. Small messages ship as single frames; large text products are split into FEC-protected chunks with XOR parity recovery. Every message is COBS-encoded so the firmware's companion protocol doesn't truncate at null bytes.
 - **Discovery protocol** — bots announce themselves on `#meshwx-discover` with 0xF0 beacons containing their data channel name, coverage radius, and capability flags. Clients auto-discover and join without manual channel configuration.
-- **A per-job broadcast schedule system** with a web admin UI. Operators define arbitrary `(product, location, interval)` jobs via the portal — e.g. "radar every 15 min", "Austin METAR every 30 min", "TX storm reports every 10 min", "EWX outlook every 12 hr". Jobs persist across restarts.
+- **A per-job broadcast schedule system** with a web admin UI. Operators define arbitrary `(product, location, interval)` jobs via the portal — e.g. "Austin METAR every 30 min", "TX storm reports every 10 min", "EWX outlook every 12 hr". Jobs persist across restarts.
 - **Preload bundle** (`client_data/`, ~9.9 MB) that ships with every client app — NWS zones, census places, METAR stations, WFO metadata, PFM forecast points, zone polygons. With this preloaded, broadcasts only carry compact IDs instead of full names, slashing airtime.
 - **pyIEM-powered parsing** — the reference Python library for NWS text products (VTEC, UGC, CAP standards). Runs fully offline with a `legacy_dict` UGC provider built from bundled zones data.
 - **Canonical NWS data quality**: forecasts from PFM (Point Forecast Matrix) tables, warnings with correct VTEC extraction and polygon winding, absolute expiry timestamps so clients always know exactly when data becomes invalid.
@@ -46,7 +46,6 @@
 | Broadcast schedule system + web portal UI | ✅ shipped |
 | iOS client (DigitainoMesh) | ✅ shipped |
 | Web client (meshwx-client) | ✅ shipped |
-| RIDGE radar extraction (CONUS + single-site) | ✅ shipped |
 | Text-command interface | ✅ shipped (legacy) |
 | Standalone e-ink dashboard (consumer) | 💡 idea parked in `docs/Future_EInk_Dashboard.md` |
 
@@ -60,8 +59,6 @@ All broadcasts go on the configured data channel (e.g. `#aus-meshwx-v4`). All me
 | `0x02` | Data Request | client → bot DM, product + location |
 | `0x03` | Not Available | bot → client, "data not available" response |
 | `0x04` | v4 Frame | v4 wrapper with FEC flags, group total, sequence number |
-| `0x10` | Radar Grid | 16×16 4-bit reflectivity, one per region (legacy) |
-| `0x11` | Radar Compressed | 32×32 or 64×64 sparse/RLE grid, multi-chunk with FEC |
 | `0x12` | QPF Grid | Quantitative precipitation forecast (same encoding as 0x11) |
 | `0x20` | Warning Polygon | Storm-specific polygon + VTEC metadata + headline |
 | `0x21` | Warning Zones | Multi-zone advisory, compact zone-coded |
@@ -91,7 +88,6 @@ Also see:
 - **`docs/MeshWX_Protocol_v3.md`** — canonical byte-level wire format spec for inner message types
 - **`docs/MeshWX_Protocol_v4_Design.md`** — v4 frame header, FEC group assembly, quadrant recovery
 - **`docs/Future_EInk_Dashboard.md`** — parked project idea for a standalone e-ink hardware display
-- **`docs/puerto_rico_radar.md`** — notes on PR/Hawaii/Alaska single-site radar extraction
 
 ## For operators
 
@@ -100,16 +96,16 @@ Also see:
 ```bash
 MCW_HOME_CITIES=Austin TX,San Antonio TX        # Cities to broadcast obs+forecast for
 MCW_HOME_STATES=TX                              # States for warning filtering
-MCW_HOME_WFOS=EWX,FWD,HGX,SJT                   # NWS offices — narrows radar + warnings
+MCW_HOME_WFOS=EWX,FWD,HGX,SJT                   # NWS offices — narrows warnings
 ```
 
-Coverage determines which radar regions are broadcast, which warnings get filtered to your area, and which home cities get proactive obs/forecast broadcasts. On first run, the bot synthesizes a default broadcast schedule from your coverage config.
+Coverage determines which warnings get filtered to your area, and which home cities get proactive obs/forecast broadcasts. On first run, the bot synthesizes a default broadcast schedule from your coverage config.
 
 ### Then manage everything else from the web admin
 
 Open **`http://localhost:8080/schedule`** and you'll see a live table of all broadcast jobs with their last-run / next-run / bytes-sent stats. From there:
 
-- **Add a new job** — pick a product (radar, observation, forecast, outlook, storm_reports, rain_obs, metar, taf, warnings, warnings_near, fire_weather, nowcast, qpf), pick a location type (station, zone, wfo, pfm_point, region, coverage, city), enter the location ID, set the interval, save.
+- **Add a new job** — pick a product (observation, forecast, outlook, storm_reports, rain_obs, metar, taf, warnings, warnings_near, fire_weather, nowcast, qpf), pick a location type (station, zone, wfo, pfm_point, region, coverage, city), enter the location ID, set the interval, save.
 - **Enable/disable** jobs without deleting them
 - **Edit** intervals, names, or targets
 - **Run now** to force-broadcast a job immediately regardless of schedule
@@ -120,7 +116,7 @@ Changes take effect within 30 seconds (the scheduler picks up config changes on 
 ### Other portal pages
 
 - `/` — dashboard with bot state, coverage summary, and live activity feed
-- `/data` — live map of active warnings and latest radar
+- `/data` — live map of active warnings
 - `/schedule` — broadcast schedule management with CRUD
 - `/status` — radio connection state, contact list, manual broadcast trigger
 - `/config` — read-only view of coverage (edit via `.env` + restart)
@@ -130,7 +126,6 @@ Changes take effect within 30 seconds (the scheduler picks up config changes on 
 ```
 ID                Name                       Product        Location       Interval
 ─────────────────────────────────────────────────────────────────────────────────
-radar-coverage    Radar (3 TX regions)       radar          coverage       15 min
 warnings-coverage Active TX warnings         warnings       coverage       5 min
 obs-austin-tx     Austin current wx          observation    city:Austin TX 30 min
 obs-san-antonio   San Antonio current wx     observation    city:San...    30 min
@@ -170,7 +165,7 @@ The container will:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[radar,portal]"
+pip install -e ".[portal]"
 cp .env.example .env
 # Edit .env
 meshcore-weather
@@ -215,7 +210,6 @@ All settings are environment variables prefixed with `MCW_`. See `.env.example` 
 | `MCW_MESHCORE_CHANNEL` | `#digitaino-wx-bot` | Channel for text commands (never `0`/public) |
 | `MCW_MESHWX_CHANNEL` | *(empty)* | Channel for v4 binary data broadcasts (e.g. `#aus-meshwx-v4`) |
 | `MCW_MESHWX_DISCOVER_CHANNEL` | `#meshwx-discover` | Discovery beacon channel |
-| `MCW_MESHWX_RADAR_GRID_SIZE` | `32` | Default radar grid size (16, 32, or 64) |
 | `MCW_HOME_CITIES` | *(empty)* | Comma-separated cities to seed the default schedule |
 | `MCW_HOME_STATES` | *(empty)* | Comma-separated states for warning filtering |
 | `MCW_HOME_WFOS` | *(empty)* | Comma-separated WFOs for coverage filtering |
@@ -249,9 +243,6 @@ Supported product types:
 | **NOW** | Short Term Forecast | `0x3C` Nowcast (urgency flags, text) |
 | **RTP** | Regional Temp/Precip | `0x3A` Daily Climate (high/low/precip/snow) |
 | **SVR/SVS/TOR/FFW/FLW/FLS/WSW/NPW/RFW/MWW/SPS/...** | NWS warnings | `0x20`/`0x21` Warning broadcasts with VTEC metadata |
-| **NEXRAD composite** | IEM hosted PNG | `0x11` Radar Grid (32×32 or 64×64 per region, FEC-protected) |
-| **NWS RIDGE** | GOES HRIT/EMWIN GIF | `0x11` Radar Grid (CONUS, PR, HI, AK single-site extraction) |
-| **QPF** | Quantitative Precip Forecast | `0x12` QPF Grid (same encoding as radar) |
 
 Warnings include canonical VTEC event tracking (phenomenon / significance / action / ETN / office), correct polygon winding, both zone (`TXZ192`) and county FIPS (`TXC029`) UGC support, and absolute expiry timestamps so clients never display stale warnings.
 
@@ -330,8 +321,6 @@ meshcore_weather/
 │   ├── encoders.py        # Product text → binary (encode_* helpers)
 │   ├── coverage.py        # Operator coverage (cities/states/WFOs → zone set)
 │   ├── warnings.py        # pyIEM-backed warning extraction
-│   ├── radar.py           # IEM NEXRAD composite → 32×32/64×64 grids per region + FEC
-│   ├── ridge.py           # NWS RIDGE radar image extraction (CONUS, PR, HI, AK)
 │   └── broadcaster.py     # Reactive: responds to 0x02 DM data requests
 │
 ├── schedule/              # Unified broadcast schedule system
@@ -356,7 +345,7 @@ meshcore_weather/
 │   ├── state_index.json   # State/marine prefix → 1-byte index
 │   ├── protocol.json      # Protocol version + enum reference
 │   ├── pfm_points.json    # PFM forecast points (name, WFO, lat/lon, zone)
-│   ├── regions.json       # Radar region definitions + bounds
+│   ├── regions.json       # MeshWX region definitions + bounds (coverage/beacon)
 │   ├── zones.geojson      # Simplified zone polygons for map rendering
 │   └── weather_dict.json  # Reserved for future dict text compression
 │
@@ -373,7 +362,6 @@ meshcore_weather/
 - `docs/MeshWX_Protocol_v4_Design.md` — v4 frame header, FEC group assembly, quadrant recovery design
 - `docs/v4_client_guide.md` — practical v4 client integration guide
 - `docs/iOS_Developer_Brief.md` — integration guide for iOS / web / embedded client developers
-- `docs/puerto_rico_radar.md` — notes on PR/HI/AK single-site radar extraction via RIDGE
 - `docs/Future_EInk_Dashboard.md` — parked project idea for a standalone e-ink hardware display
 
 ## Safety
@@ -398,8 +386,6 @@ Shipped:
 - [x] COBS-encoded wire format (survives firmware null-byte truncation)
 - [x] Absolute Unix-minute expiry timestamps (no client-side countdown drift)
 - [x] PFM forecast source (structured numeric data, displacing ZFP narrative regex)
-- [x] Compressed radar grids (32×32 and 64×64 with sparse/RLE encoding)
-- [x] RIDGE radar extraction (CONUS composite + single-site for PR, HI, AK)
 - [x] Fire weather forecasts (FWF → 0x38)
 - [x] Nowcasts (NOW → 0x3C) with urgency flags
 - [x] Daily climate summaries (RTP → 0x3A)

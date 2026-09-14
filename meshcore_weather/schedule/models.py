@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field, field_validator
 # Supported product names. Adding a new product requires adding one
 # entry here AND one entry in executor.PRODUCT_BUILDERS.
 PRODUCT_TYPES = {
-    "radar",           # 0x10/0x11 radar grid (per region)
     "warnings",        # 0x20/0x21 full re-broadcast of ALL active warnings (safety net, slow cycle)
     "warnings_delta",  # 0x20/0x21 only NEW or CHANGED warnings since last cycle (fast cycle)
     "observation",     # 0x30 current conditions for a point
@@ -39,7 +38,6 @@ LOCATION_TYPES = {
     "zone",        # 6-char UGC zone, e.g. "TXZ192"
     "wfo",         # 3-letter WFO code, e.g. "EWX"
     "pfm_point",   # numeric index into pfm_points.json, e.g. "103"
-    "region",      # MeshWX radar region id 0-9, e.g. "3"
     "coverage",    # expands at execution time to the operator's configured coverage area
     "city",        # human city name resolved via resolver, e.g. "Austin TX"
 }
@@ -123,10 +121,6 @@ class BroadcastConfig(BaseModel):
 
     version: int = Field(1, description="Schema version")
     jobs: list[BroadcastJob] = Field(default_factory=list)
-    radar_grid_size: int = Field(
-        32,
-        description="Default radar grid size for on-demand requests (16, 32, or 64). Editable from the portal System tab.",
-    )
 
     def get_job(self, job_id: str) -> BroadcastJob | None:
         """Look up a job by ID; returns None if not found."""

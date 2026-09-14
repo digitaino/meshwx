@@ -269,9 +269,6 @@ async def get_status(request: Request) -> JSONResponse:
         "contacts": {
             "known": len(bot._known_contacts) if hasattr(bot, "_known_contacts") else 0,
         },
-        "settings": {
-            "radar_grid_size": cfg.radar_grid_size if cfg else 32,
-        },
     })
 
 
@@ -331,20 +328,6 @@ async def get_stats(
     return JSONResponse({
         "stats": [activity_log.stats(w) for w in windows],
     })
-
-
-@router.post("/settings/radar-grid-size")
-async def set_radar_grid_size(request: Request) -> JSONResponse:
-    """Update the default radar grid size for on-demand requests."""
-    body = await request.json()
-    grid_size = body.get("radar_grid_size")
-    if grid_size not in (16, 32, 64):
-        raise HTTPException(400, "radar_grid_size must be 16, 32, or 64")
-    scheduler = _get_scheduler(request)
-    cfg = scheduler.current_config()
-    cfg.radar_grid_size = grid_size
-    await scheduler.save_config(cfg)
-    return JSONResponse({"ok": True, "radar_grid_size": grid_size})
 
 
 @router.post("/settings/channels")
@@ -465,10 +448,9 @@ async def trigger_v2_request(request: Request) -> JSONResponse:
 @router.get("/schedule/meta")
 async def schedule_meta() -> JSONResponse:
     """Return rich metadata for the job form: products with descriptions,
-    location types, which locations each product supports, and radar options."""
+    location types, and which locations each product supports."""
 
     product_info = {
-        "radar":          {"label": "Radar",                  "desc": "Compressed radar grid (0x11)", "locations": ["coverage", "region"]},
         "warnings":       {"label": "Warnings (full)",        "desc": "Re-broadcast ALL active warnings (safety net)", "locations": ["coverage"]},
         "warnings_delta": {"label": "Warnings (delta)",       "desc": "Only new/changed warnings since last cycle", "locations": ["coverage"]},
         "warnings_near":  {"label": "Warnings near zone",     "desc": "Warnings affecting a specific zone", "locations": ["zone"]},
@@ -485,7 +467,6 @@ async def schedule_meta() -> JSONResponse:
 
     location_info = {
         "coverage":  {"label": "Coverage area",    "desc": "All zones in the operator's configured coverage", "placeholder": "(leave empty)"},
-        "region":    {"label": "Radar region",     "desc": "MeshWX radar region 0\u20139", "placeholder": "e.g. 3"},
         "city":      {"label": "City",             "desc": "Resolved to nearest NWS zone", "placeholder": "e.g. Austin TX"},
         "station":   {"label": "Station (ICAO)",   "desc": "4-letter ICAO code", "placeholder": "e.g. KAUS"},
         "zone":      {"label": "NWS Zone",         "desc": "6-character UGC zone code", "placeholder": "e.g. TXZ192"},
@@ -498,10 +479,6 @@ async def schedule_meta() -> JSONResponse:
         "location_types": sorted(LOCATION_TYPES),
         "product_info": product_info,
         "location_info": location_info,
-        "radar_grid_sizes": [
-            {"value": 32, "label": "32x32 (standard)", "desc": "~42 km/cell, 4-5 messages"},
-            {"value": 64, "label": "64x64 (high-res)", "desc": "~21 km/cell, 10-15 messages"},
-        ],
     })
 
 
