@@ -532,6 +532,8 @@ class MeshcoreRadio:
             await self._mc.commands.send_advert(flood=True)
             self.last_advert_at = time.time()
             logger.info("Sent advertisement (flood)")
+            from meshcore_weather.traffic import traffic_log
+            traffic_log.record("advert_out", sender=(self._mc.self_info or {}).get("name"))
         except Exception:
             logger.exception("Failed to send advert")
 

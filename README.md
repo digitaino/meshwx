@@ -223,6 +223,24 @@ plugged in later. To try text commands from the Pi's shell:
 .venv/bin/meshcore-weather-cli interactive
 ```
 
+### The public page (port 8080)
+
+The goestools dashboard on the Pi (`deploy/goes-dashboard/`, installed as
+`~/goes/dashboard.py` + `dashboard.html`, `goes-dashboard.service`) is the
+public, read-only page: receiver stats and imagery, plus a card that explains
+the mesh weather bot and how to reach it, its request/reply counters, and a
+live feed of what it sees on its channel. That card is fed by the admin
+portal's `/api/public/bot` bundle, proxied at `/api/bot` on the same port,
+so the portal itself (8081) never has to be exposed. DMs are redacted in the
+bundle (command and reply length only). To update the page:
+
+```bash
+scp deploy/goes-dashboard/dashboard.* pi:~/goes/ && ssh pi sudo systemctl restart goes-dashboard
+```
+
+The admin portal's Text Bot page shows the same feed unredacted (sender names,
+DM text, admin and console commands, and why a request was not answered).
+
 ## Configuration reference
 
 All settings are environment variables prefixed with `MCW_`. See `.env.example` for the full list. Most commonly adjusted:

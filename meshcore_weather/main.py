@@ -15,6 +15,7 @@ from meshcore_weather.geodata import resolver
 from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.nlp import parse_intent
 from meshcore_weather.parser.weather import WeatherStore, paginate
+from meshcore_weather.traffic import traffic_log
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ class WeatherBot:
 
         from meshcore_weather.portal import logbuf
         logbuf.install(asyncio.get_running_loop())   # console buffer catches everything from here on
+        traffic_log.install(asyncio.get_running_loop())
         resolver.load()   # also sets the resolver home from MCW_HOME_CITIES
         if settings.emwin_source == "sdr":
             from meshcore_weather.sdr_monitor import SdrMonitor
@@ -242,6 +244,7 @@ class WeatherBot:
                 pass
         await self.radio.stop()
         await self.emwin.stop()
+        traffic_log.flush(force=True)
         logger.info("Weather bot stopped")
 
     async def _refresh_loop(self) -> None:
@@ -275,11 +278,13 @@ class WeatherBot:
         ch = int(channel)
         if ch == 0:
             return
+        text = text.strip()
         # Bots ignore bots: another WX-* node's channel reply is not a request.
         if sender.upper().startswith(settings.peer_bot_prefix.upper()):
+            if text:
+                traffic_log.record("peer", sender=sender, text=text, hops=hops)
             return
 
-        text = text.strip()
         if not text:
             return
 
@@ -288,10 +293,12 @@ class WeatherBot:
         # use the text channel.
         if text.startswith("WXQ") and self._broadcaster:
             logger.info("Channel WXQ request from %s (ch %d)", sender, ch)
+            traffic_log.record("data_request", sender=sender, text=text[:24], transport="channel", hops=hops)
             await self._handle_meshwx_data_request(text, "", sender)
             return
         if text.startswith("MWX") and len(text) >= 7 and self._broadcaster:
             logger.info("Channel MWX request from %s (ch %d)", sender, ch)
+            traffic_log.record("data_request", sender=sender, text=text[:24], transport="channel", hops=hops)
             await self._handle_meshwx_refresh(text, "", sender)
             return
 
@@ -299,10 +306,13 @@ class WeatherBot:
         if ch != self.radio.channel_idx:
             return
 
+        req = traffic_log.record("channel_in", sender=sender, text=text, hops=hops)
         if not self._rate_check(sender):
+            traffic_log.record("dropped", reason="rate limit", req=req, text=text)
             return
 
         command, location = await self._parse(text)
+        traffic_log.update(req, command=command, location=location)
 
         # Replies go by DM when we can: a DM with a known path costs only
         # the repeaters on it, a channel reply floods every repeater. For a
@@ -311,19 +321,21 @@ class WeatherBot:
         # on the public one, rate-limited, and advert so the next exchange
         # can be a DM.
         if not self._we_answer(command, location):
+            traffic_log.record("dropped", reason="a nearer bot answers", req=req)
             return
         mode = settings.reply_mode
         if mode == "channel":
-            await self._respond_channel(sender, command, location, hops, forced=True)
+            await self._respond_channel(sender, command, location, hops, forced=True, req=req)
             return
         pubkey = self._resolve_sender_key(sender)
         if not pubkey:
             if mode == "dm_only":
                 logger.info("Channel command from %s: no DM path and reply_mode=dm_only — ignoring", sender)
+                traffic_log.record("dropped", reason="no DM path (dm_only)", req=req)
                 return
-            await self._respond_channel(sender, command, location, hops)
+            await self._respond_channel(sender, command, location, hops, req=req)
             return
-        await self._respond_dm(pubkey, sender, command, location)
+        await self._respond_dm(pubkey, sender, command, location, req=req)
 
     # Commands that name a place are answered by the nearest bot only.
     _PLACE_COMMANDS = {"wx", "forecast", "warn", "outlook", "metar", "taf", "nowcast"}
@@ -360,7 +372,8 @@ class WeatherBot:
     CHANNEL_REPLY_PER_HOUR = 12
 
     async def _respond_channel(self, sender: str, command: str, location: str,
-                               hops: int | None = None, forced: bool = False) -> None:
+                               hops: int | None = None, forced: bool = False,
+                               req: dict | None = None) -> None:
         """Reply on our own channel (a flood). `forced` is reply_mode=channel;
         otherwise this is the stranger fallback with its hop gate and budget."""
         now = time.time()
@@ -368,18 +381,23 @@ class WeatherBot:
             if hops is not None and hops > settings.channel_reply_max_hops:
                 logger.info("Channel command from %s: no DM path and %d hops away — too far for a channel reply",
                             sender, hops)
+                traffic_log.record("dropped", reason=f"no DM path, {hops} hops away", req=req, sender=sender)
                 return
             self._channel_replies = [ts for ts in getattr(self, "_channel_replies", []) if now - ts < 3600]
             last = self._channel_reply_by_sender.get(sender, 0.0)
             if now - last < self.CHANNEL_REPLY_PER_SENDER_S:
                 logger.info("Channel command from %s: no DM path, channel reply already sent %ds ago — ignoring",
                             sender, int(now - last))
+                traffic_log.record("dropped", reason=f"no DM path, channel reply {int(now - last)}s ago",
+                                   req=req, sender=sender)
                 return
             if len(self._channel_replies) >= self.CHANNEL_REPLY_PER_HOUR:
                 logger.warning("Channel command from %s: no DM path and the hourly channel-reply budget is spent — ignoring", sender)
+                traffic_log.record("dropped", reason="hourly channel-reply budget spent", req=req, sender=sender)
                 return
         response, _, _ = self._get_response(command, location, f"ch:{sender}")
         if not response:
+            traffic_log.record("dropped", reason="nothing to say", req=req, sender=sender)
             return
         chunk = channel_fit(response, self.radio.channel_text_budget())
         if not forced:
@@ -389,6 +407,8 @@ class WeatherBot:
         else:
             logger.info("Channel command from %s: reply_mode=channel, replying on our channel (flood)", sender)
         await self.radio.send_channel_message(self.radio.channel_idx, chunk[:160])
+        traffic_log.record("reply_channel", text=chunk, chars=len(chunk), req=req, sender=sender,
+                           command=command, location=location, ok=settings.tx_enabled)
         if not forced and await self.radio.advert_if_stale():
             logger.info("Adverted so %s can DM us next time", sender)
 
@@ -407,8 +427,14 @@ class WeatherBot:
         # users typing text commands like "wx austin" / "forecast", not for
         # apps doing structured queries.
         is_binary_request = text.startswith("WXQ") or text.startswith("MWX")
+        req = None
+        if is_binary_request:
+            traffic_log.record("data_request", sender=sender_name, key=prefix, text=text[:24], transport="dm")
+        else:
+            req = traffic_log.record("dm_in", sender=sender_name, key=prefix, text=text)
         if not is_binary_request and not self._rate_check(prefix):
             logger.debug("DM rate-limited from %s", sender_name)
+            traffic_log.record("dropped", reason="rate limit", req=req)
             return
 
         # Parse @lat,lng prefix for location-aware commands
@@ -450,14 +476,17 @@ class WeatherBot:
         if self._is_admin(prefix):
             result = await self._handle_admin(text, prefix, sender_name)
             if result is not None:
+                traffic_log.update(req, kind="admin", command=text.split(None, 1)[0].lower())
                 return
 
         command, location = await self._parse(text)
-        await self._respond_dm(prefix, sender_name, command, location)
+        traffic_log.update(req, command=command, location=location)
+        await self._respond_dm(prefix, sender_name, command, location, req=req)
 
     async def _handle_advert(self, contact_name: str, pubkey_prefix: str) -> None:
         """Handle a new advert — only greet users who were using the channel."""
         prefix = self._normalize_key(pubkey_prefix)
+        traffic_log.record("advert", sender=contact_name, key=prefix)
 
         # If they already DM us fine, just update the mapping — no greeting
         if contact_name in self._known_contacts:
@@ -669,13 +698,17 @@ class WeatherBot:
             del self._paging[sender_key]
         return chunk, has_more
 
-    async def _respond_dm(self, pubkey_prefix: str, sender_name: str, command: str, location: str) -> None:
+    async def _respond_dm(self, pubkey_prefix: str, sender_name: str, command: str, location: str,
+                          req: dict | None = None) -> None:
         """Send the reply as a DM."""
         chunk, _ = self.reply_chunk(command, location, pubkey_prefix)
         if not chunk:
+            traffic_log.record("dropped", reason="nothing to say", req=req, sender=sender_name, key=pubkey_prefix)
             return
 
         success = await self.radio.send_dm(pubkey_prefix, chunk)
+        traffic_log.record("reply_dm" if success else "dm_failed", text=chunk, chars=len(chunk), req=req,
+                           sender=sender_name, key=pubkey_prefix, command=command, location=location, ok=success)
         if success:
             logger.info("Response to %s (DM): %s", sender_name, chunk.replace("\n", " | "))
         else:

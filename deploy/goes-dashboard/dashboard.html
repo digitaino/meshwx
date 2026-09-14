@@ -1,0 +1,232 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>mesh-wx · GOES-19 + MeshCore weather bot</title>
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--fg:#e6edf3;--dim:#8b949e;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--line:#30363d;--acc:#58a6ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 -apple-system,system-ui,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}
+h1{font-size:16px;margin:0}.badge{padding:3px 10px;border-radius:999px;font-weight:600;font-size:13px;background:#21262d}
+.badge.ok{background:#1a4d2e;color:#7ee2a8}.badge.bad{background:#4d1a1a;color:#ffa198}.badge.warn{background:#4d3a1a;color:#ffd27e}
+.chip{color:var(--dim);font-size:12px}.chip b{color:var(--fg)}
+button,select{background:#21262d;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 10px;font-size:13px;cursor:pointer}
+button.primary{background:#1f6feb;border-color:#1f6feb}button:disabled{opacity:.5;cursor:default}
+main{padding:12px 14px;display:grid;gap:12px;grid-template-columns:repeat(12,1fr)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;grid-column:span 12;min-width:0}
+.card h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:0 0 8px}
+@media(min-width:900px){.c4{grid-column:span 4}.c6{grid-column:span 6}.c8{grid-column:span 8}.c3{grid-column:span 3}}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.tile{background:#0a0e14;border:1px solid var(--line);border-radius:8px;padding:10px}
+.tile .v{font-size:30px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}.tile .l{color:var(--dim);font-size:12px;margin-top:2px}
+.tile.good .v{color:var(--ok)}.tile.warn .v{color:var(--warn)}.tile.bad .v{color:var(--bad)}
+canvas{width:100%;display:block;background:#0a0e14;border:1px solid var(--line);border-radius:8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.grid a{display:block;background:#0a0e14;border:1px solid var(--line);border-radius:8px;overflow:hidden;color:var(--dim);font-size:11px;text-decoration:none}
+.grid img{width:100%;aspect-ratio:1;object-fit:cover;display:block}.grid span{display:block;padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+table{width:100%;border-collapse:collapse;font-size:12px}td{padding:3px 6px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0}td.r{text-align:right;color:var(--dim);width:1%;max-width:none}
+td a{color:var(--acc);text-decoration:none}
+.meter{height:26px;background:#0a0e14;border:1px solid var(--line);border-radius:6px;overflow:hidden;position:relative;margin:8px 0 4px}
+.meter .fill{height:100%;background:linear-gradient(90deg,var(--bad),var(--warn) 40%,var(--ok) 70%);width:0;transition:width .3s}.meter .pk{position:absolute;top:0;width:2px;height:100%;background:#fff}
+.hint{color:var(--dim);font-size:12px}.hidden{display:none!important}#msg{color:var(--warn);font-size:12px}
+.prose{font-size:13px;line-height:1.5;color:#c9d1d9}.prose p{margin:0 0 8px}.prose ol{margin:0 0 8px;padding-left:20px}.prose li{margin:2px 0}
+.prose code,.cmd td code{background:#0a0e14;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px;color:#e6edf3}
+.cmd td{white-space:normal;max-width:none}.cmd td:first-child{white-space:nowrap;width:1%}
+.feed{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#0a0e14;border:1px solid var(--line);border-radius:8px;padding:8px;max-height:340px;overflow:auto}
+.feed div{white-space:pre-wrap;word-break:break-word}.feed .t{color:var(--dim)}.feed .in{color:#58a6ff}.feed .out{color:#d2a8ff}.feed .drop{color:var(--warn)}.feed .who{font-weight:600}
+.tag{display:inline-block;padding:0 6px;border-radius:4px;font-size:11px;font-weight:600;background:#21262d;color:var(--dim);min-width:28px;text-align:center}
+</style></head><body>
+<header>
+<h1>mesh-wx · GOES-19 HRIT · MeshCore weather bot</h1>
+<span class="badge" id="lock">connecting</span>
+<span class="badge" id="botBadge">bot ?</span>
+<span class="chip" id="mode"></span>
+<button id="btnPoint">Pointing mode</button>
+<button id="btnRecv" class="primary hidden">Back to receiving</button>
+<span id="msg"></span>
+<span style="flex:1"></span>
+<span class="chip">goesrecv <b id="s_goesrecv">–</b></span>
+<span class="chip">goesproc <b id="s_goesproc">–</b></span>
+<span class="chip">cpu <b id="temp">–</b></span>
+<span class="chip">disk <b id="disk">–</b></span>
+<span class="chip">feed <b id="feed">–</b></span>
+</header>
+<main>
+<section id="botView" style="display:contents">
+ <div class="card c8"><h2>Mesh weather bot · <span id="botName">WX-AUS</span> <span class="hint" id="botSub"></span></h2>
+  <div class="prose">
+   <p><b>How it works.</b> The dish above receives the GOES-19 HRIT downlink. Inside that stream NOAA relays <b>EMWIN</b>: every National Weather Service text product — observations, forecasts, watches and warnings, storm reports, space weather — for the whole country. The bot parses those products as they land, with <b>no internet connection</b>, and answers questions over LoRa on the MeshCore mesh. Every reply fits in one mesh packet.</p>
+   <p><b>How to reach it on the Austin MeshCore network.</b></p>
+   <ol>
+    <li>Set your MeshCore radio to <b id="botRadio">the US preset (910.525 MHz, 62.5 kHz, SF7, CR5)</b>.</li>
+    <li>In the MeshCore app add the channel <code id="botChannel">#meshwx</code> (just the name — a <code>#</code> channel's key comes from its name, so anyone can join). This is the one request channel for every weather bot, everywhere.</li>
+    <li>Post a command there, for example <code>wx round rock tx</code>. <span id="botReplyHow">The bot replies by DM when it knows your node; a nearby newcomer gets one reply on the channel and the bot adverts so the next exchange can be a DM.</span></li>
+    <li>Or DM the node <code id="botNameDm">WX-AUS</code> directly for private replies. You need its advert in your contacts first: it adverts every few hours, and it adverts when a stranger talks to it on the channel.</li>
+    <li>The bot has products for the whole country, so <code>wx</code> and <code>warn</code> work for any US place. If another <code>WX-</code> bot is nearer to the place you ask about, that bot answers instead of this one.</li>
+   </ol>
+   <p class="hint">Apps: the MeshWX iOS app reads compact binary datagrams (warnings, observations, forecasts) on <code id="botDataChannel">#meshwx-data</code>. Weather for the local area is broadcast there on a schedule.</p>
+  </div>
+  <table class="cmd" id="botCmds"></table>
+ </div>
+ <div class="card c4"><h2>Bot · requests and replies</h2>
+  <div class="tiles">
+   <div class="tile"><div class="v" id="b_req24">–</div><div class="l">requests · 24 h</div></div>
+   <div class="tile"><div class="v" id="b_rep24">–</div><div class="l">replies · 24 h</div></div>
+   <div class="tile"><div class="v" id="b_send24">–</div><div class="l">nodes served · 24 h</div></div>
+   <div class="tile"><div class="v" id="b_lat">–</div><div class="l">median reply · ms</div></div>
+   <div class="tile"><div class="v" id="b_life">–</div><div class="l" id="b_lifel">requests all time</div></div>
+   <div class="tile"><div class="v" id="b_bc24">–</div><div class="l">data broadcasts · 24 h</div></div>
+  </div>
+  <div class="hint" style="margin-top:8px" id="botStatsHint"></div>
+  <div class="hint" id="botTop"></div>
+ </div>
+ <div class="card c12"><h2>Live on <span id="botChannel2">#meshwx</span> · what the bot sees and says <span class="hint" id="botFeedHint"></span></h2>
+  <div class="feed" id="botFeed"><div class="hint">connecting to the bot…</div></div>
+  <div class="hint" style="margin-top:6px">Channel traffic is public by nature and shown as is. Direct messages are private: a DM shows only the command and the reply length, never who sent it.</div>
+ </div>
+</section>
+<section id="recvView" style="display:contents">
+ <div class="card c8"><h2>Decoder</h2>
+  <div class="tiles">
+   <div class="tile" id="t_vit"><div class="v" id="vit">–</div><div class="l">vit(avg) · Viterbi errors/frame</div></div>
+   <div class="tile" id="t_pk"><div class="v" id="pk">–</div><div class="l">packets / s</div></div>
+   <div class="tile" id="t_dr"><div class="v" id="dr">–</div><div class="l">drops / s</div></div>
+   <div class="tile" id="t_rs"><div class="v" id="rs">–</div><div class="l">rs(sum) · RS corrections/s</div></div>
+   <div class="tile"><div class="v" id="freq">–</div><div class="l">carrier offset kHz</div></div>
+   <div class="tile"><div class="v" id="lockt">–</div><div class="l">locked for</div></div>
+  </div>
+  <div class="hint" style="margin-top:8px">totals since goesrecv start: <b id="tot"></b></div>
+ </div>
+ <div class="card c4"><h2>Constellation (BPSK)</h2><canvas id="const" height="240"></canvas></div>
+ <div class="card c12"><h2>Last 15 minutes · vit(avg) line, packets/s bars</h2><canvas id="hist" height="150"></canvas></div>
+ <div class="card c8"><h2>Latest images</h2><div class="grid" id="imgs"><span class="hint">nothing decoded yet</span></div></div>
+ <div class="card c4"><h2>Latest EMWIN products <span class="hint" id="emcount"></span></h2><table id="emwin"></table></div>
+</section>
+<section id="pointView" style="display:contents" class="hidden">
+ <div class="card c12"><h2>Pointing meter · in-band minus noise floor</h2>
+  <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+   <div style="font-size:64px;font-weight:700;line-height:1"><span id="snr">–</span><span style="font-size:20px;color:var(--dim)"> dB</span></div>
+   <div style="flex:1;min-width:240px"><div class="meter"><div class="fill" id="fill"></div><div class="pk" id="pkm"></div></div>
+   <div class="hint">peak <b id="peak">–</b> dB · in-band <b id="inb">–</b> · floor <b id="oob">–</b> · <span id="verdict"></span></div></div>
+   <span id="meterCtl"><label class="chip">gain <select id="gain"></select></label> <button id="resetpk">Reset peak</button>
+   <label class="chip"><input type="checkbox" id="tone"> tone</label></span>
+  </div>
+  <canvas id="spec" height="260" style="margin-top:10px"></canvas>
+  <canvas id="snrh" height="120" style="margin-top:10px"></canvas>
+  <div class="hint">≥5 dB decodes, ≥8 dB is clean. Aim: 138° compass, 47° up from Austin. Rotate the feed for polarisation once you find the hump.</div>
+ </div>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);const dpr=devicePixelRatio||1;
+let state={},yMin=-60,yMax=0,audio=null,osc=null,curGain=null;
+const gains=[0,0.9,1.4,2.7,3.7,7.7,8.7,12.5,14.4,15.7,16.6,19.7,20.7,22.9,25.4,28,29.7,32.8,33.8,36.4,37.2,38.6,40.2,42.1,43.4,43.9,44.5,48,49.6];
+gains.forEach(g=>{const o=document.createElement('option');o.value=g;o.textContent=g;$('gain').appendChild(o)});
+const post=u=>fetch(u,{method:'POST'});
+$('btnPoint').onclick=()=>{if(confirm('Stop goesrecv and switch the dongle to the pointing meter?')){post('/mode/point');$('msg').textContent='switching…'}};
+$('btnRecv').onclick=()=>{post('/mode/receive');$('msg').textContent='switching…'};
+$('gain').onchange=()=>post('/meter/gain/'+$('gain').value);$('resetpk').onclick=()=>post('/meter/resetpeak');
+$('tone').onchange=()=>{if($('tone').checked){audio=audio||new (window.AudioContext||window.webkitAudioContext)();osc=audio.createOscillator();const g=audio.createGain();g.gain.value=.15;osc.connect(g).connect(audio.destination);osc.start()}else if(osc){osc.stop();osc=null}};
+const fmtAge=s=>s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m';
+const fmtT=t=>new Date(t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+function cls(el,c){el.className='tile'+(c?' '+c:'')}
+function render(d){state=d;
+ const status=d.status;
+ if(status){$('s_goesrecv').textContent=status.services.goesrecv;$('s_goesproc').textContent=status.services.goesproc;
+  $('temp').textContent=status.temp!=null?status.temp.toFixed(0)+'°C':'–';$('disk').textContent=status.disk_free_gb+' GB free';
+  renderImages(status.latest_images);renderEmwin(status.latest_emwin,status.counts)}
+ const point=d.mode==='point',ctl=!!d.control;$('recvView').classList.toggle('hidden',point);$('pointView').classList.toggle('hidden',!point);
+ $('btnPoint').classList.toggle('hidden',point||!ctl);$('btnRecv').classList.toggle('hidden',!point||!ctl);$('meterCtl').classList.toggle('hidden',!ctl);
+ $('mode').textContent=ctl?(d.mode_msg||''):(point?'station is being aimed right now':'');
+ if(d.msg)$('msg').textContent=d.msg; else if(!$('msg').textContent.startsWith('switching')||d.mode_msg)$('msg').textContent='';
+ if(point){renderMeter(d.meter);$('lock').textContent='POINTING';$('lock').className='badge warn';return}
+ const s=d.stats||{};$('feed').textContent=s.feed_alive?'live':'no data';
+ if(!s.feed_alive){$('lock').textContent='NO STATS';$('lock').className='badge bad'}
+ else if(s.locked){$('lock').textContent='LOCKED';$('lock').className='badge ok'}else{$('lock').textContent='NO LOCK';$('lock').className='badge bad'}
+ const v=s.vit_avg;$('vit').textContent=v==null?'–':v;cls($('t_vit'),v==null?'':v<200?'good':v<600?'warn':'bad');
+ $('pk').textContent=s.packets??'–';cls($('t_pk'),s.packets>0?'good':'');
+ $('dr').textContent=s.drops??'–';cls($('t_dr'),s.drops>0&&s.packets>0?'warn':s.drops>0?'bad':'');
+ $('rs').textContent=s.rs_sum??'–';cls($('t_rs'),s.rs_sum>50?'warn':'');
+ $('freq').textContent=s.freq!=null?(s.freq/1000).toFixed(1):'–';
+ $('lockt').textContent=s.lock_since?fmtAge(Math.round(d.t-s.lock_since)):'–';
+ if(s.totals)$('tot').textContent=`${s.totals.packets} packets · ${s.totals.drops} drops · ${s.totals.rs_errors} RS corrections`;
+ drawConst(s.const||[]);if(d.history)drawHist(d.history)}
+function renderImages(list){const g=$('imgs');if(!list||!list.length)return;g.innerHTML='';list.forEach(i=>{const a=document.createElement('a');a.href='/img/'+i.path;a.target='_blank';a.innerHTML=`<img loading="lazy" src="/thumb/${i.path}"><span title="${i.name}">${i.name.replace(/^GOES1[89]_/,'').replace(/\.jpg$/,'')} · ${fmtAge(Math.round(Date.now()/1000-i.mtime))} ago</span>`;g.appendChild(a)})}
+function renderEmwin(list,counts){const t=$('emwin');t.innerHTML='';(list||[]).forEach(f=>{const tr=document.createElement('tr');tr.innerHTML=`<td><a href="/img/${f.path}" target="_blank">${f.name}</a></td><td class="r">${fmtT(f.mtime)}</td>`;t.appendChild(tr)});
+ if(!list||!list.length)t.innerHTML='<tr><td class="hint">no EMWIN files yet</td></tr>';if(counts)$('emcount').textContent=`· ${counts.emwin_today} today, ${counts.emwin} total`}
+function drawConst(pts){const c=$('const'),W=c.width=c.clientWidth*dpr,H=c.height=240*dpr,x=c.getContext('2d');x.clearRect(0,0,W,H);
+ x.strokeStyle='#30363d';x.beginPath();x.moveTo(W/2,0);x.lineTo(W/2,H);x.moveTo(0,H/2);x.lineTo(W,H/2);x.stroke();
+ if(!pts.length){x.fillStyle='#8b949e';x.font=(12*dpr)+'px system-ui';x.fillText('no samples',10*dpr,20*dpr);return}
+ let m=0;for(let i=0;i<pts.length;i++)m=Math.max(m,Math.abs(pts[i]));const sc=(Math.min(W,H)/2-10*dpr)/(m||1);
+ x.fillStyle='rgba(88,166,255,.7)';for(let i=0;i+1<pts.length;i+=2){x.fillRect(W/2+pts[i]*sc-1.5*dpr,H/2-pts[i+1]*sc-1.5*dpr,3*dpr,3*dpr)}}
+function drawHist(h){const c=$('hist'),W=c.width=c.clientWidth*dpr,H=c.height=150*dpr,x=c.getContext('2d');x.clearRect(0,0,W,H);if(!h.length)return;
+ const t1=h[h.length-1][0],t0=t1-900,px=t=>(t-t0)/900*W;const maxP=Math.max(60,...h.map(p=>p[2]));
+ x.fillStyle='rgba(63,185,80,.35)';h.forEach(p=>{if(p[0]<t0)return;const y=p[2]/maxP*H;x.fillRect(px(p[0]),H-y,Math.max(1,W/900),y)});
+ x.strokeStyle='#30363d';x.font=(11*dpr)+'px system-ui';x.fillStyle='#8b949e';[500,1000,1500,2000].forEach(v=>{const y=H-v/2500*H;x.beginPath();x.moveTo(0,y);x.lineTo(W,y);x.stroke();x.fillText('vit '+v,4*dpr,y-3)});
+ x.strokeStyle='#f85149';x.lineWidth=1.5*dpr;x.beginPath();let pen=false;h.forEach(p=>{if(p[0]<t0||p[1]==null){pen=false;return}const X=px(p[0]),Y=H-Math.min(p[1],2500)/2500*H;pen?x.lineTo(X,Y):x.moveTo(X,Y);pen=true});x.stroke();
+ x.fillStyle='#8b949e';x.fillText('packets/s max '+maxP,W-110*dpr,14*dpr)}
+function renderMeter(m){if(!m){$('snr').textContent='–';return}
+ if(curGain!==m.gain){const o=[...$('gain').options].reduce((a,b)=>Math.abs(b.value-m.gain)<Math.abs(a.value-m.gain)?b:a);$('gain').value=o.value;curGain=m.gain}
+ if(m.err)$('msg').textContent=m.err;
+ if(m.snr!=null){const s=m.snr;$('snr').textContent=s.toFixed(1);$('peak').textContent=(m.peak||0).toFixed(1);$('inb').textContent=m.inband_lvl.toFixed(1);$('oob').textContent=m.oob_lvl.toFixed(1);
+  $('fill').style.width=Math.max(0,Math.min(100,s/20*100))+'%';$('pkm').style.left=Math.max(0,Math.min(100,(m.peak||0)/20*100))+'%';
+  $('verdict').textContent=s<2?'no signal':s<5?'signal found, fine tune':s<9?'good, will decode':'excellent';
+  if(osc)osc.frequency.setTargetAtTime(220+Math.max(0,s)*90,audio.currentTime,.05)}
+ drawSpec(m);drawSnrHist(m.history||[])}
+function drawSpec(d){const c=$('spec'),W=c.width=c.clientWidth*dpr,H=c.height=260*dpr,x=c.getContext('2d');x.clearRect(0,0,W,H);if(!d.freqs||!d.freqs.length)return;
+ const f0=d.freqs[0],f1=d.freqs[d.freqs.length-1],mn=Math.min(...d.db),mx=Math.max(...d.db);yMin+=(mn-4-yMin)*.1;yMax+=(mx+4-yMax)*.1;
+ const px=f=>(f-f0)/(f1-f0)*W,py=v=>H-(v-yMin)/(yMax-yMin)*H;
+ x.fillStyle='rgba(63,185,80,.12)';x.fillRect(px(d.inband[0]),0,px(d.inband[1])-px(d.inband[0]),H);
+ x.fillStyle='rgba(139,148,158,.10)';d.oob.forEach(r=>x.fillRect(px(r[0]),0,px(r[1])-px(r[0]),H));
+ x.strokeStyle='#30363d';x.font=(11*dpr)+'px system-ui';x.fillStyle='#8b949e';
+ for(let f=Math.ceil(f0/1e6);f<=f1/1e6;f++){x.beginPath();x.moveTo(px(f*1e6),0);x.lineTo(px(f*1e6),H);x.stroke();x.fillText(f+' MHz',px(f*1e6)+3,H-6)}
+ x.strokeStyle='#58a6ff';x.lineWidth=1.5*dpr;x.beginPath();d.freqs.forEach((f,i)=>{i?x.lineTo(px(f),py(d.db[i])):x.moveTo(px(f),py(d.db[i]))});x.stroke();
+ if(d.oob_lvl!=null){x.strokeStyle='#8b949e';x.setLineDash([6,4]);x.beginPath();x.moveTo(0,py(d.oob_lvl));x.lineTo(W,py(d.oob_lvl));x.stroke();x.setLineDash([])}}
+function drawSnrHist(h){const c=$('snrh'),W=c.width=c.clientWidth*dpr,H=c.height=120*dpr,x=c.getContext('2d');x.clearRect(0,0,W,H);if(!h.length)return;
+ const t1=h[h.length-1][0],t0=Math.min(h[0][0],t1-60),mx=Math.max(15,...h.map(p=>p[1])),px=t=>(t-t0)/(t1-t0||1)*W,py=v=>H-Math.max(0,v)/mx*H;
+ x.strokeStyle='#30363d';x.font=(11*dpr)+'px system-ui';x.fillStyle='#8b949e';for(let v=0;v<=mx;v+=5){x.beginPath();x.moveTo(0,py(v));x.lineTo(W,py(v));x.stroke();x.fillText(v+' dB',4*dpr,py(v)-3)}
+ x.strokeStyle='#3fb950';x.lineWidth=2*dpr;x.beginPath();h.forEach((p,i)=>{i?x.lineTo(px(p[0]),py(p[1])):x.moveTo(px(p[0]),py(p[1]))});x.stroke()}
+function connect(){const es=new EventSource('/events');es.onmessage=e=>{try{render(JSON.parse(e.data))}catch(err){console.error(err)}};
+ es.onerror=()=>{$('lock').textContent='RECONNECTING';$('lock').className='badge bad';es.close();setTimeout(connect,2000)}}
+fetch('/api/state').then(r=>r.json()).then(render).finally(connect);
+
+// ---- mesh weather bot (read-only bundle proxied from the bot's portal) ----
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let botLastId=0,botFeedInit=false;
+function botLine(ev){const ts=new Date(ev.t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+ const tr=ev.transport==='channel'?'CH':ev.transport==='dm'?'DM':ev.kind.startsWith('advert')?'ADV':'';const who=ev.sender?`<span class="who">${esc(ev.sender)}</span> `:'';
+ const cmd=ev.command?` <span class="t">[${esc(ev.command)}${ev.location?' · '+esc(ev.location):''}]</span>`:'';let cls='in',body='';
+ switch(ev.kind){
+  case 'channel_in':body=esc(ev.text)+cmd+(ev.hops!=null?` <span class="t">${ev.hops} hops</span>`:'');break;
+  case 'dm_in':body=`<span class="t">DM request</span>${cmd}`;break;
+  case 'reply_channel':cls='out';body=esc(ev.text)+` <span class="t">${ev.chars||0} ch${ev.ms!=null?' · '+ev.ms+' ms':''}</span>`;break;
+  case 'reply_dm':cls='out';body=`<span class="t">DM reply</span>${cmd} <span class="t">${ev.chars||0} ch${ev.ms!=null?' · '+ev.ms+' ms':''}</span>`;break;
+  case 'dropped':cls='drop';body=`not answered: ${esc(ev.reason)}${cmd}`;break;
+  case 'dm_failed':cls='drop';body='DM could not be delivered';break;
+  case 'peer':body=`<span class="t">another weather bot:</span> ${esc(ev.text)}`;break;
+  case 'advert':body='<span class="t">advert heard</span>';break;
+  case 'advert_out':cls='out';body='<span class="t">bot advert (flood)</span>';break;
+  case 'data_request':body='<span class="t">app data request</span>';break;
+  default:body=esc(ev.text||ev.reason||ev.kind)}
+ return `<div><span class="t">${ts}</span> <span class="${cls}">${ev.dir==='in'?'←':'→'}</span> <span class="tag">${tr||ev.kind}</span> ${who}${body}</div>`}
+function renderBot(d){const b=$('botBadge');
+ if(!d.online){b.textContent='BOT OFFLINE';b.className='badge bad';$('botSub').textContent=d.error||'';return}
+ const bot=d.bot||{},r=d.radio,st=d.stats||{},w=(st.windows||{})['24h']||{},lt=st.lifetime||{},lat=st.latency||{};
+ b.textContent=bot.connected?(bot.tx_enabled?'BOT ON AIR':'BOT RX ONLY'):'BOT: NO RADIO';b.className='badge '+(bot.connected&&bot.tx_enabled?'ok':'warn');
+ if(bot.name){$('botName').textContent=bot.name;$('botNameDm').textContent=bot.name}
+ $('botSub').textContent=`· up ${fmtAge(bot.uptime_s||0)} · ${bot.products||0} NWS products in memory`+(bot.lat!=null?` · ${(+bot.lat).toFixed(2)}, ${(+bot.lon).toFixed(2)}`:'')+(d.peers&&d.peers.length?` · peers: ${d.peers.map(p=>p.name).join(', ')}`:'');
+ if(r)$('botRadio').textContent=`${r.preset?r.preset+': ':''}${r.freq_mhz} MHz, ${r.bw_khz} kHz, SF${r.sf}, CR${r.cr}`;
+ const ch=(d.channels||{});if(ch.text){$('botChannel').textContent=ch.text;$('botChannel2').textContent=ch.text}if(ch.data)$('botDataChannel').textContent=ch.data;
+ $('botReplyHow').textContent=bot.reply_mode==='channel'?'Right now the bot answers on the channel itself, so everyone on it sees the replies.':bot.reply_mode==='dm_only'?'The bot replies by DM only, so it must have your advert (see the next step).':'The bot replies by DM when it knows your node; a nearby newcomer gets one reply on the channel and the bot adverts so the next exchange can be a DM.';
+ if(d.commands&&!$('botCmds').childElementCount)$('botCmds').innerHTML=d.commands.map(c=>`<tr><td><code>${esc(c.cmd)}</code></td><td>${esc(c.what)}</td><td class="r"><code>${esc(c.example)}</code></td></tr>`).join('');
+ $('b_req24').textContent=w.requests??'–';$('b_rep24').textContent=w.replies??'–';$('b_send24').textContent=w.senders??'–';
+ $('b_lat').textContent=lat.median_ms!=null?lat.median_ms:'–';$('b_life').textContent=lt.requests??'–';
+ if(lt.since)$('b_lifel').textContent='requests since '+new Date(lt.since*1000).toLocaleDateString();
+ $('b_bc24').textContent=((d.broadcasts||{})['24h']||{}).messages??'–';
+ $('botStatsHint').textContent=`last 24 h: ${w.dm_replies||0} replies by DM, ${w.channel_replies||0} on the channel, ${w.dropped||0} not answered · ${w.chars_sent||0} characters sent`;
+ const top=Object.entries(w.by_command||{}).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,v])=>`${k} ×${v}`).join(', ');$('botTop').textContent=top?'most asked: '+top:'';
+ const feed=$('botFeed'),recent=d.recent||[];
+ if(!botFeedInit){feed.innerHTML=recent.length?recent.map(botLine).join(''):'<div class="hint">quiet — nothing has been asked yet</div>';botFeedInit=true;botLastId=recent.length?recent[recent.length-1].id:0;feed.scrollTop=feed.scrollHeight}
+ else{const fresh=recent.filter(e=>e.id>botLastId);if(fresh.length){if(botLastId===0)feed.innerHTML='';const atBottom=feed.scrollHeight-feed.scrollTop-feed.clientHeight<40;feed.insertAdjacentHTML('beforeend',fresh.map(botLine).join(''));while(feed.childElementCount>300)feed.removeChild(feed.firstChild);botLastId=fresh[fresh.length-1].id;if(atBottom)feed.scrollTop=feed.scrollHeight}}
+ $('botFeedHint').textContent=st.last_request_at?`· last request ${fmtAge(Math.max(0,Math.round(d.t-st.last_request_at)))} ago`:''}
+function pollBot(){fetch('/api/bot').then(r=>r.json()).then(renderBot).catch(()=>renderBot({online:false,error:'dashboard cannot reach the bot'})).finally(()=>setTimeout(pollBot,5000))}
+pollBot();
+</script></body></html>

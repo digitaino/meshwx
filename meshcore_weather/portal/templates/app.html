@@ -215,7 +215,25 @@
     <!-- ============ SECTION: TEXT BOT ============ -->
     <section id="section-textbot" class="section">
       <h1 class="page-title">Text Bot</h1>
-      <p class="page-subtitle">The plain-MeshCore side: which channels the bot listens on, and a console that answers exactly like a DM.</p>
+      <p class="page-subtitle">The plain-MeshCore side: what the bot sees and says on its channel and by DM, which channels it listens on, and a console that answers exactly like a DM.</p>
+
+      <div class="grid grid-5 mb-4" id="traffic-stats"></div>
+      <div class="card mb-4">
+        <div class="card-header"><div><div class="card-title">Live: <span id="traffic-channel-name">#meshwx</span> and DMs</div>
+          <div class="card-subtitle">Every request the bot hears, every reply it sends, and what it chose not to answer (and why). DMs show the sender here; the public page hides them.</div></div>
+          <div class="flex gap-2" style="align-items:center">
+            <div class="sub-tabs" id="traffic-kinds" style="margin:0">
+              <button class="sub-tab active" data-k="all" onclick="Portal.traffic.setKind('all')">All</button>
+              <button class="sub-tab" data-k="channel" onclick="Portal.traffic.setKind('channel')">Channel</button>
+              <button class="sub-tab" data-k="dm" onclick="Portal.traffic.setKind('dm')">DMs</button>
+              <button class="sub-tab" data-k="dropped" onclick="Portal.traffic.setKind('dropped')">Not answered</button>
+              <button class="sub-tab" data-k="adverts" onclick="Portal.traffic.setKind('adverts')">Adverts</button>
+              <button class="sub-tab" data-k="apps" onclick="Portal.traffic.setKind('apps')">Apps</button>
+            </div>
+            <span class="text-small text-muted" id="traffic-status"></span>
+          </div></div>
+        <div id="traffic-body" class="text-mono text-small" style="height:380px;overflow:auto;white-space:pre-wrap;background:rgba(0,0,0,.25);padding:8px;border-radius:6px"></div>
+      </div>
 
       <div class="grid grid-2">
         <div class="card">

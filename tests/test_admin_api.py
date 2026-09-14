@@ -225,6 +225,7 @@ def test_env_settings_apply_live_where_possible(client, tmp_path, monkeypatch):
 
 def test_mutations_need_the_portal_header(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(settings, "tx_enabled", False)       # the Pi's .env has TX on
     bot = WeatherBot()
     bot.radio = FakeRadio()
     bare = TestClient(create_app(bot))                       # no X-Requested-With: a cross-site page

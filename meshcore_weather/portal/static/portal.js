@@ -237,6 +237,7 @@ var Portal = {
       if (prev === "map") Portal.weatherMap.onLeave();
       if (prev === "sdr") Portal.sdr.onLeave();
       if (prev === "console") Portal.console.onLeave();
+      if (prev === "textbot") Portal.traffic.onLeave();
       if (hash === "console") Portal.console.onEnter();
       if (hash === "map") Portal.weatherMap.onEnter();
       if (hash === "overview") Portal.overview.refresh();
@@ -1369,6 +1370,7 @@ Portal.textbot = {
     }
     Portal.system.loadChannels();
     this.loadReplyMode();
+    Portal.traffic.onEnter();
   },
   loadReplyMode: function () {
     apiJson("/api/radio").then(function (d) {
@@ -1594,6 +1596,132 @@ Portal.console = {
     this._lines.forEach(function (l) { if (self._show(l)) html.push(self._fmt(l)); });
     el.innerHTML = html.join("") || '<div class="text-muted">nothing matches</div>';
     if (scroll !== false) el.scrollTop = el.scrollHeight;
+    this._status();
+  },
+};
+
+// -- Request/reply traffic: what the bot sees on its channel and by DM --------------
+
+Portal.traffic = {
+  _events: [], _max: 1500, _kind: "all", _sse: null, _lastId: 0, _timer: null,
+  _filters: {
+    all: null,
+    channel: ["channel_in", "reply_channel", "peer"],
+    dm: ["dm_in", "reply_dm", "dm_failed", "admin"],
+    dropped: ["dropped", "dm_failed"],
+    adverts: ["advert", "advert_out"],
+    apps: ["data_request"],
+  },
+
+  onEnter: function () {
+    var self = this;
+    document.getElementById("traffic-channel-name").textContent = (document.getElementById("sys-ch-text") || {}).value || "#meshwx";
+    apiJson("/api/traffic?n=400").then(function (d) {
+      self._events = d.events || [];
+      self._lastId = self._events.length ? self._events[self._events.length - 1].id : 0;
+      self.renderStats(d.stats);
+      self.render();
+      self._connect();
+    }).catch(function (e) { Portal.ui.showToast("Traffic: " + e.message, false); });
+    if (this._timer) clearInterval(this._timer);
+    this._timer = setInterval(function () {
+      apiJson("/api/traffic?n=1").then(function (d) { self.renderStats(d.stats); }).catch(function () {});
+    }, 30000);
+  },
+  onLeave: function () {
+    if (this._sse) { this._sse.close(); this._sse = null; }
+    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+  },
+  _connect: function () {
+    var self = this;
+    if (this._sse) this._sse.close();
+    var es = new EventSource("/api/traffic/stream");
+    this._sse = es;
+    es.onmessage = function (m) {
+      var ev; try { ev = JSON.parse(m.data); } catch (e) { return; }
+      if (!ev || ev.hello) return;
+      if (ev.id && ev.id <= self._lastId) return;
+      self._lastId = ev.id || self._lastId;
+      self._events.push(ev);
+      if (self._events.length > self._max) self._events.splice(0, self._events.length - self._max);
+      if (self._show(ev)) self._append(ev);
+      self._status();
+    };
+    es.onerror = function () { self._status("reconnecting…"); };
+    es.onopen = function () { self._status(); };
+  },
+  _status: function (extra) {
+    var el = document.getElementById("traffic-status");
+    if (el) el.textContent = "live · " + this._events.length + " events" + (extra ? " · " + extra : "");
+  },
+  setKind: function (k) {
+    this._kind = k;
+    document.querySelectorAll("#traffic-kinds .sub-tab").forEach(function (b) { b.classList.toggle("active", b.dataset.k === k); });
+    this.render();
+  },
+  _show: function (ev) {
+    var f = this._filters[this._kind];
+    return !f || f.indexOf(ev.kind) !== -1;
+  },
+  renderStats: function (st) {
+    if (!st) return;
+    var w24 = st.windows["24h"], w1 = st.windows["1h"], lt = st.lifetime, lat = st.latency || {};
+    var top = Object.keys(w24.by_command || {}).sort(function (a, b) { return w24.by_command[b] - w24.by_command[a]; }).slice(0, 3)
+      .map(function (k) { return k + " " + w24.by_command[k]; }).join(", ");
+    var since = lt.since ? new Date(lt.since * 1000).toLocaleDateString() : "";
+    document.getElementById("traffic-stats").innerHTML =
+      statCard("Requests · 24h", w24.requests, w1.requests + " in the last hour" + (top ? " · " + top : "")) +
+      statCard("Replies · 24h", w24.replies, w24.dm_replies + " by DM · " + w24.channel_replies + " on the channel · " + w24.chars_sent + " chars") +
+      statCard("Not answered · 24h", w24.dropped, "rate limits, hop gate, budgets, nearer bot", w24.dropped ? "badge-warning" : "") +
+      statCard("Senders · 24h", w24.senders, w24.senders ? "distinct nodes" : "nobody yet") +
+      statCard("Reply time", lat.median_ms != null ? lat.median_ms + " ms" : "–", lat.p90_ms != null ? "median · p90 " + lat.p90_ms + " ms" : "receipt to send") +
+      statCard("Since " + since, lt.requests + " req", lt.replies + " replies · " + lt.dropped + " dropped · " + lt.by_transport.dm + " DM / " + lt.by_transport.channel + " channel requests");
+  },
+  _fmt: function (ev) {
+    var ts = new Date(ev.t * 1000).toTimeString().slice(0, 8);
+    var arrow = ev.dir === "in" ? '<span style="color:#06b6d4">&#8592; in </span>' : '<span style="color:#a855f7">&#8594; out</span>';
+    var tr = ev.transport === "channel" ? "CH" : ev.transport === "dm" ? "DM" : ev.transport === "console" ? "WEB" : ev.kind.indexOf("advert") === 0 ? "ADV" : "";
+    var who = ev.sender ? escapeHtml(ev.sender) : (ev.key ? '<span class="text-muted">' + escapeHtml(ev.key) + "</span>" : "");
+    var body = "", cls = "badge-muted";
+    switch (ev.kind) {
+      case "channel_in": case "dm_in":
+        body = escapeHtml(ev.text || "") + (ev.command ? ' <span class="text-muted">[' + escapeHtml(ev.command) + (ev.location ? " · " + escapeHtml(ev.location) : "") + "]</span>" : "");
+        if (ev.hops != null) body += ' <span class="text-muted">' + ev.hops + " hops</span>";
+        break;
+      case "reply_dm": case "reply_channel":
+        cls = "badge-success";
+        body = escapeHtml(ev.text || "") + ' <span class="text-muted">' + (ev.chars || 0) + " ch" + (ev.ms != null ? " · " + ev.ms + " ms" : "") + (ev.ok === false ? " · TX off" : "") + "</span>";
+        break;
+      case "dropped":
+        cls = "badge-warning";
+        body = '<span style="color:#d29922">not answered: ' + escapeHtml(ev.reason || "") + "</span>" + (ev.command ? ' <span class="text-muted">[' + escapeHtml(ev.command) + (ev.location ? " · " + escapeHtml(ev.location) : "") + "]</span>" : "");
+        break;
+      case "dm_failed":
+        cls = "badge-danger"; body = '<span style="color:#f85149">DM failed</span> ' + escapeHtml(ev.text || ""); break;
+      case "peer": body = '<span class="text-muted">peer bot, ignored:</span> ' + escapeHtml(ev.text || ""); break;
+      case "advert": body = '<span class="text-muted">advert heard</span>'; break;
+      case "advert_out": body = '<span class="text-muted">our advert (flood)</span>'; break;
+      case "data_request": body = '<span class="text-muted">app data request</span> ' + escapeHtml(ev.text || ""); break;
+      case "admin": body = '<span class="text-muted">admin command:</span> ' + escapeHtml(ev.command || ""); break;
+      case "console": body = escapeHtml(ev.text || "") + ' <span class="text-muted">[' + escapeHtml(ev.command || "") + (ev.location ? " · " + escapeHtml(ev.location) : "") + " · " + (ev.chars || 0) + " ch]</span>"; break;
+      default: body = escapeHtml(ev.text || ev.reason || "");
+    }
+    return '<div class="console-line"><span class="text-muted">' + ts + "</span> " + arrow + " " +
+      '<span class="badge ' + cls + '" style="min-width:34px;text-align:center">' + (tr || ev.kind) + "</span> " +
+      (who ? "<b>" + who + "</b> " : "") + body + "</div>";
+  },
+  _append: function (ev) {
+    var el = document.getElementById("traffic-body");
+    var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    el.insertAdjacentHTML("beforeend", this._fmt(ev));
+    if (el.childElementCount > this._max) el.removeChild(el.firstChild);
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  },
+  render: function () {
+    var self = this, el = document.getElementById("traffic-body"), html = [];
+    this._events.forEach(function (ev) { if (self._show(ev)) html.push(self._fmt(ev)); });
+    el.innerHTML = html.join("") || '<div class="text-muted">nothing yet — a request on the channel or a DM will show up here</div>';
+    el.scrollTop = el.scrollHeight;
     this._status();
   },
 };

@@ -1,6 +1,8 @@
 """Admin API: the radio, the satellite receiver, the text bot console, logs,
-host status and .env settings. Everything here is operator-only; the portal
-sits behind HTTP Basic auth when MCW_ADMIN_KEY is set (see server.py)."""
+host status, .env settings, and the request/reply traffic feed. Everything
+here is operator-only except /public/bot, the read-only bundle the goestools
+dashboard proxies for the public page. The portal has no login: keep it on
+the LAN or gate it at the edge (see server.py)."""
 
 from __future__ import annotations
 
@@ -17,8 +19,10 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from meshcore_weather.activity import activity_log
 from meshcore_weather.config import settings
 from meshcore_weather.portal import logbuf
+from meshcore_weather.traffic import KINDS as TRAFFIC_KINDS, traffic_log
 
 router = APIRouter()
 
@@ -335,6 +339,8 @@ async def console(request: Request) -> JSONResponse:
     # per command, "more" continues the last long reply.
     sender_key = "console:" + (request.client.host if request.client else "local")
     chunk, has_more = bot.reply_chunk(command, location, sender_key)
+    traffic_log.record("console", sender=sender_key, text=text, command=command, location=location,
+                       chars=len(chunk or ""), transport="console")
     return JSONResponse({
         "text": text, "command": command, "location": location,
         "reply": chunk, "has_more": has_more, "chars": len(chunk or ""),
@@ -346,6 +352,124 @@ async def console(request: Request) -> JSONResponse:
 async def console_help(request: Request) -> JSONResponse:
     from meshcore_weather.main import HELP_TEXT
     return JSONResponse({"help": HELP_TEXT})
+
+
+# -- Request/reply traffic: what the bot sees on #meshwx and by DM ---------------------
+
+
+def _kinds_arg(kinds: str | None) -> tuple[str, ...] | None:
+    if not kinds:
+        return None
+    out = tuple(k for k in kinds.split(",") if k in TRAFFIC_KINDS)
+    return out or None
+
+
+@router.get("/traffic")
+async def traffic(n: int = Query(200, ge=1, le=1000), kinds: str | None = None,
+                  since_id: int = Query(0, ge=0)) -> JSONResponse:
+    """Recent conversation events (full detail: this is the admin side) and the counters."""
+    return JSONResponse({"events": traffic_log.recent(n, kinds=_kinds_arg(kinds), since_id=since_id),
+                         "stats": traffic_log.stats(), "kinds": list(TRAFFIC_KINDS)})
+
+
+@router.get("/traffic/stream")
+async def traffic_stream():
+    """SSE stream of new conversation events."""
+    import json
+    from starlette.responses import StreamingResponse
+
+    async def gen():
+        yield "data: " + json.dumps({"hello": True}) + "\n\n"
+        async for ev in traffic_log.subscribe():
+            yield "data: " + json.dumps(ev) + "\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+
+
+# What "help" says, spelled out for a web page.
+PUBLIC_COMMANDS = [
+    {"cmd": "wx <city ST>", "what": "current conditions, today's high/low and any active warnings for a place",
+     "example": "wx round rock tx"},
+    {"cmd": "forecast <city ST>", "what": "the next days, one line per day", "example": "forecast austin tx"},
+    {"cmd": "warn <city ST or ST>", "what": "active NWS watches, warnings and advisories", "example": "warn TX"},
+    {"cmd": "storm <ST>", "what": "storm reports from the last 6 hours (hail, wind, tornado, flooding)",
+     "example": "storm TX"},
+    {"cmd": "rain <ST>", "what": "rainfall totals reported by stations in the state", "example": "rain TX"},
+    {"cmd": "metar <ICAO>", "what": "the latest airport observation", "example": "metar KAUS"},
+    {"cmd": "space", "what": "space weather: Kp, geomagnetic storm and solar alerts", "example": "space"},
+    {"cmd": "more", "what": "the next page of the last long reply", "example": "more"},
+    {"cmd": "help", "what": "the command list", "example": "help"},
+]
+
+_PUBLIC_RADIO_CACHE: dict = {"t": 0.0, "info": None}
+
+
+async def _radio_info_cached(radio) -> dict | None:
+    """The public page is polled by anyone; ask the node at most every 30 s."""
+    now = time.time()
+    if now - _PUBLIC_RADIO_CACHE["t"] < 30:
+        return _PUBLIC_RADIO_CACHE["info"]
+    info = None
+    if radio.connected:
+        try:
+            info = await radio.info()
+        except Exception:
+            info = None
+    _PUBLIC_RADIO_CACHE.update(t=now, info=info)
+    return info
+
+
+def _preset_label(info: dict | None) -> str | None:
+    if not info:
+        return None
+    for p in RADIO_PRESETS.values():
+        if (abs((info.get("radio_freq") or 0) - p["freq_mhz"]) < 0.001 and abs((info.get("radio_bw") or 0) - p["bw_khz"]) < 0.1
+                and info.get("radio_sf") == p["sf"] and info.get("radio_cr") == p["cr"]):
+            return p["label"]
+    return None
+
+
+@router.get("/public/bot")
+async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSONResponse:
+    """Read-only bundle for the public dashboard: who the bot is, how to reach
+    it, what it answers, the request/reply counters and the recent traffic in
+    its redacted (public) form. No settings, no contacts, no keys of others."""
+    bot = _bot(request)
+    radio = bot.radio
+    info = await _radio_info_cached(radio)
+    started = getattr(bot, "_started_at", None)
+    from meshcore_weather.main import HELP_TEXT
+    peers = radio.peer_bots() if radio.connected and hasattr(radio, "peer_bots") else []
+    return JSONResponse({
+        "t": time.time(),
+        "bot": {
+            "name": (info or {}).get("name"),
+            "public_key": (info or {}).get("public_key"),
+            "lat": (info or {}).get("adv_lat"), "lon": (info or {}).get("adv_lon"),
+            "connected": radio.connected,
+            "tx_enabled": settings.tx_enabled,
+            "reply_mode": settings.reply_mode,
+            "uptime_s": int(time.time() - started) if started else None,
+            "products": len(bot.store._products),
+            "last_advert_at": getattr(radio, "last_advert_at", 0) or None,
+            "version": _git_rev(),
+        },
+        "radio": None if not info else {
+            "freq_mhz": info.get("radio_freq"), "bw_khz": info.get("radio_bw"),
+            "sf": info.get("radio_sf"), "cr": info.get("radio_cr"),
+            "tx_power_dbm": info.get("tx_power"), "preset": _preset_label(info),
+        },
+        "channels": {"text": settings.meshcore_channel, "data": settings.meshwx_channel},
+        "coverage": {"home": settings.home_cities, "radius_km": settings.home_radius_km,
+                     "states": settings.home_states, "timezone": settings.timezone},
+        "commands": PUBLIC_COMMANDS,
+        "help": HELP_TEXT,
+        "peers": [{"name": p["name"], "lat": p["lat"], "lon": p["lon"]} for p in peers],
+        "stats": traffic_log.stats(),
+        "broadcasts": {"24h": activity_log.stats(1440), "1h": activity_log.stats(60)},
+        "recent": traffic_log.recent(n, public=True),
+    })
 
 
 # -- Logs, host, settings -------------------------------------------------------------
