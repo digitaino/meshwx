@@ -181,6 +181,18 @@ class WeatherBot:
         products = await self.emwin.fetch_products()
         if products:
             self.store.ingest(products)
+            await self._warm_warnings()
+
+    async def _warm_warnings(self) -> None:
+        """Parse new warning products now, off the event loop, so the first
+        DM after a refresh does not wait on pyIEM (15-25 s on a Pi 4)."""
+        from functools import partial
+        from meshcore_weather.protocol.warnings import extract_active_warnings
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, partial(extract_active_warnings, self.store, coverage=None))
+        except Exception:
+            logger.debug("warning cache warm-up failed", exc_info=True)
 
     # -- Message handling --
 

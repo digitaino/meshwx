@@ -279,6 +279,10 @@ def _polygon_from_sbw(sbw) -> list[tuple[float, float]]:
 # -- pyIEM-backed extraction --------------------------------------------------
 
 
+_parsed_cache: dict[str, object] = {}
+_PARSE_FAILED = object()
+
+
 def _extract_warnings_pyiem(store: WeatherStore) -> list[dict]:
     """Parse each warning product via pyIEM and build canonical warning dicts.
 
@@ -292,13 +296,26 @@ def _extract_warnings_pyiem(store: WeatherStore) -> list[dict]:
     seen: dict[tuple, dict] = {}
     results: list[dict] = []
 
-    for prod in sorted(store._products.values(), key=lambda p: p.timestamp, reverse=True):
+    # Products never change once stored, so each one is parsed with pyIEM
+    # exactly once. Without this a Pi 4 spent ~15 s per "wx" reply re-parsing
+    # ~300 warning products. Expiry is applied per call, below.
+    products = list(store._products.values())      # snapshot: the warm-up runs off-loop
+    live = {p.filename for p in products if p.product_type in _WARNING_PRODUCT_TYPES}
+    for stale in [k for k in _parsed_cache if k not in live]:
+        del _parsed_cache[stale]
+
+    for prod in sorted(products, key=lambda p: p.timestamp, reverse=True):
         if prod.product_type not in _WARNING_PRODUCT_TYPES:
             continue
-        try:
-            parsed = pyiem_parser(prod.raw_text, ugc_provider=provider)
-        except Exception as exc:  # pyIEM can raise on malformed input
-            logger.debug("pyIEM parse failed for %s: %s", prod.filename, exc)
+        parsed = _parsed_cache.get(prod.filename)
+        if parsed is None:
+            try:
+                parsed = pyiem_parser(prod.raw_text, ugc_provider=provider)
+            except Exception as exc:  # pyIEM can raise on malformed input
+                logger.debug("pyIEM parse failed for %s: %s", prod.filename, exc)
+                parsed = _PARSE_FAILED
+            _parsed_cache[prod.filename] = parsed
+        if parsed is _PARSE_FAILED:
             continue
 
         for seg in parsed.segments:
