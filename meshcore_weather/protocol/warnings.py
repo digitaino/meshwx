@@ -327,9 +327,21 @@ def _extract_warnings_pyiem(store: WeatherStore) -> list[dict]:
                 entry = _segment_to_entry(seg, parsed, prod, now, vtec=vtec, vtec_index=idx)
                 if entry is None:
                     continue
-                if entry["_dedup_key"] in seen:
+                key = entry["_dedup_key"]
+                if key in seen:
+                    # Same event in another segment (or an older product):
+                    # one advisory often spans several UGC segments. Keep
+                    # the first (newest) entry but take the union of areas,
+                    # otherwise a city in the second segment gets "no
+                    # warnings" (HGX heat advisory: 3 of 25 zones kept,
+                    # found against api.weather.gov 2026-09-14).
+                    first = seen[key]
+                    for fld in ("ugcs", "zones"):
+                        if entry.get(fld):
+                            merged = list(dict.fromkeys(list(first.get(fld) or []) + list(entry[fld])))
+                            first[fld] = merged
                     continue
-                seen[entry["_dedup_key"]] = entry
+                seen[key] = entry
                 del entry["_dedup_key"]
                 results.append(entry)
 

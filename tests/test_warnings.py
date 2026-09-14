@@ -54,3 +54,27 @@ def test_segment_with_two_vtec_lines_yields_two_warnings():
     # Each event gets its own headline, in VTEC order.
     assert "MONDAY" in by_etn[11]["headline"].upper()
     assert "MONDAY" not in by_etn[10]["headline"].upper()
+
+
+def test_segments_of_one_event_are_merged():
+    """One heat advisory, two UGC segments in the same product: the event
+    must cover the zones of both segments."""
+    from datetime import datetime, timezone
+    from meshcore_weather.parser.weather import WeatherStore
+    from meshcore_weather.protocol.warnings import extract_active_warnings
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    exp = (now.replace(hour=23, minute=0) if now.hour < 23 else now).strftime("%y%m%dT%H%MZ")
+    day = now.strftime("%d%H%M")
+    text = (
+        f"WWUS74 KHGX {day}\r\r\nNPWHGX\r\r\n\r\r\nURGENT - WEATHER MESSAGE\r\r\nNational Weather Service Houston/Galveston TX\r\r\n"
+        f"{now.strftime('%I%M %p').lstrip('0')} CDT {now.strftime('%a %b %d %Y')}\r\r\n\r\r\n"
+        f"TXZ213-214-215-{now.strftime('%d%H%M')}-\r\r\n/O.CON.KHGX.HT.Y.0011.000000T0000Z-{exp}/\r\r\n"
+        "Austin-Waller-Montgomery-\r\r\n...HEAT ADVISORY REMAINS IN EFFECT UNTIL 7 PM CDT THIS EVENING...\r\r\n\r\r\n$$\r\r\n\r\r\n"
+        f"TXZ226-227-228-229-{now.strftime('%d%H%M')}-\r\r\n/O.CON.KHGX.HT.Y.0011.000000T0000Z-{exp}/\r\r\n"
+        "Harris-Chambers-Galveston-Brazoria-\r\r\n...HEAT ADVISORY REMAINS IN EFFECT UNTIL 7 PM CDT THIS EVENING...\r\r\n\r\r\n$$\r\r\n"
+    )
+    store = WeatherStore()
+    store.ingest([{"filename": f"A_WWUS74KHGX{day}_C_KWIN_{now:%Y%m%d%H%M%S}_000001-1-NPWHGXTX.TXT", "raw_text": text}])
+    ws = [w for w in extract_active_warnings(store, coverage=None) if w.get("vtec_etn") == 11]
+    assert len(ws) == 1
+    assert set(ws[0].get("ugcs") or ws[0].get("zones")) >= {"TXZ213", "TXZ214", "TXZ215", "TXZ226", "TXZ227", "TXZ228", "TXZ229"}
