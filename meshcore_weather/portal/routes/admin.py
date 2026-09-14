@@ -217,9 +217,18 @@ async def radio_tx(request: Request) -> JSONResponse:
     """Flip transmit on or off. Applies immediately and persists to .env."""
     body = await _body(request)
     enabled = bool(body.get("enabled"))
+    was = settings.tx_enabled
     settings.tx_enabled = enabled
     _write_env({"MCW_TX_ENABLED": "true" if enabled else "false"})
-    return JSONResponse({"ok": True, "tx_enabled": enabled})
+    adverted = False
+    if enabled and not was and _radio(request).connected:
+        # First thing on air: tell the mesh we exist so phones can DM us.
+        try:
+            adverted = await _radio(request).advert_now(flood=True)
+        except Exception:
+            adverted = False
+    return JSONResponse({"ok": True, "tx_enabled": enabled, "adverted": adverted,
+                         "note": "Transmit on; advert sent" if adverted else None})
 
 
 @router.get("/radio/contacts")
@@ -340,8 +349,24 @@ async def console_help(request: Request) -> JSONResponse:
 
 
 @router.get("/logs")
-async def logs(n: int = Query(200, ge=1, le=600), level: str | None = None) -> JSONResponse:
-    return JSONResponse({"lines": logbuf.tail(n, level)})
+async def logs(n: int = Query(300, ge=1, le=2000), level: str | None = None,
+               cat: str | None = None, q: str | None = None) -> JSONResponse:
+    return JSONResponse({"lines": logbuf.tail(n, level, cat, q), "counts": logbuf.counts()})
+
+
+@router.get("/logs/stream")
+async def logs_stream():
+    """SSE stream of every new log line, tagged with its category."""
+    import json
+    from starlette.responses import StreamingResponse
+
+    async def gen():
+        yield "data: " + json.dumps({"hello": True}) + "\n\n"
+        async for line in logbuf.subscribe():
+            yield "data: " + json.dumps(line) + "\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
 
 
 def _git_rev() -> str | None:

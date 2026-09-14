@@ -6,6 +6,7 @@ Listens for incoming channel messages and DMs, sends responses.
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -17,7 +18,6 @@ from meshcore_weather.mqtt import MqttPublisher
 logger = logging.getLogger(__name__)
 
 # How often to re-advertise and refresh contacts (seconds)
-ADVERT_INTERVAL = 86400  # 24 hours
 CONTACTS_REFRESH = 120  # 2 minutes
 
 
@@ -65,6 +65,7 @@ class MeshcoreRadio:
         self._advert_task: asyncio.Task | None = None
         self._contacts_task: asyncio.Task | None = None
         self._mqtt: MqttPublisher | None = None
+        self.last_advert_at: float = 0.0
         # Shared send lock — prevents the scheduler and on-demand
         # request handler from interleaving messages on the data channel.
         # Without this, a client DM triggering respond_to_data_request
@@ -304,7 +305,7 @@ class MeshcoreRadio:
             return
         try:
             await self._mc.commands.send_chan_msg(channel, text)
-            logger.debug("Sent to ch %d: %s", channel, text[:60])
+            logger.info("Sent on ch %d (flood): %s", channel, text[:80])
         except Exception:
             logger.exception("Failed to send channel message")
 
@@ -383,7 +384,7 @@ class MeshcoreRadio:
             if result.type == EventType.ERROR:
                 logger.warning("DM to %s failed: %s", pubkey_prefix[:8], result.payload)
                 return False
-            logger.debug("DM sent to %s: %s", pubkey_prefix[:8], text[:60])
+            logger.info("DM sent to %s: %s", pubkey_prefix[:8], text[:80])
             return True
         except Exception:
             logger.exception("Failed to send DM to %s", pubkey_prefix[:8])
@@ -501,13 +502,22 @@ class MeshcoreRadio:
             return
         try:
             await self._mc.commands.send_advert(flood=True)
+            self.last_advert_at = time.time()
             logger.info("Sent advertisement (flood)")
         except Exception:
             logger.exception("Failed to send advert")
 
+    async def advert_if_stale(self, max_age_s: int = 3600) -> bool:
+        """Advert now unless one went out recently. Used when a stranger
+        talks to us on the channel and we have no DM path back."""
+        if time.time() - self.last_advert_at < max_age_s or not settings.tx_enabled or not self._mc:
+            return False
+        await self._send_advert()
+        return True
+
     async def _advert_loop(self) -> None:
         while self._running:
-            await asyncio.sleep(ADVERT_INTERVAL)
+            await asyncio.sleep(max(1, settings.advert_interval_hours) * 3600)
             await self._send_advert()
             # Refresh contacts right after advert to pick up new peers
             try:
@@ -719,7 +729,12 @@ class MeshcoreRadio:
             return False
         mc = self._require()
         res = await mc.commands.send_advert(flood=flood)
-        return res.type == EventType.OK
+        ok = res.type == EventType.OK
+        if ok:
+            self.last_advert_at = time.time()
+        logger.info("Sent advertisement (%s, requested from the portal)" if ok else "Advert refused by node: %s",
+                    "flood" if flood else "direct" if ok else res.payload)
+        return ok
 
     async def reboot(self) -> None:
         mc = self._require()

@@ -68,6 +68,9 @@ class WeatherBot:
         self._portal = None  # PortalServer, created if portal enabled
         self._paging: dict[str, dict] = {}  # sender_key -> {full, offset, ts}
         self._rate_limit: dict[str, float] = {}
+        self._channel_reply_by_sender: dict[str, float] = {}
+        self._channel_replies: list[float] = []
+        self._sdr_monitor = None
         # Map sender names to pubkey prefixes — persisted to disk
         self._known_contacts: dict[str, str] = {}  # name -> pubkey_prefix
         # Names where DM has failed — don't try again until they re-advert
@@ -82,7 +85,13 @@ class WeatherBot:
         logger.info("  EMWIN source: %s", settings.emwin_source)
         logger.info("  Channel: %s", settings.meshcore_channel)
 
+        from meshcore_weather.portal import logbuf
+        logbuf.install(asyncio.get_running_loop())   # console buffer catches everything from here on
         resolver.load()   # also sets the resolver home from MCW_HOME_CITIES
+        if settings.emwin_source == "sdr":
+            from meshcore_weather.sdr_monitor import SdrMonitor
+            self._sdr_monitor = SdrMonitor()
+            self._sdr_monitor.start()
         self.radio.on_channel_message(self._handle_channel_message)
         self.radio.on_dm(self._handle_dm)
         self.radio.on_advert(self._handle_advert)
@@ -205,6 +214,8 @@ class WeatherBot:
                 pass
         if self._portal:
             await self._portal.stop()
+        if self._sdr_monitor:
+            await self._sdr_monitor.stop()
         if self._broadcaster:
             await self._broadcaster.stop()
         if self._refresh_task:
@@ -272,15 +283,45 @@ class WeatherBot:
 
         command, location = await self._parse(text)
 
-        # Replies go by DM only. A channel reply is a flood through every
-        # repeater; a DM with a known path costs only the repeaters on it.
-        # If we cannot DM this sender we stay silent — no channel reply, no
-        # nudge, no reactive advert (an advert is itself a flood).
+        # Replies go by DM when we can: a DM with a known path costs only
+        # the repeaters on it, a channel reply floods every repeater. For a
+        # sender we cannot DM (their phone has never heard our advert, or
+        # ours has never heard theirs) we answer once on OUR channel, never
+        # on the public one, rate-limited, and advert so the next exchange
+        # can be a DM.
         pubkey = self._resolve_sender_key(sender)
         if not pubkey:
-            logger.info("Channel command from %s but no DM path known — ignoring", sender)
+            await self._respond_channel(sender, command, location)
             return
         await self._respond_dm(pubkey, sender, command, location)
+
+    # Channel-reply budget for senders we cannot DM: per sender and overall.
+    CHANNEL_REPLY_PER_SENDER_S = 600
+    CHANNEL_REPLY_PER_HOUR = 12
+
+    async def _respond_channel(self, sender: str, command: str, location: str) -> None:
+        now = time.time()
+        self._channel_replies = [ts for ts in getattr(self, "_channel_replies", []) if now - ts < 3600]
+        last = self._channel_reply_by_sender.get(sender, 0.0)
+        if now - last < self.CHANNEL_REPLY_PER_SENDER_S:
+            logger.info("Channel command from %s: no DM path, channel reply already sent %ds ago — ignoring",
+                        sender, int(now - last))
+            return
+        if len(self._channel_replies) >= self.CHANNEL_REPLY_PER_HOUR:
+            logger.warning("Channel command from %s: no DM path and the hourly channel-reply budget is spent — ignoring", sender)
+            return
+        response, _, _ = self._get_response(command, location, f"ch:{sender}")
+        if not response:
+            return
+        chunk, _, has_more = paginate(response, 0)
+        if has_more:
+            chunk = chunk.rstrip() + " (DM me for the rest)"
+        self._channel_reply_by_sender[sender] = now
+        self._channel_replies.append(now)
+        logger.info("Channel command from %s: no DM path, replying on our channel (flood)", sender)
+        await self.radio.send_channel_message(self.radio.channel_idx, chunk[:160])
+        if await self.radio.advert_if_stale():
+            logger.info("Adverted so %s can DM us next time", sender)
 
     async def _handle_dm(self, pubkey_prefix: str, sender_name: str, text: str) -> None:
         """Handle a direct message."""
@@ -557,7 +598,7 @@ class WeatherBot:
         else:
             # DM failed: drop it. The user will retry; no channel fallback,
             # no advert. Forget the stale mapping so a fresh advert re-learns it.
-            logger.info("DM to %s failed — dropping reply (no channel fallback)", sender_name)
+            logger.info("DM to %s failed — forgetting the path; the next channel command gets a channel reply", sender_name)
             self._dm_blocked.add(sender_name)
             self._known_contacts.pop(sender_name, None)
 
@@ -762,6 +803,9 @@ def main():
         level=getattr(logging, settings.log_level.upper()),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    # Library chatter that would drown the console: one HTTP line per poll.
+    for noisy in ("httpx", "httpcore", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     bot = WeatherBot()
     loop = asyncio.new_event_loop()

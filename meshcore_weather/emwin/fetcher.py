@@ -247,6 +247,11 @@ class InternetSource(EMWINSource):
         return list(self._products.values())
 
 
+# Product types worth a console line when they arrive from the dish.
+_NOTABLE = {"TOR", "SVR", "SVS", "FFW", "FFS", "FLW", "FLS", "NPW", "WSW", "MWW", "SMW",
+            "SPS", "CFW", "RFW", "EWW", "HLS", "TCV", "WOU", "WCN", "SEL", "ALT", "WAR", "WAT"}
+
+
 class SDRSource(EMWINSource):
     """EMWIN products from the goestools output directory on disk.
 
@@ -267,6 +272,7 @@ class SDRSource(EMWINSource):
         self._seen: set[str] = set()
         self._poll_task: asyncio.Task | None = None
         self._running = False
+        self._seen_initial = False
 
     async def start(self) -> None:
         if not self.root.is_dir():
@@ -318,6 +324,7 @@ class SDRSource(EMWINSource):
         cutoff = now - timedelta(hours=settings.emwin_max_age_hours)
         settle = now.timestamp() - 2          # skip files goesproc may still be writing
         added = 0
+        notable: list[str] = []
         for d in self._candidate_dirs(now):
             with os.scandir(d) as it:
                 for entry in it:
@@ -350,6 +357,11 @@ class SDRSource(EMWINSource):
                     if prod:
                         self._products[name] = prod
                         added += 1
+                        if (prod.get("awips_id") or "")[:3] in _NOTABLE:
+                            notable.append(prod["awips_id"])
+        if notable and self._seen_initial:
+            logger.info("EMWIN: %s%s", " ".join(notable[:10]), f" +{len(notable) - 10} more" if len(notable) > 10 else "")
+        self._seen_initial = True      # the first scan is the backlog, not news
         # Expire
         before = len(self._products)
         self._products = {k: v for k, v in self._products.items() if v["timestamp"] > cutoff}

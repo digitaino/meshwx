@@ -137,10 +137,11 @@ def test_radio_state_and_edits(client):
 def test_tx_switch_persists_and_gates_adverts(client, tmp_path):
     c, bot = client
     assert c.post("/api/radio/advert", json={}).json()["sent"] is False     # TX off
-    assert c.post("/api/radio/tx", json={"enabled": True}).json()["tx_enabled"] is True
+    r = c.post("/api/radio/tx", json={"enabled": True}).json()
+    assert r["tx_enabled"] is True and r["adverted"] is True and bot.radio.adverts == 1   # first thing on air
     assert settings.tx_enabled is True
     assert "MCW_TX_ENABLED=true" in (tmp_path / ".env").read_text()
-    assert c.post("/api/radio/advert", json={}).json()["sent"] is True and bot.radio.adverts == 1
+    assert c.post("/api/radio/advert", json={}).json()["sent"] is True and bot.radio.adverts == 2
     c.post("/api/radio/tx", json={"enabled": False})
     assert "MCW_TX_ENABLED=false" in (tmp_path / ".env").read_text()
 

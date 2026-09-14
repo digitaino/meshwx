@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     sdr_poll_interval: int = 30     # seconds between directory scans
     # goestools dashboard (signal stats, pointing mode) proxied into the admin portal
     sdr_dashboard_url: str = "http://127.0.0.1:8080"
+    # How often the bot floods an advert so phones can DM it (hours)
+    advert_interval_hours: int = 6
     # Initial load uses 1-hour bundle for coverage, then polls 2-minute bundle
     emwin_base_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip"
     emwin_poll_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txtmin02.zip"

@@ -16,6 +16,7 @@
       </a>
       <nav class="nav" id="main-nav">
         <a href="#overview" data-section="overview" class="active">Overview</a>
+        <a href="#console" data-section="console">Console</a>
         <a href="#radio" data-section="radio">Radio</a>
         <a href="#textbot" data-section="textbot">Text Bot</a>
         <a href="#broadcast" data-section="broadcast">Broadcast</a>
@@ -100,6 +101,31 @@
       </div>
     </section>
 
+
+
+    <!-- ============ SECTION: CONSOLE ============ -->
+    <section id="section-console" class="section">
+      <h1 class="page-title">Console</h1>
+      <p class="page-subtitle">Everything happening on the satellite side, the radio side and the bot, live. Filter by source, level or text.</p>
+
+      <div class="card">
+        <div class="flex gap-2 mb-4" style="flex-wrap:wrap;align-items:center">
+          <div class="sub-tabs" id="console-cats" style="margin:0">
+            <button class="sub-tab active" data-cat="all" onclick="Portal.console.setCat('all')">All</button>
+            <button class="sub-tab" data-cat="satellite" onclick="Portal.console.setCat('satellite')">Satellite <span class="badge badge-muted" id="console-n-satellite"></span></button>
+            <button class="sub-tab" data-cat="radio" onclick="Portal.console.setCat('radio')">Radio <span class="badge badge-muted" id="console-n-radio"></span></button>
+            <button class="sub-tab" data-cat="bot" onclick="Portal.console.setCat('bot')">Bot <span class="badge badge-muted" id="console-n-bot"></span></button>
+          </div>
+          <select class="input" id="console-level" style="max-width:150px" onchange="Portal.console.render()">
+            <option value="">All levels</option><option value="INFO">Info+</option><option value="WARNING">Warnings+</option><option value="ERROR">Errors</option></select>
+          <input class="input" id="console-q" placeholder="filter text…" style="max-width:260px" oninput="Portal.console.render()">
+          <button class="btn" id="console-pause" onclick="Portal.console.togglePause()">Pause</button>
+          <button class="btn" onclick="Portal.console.clear()">Clear</button>
+          <span class="text-small text-muted" id="console-status"></span>
+        </div>
+        <div id="console-body" class="text-mono text-small" style="height:calc(100vh - 300px);min-height:360px;overflow:auto;white-space:pre-wrap;background:rgba(0,0,0,.25);padding:8px;border-radius:6px"></div>
+      </div>
+    </section>
 
     <!-- ============ SECTION: RADIO ============ -->
     <section id="section-radio" class="section">
@@ -405,16 +431,6 @@
           <button class="btn btn-primary" onclick="Portal.sysinfo.saveEnv()">Save settings</button>
           <button class="btn btn-danger" onclick="Portal.sysinfo.restartBot()">Restart bot</button>
           <span id="env-status" class="text-small text-muted"></span></div>
-      </div>
-
-      <div class="card">
-        <div class="card-header"><div><div class="card-title">Logs</div>
-          <div class="card-subtitle">Last lines from the bot process</div></div>
-          <div class="flex gap-2">
-            <select class="input" id="logs-level" onchange="Portal.sysinfo.loadLogs()" style="max-width:140px">
-              <option value="">All</option><option value="INFO">Info+</option><option value="WARNING">Warnings+</option><option value="ERROR">Errors</option></select>
-            <button class="btn" onclick="Portal.sysinfo.loadLogs()">Refresh</button></div></div>
-        <div id="logs-body" class="text-mono text-small" style="max-height:420px;overflow:auto;white-space:pre-wrap"></div>
       </div>
 
       <div class="card">

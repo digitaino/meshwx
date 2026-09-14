@@ -166,7 +166,7 @@ var Portal = {
 
   router: {
     currentSection: null,
-    _sections: ["overview", "radio", "textbot", "broadcast", "sdr", "map", "system"],
+    _sections: ["overview", "console", "radio", "textbot", "broadcast", "sdr", "map", "system"],
 
     init: function () {
       var self = this;
@@ -219,6 +219,8 @@ var Portal = {
       // Section lifecycle hooks
       if (prev === "map") Portal.weatherMap.onLeave();
       if (prev === "sdr") Portal.sdr.onLeave();
+      if (prev === "console") Portal.console.onLeave();
+      if (hash === "console") Portal.console.onEnter();
       if (hash === "map") Portal.weatherMap.onEnter();
       if (hash === "overview") Portal.overview.refresh();
       if (hash === "radio") Portal.radio.onEnter();
@@ -1419,7 +1421,7 @@ Portal.sdr = {
 };
 
 Portal.sysinfo = {
-  onEnter: function () { this.load(); this.loadLogs(); },
+  onEnter: function () { this.load(); },
   load: function () {
     apiJson("/api/system").then(function (d) {
       var b = d.bot || {}, h = d.host || {}, s = d.settings || {};
@@ -1447,16 +1449,101 @@ Portal.sysinfo = {
     apiJson("/api/system/restart", { method: "POST" }).then(function (d) { Portal.ui.showToast(d.note, true); })
       .catch(function (e) { Portal.ui.showToast(e.message, false); });
   },
-  loadLogs: function () {
-    var level = document.getElementById("logs-level").value;
-    apiJson("/api/logs?n=300" + (level ? "&level=" + level : "")).then(function (d) {
-      var el = document.getElementById("logs-body");
-      el.innerHTML = d.lines.map(function (l) {
-        var t = new Date(l.t * 1000).toTimeString().slice(0, 8);
-        var cls = l.level === "ERROR" || l.level === "CRITICAL" ? "badge-danger" : l.level === "WARNING" ? "badge-warning" : "badge-muted";
-        return '<div><span class="text-muted">' + t + '</span> <span class="badge ' + cls + '">' + l.level.slice(0, 4) + '</span> ' + escapeHtml(l.msg) + '</div>';
-      }).join("") || '<div class="text-muted">no log lines yet</div>';
-      el.scrollTop = el.scrollHeight;
-    }).catch(function (e) { Portal.ui.showToast(e.message, false); });
+};
+
+// ---------------------------------------------------------------------------
+// Console: one live stream for satellite / radio / bot, filterable
+// ---------------------------------------------------------------------------
+
+Portal.console = {
+  _lines: [], _max: 3000, _cat: "all", _paused: false, _sse: null, _pending: 0, _lastId: 0,
+
+  onEnter: function () {
+    var self = this;
+    apiJson("/api/logs?n=800").then(function (d) {
+      self._lines = d.lines || [];
+      self._lastId = self._lines.length ? self._lines[self._lines.length - 1].id : 0;
+      self._counts(d.counts);
+      self.render(true);
+      self._connect();
+    }).catch(function (e) { Portal.ui.showToast("Console: " + e.message, false); });
+  },
+  onLeave: function () { if (this._sse) { this._sse.close(); this._sse = null; } },
+
+  _connect: function () {
+    var self = this;
+    if (this._sse) this._sse.close();
+    var es = new EventSource("/api/logs/stream");
+    this._sse = es;
+    es.onmessage = function (m) {
+      var l; try { l = JSON.parse(m.data); } catch (e) { return; }
+      if (!l || l.hello) return;
+      if (l.id && l.id <= self._lastId) return;
+      self._lastId = l.id || self._lastId;
+      self._lines.push(l);
+      if (self._lines.length > self._max) self._lines.splice(0, self._lines.length - self._max);
+      if (self._paused) { self._pending++; self._status(); return; }
+      if (self._show(l)) self._append(l, true);
+    };
+    es.onerror = function () { self._status("reconnecting…"); };
+    es.onopen = function () { self._status(); };
+  },
+
+  _counts: function (c) {
+    if (!c) return;
+    ["satellite", "radio", "bot"].forEach(function (k) {
+      var el = document.getElementById("console-n-" + k); if (el) el.textContent = c[k] || 0;
+    });
+  },
+  _status: function (extra) {
+    var el = document.getElementById("console-status");
+    el.textContent = (this._paused ? "paused" + (this._pending ? " · " + this._pending + " new" : "") : "live") + (extra ? " · " + extra : "");
+  },
+  setCat: function (cat) {
+    this._cat = cat;
+    document.querySelectorAll("#console-cats .sub-tab").forEach(function (b) { b.classList.toggle("active", b.dataset.cat === cat); });
+    this.render(true);
+  },
+  togglePause: function () {
+    this._paused = !this._paused;
+    document.getElementById("console-pause").textContent = this._paused ? "Resume" : "Pause";
+    if (!this._paused) { this._pending = 0; this.render(true); }
+    this._status();
+  },
+  clear: function () { this._lines = []; this.render(true); },
+
+  _show: function (l) {
+    if (this._cat !== "all" && l.cat !== this._cat) return false;
+    var lv = document.getElementById("console-level").value;
+    var order = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+    if (lv && order.indexOf(l.level) < order.indexOf(lv)) return false;
+    var q = document.getElementById("console-q").value.trim().toLowerCase();
+    if (q && l.msg.toLowerCase().indexOf(q) === -1) return false;
+    return true;
+  },
+  _fmt: function (l) {
+    var d = new Date(l.t * 1000);
+    var ts = d.toTimeString().slice(0, 8);
+    var lc = l.level === "ERROR" || l.level === "CRITICAL" ? "badge-danger" : l.level === "WARNING" ? "badge-warning" : "badge-muted";
+    var cc = { satellite: "#06b6d4", radio: "#a855f7", bot: "#9ca3af" }[l.cat] || "#9ca3af";
+    return '<div class="console-line"><span class="text-muted">' + ts + '</span> ' +
+      '<span style="color:' + cc + ';display:inline-block;min-width:64px">' + l.cat + '</span>' +
+      '<span class="badge ' + lc + '">' + l.level.slice(0, 4) + '</span> ' + escapeHtml(l.msg) + '</div>';
+  },
+  _append: function (l, scroll) {
+    var el = document.getElementById("console-body");
+    var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    el.insertAdjacentHTML("beforeend", this._fmt(l));
+    if (el.childElementCount > this._max) el.removeChild(el.firstChild);
+    if (scroll && atBottom) el.scrollTop = el.scrollHeight;
+  },
+  render: function (scroll) {
+    var self = this;
+    var el = document.getElementById("console-body");
+    var html = [];
+    this._lines.forEach(function (l) { if (self._show(l)) html.push(self._fmt(l)); });
+    el.innerHTML = html.join("") || '<div class="text-muted">nothing matches</div>';
+    if (scroll !== false) el.scrollTop = el.scrollHeight;
+    this._status();
   },
 };

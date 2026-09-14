@@ -1,0 +1,114 @@
+"""Console buffer categories and the channel-reply fallback for strangers."""
+
+import asyncio
+import logging
+import time
+
+import pytest
+
+from meshcore_weather.config import settings
+from meshcore_weather.main import WeatherBot
+from meshcore_weather.parser.weather import WeatherStore
+from meshcore_weather.portal import logbuf
+from meshcore_weather.sdr_monitor import SdrMonitor
+
+
+def test_categories_and_tail():
+    logbuf.install()
+    for name in ("meshcore_weather.meshcore.radio", "meshcore_weather.emwin.fetcher"):
+        logging.getLogger(name).setLevel(logging.INFO)
+    assert logbuf.category_for("meshcore_weather.meshcore.radio") == "radio"
+    assert logbuf.category_for("meshcore") == "radio"
+    assert logbuf.category_for("meshcore_weather.emwin.fetcher") == "satellite"
+    assert logbuf.category_for("meshcore_weather.sdr") == "satellite"
+    assert logbuf.category_for("meshcore_weather.parser.pfm") == "satellite"
+    assert logbuf.category_for("meshcore_weather.main") == "bot"
+    logging.getLogger("meshcore_weather.meshcore.radio").warning("console-test radio line")
+    logging.getLogger("meshcore_weather.emwin.fetcher").info("console-test satellite line")
+    assert [l["cat"] for l in logbuf.tail(10, q="console-test")] == ["radio", "satellite"]
+    assert [l["cat"] for l in logbuf.tail(10, cat="radio", q="console-test")] == ["radio"]
+    assert [l["level"] for l in logbuf.tail(10, level="WARNING", q="console-test")] == ["WARNING"]
+    assert logbuf.counts()["radio"] >= 1
+
+
+def test_sdr_monitor_logs_only_changes(caplog):
+    caplog.set_level(logging.INFO, logger="meshcore_weather.sdr")
+    m = SdrMonitor("http://127.0.0.1:1")
+    base = 1_000_000.0
+    st = {"stats": {"locked": True, "vit_avg": 120, "drops": 0, "gain": 10.0}, "mode": "receive",
+          "status": {"services": {"goesrecv": "active", "goesproc": "active"}}}
+    m.observe(st, now=base)
+    m.observe(st, now=base + 10)
+    assert len([r for r in caplog.records]) == 1 and "locked" in caplog.records[0].message
+    st2 = {**st, "stats": {**st["stats"], "locked": False, "drops": 7}}
+    m.observe(st2, now=base + 20)
+    st3 = {**st2, "status": {"services": {"goesrecv": "failed", "goesproc": "active"}}}
+    m.observe(st3, now=base + 70)
+    msgs = [r.message for r in caplog.records]
+    assert any("LOST LOCK" in x for x in msgs)
+    assert any("goesrecv is failed" in x for x in msgs)
+    assert any("dropped 14 packets" in x for x in msgs)   # 7 at +20 s, 7 more at +70 s, summarised once
+
+
+class ChannelFakeRadio:
+    def __init__(self):
+        self.connected = True
+        self.channel_idx, self.data_channel_idx, self.discover_channel_idx = 1, 2, 3
+        self.channel_sent: list[tuple[int, str]] = []
+        self.dms: list[tuple[str, str]] = []
+        self.adverts = 0
+        self.contacts = {}
+
+    def find_contact_by_name(self, name):
+        return self.contacts.get(name)
+
+    def find_contact_by_key(self, prefix):
+        return None
+
+    async def send_channel_message(self, ch, text):
+        self.channel_sent.append((ch, text))
+
+    async def send_dm(self, prefix, text):
+        self.dms.append((prefix, text))
+        return True
+
+    async def advert_if_stale(self, max_age_s=3600):
+        self.adverts += 1
+        return True
+
+
+@pytest.fixture
+def bot(monkeypatch):
+    monkeypatch.setattr(settings, "tx_enabled", True)
+    b = WeatherBot()
+    b.store = WeatherStore()
+    b.radio = ChannelFakeRadio()
+    return b
+
+
+def test_stranger_gets_one_channel_reply_and_an_advert(bot):
+    asyncio.run(bot._handle_channel_message("1", "Stranger", "help"))
+    assert len(bot.radio.channel_sent) == 1
+    ch, text = bot.radio.channel_sent[0]
+    assert ch == 1 and "wx" in text and len(text) <= 160
+    assert bot.radio.adverts == 1 and bot.radio.dms == []
+    # Same sender again inside the window: silent (rate limit resets the 5 s check)
+    bot._rate_limit.clear()
+    asyncio.run(bot._handle_channel_message("1", "Stranger", "help"))
+    assert len(bot.radio.channel_sent) == 1
+    # Never on the public channel, never on the data channel
+    asyncio.run(bot._handle_channel_message("0", "Other", "help"))
+    asyncio.run(bot._handle_channel_message("2", "Other", "help"))
+    assert len(bot.radio.channel_sent) == 1
+
+
+def test_known_sender_gets_a_dm(bot):
+    bot.radio.contacts["Tommy"] = {"public_key": "ab" * 32, "adv_name": "Tommy"}
+    asyncio.run(bot._handle_channel_message("1", "Tommy", "help"))
+    assert bot.radio.channel_sent == [] and len(bot.radio.dms) == 1
+
+
+def test_hourly_channel_budget(bot):
+    bot._channel_replies = [time.time()] * WeatherBot.CHANNEL_REPLY_PER_HOUR
+    asyncio.run(bot._handle_channel_message("1", "Someone", "help"))
+    assert bot.radio.channel_sent == []
