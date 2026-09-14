@@ -48,6 +48,7 @@ from meshcore_weather.protocol.meshwx import (
     DATA_STORM_REPORTS,
     DATA_TAF,
     DATA_WARNING_DETAIL,
+    DATA_SPACE_WEATHER,
     DATA_WARNINGS_NEAR,
     DATA_WX,
     LOC_LATLON,
@@ -279,6 +280,10 @@ class MeshWXBroadcaster:
                 msg = self._build_taf(loc, location_name)
             elif data_type == DATA_WARNINGS_NEAR:
                 msg = self._build_warnings_near(loc, location_name)
+            elif data_type == DATA_SPACE_WEATHER:
+                from meshcore_weather.core import space_weather
+                sw = space_weather.space_weather_for(self.store)
+                msg = sw.to_bytes() if sw else None
             elif data_type == DATA_WARNING_DETAIL:
                 msgs = self._build_warning_detail(loc, location_name)
                 if msgs:

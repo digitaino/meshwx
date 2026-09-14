@@ -513,25 +513,10 @@ def _build_afd(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
 
 
 def _build_space_weather(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    """Space weather products (0x40 text chunks).
-
-    Scans the store for DAY (daily indices), UVI (UV index), and other
-    SWPC products. Packs the most recent one as text chunks.
-    """
-    from meshcore_weather.protocol.encoders import encode_space_weather
-
-    # Space weather products have specific type codes
-    swpc_types = {"DAY", "UVI"}
-    best = None
-    for prod in ctx.store._products.values():
-        if prod.product_type in swpc_types:
-            if best is None or prod.timestamp > best.timestamp:
-                best = prod
-    if best is None:
-        return []
-
-    msgs = encode_space_weather(best.raw_text)
-    return msgs or []
+    """SWPC 3-day Kp forecast + solar indices (0x3E) via core.space_weather."""
+    from meshcore_weather.core import space_weather
+    sw = space_weather.space_weather_for(ctx.store)
+    return [sw.to_bytes()] if sw else []
 
 
 def _build_fire_weather(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:

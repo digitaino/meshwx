@@ -16,7 +16,8 @@
     "metar": 53,
     "taf": 54,
     "warnings_near": 55,
-    "text_chunk": 64
+    "text_chunk": 64,
+    "space_weather": 62
   },
   "location_types": {
     "zone": 1,
@@ -509,5 +510,21 @@
     "Y": "advisory",
     "S": "statement"
   },
-  "notes": " Warning messages (0x20, 0x21, 0x37) carry a 1-byte VTEC event code at byte 1 (see 'events'); severity is implied by the significance letter. 0 = unknown event."
+  "notes": " Warning messages (0x20, 0x21, 0x37) carry a 1-byte VTEC event code at byte 1 (see 'events'); severity is implied by the significance letter. 0 = unknown event.",
+  "data_types": {
+    "wx": 0,
+    "forecast": 1,
+    "outlook": 2,
+    "storm_reports": 3,
+    "rain_obs": 4,
+    "metar": 5,
+    "taf": 6,
+    "warnings_near": 7,
+    "warning_detail": 8,
+    "space_weather": 9
+  },
+  "space_weather": {
+    "layout": "0:type 1-4:issued_unix_min u32 5:kp24h*3 6-8:kp_day1..3*3 9:G1<<4|G2 10:G3<<4 11-13:S1+% 14-16:R1-R2% 17-19:R3+% 20-21:sfi u16 22-23:ssn u16(0xFFFF=unknown) 24:xray class*10+mag(255=unknown)",
+    "size": 25
+  }
 }

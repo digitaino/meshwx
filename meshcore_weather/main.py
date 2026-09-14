@@ -22,7 +22,7 @@ HELP_TEXT = (
     "GOES-E EMWIN off-grid weather\n"
     "wx = overview | wx <ST> = state\n"
     "wx/forecast/warn <city ST>\n"
-    "outlook/rain/storm\n"
+    "outlook/rain/storm | space\n"
     "metar/taf <ICAO> | more\n"
     "DM me for private replies"
 )
@@ -664,6 +664,10 @@ class WeatherBot:
             if not location:
                 return "Usage: taf <ICAO or city ST>"
             return self._place_reply("taf", location)
+
+        if command == "space":
+            from meshcore_weather.core import space_weather
+            return space_weather.render(space_weather.space_weather_for(self.store))
 
         return None
 

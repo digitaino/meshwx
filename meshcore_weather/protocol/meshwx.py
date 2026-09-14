@@ -82,6 +82,7 @@ MSG_WARNINGS_NEAR = 0x37 # v2: warnings near location summary
 MSG_FIRE_WEATHER = 0x38  # v4: fire weather forecast (FWF)
 MSG_DAILY_CLIMATE = 0x3A # v4: daily climate summary (RTP)
 MSG_NOWCAST = 0x3C       # v4: short-term forecast (NOW)
+MSG_SPACE_WEATHER = 0x3E # SWPC 3-day Kp/scales + solar indices (core.space_weather)
 MSG_QPF_GRID = 0x12      # v4: QPF precipitation grid (same encoding as 0x11)
 MSG_TEXT_CHUNK = 0x40    # v2: compressed text fallback
 MSG_BEACON = 0xF0        # v4: discovery beacon (bot → client response)
@@ -692,6 +693,7 @@ DATA_METAR = 0x5
 DATA_TAF = 0x6
 DATA_WARNINGS_NEAR = 0x7
 DATA_WARNING_DETAIL = 0x8  # client requests full description for a warning
+DATA_SPACE_WEATHER = 0x9   # SWPC Kp forecast + solar indices (no location needed)
 
 # Sky condition codes (low nibble in observation messages)
 SKY_CLEAR = 0x0

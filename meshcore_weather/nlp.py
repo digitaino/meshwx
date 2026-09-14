@@ -15,12 +15,12 @@ import re
 
 # Command must be first word, followed by location
 COMMAND_RE = re.compile(
-    r"^(wx|warn|warnings?|wanr|forecast|metar|taf|help|more|outlook|rain|storm|storms)\b\s*(.*)",
+    r"^(wx|warn|warnings?|wanr|forecast|metar|taf|help|more|outlook|rain|storm|storms|space|swx|solar)\b\s*(.*)",
     re.IGNORECASE,
 )
 
 # Normalize typos/aliases to canonical command names
-_CMD_ALIASES = {"warnings": "warn", "warning": "warn", "wanr": "warn", "storms": "storm"}
+_CMD_ALIASES = {"warnings": "warn", "warning": "warn", "wanr": "warn", "storms": "storm", "swx": "space", "solar": "space"}
 
 
 async def parse_intent(text: str) -> dict:
