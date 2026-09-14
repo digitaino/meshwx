@@ -183,8 +183,14 @@ async def radio_set_channel(request: Request) -> JSONResponse:
     if not name:
         raise HTTPException(400, "name required (use DELETE to clear a slot)")
     secret = body.get("secret") or None
-    await _run(_radio_call(request).set_channel_name(idx, name, secret))
-    return JSONResponse({"ok": True, "channels": await _radio_call(request).list_channels()})
+    role = await _run(_radio_call(request).set_channel_name(idx, name, secret))
+    note = None
+    if role:
+        key = {"text": "MCW_MESHCORE_CHANNEL", "data": "MCW_MESHWX_CHANNEL", "discover": "MCW_MESHWX_DISCOVER_CHANNEL"}[role]
+        _write_env({key: name})
+        note = f"slot {idx} is the bot's {role} channel; the bot now uses {name}"
+    return JSONResponse({"ok": True, "role": role, "note": note,
+                         "channels": await _radio_call(request).list_channels()})
 
 
 @router.delete("/radio/channel/{idx}")
@@ -396,9 +402,69 @@ async def system(request: Request) -> JSONResponse:
     })
 
 
+# Keys the running bot can take on board without a restart.
+_LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM",
+              "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_TX_ENABLED"}
+
+
+async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
+    """Apply what can be applied now; return the keys that were."""
+    import logging
+    from meshcore_weather.geodata import resolver
+    applied: list[str] = []
+    coverage_changed = False
+    for key, val in updates.items():
+        if key not in _LIVE_KEYS:
+            continue
+        if key == "MCW_TIMEZONE":
+            settings.timezone = val
+        elif key == "MCW_LOG_LEVEL":
+            logging.getLogger().setLevel(getattr(logging, val.upper(), logging.INFO))
+            settings.log_level = val
+        elif key == "MCW_TX_ENABLED":
+            settings.tx_enabled = val.strip().lower() in ("1", "true", "yes", "on")
+        elif key in ("MCW_HOME_CITIES", "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_HOME_RADIUS_KM"):
+            attr = key[4:].lower()
+            setattr(settings, attr, int(val) if key.endswith("_KM") and val.isdigit() else val)
+            coverage_changed = True
+        elif key in ("MCW_SERIAL_PORT", "MCW_SERIAL_BAUD"):
+            setattr(settings, key[4:].lower(), int(val) if key.endswith("BAUD") and val.isdigit() else val)
+        applied.append(key)
+    if coverage_changed:
+        try:
+            resolver._set_home_from_settings()
+        except Exception:
+            pass
+        if bot._broadcaster is not None:
+            try:
+                bot._broadcaster.scheduler.reload_coverage()
+            except Exception:
+                pass
+    if "MCW_SERIAL_PORT" in applied or "MCW_SERIAL_BAUD" in applied:
+        await bot.reconnect_radio()
+    return applied
+
+
 @router.post("/settings/env")
 async def settings_env(request: Request) -> JSONResponse:
     body = await _body(request)
     updates = {str(k): str(v) for k, v in body.items()}
     _write_env(updates)
-    return JSONResponse({"ok": True, "updated": sorted(updates), "note": "Restart the bot to apply"})
+    applied = await _apply_live(_bot(request), updates)
+    pending = sorted(set(updates) - set(applied))
+    note = "Applied now" if not pending else "Applied now: " + ", ".join(applied) + ". Needs a restart: " + ", ".join(pending) if applied else "Needs a restart: " + ", ".join(pending)
+    return JSONResponse({"ok": True, "applied": sorted(applied), "restart_needed": pending, "note": note})
+
+
+@router.post("/system/restart")
+async def system_restart(request: Request) -> JSONResponse:
+    """Clean exit; systemd restarts the bot with the current .env."""
+    _bot(request).request_restart()
+    return JSONResponse({"ok": True, "note": "Restarting; back in about 40 seconds"})
+
+
+@router.post("/radio/reconnect")
+async def radio_reconnect(request: Request) -> JSONResponse:
+    await _bot(request).reconnect_radio()
+    bot = _bot(request)
+    return JSONResponse({"ok": True, "connected": bot.radio.connected, "error": bot._radio_last_error})

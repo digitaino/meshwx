@@ -332,52 +332,61 @@ async def get_stats(
 
 @router.post("/settings/channels")
 async def set_channels(request: Request) -> JSONResponse:
-    """Save channel configuration to the .env file.
+    """Change the bot's text / data / discovery channel names.
 
-    Channel changes require a bot restart to take effect since the radio
-    resolves channels at startup. We persist to .env so the next startup
-    picks up the new values.
+    Applied live when the radio is up (the slot is renamed in place, or an
+    existing slot with that name is reused, or a free slot is created),
+    kept in memory otherwise so the next radio connect uses them, and
+    persisted to .env either way.
     """
+    from meshcore_weather.config import settings
+    from meshcore_weather.portal.routes.admin import _write_env
+
     body = await request.json()
-    text_ch = body.get("text_channel", "").strip()
-    data_ch = body.get("data_channel", "").strip()
-    discover_ch = body.get("discover_channel", "").strip()
-
-    # Validate: channel names should start with # or be a numeric index
-    for name, val in [("text_channel", text_ch), ("data_channel", data_ch), ("discover_channel", discover_ch)]:
-        if val and not val.startswith("#") and not val.isdigit():
-            raise HTTPException(400, f"{name} must start with '#' or be a numeric index")
-
-    # Persist to .env file
-    from pathlib import Path
-    env_path = Path(".env")
-    env_lines: list[str] = []
-    if env_path.exists():
-        env_lines = env_path.read_text().splitlines()
-
-    env_map = {
-        "MCW_MESHCORE_CHANNEL": text_ch,
-        "MCW_MESHWX_CHANNEL": data_ch,
-        "MCW_MESHWX_DISCOVER_CHANNEL": discover_ch,
+    wanted = {
+        "text": body.get("text_channel", "").strip(),
+        "data": body.get("data_channel", "").strip(),
+        "discover": body.get("discover_channel", "").strip(),
     }
-    for key, val in env_map.items():
-        found = False
-        for i, line in enumerate(env_lines):
-            if line.startswith(f"{key}=") or line.startswith(f"# {key}="):
-                env_lines[i] = f"{key}={val}" if val else f"# {key}="
-                found = True
-                break
-        if not found and val:
-            env_lines.append(f"{key}={val}")
+    if not wanted["text"]:
+        raise HTTPException(400, "text_channel is required")
+    for role, val in wanted.items():
+        if val and not val.startswith("#") and not val.isdigit():
+            raise HTTPException(400, f"{role} channel must start with '#' or be a numeric index")
+    if len({v for v in wanted.values() if v}) != len([v for v in wanted.values() if v]):
+        raise HTTPException(400, "each role needs a different channel")
 
-    env_path.write_text("\n".join(env_lines) + "\n")
+    bot = request.app.state.bot
+    radio = bot.radio
+    applied: dict[str, int | None] = {}
+    if radio.connected:
+        for role in ("text", "data", "discover"):
+            try:
+                applied[role] = await radio.assign_role(role, wanted[role])
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            except Exception as e:
+                raise HTTPException(500, f"radio error on {role} channel: {e}")
+        # Discovery pings are only wired when a broadcaster exists; a data
+        # channel that appeared just now needs the broadcaster started.
+        if applied.get("data") is not None and bot._broadcaster is None:
+            await bot._after_radio_connected()
+    else:
+        settings.meshcore_channel = wanted["text"]
+        settings.meshwx_channel = wanted["data"]
+        settings.meshwx_discover_channel = wanted["discover"]
 
+    _write_env({
+        "MCW_MESHCORE_CHANNEL": wanted["text"],
+        "MCW_MESHWX_CHANNEL": wanted["data"],
+        "MCW_MESHWX_DISCOVER_CHANNEL": wanted["discover"],
+    })
     return JSONResponse({
         "ok": True,
-        "text_channel": text_ch,
-        "data_channel": data_ch,
-        "discover_channel": discover_ch,
-        "note": "Restart required for changes to take effect",
+        "applied": radio.connected,
+        "slots": applied if radio.connected else None,
+        "text_channel": wanted["text"], "data_channel": wanted["data"], "discover_channel": wanted["discover"],
+        "note": "Applied on the node now" if radio.connected else "Saved; applied when the radio connects",
     })
 
 

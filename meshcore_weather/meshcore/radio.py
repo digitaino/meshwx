@@ -590,28 +590,88 @@ class MeshcoreRadio:
             return "discover"
         return None
 
-    async def set_channel_name(self, idx: int, name: str, secret_hex: str | None = None) -> None:
+    # Role -> (index attribute, settings attribute). The bot listens/sends on
+    # these; the names in settings are what the operator configured.
+    _ROLES = {
+        "text": ("_channel_idx", "meshcore_channel"),
+        "data": ("_data_channel_idx", "meshwx_channel"),
+        "discover": ("_discover_channel_idx", "meshwx_discover_channel"),
+    }
+
+    async def _slots(self) -> dict[int, str]:
+        mc = self._require()
+        out: dict[int, str] = {}
+        for i in range(8):
+            try:
+                ch = await mc.commands.get_channel(i)
+            except Exception:
+                break
+            if ch.type != EventType.CHANNEL_INFO:
+                break
+            out[i] = ch.payload.get("channel_name", "") or ""
+        return out
+
+    async def set_channel_name(self, idx: int, name: str, secret_hex: str | None = None) -> str | None:
+        """Rename slot `idx` on the node. If the slot carries one of the bot's
+        roles, the role follows the new name (settings updated in memory;
+        the caller persists .env). Returns the role, or None."""
         mc = self._require()
         if not 0 <= idx <= 7:
             raise ValueError("channel index must be 0-7")
+        if idx == 0:
+            raise ValueError("slot 0 is the public channel and is left alone")
         secret = bytes.fromhex(secret_hex) if secret_hex else None
         res = await mc.commands.set_channel(idx, name, secret)
         if res.type != EventType.OK:
             raise RuntimeError(f"radio refused set_channel: {res.payload}")
-        # Re-resolve the bot's channels: the operator may have renamed one of ours.
-        for attr, ref in (("_channel_idx", settings.meshcore_channel),
-                          ("_data_channel_idx", settings.meshwx_channel),
-                          ("_discover_channel_idx", settings.meshwx_discover_channel)):
-            if ref:
-                try:
-                    setattr(self, attr, await self._resolve_channel(ref))
-                except ValueError:
-                    setattr(self, attr, None)
+        role = self._role_for(idx)
+        if role and name:
+            setattr(settings, self._ROLES[role][1], name)
+        return role
 
     async def clear_channel(self, idx: int) -> None:
         if idx == 0:
             raise ValueError("channel 0 (public) cannot be cleared")
+        role = self._role_for(idx)
+        if role:
+            raise ValueError(f"slot {idx} is the bot's {role} channel; change it under Text Bot instead of clearing it")
         await self.set_channel_name(idx, "", "00" * 16)
+
+    async def assign_role(self, role: str, name: str) -> int | None:
+        """Point a bot role at a channel name, live: reuse a slot that already
+        has that name, else rename the role's current slot in place, else
+        create it on a free slot. Empty name detaches the role (data/discover
+        only). Returns the slot index."""
+        if role not in self._ROLES:
+            raise ValueError(f"unknown role {role!r}")
+        idx_attr, set_attr = self._ROLES[role]
+        name = name.strip()
+        if not name:
+            if role == "text":
+                raise ValueError("the text channel is required")
+            setattr(self, idx_attr, None)
+            setattr(settings, set_attr, "")
+            return None
+        if not name.startswith("#") and not name.isdigit():
+            raise ValueError("channel names start with '#'")
+        slots = await self._slots()
+        current = getattr(self, idx_attr)
+        target = next((i for i, n in slots.items() if n == name and i != 0), None)
+        if target is None:
+            other_roles = {getattr(self, a) for r, (a, _) in self._ROLES.items() if r != role}
+            if current is not None and current not in other_roles and current != 0:
+                target = current                      # rename in place, keep the slot
+            else:
+                target = next((i for i in range(1, 8) if not slots.get(i)), None)
+                if target is None:
+                    raise RuntimeError("no free channel slot on the node")
+            res = await self._require().commands.set_channel(target, name)
+            if res.type != EventType.OK:
+                raise RuntimeError(f"radio refused set_channel: {res.payload}")
+        setattr(self, idx_attr, target)
+        setattr(settings, set_attr, name)
+        logger.info("Channel role %s -> slot %d (%s)", role, target, name)
+        return target
 
     async def set_name(self, name: str) -> None:
         mc = self._require()

@@ -134,6 +134,51 @@ class WeatherBot:
             if self.radio.discover_channel_idx is not None:
                 self.radio.on_discover_ping(self._broadcaster.scheduler.respond_to_discovery_ping)
 
+    async def reconnect_radio(self) -> None:
+        """Drop the radio link and connect again (serial port changed, node
+        rebooted). Falls back to the retry loop if it does not come up."""
+        if self._radio_task:
+            self._radio_task.cancel()
+            self._radio_task = None
+        try:
+            await self.radio.stop()
+        except Exception:
+            pass
+        if self._broadcaster:
+            try:
+                await self._broadcaster.stop()
+            except Exception:
+                pass
+            self._broadcaster = None
+        self.radio = MeshcoreRadio()
+        self.radio.on_channel_message(self._handle_channel_message)
+        self.radio.on_dm(self._handle_dm)
+        self.radio.on_advert(self._handle_advert)
+        try:
+            await self.radio.start()
+        except Exception as e:
+            self._radio_last_error = str(e)
+            logger.warning("Radio not available after reconnect (%s); retrying every %ds", e, RADIO_RETRY_SECONDS)
+            self._radio_task = asyncio.create_task(self._radio_retry_loop())
+            return
+        self._radio_last_error = None
+        await self._after_radio_connected()
+
+    def request_restart(self, delay: float = 0.5) -> None:
+        """Exit cleanly a moment from now; systemd (Restart=always) brings the
+        bot back with the current .env."""
+        loop = asyncio.get_running_loop()
+
+        async def _go():
+            await asyncio.sleep(delay)
+            logger.info("Restart requested from the portal; exiting")
+            try:
+                await self.stop()
+            finally:
+                loop.stop()
+
+        loop.create_task(_go())
+
     async def _radio_retry_loop(self) -> None:
         while self._running:
             await asyncio.sleep(RADIO_RETRY_SECONDS)

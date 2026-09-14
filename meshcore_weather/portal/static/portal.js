@@ -943,18 +943,17 @@ var Portal = {
     },
 
     loadChannels: function () {
-      var boot = window.__BOOT__;
-      var cfg = boot.channel_config || {};
-      document.getElementById("sys-ch-text").value = cfg.text_channel || "";
-      document.getElementById("sys-ch-data").value = cfg.data_channel || "";
-      document.getElementById("sys-ch-discover").value = cfg.discover_channel || "";
-      var parts = [];
-      if (boot.channel_idx != null) parts.push("text: ch" + boot.channel_idx);
-      if (boot.data_channel != null) parts.push("data: ch" + boot.data_channel);
-      if (boot.discover_channel != null) parts.push("discover: ch" + boot.discover_channel);
-      document.getElementById("sys-ch-status").textContent = parts.length
-        ? "Active: " + parts.join(", ")
-        : "No channels active";
+      // Live truth from the radio API: configured names + the slot each role sits on.
+      apiJson("/api/radio").then(function (d) {
+        var cfg = d.configured_channels || {};
+        var set = function (id, v) { var el = document.getElementById(id); if (document.activeElement !== el) el.value = v || ""; };
+        set("sys-ch-text", cfg.text); set("sys-ch-data", cfg.data); set("sys-ch-discover", cfg.discover);
+        var slots = (d.info && d.info.channels) || {};
+        var parts = ["text", "data", "discover"].map(function (r) {
+          return r + ": " + (slots[r] != null ? "slot " + slots[r] : (cfg[r] ? "not on node" : "off"));
+        });
+        document.getElementById("sys-ch-status").textContent = d.connected ? "On the node — " + parts.join(", ") : "Radio not connected; names apply when it connects";
+      }).catch(function () {});
     },
 
     saveChannels: function (btn) {
@@ -973,9 +972,10 @@ var Portal = {
       }).then(function (r) {
         if (!r.ok) return r.json().then(function (d) { throw new Error(d.detail || r.status); });
         return r.json();
-      }).then(function () {
-        statusEl.innerHTML = '<span style="color:var(--color-success);">Saved. Restart bot to apply.</span>';
-        Portal.ui.showToast("Channel config saved. Restart the bot to apply changes.");
+      }).then(function (d) {
+        statusEl.innerHTML = '<span style="color:var(--color-success);">' + escapeHtml(d.note || "Saved") + '</span>';
+        Portal.ui.showToast(d.note || "Saved", true);
+        Portal.system.loadChannels();
       }).catch(function (e) {
         statusEl.innerHTML = '<span style="color:var(--color-danger);">' + escapeHtml(e.message) + '</span>';
       }).finally(function () { btn.disabled = false; });
@@ -1261,7 +1261,7 @@ Portal.radio = {
         '<td class="text-mono text-small text-muted">' + (ch.secret ? ch.secret.slice(0, 8) + "…" : "") + '</td>' +
         '<td>' + (i === 0 ? "" :
           '<button class="btn btn-mini" onclick="Portal.radio.saveChannel(' + i + ')">Save</button> ' +
-          (ch.name ? '<button class="btn btn-mini btn-danger" onclick="Portal.radio.clearChannel(' + i + ')">Clear</button>' : "")) + '</td></tr>');
+          (ch.name && !ch.role ? '<button class="btn btn-mini btn-danger" onclick="Portal.radio.clearChannel(' + i + ')">Clear</button>' : "")) + '</td></tr>');
     }
     tb.innerHTML = rows.join("");
   },
@@ -1439,8 +1439,13 @@ Portal.sysinfo = {
     var keys = ["MCW_SERIAL_PORT", "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_TIMEZONE", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR", "MCW_LOG_LEVEL"];
     var body = {}; keys.forEach(function (k) { body[k] = document.getElementById("env-" + k).value; });
     var st = document.getElementById("env-status"); st.textContent = "Saving…";
-    apiJson("/api/settings/env", { method: "POST", body: body }).then(function (d) { st.textContent = d.note; Portal.ui.showToast("Settings saved (restart to apply)", true); })
+    apiJson("/api/settings/env", { method: "POST", body: body }).then(function (d) { st.textContent = d.note; Portal.ui.showToast(d.restart_needed && d.restart_needed.length ? "Saved; some settings need a restart" : "Settings applied", true); })
       .catch(function (e) { st.textContent = e.message; });
+  },
+  restartBot: function () {
+    if (!confirm("Restart the bot now? It is back in about 40 seconds; the radio link drops briefly.")) return;
+    apiJson("/api/system/restart", { method: "POST" }).then(function (d) { Portal.ui.showToast(d.note, true); })
+      .catch(function (e) { Portal.ui.showToast(e.message, false); });
   },
   loadLogs: function () {
     var level = document.getElementById("logs-level").value;

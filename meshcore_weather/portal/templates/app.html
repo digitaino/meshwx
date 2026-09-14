@@ -213,7 +213,7 @@
             <div class="flex gap-2 mb-4" style="align-items:center">
               <button class="btn btn-primary" onclick="Portal.system.saveChannels(this)">Save</button>
               <span id="sys-ch-status" class="text-small text-muted"></span></div>
-            <div class="text-small text-muted">Takes effect at the next restart. Never uses channel 0.</div>
+            <div class="text-small text-muted">Applied on the node immediately: the role's slot is renamed in place, or a slot that already has the name is reused. Never uses slot 0. Renaming a tagged slot on the Radio page moves the role with it.</div>
           </div>
           <div class="card">
             <div class="card-header"><div><div class="card-title">Commands</div>
@@ -348,7 +348,7 @@
         <div class="card-header">
           <div>
             <div class="card-title">Coverage Configuration</div>
-            <div class="card-subtitle">Loaded from environment variables at startup (read-only)</div>
+            <div class="card-subtitle">Home city and radius are edited in Settings below</div>
           </div>
         </div>
         <div class="grid grid-3 mb-4">
@@ -389,7 +389,7 @@
 
       <div class="card">
         <div class="card-header"><div><div class="card-title">Settings (.env)</div>
-          <div class="card-subtitle">Saved to the env file; the bot picks them up at the next restart</div></div></div>
+          <div class="card-subtitle">Saved to the env file. Home city, radius, timezone, log level and serial port apply immediately; the EMWIN source and directory need a restart.</div></div></div>
         <div class="grid grid-3 mb-4">
           <div><label class="form-label">Serial port</label><input class="input" id="env-MCW_SERIAL_PORT"></div>
           <div><label class="form-label">Home city</label><input class="input" id="env-MCW_HOME_CITIES"></div>
@@ -403,6 +403,7 @@
         </div>
         <div class="flex gap-2" style="align-items:center">
           <button class="btn btn-primary" onclick="Portal.sysinfo.saveEnv()">Save settings</button>
+          <button class="btn btn-danger" onclick="Portal.sysinfo.restartBot()">Restart bot</button>
           <span id="env-status" class="text-small text-muted"></span></div>
       </div>
 

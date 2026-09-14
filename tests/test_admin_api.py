@@ -30,15 +30,47 @@ class FakeRadio:
     async def list_channels(self):
         return [{"idx": i, "name": self.channels.get(i, ""), "secret": "", "role": {1: "text", 2: "data", 3: "discover"}.get(i)} for i in range(8)]
 
+    _ROLES = {"text": "channel_idx", "data": "data_channel_idx", "discover": "discover_channel_idx"}
+
+    def _role_for(self, idx):
+        for r, a in self._ROLES.items():
+            if getattr(self, a) == idx:
+                return r
+        return None
+
     async def set_channel_name(self, idx, name, secret=None):
         if not 0 <= idx <= 7:
             raise ValueError("channel index must be 0-7")
+        if idx == 0:
+            raise ValueError("slot 0 is the public channel and is left alone")
         self.channels[idx] = name
+        role = self._role_for(idx)
+        if role and name:
+            setattr(settings, {"text": "meshcore_channel", "data": "meshwx_channel", "discover": "meshwx_discover_channel"}[role], name)
+        return role
 
     async def clear_channel(self, idx):
         if idx == 0:
             raise ValueError("channel 0 (public) cannot be cleared")
+        if self._role_for(idx):
+            raise ValueError("role slot")
         self.channels.pop(idx, None)
+
+    async def assign_role(self, role, name):
+        attr = self._ROLES[role]
+        if not name:
+            if role == "text":
+                raise ValueError("the text channel is required")
+            setattr(self, attr, None)
+            return None
+        target = next((i for i, n in self.channels.items() if n == name and i != 0), None)
+        if target is None:
+            cur = getattr(self, attr)
+            target = cur if cur is not None else next(i for i in range(1, 8) if i not in self.channels)
+            self.channels[target] = name
+        setattr(self, attr, target)
+        setattr(settings, {"text": "meshcore_channel", "data": "meshwx_channel", "discover": "meshwx_discover_channel"}[role], name)
+        return target
 
     async def set_name(self, name):
         if not name.strip():
@@ -98,6 +130,7 @@ def test_radio_state_and_edits(client):
     assert bot.radio.channels[4] == "#test"
     assert c.delete("/api/radio/channel/4").json()["ok"] and 4 not in bot.radio.channels
     assert c.delete("/api/radio/channel/0").status_code == 400
+    assert c.delete("/api/radio/channel/1").status_code == 400            # role slot: refuse
     assert c.get("/api/radio/contacts").json()["contacts"][0]["name"] == "Tommy"
 
 
@@ -149,3 +182,40 @@ def test_portal_has_no_login(tmp_path, monkeypatch):
     bot = WeatherBot()
     bot.radio = FakeRadio()
     assert TestClient(create_app(bot)).get("/api/system").status_code == 200
+
+
+def test_channel_roles_follow_edits_from_either_page(client, tmp_path, monkeypatch):
+    c, bot = client
+    monkeypatch.setattr(settings, "meshcore_channel", "#digitaino-wx-bot")
+    monkeypatch.setattr(settings, "meshwx_channel", "#aus-meshwx-v4")
+    monkeypatch.setattr(settings, "meshwx_discover_channel", "#meshwx-discover")
+
+    async def _no_broadcaster():          # the real one needs a real radio
+        pass
+    monkeypatch.setattr(bot, "_after_radio_connected", _no_broadcaster)
+    # Text Bot page: rename data + discover -> applied on the node, same slots, env persisted
+    r = c.post("/api/settings/channels", json={"text_channel": "#digitaino-wx-bot", "data_channel": "#mesh-wx-aus",
+                                               "discover_channel": "#mesh-wx-discover"}).json()
+    assert r["applied"] and r["slots"] == {"text": 1, "data": 2, "discover": 3}
+    assert bot.radio.channels[2] == "#mesh-wx-aus" and settings.meshwx_channel == "#mesh-wx-aus"
+    env = (tmp_path / ".env").read_text()
+    assert "MCW_MESHWX_CHANNEL=#mesh-wx-aus" in env and "MCW_MESHWX_DISCOVER_CHANNEL=#mesh-wx-discover" in env
+    d = c.get("/api/radio").json()
+    assert d["configured_channels"]["data"] == "#mesh-wx-aus"
+    assert [ch["role"] for ch in d["channels"][:4]] == [None, "text", "data", "discover"]
+    # Radio page: renaming the tagged text slot moves the role with it
+    r = c.post("/api/radio/channel", json={"idx": 1, "name": "#wx-bot"}).json()
+    assert r["role"] == "text" and settings.meshcore_channel == "#wx-bot"
+    assert "MCW_MESHCORE_CHANNEL=#wx-bot" in (tmp_path / ".env").read_text()
+    # Validation
+    assert c.post("/api/settings/channels", json={"text_channel": "", "data_channel": "#x", "discover_channel": ""}).status_code == 400
+    assert c.post("/api/settings/channels", json={"text_channel": "#a", "data_channel": "#a", "discover_channel": ""}).status_code == 400
+
+
+def test_env_settings_apply_live_where_possible(client, tmp_path, monkeypatch):
+    c, bot = client
+    monkeypatch.setattr(settings, "timezone", "America/Chicago")
+    r = c.post("/api/settings/env", json={"MCW_TIMEZONE": "America/New_York", "MCW_EMWIN_SOURCE": "sdr"}).json()
+    assert r["applied"] == ["MCW_TIMEZONE"] and r["restart_needed"] == ["MCW_EMWIN_SOURCE"]
+    assert settings.timezone == "America/New_York"
+    assert "MCW_TIMEZONE=America/New_York" in (tmp_path / ".env").read_text()

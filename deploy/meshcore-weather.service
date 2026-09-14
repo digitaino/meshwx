@@ -13,8 +13,8 @@ Group=dialout
 WorkingDirectory=/home/digitaino/meshcore-weather
 EnvironmentFile=/home/digitaino/meshcore-weather/.env
 ExecStart=/home/digitaino/meshcore-weather/.venv/bin/meshcore-weather
-Restart=on-failure
-RestartSec=15
+Restart=always
+RestartSec=5
 # Keep the bot from starving goesrecv (the receiver must never drop packets)
 Nice=5
 MemoryMax=700M
