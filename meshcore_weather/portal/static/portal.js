@@ -1349,7 +1349,7 @@ Portal.radio = {
       var now = Date.now() / 1000;
       tb.innerHTML = d.contacts.map(function (c) {
         return '<tr><td>' + escapeHtml(c.name || "?") + '</td><td>' + ({ 1: "client", 2: "repeater", 3: "room" }[c.type] || c.type || "") + '</td>' +
-          '<td>' + (c.last_advert ? fmtAgeS(Math.round(now - c.last_advert)) + " ago" : "–") + '</td>' +
+          '<td>' + (c.heard ? fmtAgeS(Math.max(0, Math.round(now - c.heard))) + " ago" : "–") + '</td>' +
           '<td>' + (c.out_path_len != null && c.out_path_len >= 0 ? c.out_path_len + " hops" : "flood") + '</td>' +
           '<td class="text-mono text-small text-muted">' + (c.public_key || "").slice(0, 12) + '</td></tr>';
       }).join("");

@@ -799,11 +799,15 @@ class MeshcoreRadio:
                 "public_key": key if isinstance(key, str) else str(key),
                 "name": c.get("adv_name"),
                 "type": c.get("type"),
+                # last_advert is the timestamp the peer wrote into its advert
+                # (its own clock, often wrong); lastmod is when our node
+                # stored it (our clock, set by the bot). Show the latter.
+                "heard": c.get("lastmod"),
                 "last_advert": c.get("last_advert"),
                 "lat": c.get("adv_lat"), "lon": c.get("adv_lon"),
                 "out_path_len": c.get("out_path_len"),
             })
-        out.sort(key=lambda c: c.get("last_advert") or 0, reverse=True)
+        out.sort(key=lambda c: c.get("heard") or 0, reverse=True)
         return out
 
     async def stats(self) -> dict:
