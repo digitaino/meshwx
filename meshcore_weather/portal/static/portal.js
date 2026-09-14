@@ -309,7 +309,7 @@ var Portal = {
           statCard("Satellite", st.locked ? "locked" : (sdr.receiver && !sdr.receiver._error ? "no lock" : "?"), st.vit_avg != null ? "vit " + st.vit_avg + " · drops " + st.drops : "dashboard unreachable", st.locked ? "" : "text-muted") +
           statCard("EMWIN feed", fmtAgeS(feed.newest_age_s), (feed.products_last_hour || 0) + " products/h") +
           statCard("Radio", radio.connected ? "up" : "down", radio.connected ? (info.name || "") + " · " + info.radio_freq + " MHz" : (radio.serial_port || ""), radio.connected ? "" : "text-muted") +
-          statCard("Transmit", radio.tx_enabled ? "ON" : "OFF", radio.tx_enabled ? "on air" : "receive-only") +
+          statCard("Transmit", radio.tx_enabled ? "ON" : "OFF", radio.reply_mode === "channel" ? "reply mode CHANNEL: every reply floods" : (radio.tx_enabled ? "on air · replies by DM" : "receive-only"), radio.reply_mode === "channel" ? "badge-danger" : "") +
           statCard("Warnings", feed.warnings_last_hour != null ? feed.warnings_last_hour : "–", "warning-class products, last hour");
       });
     },
@@ -1332,8 +1332,26 @@ Portal.textbot = {
         return '<button class="btn btn-mini" onclick="Portal.textbot.send(' + JSON.stringify(t).replace(/"/g, "&quot;") + ')">' + escapeHtml(t) + '</button>';
       }).join("");
       apiJson("/api/console/help").then(function (d) { document.getElementById("console-help").textContent = d.help; });
-      Portal.system.loadChannels();
     }
+    Portal.system.loadChannels();
+    this.loadReplyMode();
+  },
+  loadReplyMode: function () {
+    apiJson("/api/radio").then(function (d) {
+      var set = function (id, v) { var el = document.getElementById(id); if (document.activeElement !== el && v != null) el.value = v; };
+      set("reply-mode", d.reply_mode); set("reply-max-hops", d.channel_reply_max_hops);
+      apiJson("/api/system").then(function (sy) { set("advert-hours", (sy.settings || {}).advert_interval_hours); });
+      var peers = d.peer_bots || [];
+      document.getElementById("peer-bots").textContent = peers.length ? peers.map(function (p) { return p.name + " (" + p.lat.toFixed(2) + "," + p.lon.toFixed(2) + ")"; }).join(", ") : "none";
+    }).catch(function () {});
+  },
+  saveReplyMode: function () {
+    var body = { MCW_REPLY_MODE: document.getElementById("reply-mode").value,
+      MCW_CHANNEL_REPLY_MAX_HOPS: document.getElementById("reply-max-hops").value,
+      MCW_ADVERT_INTERVAL_HOURS: document.getElementById("advert-hours").value };
+    var st = document.getElementById("reply-mode-status");
+    apiJson("/api/settings/env", { method: "POST", body: body }).then(function (d) { st.textContent = d.note; Portal.ui.showToast("Reply mode applied", true); })
+      .catch(function (e) { st.textContent = e.message; Portal.ui.showToast(e.message, false); });
   },
   send: function (preset) {
     var input = document.getElementById("console-input");

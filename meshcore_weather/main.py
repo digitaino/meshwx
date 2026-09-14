@@ -252,10 +252,15 @@ class WeatherBot:
 
     # -- Message handling --
 
-    async def _handle_channel_message(self, channel: str, sender: str, text: str) -> None:
-        """Handle a message received on a channel."""
+    async def _handle_channel_message(self, channel: str, sender: str, text: str,
+                                      hops: int | None = None) -> None:
+        """Handle a message received on a channel. `hops` is how many
+        repeaters the packet crossed (None when the frame did not say)."""
         ch = int(channel)
         if ch == 0:
+            return
+        # Bots ignore bots: another WX-* node's channel reply is not a request.
+        if sender.upper().startswith(settings.peer_bot_prefix.upper()):
             return
 
         text = text.strip()
@@ -289,38 +294,88 @@ class WeatherBot:
         # ours has never heard theirs) we answer once on OUR channel, never
         # on the public one, rate-limited, and advert so the next exchange
         # can be a DM.
+        if not self._we_answer(command, location):
+            return
+        mode = settings.reply_mode
+        if mode == "channel":
+            await self._respond_channel(sender, command, location, hops, forced=True)
+            return
         pubkey = self._resolve_sender_key(sender)
         if not pubkey:
-            await self._respond_channel(sender, command, location)
+            if mode == "dm_only":
+                logger.info("Channel command from %s: no DM path and reply_mode=dm_only — ignoring", sender)
+                return
+            await self._respond_channel(sender, command, location, hops)
             return
         await self._respond_dm(pubkey, sender, command, location)
+
+    # Commands that name a place are answered by the nearest bot only.
+    _PLACE_COMMANDS = {"wx", "forecast", "warn", "outlook", "metar", "taf", "nowcast"}
+
+    def _we_answer(self, command: str, location: str) -> bool:
+        """Overlap rule: for a request that names a place, answer only if we
+        are the nearest weather bot to that place among the bots we have
+        heard adverts from (ties: lower public key). Requests without a
+        place are answered by every bot that hears them (by DM, cheap)."""
+        if command not in self._PLACE_COMMANDS or not location:
+            return True
+        peers = self.radio.peer_bots() if hasattr(self.radio, "peer_bots") else []
+        if not peers:
+            return True
+        home = resolver.home()
+        if home is None:
+            return True
+        loc = resolver.resolve(location)
+        if not loc or loc.get("lat") is None:
+            return True                      # unresolvable: let the reply say so
+        from meshcore_weather.geodata import _haversine
+        mine = _haversine(home[0], home[1], loc["lat"], loc["lon"])
+        my_key = (getattr(self.radio, "public_key", "") or "").lower()
+        for p in peers:
+            d = _haversine(p["lat"], p["lon"], loc["lat"], loc["lon"])
+            if d < mine or (d == mine and p["public_key"].lower() < my_key):
+                logger.info("Not answering %s %r: %s is nearer (%.0f km vs our %.0f km)",
+                            command, location, p["name"], d, mine)
+                return False
+        return True
 
     # Channel-reply budget for senders we cannot DM: per sender and overall.
     CHANNEL_REPLY_PER_SENDER_S = 600
     CHANNEL_REPLY_PER_HOUR = 12
 
-    async def _respond_channel(self, sender: str, command: str, location: str) -> None:
+    async def _respond_channel(self, sender: str, command: str, location: str,
+                               hops: int | None = None, forced: bool = False) -> None:
+        """Reply on our own channel (a flood). `forced` is reply_mode=channel;
+        otherwise this is the stranger fallback with its hop gate and budget."""
         now = time.time()
-        self._channel_replies = [ts for ts in getattr(self, "_channel_replies", []) if now - ts < 3600]
-        last = self._channel_reply_by_sender.get(sender, 0.0)
-        if now - last < self.CHANNEL_REPLY_PER_SENDER_S:
-            logger.info("Channel command from %s: no DM path, channel reply already sent %ds ago — ignoring",
-                        sender, int(now - last))
-            return
-        if len(self._channel_replies) >= self.CHANNEL_REPLY_PER_HOUR:
-            logger.warning("Channel command from %s: no DM path and the hourly channel-reply budget is spent — ignoring", sender)
-            return
+        if not forced:
+            if hops is not None and hops > settings.channel_reply_max_hops:
+                logger.info("Channel command from %s: no DM path and %d hops away — too far for a channel reply",
+                            sender, hops)
+                return
+            self._channel_replies = [ts for ts in getattr(self, "_channel_replies", []) if now - ts < 3600]
+            last = self._channel_reply_by_sender.get(sender, 0.0)
+            if now - last < self.CHANNEL_REPLY_PER_SENDER_S:
+                logger.info("Channel command from %s: no DM path, channel reply already sent %ds ago — ignoring",
+                            sender, int(now - last))
+                return
+            if len(self._channel_replies) >= self.CHANNEL_REPLY_PER_HOUR:
+                logger.warning("Channel command from %s: no DM path and the hourly channel-reply budget is spent — ignoring", sender)
+                return
         response, _, _ = self._get_response(command, location, f"ch:{sender}")
         if not response:
             return
         chunk, _, has_more = paginate(response, 0)
         if has_more:
             chunk = chunk.rstrip() + " (DM me for the rest)"
-        self._channel_reply_by_sender[sender] = now
-        self._channel_replies.append(now)
-        logger.info("Channel command from %s: no DM path, replying on our channel (flood)", sender)
+        if not forced:
+            self._channel_reply_by_sender[sender] = now
+            self._channel_replies.append(now)
+            logger.info("Channel command from %s: no DM path, replying on our channel (flood)", sender)
+        else:
+            logger.info("Channel command from %s: reply_mode=channel, replying on our channel (flood)", sender)
         await self.radio.send_channel_message(self.radio.channel_idx, chunk[:160])
-        if await self.radio.advert_if_stale():
+        if not forced and await self.radio.advert_if_stale():
             logger.info("Adverted so %s can DM us next time", sender)
 
     async def _handle_dm(self, pubkey_prefix: str, sender_name: str, text: str) -> None:

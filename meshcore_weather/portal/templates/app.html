@@ -242,6 +242,23 @@
             <div class="text-small text-muted">Applied on the node immediately: the role's slot is renamed in place, or a slot that already has the name is reused. Never uses slot 0. Renaming a tagged slot on the Radio page moves the role with it.</div>
           </div>
           <div class="card">
+            <div class="card-header"><div><div class="card-title">Reply mode</div>
+              <div class="card-subtitle">How answers to channel commands go out</div></div></div>
+            <select class="input mb-4" id="reply-mode" onchange="Portal.textbot.saveReplyMode()">
+              <option value="dm">DM (default): private reply; a nearby stranger gets one channel reply and an advert</option>
+              <option value="channel">Channel: every reply floods on #meshwx (for testing and demos)</option>
+              <option value="dm_only">DM only: never reply on the channel</option>
+            </select>
+            <div class="grid grid-2 mb-4">
+              <div><label class="form-label">Stranger channel reply, max hops</label>
+                <input class="input" id="reply-max-hops" onchange="Portal.textbot.saveReplyMode()"></div>
+              <div><label class="form-label">Advert every (hours)</label>
+                <input class="input" id="advert-hours" onchange="Portal.textbot.saveReplyMode()"></div>
+            </div>
+            <div id="reply-mode-status" class="text-small text-muted"></div>
+            <div class="text-small text-muted mt-4">Peer bots heard (WX-*): <span id="peer-bots">none</span>. A request that names a place is answered only by the nearest bot.</div>
+          </div>
+          <div class="card">
             <div class="card-header"><div><div class="card-title">Commands</div>
               <div class="card-subtitle">What "help" returns on the mesh</div></div></div>
             <pre class="text-small text-mono" id="console-help" style="white-space:pre-wrap;margin:0"></pre>

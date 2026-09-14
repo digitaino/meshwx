@@ -29,6 +29,7 @@ ENV_WRITABLE = {
     "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_HOME_STATES", "MCW_HOME_WFOS",
     "MCW_TIMEZONE", "MCW_TX_ENABLED", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR",
     "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_LOG_LEVEL",
+    "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
 }
 
 # Radio presets an operator can apply with one click.
@@ -92,6 +93,9 @@ async def radio_state(request: Request) -> JSONResponse:
             "discover": settings.meshwx_discover_channel,
         },
         "presets": RADIO_PRESETS,
+        "reply_mode": settings.reply_mode,
+        "channel_reply_max_hops": settings.channel_reply_max_hops,
+        "peer_bots": radio.peer_bots() if radio.connected and hasattr(radio, "peer_bots") else [],
         "info": None,
         "channels": [],
         "error": None,
@@ -429,7 +433,8 @@ async def system(request: Request) -> JSONResponse:
 
 # Keys the running bot can take on board without a restart.
 _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM",
-              "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_TX_ENABLED"}
+              "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_TX_ENABLED",
+              "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX"}
 
 
 async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
@@ -448,6 +453,14 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
             settings.log_level = val
         elif key == "MCW_TX_ENABLED":
             settings.tx_enabled = val.strip().lower() in ("1", "true", "yes", "on")
+        elif key == "MCW_REPLY_MODE":
+            if val not in ("dm", "channel", "dm_only"):
+                raise HTTPException(400, "reply mode must be dm, channel or dm_only")
+            settings.reply_mode = val
+        elif key in ("MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS"):
+            setattr(settings, key[4:].lower(), int(val))
+        elif key == "MCW_PEER_BOT_PREFIX":
+            settings.peer_bot_prefix = val
         elif key in ("MCW_HOME_CITIES", "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_HOME_RADIUS_KM"):
             attr = key[4:].lower()
             setattr(settings, attr, int(val) if key.endswith("_KM") and val.isdigit() else val)

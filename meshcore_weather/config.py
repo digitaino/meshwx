@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # Meshcore serial connection
     serial_port: str = "/dev/cu.usbserial-0001"
     serial_baud: int = 115200
-    meshcore_channel: str = "#digitaino-wx-bot"  # Channel name or index
+    meshcore_channel: str = "#meshwx"  # request channel: one name for every bot, everywhere
 
     # EMWIN data source
     emwin_source: str = "internet"  # "internet" or "sdr"
@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     sdr_dashboard_url: str = "http://127.0.0.1:8080"
     # How often the bot floods an advert so phones can DM it (hours)
     advert_interval_hours: int = 6
+    # How text replies go out:
+    #   dm       DM when we know the sender; a stranger who is close (few hops)
+    #            gets one reply on our channel and an advert so the next
+    #            exchange can be a DM
+    #   channel  always reply on the channel (flood) — for testing/coverage
+    #            demos; every repeater in range carries every reply
+    #   dm_only  DM or silence, never a channel reply
+    reply_mode: str = "dm"
+    channel_reply_max_hops: int = 2       # strangers further than this get no channel reply
+    peer_bot_prefix: str = "WX-"          # other weather bots advert with this name prefix
     # Initial load uses 1-hour bundle for coverage, then polls 2-minute bundle
     emwin_base_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip"
     emwin_poll_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txtmin02.zip"
@@ -37,7 +47,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
 
     # MeshWX data channel — all v4-framed broadcasts go here (empty = disabled)
-    meshwx_channel: str = ""
+    meshwx_channel: str = "#meshwx-data"  # binary broadcasts; folds into #meshwx with GRP_DATA
     # Discovery channel — beacon broadcast for client auto-discovery
     meshwx_discover_channel: str = "#meshwx-discover"
     meshwx_broadcast_interval: int = 3600  # seconds between broadcasts

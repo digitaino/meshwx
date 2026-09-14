@@ -176,6 +176,13 @@ class MeshcoreRadio:
         # Start auto-fetching messages from the device
         await self._mc.start_auto_message_fetching()
 
+        # Node clock: GRP_TXT carries a sender timestamp that repeaters use to
+        # dedupe, so a node with a dead clock repeats hashes. Sync it from us.
+        try:
+            await self._mc.commands.set_time(int(time.time()))
+        except Exception:
+            logger.debug("Could not set node time")
+
         # Ensure auto-add contacts is enabled so adverts create contacts
         try:
             await self._mc.commands.set_autoadd_config(1)
@@ -432,11 +439,14 @@ class MeshcoreRadio:
         if ": " in text:
             sender, text = text.split(": ", 1)
 
-        logger.info("Channel msg from %s on ch %d: %s", sender, channel_idx, text[:80])
+        hops = payload.get("path_len")
+        hops = int(hops) if isinstance(hops, int) and hops >= 0 else None
+        logger.info("Channel msg from %s on ch %d (%s): %s", sender, channel_idx,
+                    f"{hops} hops" if hops is not None else "hops ?", text[:80])
 
         if self._channel_handler:
             try:
-                await self._channel_handler(str(channel_idx), sender, text)
+                await self._channel_handler(str(channel_idx), sender, text, hops)
             except Exception:
                 logger.exception("Error in channel message handler")
 
@@ -743,6 +753,24 @@ class MeshcoreRadio:
         except Exception:
             pass   # the node drops the link mid-command
 
+    def peer_bots(self) -> list[dict]:
+        """Other weather bots we have heard adverts from: contacts whose name
+        starts with the peer prefix and that carry coordinates."""
+        if not self._mc:
+            return []
+        prefix = settings.peer_bot_prefix.upper()
+        me = (self._mc.self_info or {}).get("public_key", "")
+        out = []
+        for key, c in (self._mc.contacts or {}).items():
+            name = (c.get("adv_name") or "")
+            if not name.upper().startswith(prefix) or key == me:
+                continue
+            lat, lon = c.get("adv_lat"), c.get("adv_lon")
+            if not lat and not lon:
+                continue
+            out.append({"name": name, "public_key": key, "lat": float(lat), "lon": float(lon)})
+        return out
+
     async def contacts(self) -> list[dict]:
         mc = self._require()
         out = []
@@ -770,6 +798,10 @@ class MeshcoreRadio:
             except Exception:
                 out[label] = None
         return out
+
+    @property
+    def public_key(self) -> str:
+        return ((self._mc.self_info if self._mc else None) or {}).get("public_key", "") or ""
 
     @property
     def channel_idx(self) -> int | None:

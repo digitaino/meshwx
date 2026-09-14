@@ -58,6 +58,11 @@ class ChannelFakeRadio:
         self.dms: list[tuple[str, str]] = []
         self.adverts = 0
         self.contacts = {}
+        self.peers = []
+        self.public_key = "ff" * 32
+
+    def peer_bots(self):
+        return self.peers
 
     def find_contact_by_name(self, name):
         return self.contacts.get(name)
@@ -80,6 +85,11 @@ class ChannelFakeRadio:
 @pytest.fixture
 def bot(monkeypatch):
     monkeypatch.setattr(settings, "tx_enabled", True)
+    monkeypatch.setattr(settings, "reply_mode", "dm")
+    monkeypatch.setattr(settings, "channel_reply_max_hops", 2)
+    from meshcore_weather.geodata import resolver
+    resolver.load()
+    resolver.set_home(30.27, -97.74)          # Austin
     b = WeatherBot()
     b.store = WeatherStore()
     b.radio = ChannelFakeRadio()
@@ -112,3 +122,44 @@ def test_hourly_channel_budget(bot):
     bot._channel_replies = [time.time()] * WeatherBot.CHANNEL_REPLY_PER_HOUR
     asyncio.run(bot._handle_channel_message("1", "Someone", "help"))
     assert bot.radio.channel_sent == []
+
+
+def test_far_strangers_get_no_channel_reply(bot):
+    asyncio.run(bot._handle_channel_message("1", "Far", "help", 5))
+    assert bot.radio.channel_sent == []
+    asyncio.run(bot._handle_channel_message("1", "Near", "help", 1))
+    assert len(bot.radio.channel_sent) == 1
+
+
+def test_reply_modes(bot, monkeypatch):
+    monkeypatch.setattr(settings, "reply_mode", "dm_only")
+    asyncio.run(bot._handle_channel_message("1", "Stranger", "help", 0))
+    assert bot.radio.channel_sent == [] and bot.radio.adverts == 0
+    monkeypatch.setattr(settings, "reply_mode", "channel")
+    bot.radio.contacts["Tommy"] = {"public_key": "ab" * 32, "adv_name": "Tommy"}
+    bot._rate_limit.clear()
+    asyncio.run(bot._handle_channel_message("1", "Tommy", "help", 6))     # far, known: still on channel
+    assert len(bot.radio.channel_sent) == 1 and bot.radio.dms == []
+    bot._rate_limit.clear()
+    asyncio.run(bot._handle_channel_message("1", "Tommy", "help", 6))     # no per-sender budget in channel mode
+    assert len(bot.radio.channel_sent) == 2
+
+
+def test_bots_ignore_bots(bot):
+    asyncio.run(bot._handle_channel_message("1", "WX-SAT", "Round Rock, TX: 91F", 0))
+    asyncio.run(bot._handle_channel_message("1", "wx-dfw", "help", 0))
+    assert bot.radio.channel_sent == [] and bot.radio.dms == []
+
+
+def test_nearest_bot_answers_place_requests(bot):
+    # A San Antonio bot is in our contact list. Round Rock is ours; San Marcos is theirs.
+    bot.radio.peers = [{"name": "WX-SAT", "public_key": "00" * 32, "lat": 29.42, "lon": -98.49}]
+    bot.radio.contacts["User"] = {"public_key": "ab" * 32, "adv_name": "User"}
+    asyncio.run(bot._handle_channel_message("1", "User", "wx round rock tx", 0))
+    assert len(bot.radio.dms) == 1
+    bot._rate_limit.clear()
+    asyncio.run(bot._handle_channel_message("1", "User", "wx san antonio tx", 0))
+    assert len(bot.radio.dms) == 1                                        # theirs, we stay quiet
+    bot._rate_limit.clear()
+    asyncio.run(bot._handle_channel_message("1", "User", "help", 0))      # no place: everyone answers by DM
+    assert len(bot.radio.dms) == 2
