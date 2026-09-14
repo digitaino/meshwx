@@ -203,8 +203,12 @@
 
       <div class="card">
         <div class="card-header"><div><div class="card-title">Contacts</div>
-          <div class="card-subtitle">Nodes the radio has heard adverts from</div></div>
-          <button class="btn" onclick="Portal.radio.loadContacts()">Refresh</button></div>
+          <div class="card-subtitle" id="radio-contacts-sub">Nodes the radio has heard adverts from</div></div>
+          <div class="flex gap-2" style="align-items:center">
+            <label class="text-small" style="white-space:nowrap"><input type="checkbox" id="radio-housekeeping" onchange="Portal.radio.saveHousekeeping()"> keep slots for people</label>
+            <button class="btn btn-mini" onclick="Portal.radio.housekeepNow()">Run now</button>
+            <button class="btn" onclick="Portal.radio.loadContacts()">Refresh</button></div></div>
+        <div class="text-small text-muted mb-4">The node stores 100 contacts and cannot DM anyone it has not stored. With this on, repeaters, rooms and sensors are removed after every contacts refresh, and when people alone get near the limit the ones heard longest ago go. The admin and other WX- bots are never removed.</div>
         <div style="max-height:360px;overflow:auto">
           <table class="table table-compact"><thead><tr><th>Name</th><th>Type</th><th>Heard</th><th>Path</th><th>Key</th></tr></thead>
             <tbody id="radio-contacts"><tr><td colspan="5" class="text-muted">Not loaded</td></tr></tbody></table>

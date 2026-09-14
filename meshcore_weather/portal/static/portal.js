@@ -1263,6 +1263,7 @@ Portal.radio = {
       statCard("TX power", info.tx_power != null ? info.tx_power + " dBm" : "–", info.max_tx_power != null ? "max " + info.max_tx_power : "") +
       statCard("Battery", info.battery_mv ? (info.battery_mv / 1000).toFixed(2) + " V" : "–", d.tx_enabled ? "transmit ON" : "receive-only");
     document.getElementById("radio-stats").innerHTML = stats;
+    this.renderHousekeeping(d.housekeeping);
 
     var set = function (id, v) { var el = document.getElementById(id); if (el && document.activeElement !== el) el.value = v == null ? "" : v; };
     set("radio-name", info.name); set("radio-lat", info.adv_lat); set("radio-lon", info.adv_lon);
@@ -1342,6 +1343,25 @@ Portal.radio = {
     this._act(apiJson("/api/radio/channel", { method: "POST", body: { idx: i, name: name } }), "Channel " + i + " saved");
   },
   clearChannel: function (i) { if (confirm("Clear channel slot " + i + "?")) this._act(apiJson("/api/radio/channel/" + i, { method: "DELETE" }), "Channel " + i + " cleared"); },
+  renderHousekeeping: function (h) {
+    if (!h) return;
+    var cb = document.getElementById("radio-housekeeping");
+    if (cb && document.activeElement !== cb) cb.checked = !!h.enabled;
+    var sub = document.getElementById("radio-contacts-sub");
+    if (sub) sub.textContent = h.last && h.last.t ? "Housekeeping " + fmtAgeS(Math.round(Date.now() / 1000 - h.last.t)) + " ago: " + h.last.note :
+      (h.enabled ? "Housekeeping on, not run yet" : "Housekeeping off: the firmware keeps whatever it hears");
+  },
+  saveHousekeeping: function () {
+    var on = document.getElementById("radio-housekeeping").checked;
+    this._act(apiJson("/api/settings/env", { method: "POST", body: { MCW_CONTACT_HOUSEKEEPING: on ? "true" : "false" } }),
+      on ? "Housekeeping on" : "Housekeeping off");
+  },
+  housekeepNow: function () {
+    var self = this;
+    apiJson("/api/radio/housekeep", { method: "POST", body: {} }).then(function (d) {
+      Portal.ui.showToast(d.note, true); self.load(); self.loadContacts();
+    }).catch(function (e) { Portal.ui.showToast(e.message, false); });
+  },
   loadContacts: function () {
     apiJson("/api/radio/contacts").then(function (d) {
       var tb = document.getElementById("radio-contacts");

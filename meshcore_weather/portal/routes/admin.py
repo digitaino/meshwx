@@ -34,6 +34,7 @@ ENV_WRITABLE = {
     "MCW_TIMEZONE", "MCW_TX_ENABLED", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR",
     "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_LOG_LEVEL",
     "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
+    "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE",
 }
 
 # Radio presets an operator can apply with one click.
@@ -102,6 +103,9 @@ async def radio_state(request: Request) -> JSONResponse:
         "reply_mode": settings.reply_mode,
         "channel_reply_max_hops": settings.channel_reply_max_hops,
         "peer_bots": radio.peer_bots() if radio.connected and hasattr(radio, "peer_bots") else [],
+        "housekeeping": {"enabled": settings.contact_housekeeping, "slots": settings.contact_slots,
+                         "keep_free": settings.contact_keep_free,
+                         "last": getattr(radio, "last_housekeeping", None)},
         "info": None,
         "channels": [],
         "error": None,
@@ -239,6 +243,15 @@ async def radio_tx(request: Request) -> JSONResponse:
             adverted = False
     return JSONResponse({"ok": True, "tx_enabled": enabled, "adverted": adverted,
                          "note": "Transmit on; advert sent" if adverted else None})
+
+
+@router.post("/radio/housekeep")
+async def radio_housekeep(request: Request) -> JSONResponse:
+    """Run contact housekeeping now (also runs after every contacts refresh)."""
+    radio = _radio_call(request)
+    if not settings.contact_housekeeping:
+        raise HTTPException(400, "contact housekeeping is off (MCW_CONTACT_HOUSEKEEPING)")
+    return JSONResponse({"ok": True, **await _run(radio.housekeep_contacts())})
 
 
 @router.get("/radio/contacts")
@@ -557,7 +570,8 @@ async def system(request: Request) -> JSONResponse:
 # Keys the running bot can take on board without a restart.
 _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM",
               "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_TX_ENABLED",
-              "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX"}
+              "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
+              "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE"}
 
 
 async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
@@ -584,6 +598,10 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
             setattr(settings, key[4:].lower(), int(val))
         elif key == "MCW_PEER_BOT_PREFIX":
             settings.peer_bot_prefix = val
+        elif key == "MCW_CONTACT_HOUSEKEEPING":
+            settings.contact_housekeeping = val.strip().lower() in ("1", "true", "yes", "on")
+        elif key == "MCW_CONTACT_KEEP_FREE":
+            settings.contact_keep_free = max(0, int(val))
         elif key in ("MCW_HOME_CITIES", "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_HOME_RADIUS_KM"):
             attr = key[4:].lower()
             setattr(settings, attr, int(val) if key.endswith("_KM") and val.isdigit() else val)

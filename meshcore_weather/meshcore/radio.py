@@ -59,6 +59,43 @@ def clean_text(value: str, max_len: int) -> str:
     return value[:max_len]
 
 
+CONTACT_TYPE_NAMES = {1: "client", 2: "repeater", 3: "room", 4: "sensor"}
+
+
+def plan_contact_removals(contacts: dict, slots: int, keep_free: int, admin_key: str,
+                          peer_prefix: str, own_key: str = "") -> list[tuple[str, str, str]]:
+    """Which contacts to drop, as (public_key, name, reason). Pure, so the
+    policy is testable: every non-client goes; then, if the people left
+    would leave fewer than `keep_free` empty slots, the people heard longest
+    ago (lastmod) go too. The admin, peer bots and ourselves are protected."""
+    admin = (admin_key or "").lower().strip()
+    prefix = (peer_prefix or "").upper()
+    out: list[tuple[str, str, str]] = []
+    people: list[tuple[float, str, str]] = []
+    for key, c in contacts.items():
+        key = str(key)
+        name = c.get("adv_name") or "?"
+        if own_key and key.lower() == own_key.lower():
+            continue
+        protected = (admin and key.lower().startswith(admin)) or (prefix and name.upper().startswith(prefix))
+        ctype = c.get("type")
+        if ctype != 1:
+            if not protected:
+                out.append((key, name, f"{CONTACT_TYPE_NAMES.get(ctype, f'type {ctype}')} takes a slot and cannot be DMed"))
+            continue
+        if not protected:
+            people.append((float(c.get("lastmod") or 0), key, name))
+    limit = max(1, slots - max(0, keep_free))
+    protected_people = sum(1 for c in contacts.values() if c.get("type") == 1) - len(people)
+    excess = protected_people + len(people) - limit
+    if excess > 0:
+        people.sort()
+        for lastmod, key, name in people[:excess]:
+            age_h = (time.time() - lastmod) / 3600 if lastmod else None
+            out.append((key, name, "heard longest ago" + (f" ({age_h:.0f} h)" if age_h is not None else "") + ", making room"))
+    return out
+
+
 class MeshcoreRadio:
     """Interface to a Meshcore radio device using the official library."""
 
@@ -203,8 +240,9 @@ class MeshcoreRadio:
         # Auto-refresh contacts when adverts arrive
         self._mc.auto_update_contacts = True
 
-        # Load contacts and advertise ourselves
+        # Load contacts, make room for people, advertise ourselves
         await self._mc.ensure_contacts()
+        await self.housekeep_contacts()
         await self._send_advert()
 
         # Periodic tasks: re-advert and refresh contacts
@@ -562,6 +600,53 @@ class MeshcoreRadio:
                 await self._mc.ensure_contacts(follow=True)
             except Exception:
                 logger.debug("Failed to refresh contacts")
+            await self.housekeep_contacts()
+
+    # -- Contact table housekeeping ---------------------------------------------
+    #
+    # The node stores at most MCW_CONTACT_SLOTS contacts and a person we have
+    # not stored cannot be DMed. Repeaters, rooms and sensors take slots and
+    # give the bot nothing (a DM path is repeater hashes, not contacts), so
+    # they are removed; when people alone approach the limit, the ones heard
+    # longest ago go. Never the admin, never a peer weather bot.
+
+    last_housekeeping: dict = {"t": None, "removed": 0, "kept": 0, "people": 0, "note": ""}
+
+    async def housekeep_contacts(self) -> dict:
+        if not settings.contact_housekeeping or not self._mc:
+            return self.last_housekeeping
+        contacts = dict(self._mc.contacts or {})
+        plan = plan_contact_removals(contacts, settings.contact_slots, settings.contact_keep_free,
+                                     settings.admin_key, settings.peer_bot_prefix,
+                                     (self._mc.self_info or {}).get("public_key", ""))
+        removed = 0
+        for key, name, reason in plan:
+            try:
+                res = await self._mc.commands.remove_contact(key)
+                if res.type == EventType.ERROR:
+                    logger.warning("Could not remove contact %s: %s", name, res.payload)
+                    continue
+                removed += 1
+                logger.info("Contacts: removed %s (%s)", name, reason)
+            except Exception as e:
+                logger.warning("Could not remove contact %s: %s", name, e)
+        if removed:
+            # The library's cache only merges what the node sends since the
+            # last fetch; a removed contact never leaves it. Reload from zero
+            # so what we report is what the node actually holds.
+            try:
+                self._mc._contacts.clear()
+                self._mc._lastmod = 0
+                await self._mc.commands.get_contacts(lastmod=0)
+            except Exception:
+                logger.debug("Contacts reload after housekeeping failed")
+        left = dict(self._mc.contacts or {})
+        people = sum(1 for c in left.values() if c.get("type") == 1)
+        self.last_housekeeping = {"t": time.time(), "removed": removed, "kept": len(left), "people": people,
+                                  "note": f"removed {removed}, {len(left)} left ({people} people) of {settings.contact_slots} slots"}
+        if removed:
+            logger.info("Contacts housekeeping: %s", self.last_housekeeping["note"])
+        return self.last_housekeeping
 
     # -- Management (portal) ---------------------------------------------------
 
