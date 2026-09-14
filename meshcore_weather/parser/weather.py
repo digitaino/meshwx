@@ -23,38 +23,6 @@ from meshcore_weather.geodata import resolver
 
 logger = logging.getLogger(__name__)
 
-# Meshcore channel messages: 300 byte frame, 7 bytes overhead = 293 usable
-MAX_MSG_BYTES = 147   # one MeshCore DM/channel text; same budget as render_text.MAX_DM
-
-
-def _fit_message(text: str) -> str:
-    if len(text) <= MAX_MSG_BYTES:
-        return text
-    return text[: MAX_MSG_BYTES - 3].rstrip() + "..."
-
-
-MORE_TAG = " [more]"
-
-
-def paginate(text: str, offset: int = 0) -> tuple[str, int, bool]:
-    """Return (chunk, new_offset, has_more) for the given offset into text.
-
-    Tries to break on a newline boundary so messages don't cut mid-line,
-    but only if that doesn't waste more than half the available space.
-    """
-    remaining = text[offset:]
-    if len(remaining) <= MAX_MSG_BYTES:
-        return remaining, offset + len(remaining), False
-    usable = MAX_MSG_BYTES - len(MORE_TAG)
-    cut = remaining[:usable]
-    # Try to break at the last newline, but only if it uses >60% of space
-    nl = cut.rfind("\n")
-    if nl > usable * 3 // 5:
-        cut = cut[:nl]
-    chunk = cut.rstrip() + MORE_TAG
-    return chunk, offset + len(cut), True
-
-
 def _expand_zone_ranges(text: str) -> set[str]:
     """Expand NWS zone range notation like 'TXZ021>044' into individual zones.
 

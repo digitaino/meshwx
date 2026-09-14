@@ -301,7 +301,7 @@ The bot also supports a human-friendly text command interface via channel messag
 | `wx TX` or just `TX` | State overview |
 | `wx Austin TX` | City-level conditions, observations, forecast |
 | `help` | List commands |
-| `more` | Next page of a truncated response |
+| `more` | Next page of a long reply. A long reply is cut into numbered pages on item boundaries; page 1 ends with `(1/3) more`, and each `more` sends the next page on whichever transport it arrives |
 
 ### Detailed commands
 

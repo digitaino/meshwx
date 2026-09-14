@@ -102,7 +102,9 @@ def _dir(deg: int) -> str:
 
 
 def _cap(s: str) -> str:
-    return s if len(s) <= MAX_DM else s[: MAX_DM - 1].rstrip() + "…"
+    """Kept for its callers: replies are no longer trimmed here. The pager
+    (core/pages.py) cuts a long reply into numbered pages that "more" walks."""
+    return s
 
 
 def _title(name: str | None) -> str:
@@ -113,22 +115,10 @@ def _title(name: str | None) -> str:
 
 
 def fit_list(head: str, items: list[str], cap: int = MAX_DM, sep: str = "; ", tail: str = "") -> str:
-    """head + as many items as fit in `cap`, then ' +N more'. Never cuts an item."""
-    out = head
-    used = 0
-    for i, item in enumerate(items):
-        piece = ("" if i == 0 else sep) + item
-        rest = len(items) - i - 1
-        suffix = f" +{rest + 1} more" if rest >= 0 else ""
-        # Would this item fit, allowing for a '+N more' note if it is not the last?
-        need = len(out) + len(piece) + (len(f" +{rest} more") if rest else 0) + len(tail)
-        if need > cap:
-            break
-        out += piece
-        used += 1
-    if used < len(items):
-        out += f" +{len(items) - used} more"
-    return out + tail
+    """head + every item + tail. Nothing is dropped: a reply longer than one
+    message is paged by core/pages.py on these separators, and "more" fetches
+    the next page. `cap` is accepted for its callers and ignored."""
+    return head + sep.join(items) + tail
 
 
 def _group(items: list[str]) -> list[str]:

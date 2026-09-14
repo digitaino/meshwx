@@ -1,4 +1,4 @@
-"""Reply formatting: one message, nothing cut mid-item, readable names."""
+"""Reply formatting: nothing cut mid-item, readable names; paging is tested in test_pages.py."""
 
 from types import SimpleNamespace
 
@@ -6,12 +6,10 @@ from meshcore_weather.core import render_text as rt
 from meshcore_weather.main import HELP_TEXT, channel_fit
 
 
-def test_fit_list_never_cuts_an_item():
+def test_fit_list_keeps_every_item():
     items = [f"Item{i} Somewhere Long" for i in range(12)]
     out = rt.fit_list("16 storm reports NY: ", items, cap=100)
-    assert len(out) <= 100
-    assert out.endswith(" more") and "Item0 Somewhere Long" in out
-    assert "Somewhere L " not in out and "Long;" not in out.split("+")[-1]
+    assert out == "16 storm reports NY: " + "; ".join(items)      # paging happens later, in core/pages.py
     assert rt.fit_list("A: ", ["x", "y"], cap=100) == "A: x; y"
 
 

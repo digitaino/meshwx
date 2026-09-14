@@ -14,7 +14,9 @@ from meshcore_weather.emwin.fetcher import create_source
 from meshcore_weather.geodata import resolver
 from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.nlp import parse_intent
-from meshcore_weather.parser.weather import WeatherStore, paginate
+from meshcore_weather.core.pages import split_pages
+from meshcore_weather.core.render_text import MAX_DM
+from meshcore_weather.parser.weather import WeatherStore
 from meshcore_weather.traffic import traffic_log
 
 logger = logging.getLogger(__name__)
@@ -307,12 +309,11 @@ class WeatherBot:
             return
 
         req = traffic_log.record("channel_in", sender=sender, text=text, hops=hops)
-        if not self._rate_check(sender):
-            traffic_log.record("dropped", reason="rate limit", req=req, text=text)
-            return
-
         command, location = await self._parse(text)
         traffic_log.update(req, command=command, location=location)
+        if not self._rate_check(sender, follow_up=(command == "more")):
+            traffic_log.record("dropped", reason="rate limit", req=req, text=text)
+            return
 
         # Replies go by DM when we can: a DM with a known path costs only
         # the repeaters on it, a channel reply floods every repeater. For a
@@ -395,11 +396,17 @@ class WeatherBot:
                 logger.warning("Channel command from %s: no DM path and the hourly channel-reply budget is spent — ignoring", sender)
                 traffic_log.record("dropped", reason="hourly channel-reply budget spent", req=req, sender=sender)
                 return
-        response, _, _ = self._get_response(command, location, f"ch:{sender}")
-        if not response:
+        if forced:
+            # Channel mode: the same paged reply a DM would get, so "more" works.
+            chunk, _ = self.reply_chunk(command, location, self.person_key(sender))
+        else:
+            # A stranger gets one message and no paging session: their "more"
+            # would only hit the per-sender channel gate. DM is the way to the rest.
+            response = self._process_command(command, location)
+            chunk = channel_fit(response, self.radio.channel_text_budget()) if response else None
+        if not chunk:
             traffic_log.record("dropped", reason="nothing to say", req=req, sender=sender)
             return
-        chunk = channel_fit(response, self.radio.channel_text_budget())
         if not forced:
             self._channel_reply_by_sender[sender] = now
             self._channel_replies.append(now)
@@ -428,14 +435,11 @@ class WeatherBot:
         # apps doing structured queries.
         is_binary_request = text.startswith("WXQ") or text.startswith("MWX")
         req = None
+        command = location = ""
         if is_binary_request:
             traffic_log.record("data_request", sender=sender_name, key=prefix, text=text[:24], transport="dm")
         else:
             req = traffic_log.record("dm_in", sender=sender_name, key=prefix, text=text)
-        if not is_binary_request and not self._rate_check(prefix):
-            logger.debug("DM rate-limited from %s", sender_name)
-            traffic_log.record("dropped", reason="rate limit", req=req)
-            return
 
         # Parse @lat,lng prefix for location-aware commands
         loc_match = re.match(r"^@(-?\d+\.?\d*),(-?\d+\.?\d*)\s+(.*)", text)
@@ -454,6 +458,14 @@ class WeatherBot:
                 self._user_locations[prefix] = (lat, lon)
                 logger.info("Cached location for %s: %.4f, %.4f", sender_name, lat, lon)
 
+        if not is_binary_request:
+            command, location = await self._parse(text)
+            traffic_log.update(req, command=command, location=location)
+            if not self._rate_check(prefix, follow_up=(command == "more")):
+                logger.debug("DM rate-limited from %s", sender_name)
+                traffic_log.record("dropped", reason="rate limit", req=req)
+                return
+
         # They're DMing us — DMs work both ways, clear all blocks
         if sender_name and sender_name != "unknown":
             is_new = sender_name not in self._known_contacts
@@ -461,6 +473,10 @@ class WeatherBot:
             self._dm_blocked.discard(sender_name)
             if is_new:
                 self._save_known_contacts()
+            # A paging session opened by their channel request continues by DM.
+            ch_key = "ch:" + sender_name
+            if ch_key in self._paging and prefix not in self._paging:
+                self._paging[prefix] = self._paging.pop(ch_key)
 
         # MeshWX refresh request (e.g. "MWX310000")
         if text.startswith("MWX") and len(text) >= 7 and self._broadcaster:
@@ -479,8 +495,6 @@ class WeatherBot:
                 traffic_log.update(req, kind="admin", command=text.split(None, 1)[0].lower())
                 return
 
-        command, location = await self._parse(text)
-        traffic_log.update(req, command=command, location=location)
         await self._respond_dm(prefix, sender_name, command, location, req=req)
 
     async def _handle_advert(self, contact_name: str, pubkey_prefix: str) -> None:
@@ -673,35 +687,80 @@ class WeatherBot:
         return None  # Not an admin command, fall through to normal handling
 
     async def _send_dm_paginated(self, pubkey: str, sender_name: str, text: str) -> None:
-        """Send a potentially long response as paginated DMs."""
-        chunk, offset, has_more = paginate(text, 0)
-        if has_more:
-            self._paging[pubkey] = {"full": text, "offset": offset, "ts": time.time()}
-        await self.radio.send_dm(pubkey, chunk)
+        """Send a long admin reply: page 1 now, the rest on 'more'."""
+        pages = self._start_session(self._normalize_key(pubkey), "admin", text)
+        await self.radio.send_dm(pubkey, pages[0])
 
-    # -- Response methods --
+    # -- Replies and paging --
+    #
+    # Every reply is rendered in full and cut into numbered pages at the
+    # message budget (core/pages.py). Page 1 answers the request; "more"
+    # from the same person sends the next page, on whichever transport the
+    # "more" arrived. A person is their public key when we know it, else
+    # their channel name; a session opened on the channel moves to the key
+    # the first time they DM us.
 
+    PAGE_SESSION_TTL_S = 900
+    PAGE_SESSIONS_MAX = 500
+
+    def page_budget(self) -> int:
+        """Pages fit both transports: the DM budget (155) and the channel
+        budget (153 minus our name), never more than MAX_DM."""
+        try:
+            return min(MAX_DM, int(self.radio.channel_text_budget()))
+        except Exception:
+            return MAX_DM
+
+    def person_key(self, sender_name: str, pubkey: str | None = None) -> str:
+        if pubkey:
+            return self._normalize_key(pubkey)
+        known = self._known_contacts.get(sender_name)
+        if known:
+            return self._normalize_key(known)
+        contact = self.radio.find_contact_by_name(sender_name) if hasattr(self.radio, "find_contact_by_name") else None
+        if contact and contact.get("public_key"):
+            return self._normalize_key(contact["public_key"])
+        return "ch:" + sender_name
+
+    def _prune_sessions(self, now: float) -> None:
+        cutoff = now - self.PAGE_SESSION_TTL_S
+        if any(v["ts"] <= cutoff for v in self._paging.values()) or len(self._paging) > self.PAGE_SESSIONS_MAX:
+            live = sorted(((v["ts"], k) for k, v in self._paging.items() if v["ts"] > cutoff), reverse=True)
+            self._paging = {k: self._paging[k] for _, k in live[: self.PAGE_SESSIONS_MAX]}
+
+    def _start_session(self, key: str, command: str, response: str) -> list[str]:
+        now = time.time()
+        self._prune_sessions(now)
+        pages = split_pages(response, self.page_budget())
+        self._paging[key] = {"pages": pages, "next": 1, "ts": now, "command": command}
+        return pages
 
     def reply_chunk(self, command: str, location: str, sender_key: str) -> tuple[str | None, bool]:
-        """The one message a sender gets for this command, and whether a
-        'more' would fetch another. Owns the per-sender paging state, so the
-        DM path, the channel path and the portal console all behave alike."""
-        response, sender_key, already_paginated = self._get_response(command, location, sender_key)
+        """The one message this person gets now, and whether a 'more' would
+        fetch another. Shared by the DM path, channel mode, the CLI and the
+        portal console, so they all page the same way."""
+        now = time.time()
+        self._prune_sessions(now)
+        if command == "more":
+            session = self._paging.get(sender_key)
+            if not session:
+                return "Nothing to continue. Send a command first.", False
+            if session["next"] >= len(session["pages"]):
+                return f"That was the whole reply to '{session['command']}'. Send a new command.", False
+            page = session["pages"][session["next"]]
+            session["next"] += 1
+            session["ts"] = now
+            return page, session["next"] < len(session["pages"])
+        response = self._process_command(command, location)
         if not response:
             return None, False
-        if already_paginated:
-            return response, sender_key in self._paging
-        chunk, offset, has_more = paginate(response, 0)
-        if has_more:
-            self._paging[sender_key] = {"full": response, "offset": offset, "ts": time.time()}
-        elif sender_key in self._paging:
-            del self._paging[sender_key]
-        return chunk, has_more
+        pages = self._start_session(sender_key, (command + " " + location).strip(), response)
+        return pages[0], len(pages) > 1
 
     async def _respond_dm(self, pubkey_prefix: str, sender_name: str, command: str, location: str,
                           req: dict | None = None) -> None:
         """Send the reply as a DM."""
-        chunk, _ = self.reply_chunk(command, location, pubkey_prefix)
+        chunk, _ = self.reply_chunk(command, location, self.person_key(sender_name, pubkey_prefix))
         if not chunk:
             traffic_log.record("dropped", reason="nothing to say", req=req, sender=sender_name, key=pubkey_prefix)
             return
@@ -717,34 +776,6 @@ class WeatherBot:
             logger.info("DM to %s failed — forgetting the path; the next channel command gets a channel reply", sender_name)
             self._dm_blocked.add(sender_name)
             self._known_contacts.pop(sender_name, None)
-
-    def _get_response(self, command: str, location: str, sender_key: str) -> tuple[str | None, str, bool]:
-        """Process command and handle pagination.
-
-        Returns (response_text, sender_key, already_paginated).
-        If already_paginated is True, the caller should send as-is without re-paginating.
-        """
-        now = time.time()
-
-        # Clean expired paging sessions
-        cutoff = now - 300
-        self._paging = {k: v for k, v in self._paging.items() if v["ts"] > cutoff}
-
-        # Handle "more" pagination — returns a ready-to-send chunk
-        if command == "more":
-            session = self._paging.get(sender_key)
-            if session:
-                chunk, new_offset, has_more = paginate(session["full"], session["offset"])
-                if has_more:
-                    session["offset"] = new_offset
-                    session["ts"] = now
-                else:
-                    del self._paging[sender_key]
-                return chunk, sender_key, True
-            return "No more data. Send a command first.", sender_key, True
-
-        response = self._process_command(command, location)
-        return response, sender_key, False
 
     # -- Helpers --
 
@@ -793,10 +824,13 @@ class WeatherBot:
     REPLIES_PER_SENDER_PER_HOUR = 40
     REPLIES_PER_HOUR = 400
 
-    def _rate_check(self, sender_key: str) -> bool:
+    def _rate_check(self, sender_key: str, follow_up: bool = False) -> bool:
+        """One reply per sender per 5 s, plus hourly budgets. A 'more' is a
+        follow-up to a reply we just sent and only needs 2 s of spacing;
+        it still counts against the hourly budgets."""
         now = time.time()
         last = self._rate_limit.get(sender_key, 0)
-        if now - last < 5:
+        if now - last < (2 if follow_up else 5):
             return False
         hour_ago = now - 3600
         hist = [ts for ts in self._reply_history.get(sender_key, []) if ts > hour_ago]

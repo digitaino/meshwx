@@ -20,7 +20,7 @@ from meshcore_weather.emwin.fetcher import create_source
 from meshcore_weather.geodata import resolver
 from meshcore_weather.main import WeatherBot
 from meshcore_weather.nlp import parse_intent
-from meshcore_weather.parser.weather import WeatherStore, paginate
+from meshcore_weather.parser.weather import WeatherStore
 
 
 def cmd_fetch():
@@ -108,8 +108,6 @@ def cmd_interactive():
         print("Type 'quit' to exit.")
         print()
 
-        paging = {}  # {full, offset}
-
         while True:
             try:
                 text = input("mesh> ").strip()
@@ -120,29 +118,12 @@ def cmd_interactive():
             if not text or text.lower() == "quit":
                 break
 
-            intent = await parse_intent(text)
-            print(f"  [NLP: cmd={intent['command']} loc='{intent['location']}']")
-
-            if intent["command"] == "more":
-                if paging:
-                    chunk, new_offset, has_more = paginate(paging["full"], paging["offset"])
-                    if has_more:
-                        paging["offset"] = new_offset
-                    else:
-                        paging = {}
-                    print(f"\n{chunk}\n")
-                else:
-                    print("\n(no more data)\n")
-                continue
-
-            response = bot._process_command(intent["command"], intent["location"])
-            if response:
-                chunk, offset, has_more = paginate(response, 0)
-                if has_more:
-                    paging = {"full": response, "offset": offset}
-                else:
-                    paging = {}
-                print(f"\n{chunk}\n")
+            command, location = await bot._parse(text)
+            print(f"  [NLP: cmd={command} loc='{location}']")
+            # Same paging as a DM: "more" continues the last long reply.
+            chunk, has_more = bot.reply_chunk(command, location, "cli")
+            if chunk:
+                print(f"\n{chunk}\n" + ("  (send 'more' for the next page)\n" if has_more else ""))
             else:
                 print("\n(no response)\n")
 
