@@ -1,0 +1,22 @@
+WOXX20 KWNP 141551
+WATA20
+
+Space Weather Message Code: WATA20
+Serial Number: 1124
+Issue Time: 2026 Sep 14 1547 UTC
+
+WATCH: Geomagnetic Storm Category G1 Predicted 
+Highest Storm Level Predicted by Day:
+Sep 15:  G1 (Minor)   Sep 16:  G1 (Minor)   Sep 17:  None (Below G1)   
+THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT
+
+Comment: 
+www.swpc.noaa.gov/noaa-scales-explanation
+Potential Impacts: Area of impact primarily poleward of 60 degrees Geomagnetic Latitude.
+Induced Currents - Weak power grid fluctuations can occur.
+Spacecraft - Minor impact on satellite operations possible.
+Aurora - Aurora may be visible at high latitudes, i.e., northern tier of the U.S. such as northern Michigan and Maine.
+
+# Issued by the US Dept. of Commerce, NOAA, Space Weather Prediction Center
+# Recent messages, data, and help at http://swpc.noaa.gov/alerts/
+# Send questions to SWPC.Webmaster@noaa.gov

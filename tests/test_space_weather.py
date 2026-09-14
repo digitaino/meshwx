@@ -80,7 +80,7 @@ def test_indices_only_still_answers():
 
 # -- SWPC alert envelope -----------------------------------------------------------
 #
-# ALTEF3 is real (received 2026-09-14 11:06Z). The others follow SWPC's
+# ALTEF3 and WATA20 are real (received 2026-09-14). The others follow SWPC's
 # published message layout; no storm has happened on the dish yet.
 
 _ISSUE = "2026 Sep 15 0312 UTC"
@@ -181,3 +181,18 @@ def test_alert_nibbles_round_trip_and_text():
     text = sw.render(obj)
     assert text.startswith("!G3 storm now (K7) !R3 radio blackout !S2+ proton event. Kp now 3.0")
     assert len(text) <= 160
+
+
+def test_real_g1_watch_from_satellite():
+    # WATA20 received over GOES-19 at 15:51Z on 2026-09-14: G1 on Sep 15-16.
+    txt = _text("WATA20US_20260914_1551Z.txt")
+    a = sw.parse_swpc_alert(txt)
+    assert a["code"] == "WATA20" and a["kind"] == "WATCH"
+    assert a["issued_at"] == datetime(2026, 9, 14, 15, 47, tzinfo=timezone.utc)
+    assert {d.day: g for d, g in a["watch_days"].items()} == {15: 1, 16: 1, 17: 0}
+    store = _alert_store(("WATA20", txt))
+    assert sw.alert_state(store, now=datetime(2026, 9, 14, 16, 0, tzinfo=timezone.utc))["kp_expected"] == 5
+    assert sw.alert_state(store, now=datetime(2026, 9, 16, 23, 0, tzinfo=timezone.utc))["kp_expected"] == 5
+    assert sw.alert_state(store, now=datetime(2026, 9, 17, 1, 0, tzinfo=timezone.utc))["kp_expected"] == 0
+    obj = sw.space_weather_for(store, now=datetime(2026, 9, 14, 16, 0, tzinfo=timezone.utc))
+    assert sw.render(obj).startswith("!G1 expected. ")
