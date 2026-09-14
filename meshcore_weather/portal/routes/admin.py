@@ -590,3 +590,26 @@ async def audit_space(request: Request) -> JSONResponse:
                          "kp_forecast": sw.kp_forecast, "g_forecast": sw.g_forecast,
                          "first_day": sw.first_day.isoformat() if sw.first_day else None,
                          "kp_now": sw.kp_now, "kp_expected": sw.kp_expected, "sfi": sw.sfi, "ssn": sw.ssn})
+
+
+@router.get("/audit/last")
+async def audit_last() -> JSONResponse:
+    """Result of the most recent scripts/audit.py run (written by the audit
+    timer to data/audit.json), summarised for the Overview page."""
+    import json
+    from pathlib import Path
+    path = Path(settings.data_dir) / "audit.json"
+    if not path.exists():
+        return JSONResponse({"available": False})
+    try:
+        d = json.loads(path.read_text())
+    except Exception as e:
+        return JSONResponse({"available": False, "error": str(e)})
+    res = d.get("results", [])
+    fails = [r for r in res if not r.get("ok")]
+    by_check: dict = {}
+    for r in res:
+        c = by_check.setdefault(r["check"], {"pass": 0, "fail": 0})
+        c["pass" if r.get("ok") else "fail"] += 1
+    return JSONResponse({"available": True, "at": d.get("at"), "passed": len(res) - len(fails), "failed": len(fails),
+                         "by_check": by_check, "failures": fails[:20]})

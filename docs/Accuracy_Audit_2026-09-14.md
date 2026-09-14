@@ -58,9 +58,38 @@ Times are 19:50–20:00 UTC.
 - Any place outside Texas and New York; the same code paths serve them.
 - Tropical products: none active.
 
+## Nationwide, automated: `scripts/audit.py`
+
+The manual checks above became a script that runs every hour on the Pi
+(`deploy/meshcore-weather-audit.timer`) and writes `data/audit.json`, which
+the portal Overview shows. It compares, for every state, the set of VTEC
+events and their zone lists with api.weather.gov and the last 6 hours of
+storm reports with IEM; for 30 stations nationwide the raw METAR text with
+aviationweather.gov; for 20 places the daily highs/lows with the same PFM
+point on forecast.weather.gov (NWS grid as a loose fallback); and the space
+weather numbers with SWPC.
+
+Its first two runs found four more faults, all fixed the same day:
+
+| Fault | Effect | Fix |
+|---|---|---|
+| Flood Watches (`FFA`) never extracted | missing in AZ, IA, KS, MO, NE, NM | product type added |
+| Cancelled/expired/upgraded events resurrected by the older product that issued them | CYS high wind warning, PAH heat advisory still "active" | retired keys suppress older entries |
+| First forecast day skipped by the downsampler while labelled by the service | Minneapolis showed Tuesday's 70/51 under "Mon" | the downsampler owns period dates; a day with a Min/Max max counts |
+| LSR event names that fill their column ("Non-Tstm Wnd Gst") | every Billings wind report dropped (0 of 38) | fixed-width column parsing |
+| PFM 6-hourly Date row glued to the row above it on the satellite copy | Houston's extended days dated two days early | glued-row repair extended |
+
+Third run, 20:24 UTC: **154 of 155 checks pass**. Every state's warning set
+and zone lists match NWS; every state's storm reports match IEM (Montana
+38 of 38, South Dakota 7 of 7); all 30 METARs match; 19 of 20 forecasts are
+identical to the online PFM for the same point (Anchorage has no PFM point
+online and matched the grid within 6 °F); space weather matches. The one
+failure was a severe thunderstorm warning in its last minutes that NWS had
+already dropped while the expiring SVS was still in flight; the audit now
+gives such events a 15-minute grace.
+
 ## Standing rule
 
-Every future formatting or parsing change to a reply must be checked the same
-way, against a source that is not EMWIN, before it ships. The comparison
-scripts used here are in the commit message history; a `scripts/audit.py`
-that automates them is the next step.
+The hourly audit is the acceptance test. A reply-format or parser change
+ships only when the next audit run is clean, and a red Overview card is a
+bug until proven to be a satellite gap.

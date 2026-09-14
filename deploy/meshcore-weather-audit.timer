@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Meshcore Weather accuracy audit hourly
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

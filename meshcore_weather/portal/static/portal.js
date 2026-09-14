@@ -314,8 +314,25 @@ var Portal = {
       });
     },
 
+    loadAudit: function () {
+      apiJson("/api/audit/last").then(function (d) {
+        var el = document.getElementById("overview-audit");
+        if (!d.available) { el.textContent = "No audit result yet (the audit timer writes data/audit.json hourly)."; return; }
+        var when = new Date(d.at).toLocaleString();
+        var parts = Object.keys(d.by_check).map(function (k) {
+          var c = d.by_check[k]; return '<span class="badge ' + (c.fail ? "badge-danger" : "badge-success") + '">' + k + " " + c.pass + "/" + (c.pass + c.fail) + '</span>';
+        }).join(" ");
+        var html = '<div class="mb-4">' + when + " — <strong>" + d.passed + " passed, " + d.failed + " failed</strong> " + parts + '</div>';
+        if (d.failures.length) {
+          html += d.failures.map(function (f) { return '<div><span class="badge badge-danger">FAIL</span> ' + escapeHtml(f.check + " " + f.subject) + ': <span class="text-muted">' + escapeHtml(f.detail) + '</span></div>'; }).join("");
+        }
+        el.innerHTML = html;
+      }).catch(function () {});
+    },
+
     refresh: function () {
       this.loadHealth();
+      this.loadAudit();
       fetch("/api/status").then(function (r) { return r.json(); }).then(function (data) {
         var grid = document.getElementById("overview-status-grid");
         grid.innerHTML =

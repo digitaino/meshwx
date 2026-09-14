@@ -35,6 +35,12 @@
       <p class="page-subtitle">Receiver, feed, radio and bot at a glance.</p>
 
       <div class="grid grid-5 mb-4" id="overview-health"></div>
+      <div class="card" id="overview-audit-card">
+        <div class="card-header"><div><div class="card-title">Accuracy audit</div>
+          <div class="card-subtitle" id="overview-audit-sub">Hourly comparison of this bot's answers with api.weather.gov, IEM storm reports, aviationweather METARs and SWPC</div></div>
+          <a class="btn" href="#console" onclick="Portal.router.navigate('console')">Console</a></div>
+        <div id="overview-audit" class="text-small">Not run yet</div>
+      </div>
       <div class="grid grid-5 mb-4" id="overview-stats"></div>
 
       <div class="card">

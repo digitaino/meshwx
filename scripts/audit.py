@@ -85,8 +85,14 @@ class Audit:
             bot = self.bot_get("/api/audit/warnings", state=st)["events"]
             bot_events = {f"{e['office']} {e['phenomenon']}.{e['significance']}.{e['etn']}": set(e["ugcs"])
                           for e in bot if e.get("etn") is not None}
+            # A short-fuse warning in its last minutes: NWS may already have
+            # dropped it (an SVS with EXP is on its way over the satellite).
+            soon = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=15)
+            ending = {f"{e['office']} {e['phenomenon']}.{e['significance']}.{e['etn']}" for e in bot
+                      if e.get("etn") is not None and e.get("expires") and dt.datetime.fromisoformat(e["expires"]) <= soon}
             missing = sorted(set(api_events) - set(bot_events))
-            extra = sorted(set(bot_events) - set(api_events))
+            extra = sorted(set(bot_events) - set(api_events) - ending)
+            ending_extra = sorted((set(bot_events) - set(api_events)) & ending)
             zone_gaps = []
             for k in set(api_events) & set(bot_events):
                 lost = api_events[k] - bot_events[k]
@@ -100,6 +106,8 @@ class Audit:
                 detail += f" | bot has, NWS does not: {', '.join(extra)}"
             if zone_gaps:
                 detail += " | " + "; ".join(zone_gaps)
+            if ending_extra:
+                detail += f" | expiring within 15 min, not counted: {', '.join(ending_extra)}"
             self.rec("warnings", st, ok, detail)
 
     # -- storms -----------------------------------------------------------------

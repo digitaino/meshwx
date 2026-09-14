@@ -1,0 +1,12 @@
+# Hourly accuracy audit against api.weather.gov, IEM, aviationweather and SWPC.
+# Results land in data/audit.json and show on the portal Overview.
+[Unit]
+Description=Meshcore Weather accuracy audit
+After=meshcore-weather.service
+
+[Service]
+Type=oneshot
+User=digitaino
+WorkingDirectory=/home/digitaino/meshcore-weather
+ExecStart=/home/digitaino/meshcore-weather/.venv/bin/python scripts/audit.py --json /home/digitaino/meshcore-weather/data/audit.json
+Nice=10
