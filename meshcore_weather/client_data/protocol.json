@@ -1,11 +1,9 @@
 {
-  "version": 6,
+  "version": 7,
   "messages": {
     "refresh_request": 1,
     "data_request": 2,
     "not_available": 3,
-    "radar_grid": 16,
-    "radar_compressed": 17,
     "warning_polygon": 32,
     "warning_zones": 33,
     "observation": 48,
@@ -26,10 +24,6 @@
     "latlon": 4,
     "wfo": 5,
     "pfm_point": 6
-  },
-  "radar_encoding": {
-    "sparse": 0,
-    "rle": 1
   },
   "not_available_reasons": {
     "no_data": 0,
@@ -524,7 +518,7 @@
     "space_weather": 9
   },
   "space_weather": {
-    "layout": "0:type 1-4:issued_unix_min u32 5:kp24h*3 6-8:kp_day1..3*3 9:G1<<4|G2 10:G3<<4 11-13:S1+% 14-16:R1-R2% 17-19:R3+% 20-21:sfi u16 22-23:ssn u16(0xFFFF=unknown) 24:xray class*10+mag(255=unknown)",
-    "size": 25
+    "layout": "0:type 1-4:issued_unix_min u32 5:kp24h*3 6-8:kp_day1..3*3 9:G1<<4|G2 10:G3<<4 11-13:S1+% 14-16:R1-R2% 17-19:R3+% 20-21:sfi u16 22-23:ssn u16(0xFFFF=unknown) 24:xray class*10+mag(255=unknown) 25:kp_now<<4|kp_expected (observed K from ALTKnn, expected K from WARKnn or watch G+4; 0=none) 26:xray_alert<<4|proton_alert (xray 1=R2 M5+, 2=R3 X1+ within 3h; proton 1=S1 expected, 2=S1 observed, 3=S2+ observed)",
+    "size": 27
   }
 }

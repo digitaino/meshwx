@@ -233,3 +233,62 @@ v5: zones `TXZ173, 191–194, 205–209, 220–225` are 4 runs × 4 bytes = 16, 
 Effect, measured on the 274 PFM products received today: 215 now encode to 7 daily periods, 42 to 6, 17 to 3. Before the fixes the same products gave 2 periods (21 bytes on the wire, which is what the production log had been showing as "forecast-austin-tx → 21 bytes"). Austin's 18:51Z forecast now encodes to 56 bytes covering Mon–Sun.
 
 Still open: 13 of ~1,500 points nationwide have other header glitches and are now skipped with a warning instead of killing their product; Alaska and Guam PFMs return no forecast (different coordinate/zone layout, not investigated); the 6-hourly table has no wind speed row, so days 4–7 carry wind 0.
+
+## 10. Overnight 13/19Z–14/13Z: what else is on the downlink
+
+Receiver ran unattended for 18 hours: 795–1,354 text files every hour, no gaps. The
+journal now shows steady packet drops (about 1,100–1,750 per hour, Viterbi 90–110,
+RS corrections ~650 bytes on drop intervals versus ~50 on clean ones), which is
+bursty signal degradation rather than USB or CPU loss. It cost little: for 11–13Z
+the satellite delivered 1,187 of 1,202 product identities the internet bundle
+carried (98.8 %); the 15 misses were four PFMs (BOX, ARX, ICT, PUB), two ZFPs and
+assorted routine products, no warnings.
+
+### Space weather: alerts do come down
+
+`ALTEF3US` (WOXX30 KWNP, "Space Weather Message Code: ALTEF3", electron flux
+alert) arrived at 11:06Z. This is the standard SWPC alert envelope, so the
+K-index alerts/warnings/watches (`ALTK04`–`K09`, `WARK04`–`K07`, `WATA20/30/50`),
+flare summaries (`SUMX01`) and proton alerts will arrive the same way as
+`<CODE>US`. The bot now parses that envelope into two alert bytes in 0x3E
+(see System_Review section 3, space weather). Also on the downlink, all from KWNP:
+`DAYPRE` (3-day predictions with 3-hourly mid-latitude K and A indices),
+`DAYDSF` (daily summary/forecast with flare and storm probabilities), `DAYDIS`
+(forecast discussion), `DAYEVT` (event reports), `DAYOBS` (sunspot region table),
+`ADVOUT` (weekly advisory outlook). `DAYTDF`/`DAYIND` remain the right inputs.
+
+### Not on the downlink
+
+- **SPC mesoscale discussions.** MD 2292 was issued 13/19:59Z (OH/PA/NY,
+  "watch possible"); no file on the satellite mentions "MESOSCALE DISCUSSION".
+- **SPC day 1–3 outlook points (`PTSDY1/2/3`).** Only `PTSD48` arrived (empty).
+  The `SWODY1` narrative carries no polygons, so the earlier note that the
+  outlook text has categorical lat/lon points in its tail was wrong for this
+  feed. A "day-1 risk" product would need a different source.
+- **NHC public advisories.** Tropical Storm Norbert (EP14) and EP15 were active
+  both days. The storm appears only in wind-speed probabilities (`PWSEP4/5`),
+  the high-seas forecasts, JTWC warnings (`HEPN31/32`) and two PNG probability
+  graphics; no `TCP`, `TCM`, `TCD` or `TWO` arrived. Hurricane information for
+  a mesh would have to come from the local WFO's `HLS`/`TCV` (San Juan sends
+  its full package: `PFM`, `ZFP`, `AFM`, `SFT`, `CWF`, `SRF`, `RWR`, `CLI`), which
+  stays unverified until a storm affects land.
+
+### Newly identified, possibly useful later
+
+- `FFGMPD` (WPC Mesoscale Precipitation Discussion): state list, "Concerning...
+  Flash flooding possible", valid window, lat/lon polygon. Flash-flood heads-up.
+- `STAHRY` (SPC hourly severe report roll-up) and `SCSWBN` (selected cities).
+- `TID<wfo>` (NOS hourly tide predictions, SHEF; BRO/CRP/HGX/KEY/MHX/ACY, not
+  SJU). A coastal "tide" product is feasible from this.
+- `EPHTWO` is satellite TLE ephemeris, `TSTPAQ` Alaska test messages, `AHO*`
+  aircraft recon HDOB, `HFF*`/`HSF*` high-seas forecasts, `ASH*` volcanic ash
+  advisories (Washington VAAC), `ULP/MSA/SSA/UAB *CA` Canadian analyses,
+  `AIR*FJ`, `PMFZ40NZ`, `PCFFFN*` South Pacific. Guam (PGUM), Alaska (PAFC,
+  PAFG), Hawaii (PHFO) and San Juan (TJSJ) all send PFM/ZFP/SFT packages.
+
+### Side finding, not satellite
+
+The scheduler fetched the 4 MB IEM radar composite from the internet on every
+30-second tick whether or not a radar job was due (~11 GB/day). Radar is gone
+from v5; the fetch, the radar product, the RIDGE extractor, the 0x10/0x11
+codecs and the Pillow dependency were removed the same day.

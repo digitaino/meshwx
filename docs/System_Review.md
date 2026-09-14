@@ -101,13 +101,19 @@ Still open, smaller: Guam has no METAR station in `stations.json` (PGUM missing 
 
 ### Space weather (added 2026-09-14)
 
-The `space_weather` job type used to dump the newest SWPC file as 0x40 text chunks; on real data it shipped 132 bytes of header plus "No Data." It is now a structured product in `core/space_weather.py`: the SWPC 3-Day Forecast (max Kp last 24 h, max Kp per day for three days, G scale, S1+ and R1-R2/R3+ probabilities) merged with the Daily Indices (sunspot number, 10.7 cm flux, X-ray background). 25 bytes on the wire (message 0x3E, request type 9), one DM line via the `space` / `swx` / `solar` command:
+The `space_weather` job type used to dump the newest SWPC file as 0x40 text chunks; on real data it shipped 132 bytes of header plus "No Data." It is now a structured product in `core/space_weather.py`: the SWPC 3-Day Forecast (max Kp last 24 h, max Kp per day for three days, G scale, S1+ and R1-R2/R3+ probabilities) merged with the Daily Indices (sunspot number, 10.7 cm flux, X-ray background) and the live SWPC alert envelope (observed and expected K-index, R2/R3 flare, S-scale proton event). 27 bytes on the wire (message 0x3E, request type 9), one DM line via the `space` / `swx` / `solar` command:
 
 ```
 Kp now 3.0, next 3d 3.7/3.7/4.7 (G1 Tue). SFI 114 SSN 77 xray B3.0. R1-2 10%
 ```
 
-Both products arrive on the satellite feed daily around 22:00Z and 00:30Z. Whether SWPC's storm-time watches, warnings and alerts also come down over HRIT is unverified until the next active period.
+Both products arrive on the satellite feed daily around 22:00Z and 00:30Z. The alert envelope is confirmed on HRIT (an ALTEF3 electron alert, 2026-09-14). Alerts, warnings, watches and summaries all share one layout, so `parse_swpc_alert` covers ALTKnn / WARKnn / WATAxx / ALTXMF / SUMXnn / WARPX1 / ALTPXn / SUMPXn. `alert_state` turns the newest message per code into four small numbers with fixed validity (K alert 3 h, warning until Valid To, watch until its last listed day, flare 3 h, proton event 24 h or until the SUMPX end time). During a storm the line starts with the live state:
+
+```
+!G2 storm now (K6) !R3 radio blackout. Kp now 5.7, next 3d 6.3/5.0/4.0 (G2 Tue). SFI 180 SSN 140 xray C2.1. R1-2 55%
+```
+
+The storm-class messages have not been seen on the dish yet; their tests use SWPC's published layout and should be checked against the first real ones.
 
 ## 4. Rules going forward
 

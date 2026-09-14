@@ -1,0 +1,16 @@
+WOXX30 KWNP 141106
+ALTEF3
+
+Space Weather Message Code: ALTEF3
+Serial Number: 3744
+Issue Time: 2026 Sep 14 1103 UTC
+
+CONTINUED ALERT: Electron 2MeV Integral Flux exceeded 1,000pfu
+Continuation of Serial Number: 3743
+Begin Time: 2026 Sep 10 1304 UTC
+Yesterday Maximum 2MeV Flux: 1827 pfu
+Max time: 2026 Sep 13 1800 UTC
+
+# Issued by the US Dept. of Commerce, NOAA, Space Weather Prediction Center
+# Recent messages, data, and help at http://swpc.noaa.gov/alerts/
+# Send questions to SWPC.Webmaster@noaa.gov
