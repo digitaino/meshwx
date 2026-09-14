@@ -142,6 +142,7 @@ VTEC_PHENOMENON_TO_WARN_TYPE: dict[str, int] = {
 _WARNING_PRODUCT_TYPES = {
     # Warnings / watches / statements
     "TOR", "SVR", "SVS", "SPS", "FFW", "FLW", "FLS",
+    "FFA",  # Flood Watch (FA.A / FF.A) — missing from the bot in 6 states on 2026-09-14
     "WSW", "NPW", "RFW", "FWW", "MWW", "MWS",
     "SMW", "SWO", "DSW", "EWW", "SQW", "CFW",
     # River products (VTEC-based)
@@ -162,6 +163,11 @@ _NON_VTEC_TYPES = {"SPS"}
 # -- Cancellation actions (VTEC significance) --------------------------------
 
 _CANCEL_ACTIONS = {"CAN", "EXP", "UPG"}
+
+
+def _vtec_key(vtec) -> tuple:
+    """Identity of a VTEC event: what dedup and retirement key on."""
+    return (vtec.phenomena, vtec.significance, vtec.office, vtec.etn)
 
 
 # -- Headline shortening for LoRa display ------------------------------------
@@ -295,6 +301,11 @@ def _extract_warnings_pyiem(store: WeatherStore) -> list[dict]:
     now = datetime.now(timezone.utc)
     seen: dict[tuple, dict] = {}
     results: list[dict] = []
+    # Events retired by a later product (CAN/EXP/UPG). Products are walked
+    # newest first, so a retirement is seen before the NEW/CON lines in the
+    # older products that would otherwise resurrect the event (CYS high wind
+    # warning cancelled at 19:39Z still showing at 20:10Z, 2026-09-14).
+    dead: set[tuple] = set()
 
     # Products never change once stored, so each one is parsed with pyIEM
     # exactly once. Without this a Pi 4 spent ~15 s per "wx" reply re-parsing
@@ -324,6 +335,13 @@ def _extract_warnings_pyiem(store: WeatherStore) -> list[dict]:
             # a segment without VTEC (SPS) yields a single entry.
             vtecs = list(seg.vtec) if seg.vtec else [None]
             for idx, vtec in enumerate(vtecs):
+                if vtec is not None:
+                    vkey = _vtec_key(vtec)
+                    if vtec.action in _CANCEL_ACTIONS:
+                        dead.add(vkey)
+                        continue
+                    if vkey in dead:
+                        continue
                 entry = _segment_to_entry(seg, parsed, prod, now, vtec=vtec, vtec_index=idx)
                 if entry is None:
                     continue

@@ -131,6 +131,7 @@ class Forecast:
     source: str                        # "PFM"
     periods: list[dict] = field(default_factory=list)   # pack_forecast period dicts
     start_date: datetime | None = None                    # local date of period 0
+    wfo: str = ""
 
     @property
     def issued_hours_ago(self) -> int:
@@ -196,13 +197,10 @@ def forecast_for(store: WeatherStore, loc: dict, max_days: int = 7) -> Forecast 
     daily = downsample_to_daily(pt, max_days=max_days)
     if not daily:
         return None
-    # Local date of period 0: first local date with a full day of slots.
-    dates = sorted({pt.local_date(s.dt) for s in pt.slots})
-    start = None
-    if dates:
-        counts = {d: sum(1 for s in pt.slots if pt.local_date(s.dt) == d) for d in dates}
-        full = [d for d in dates if counts[d] >= 4]
-        start = datetime.combine(full[0] if full else dates[0], datetime.min.time())
+    # Period 0's date comes from the downsampler itself, so labels can never
+    # drift from the numbers (Minneapolis showed Tuesday's 70/51 under "Mon"
+    # when Monday was a partial day, 2026-09-14).
+    start = datetime.combine(daily[0].local_date, datetime.min.time())
     return Forecast(
         point_name=pt.name,
         point_zone=pt.zone,
@@ -211,6 +209,7 @@ def forecast_for(store: WeatherStore, loc: dict, max_days: int = 7) -> Forecast 
         source="PFM",
         periods=[p.to_encoder_dict() for p in daily],
         start_date=start,
+        wfo=pt.wfo or prod.office,
     )
 
 

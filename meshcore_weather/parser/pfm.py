@@ -856,6 +856,7 @@ def _avg_wind_speed_5mph(slots: list[PFMSlot]) -> int:
 class DailyPeriod:
     """One daily forecast period derived from PFM slots. Mirrors the 0x31 period dict."""
     day_offset: int        # 0 = first local date in the data, 1 = next, etc.
+    local_date: object     # datetime.date of this period (the single source of truth for labels)
     high_f: int | None
     low_f: int | None
     sky_code: int
@@ -922,7 +923,11 @@ def downsample_to_daily(
     valid_dates: list[date] = []
     for d in sorted_dates:
         temps = [s.temp_f for s in by_local_date[d] if s.temp_f is not None]
-        if len(temps) >= min_slots_per_day:
+        # A day counts when it has enough samples, or when NWS gave its
+        # max in the Min/Max row (issued late in the day, "today" has only
+        # evening samples but the row still says what the high was/is).
+        has_row_max = any(s.minmax_f is not None and point.local_hour(s.dt) >= 12 for s in by_local_date[d])
+        if len(temps) >= min_slots_per_day or (has_row_max and temps):
             valid_dates.append(d)
         elif valid_dates:
             # We've hit a partial day AFTER finding valid ones — stop here
@@ -974,6 +979,7 @@ def downsample_to_daily(
         periods.append(
             DailyPeriod(
                 day_offset=(d - base_date).days,
+                local_date=d,
                 high_f=high_f,
                 low_f=low_f,
                 sky_code=sky_code,

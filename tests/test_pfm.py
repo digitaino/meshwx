@@ -394,3 +394,18 @@ def test_highs_and_lows_come_from_the_min_max_row():
     days = [(d.high_f, d.low_f) for d in downsample_to_daily(mabry)]
     # Mon..Sat from the Min/Max (3-hourly) and Max/Min (6-hourly) rows
     assert days[:6] == [(101, 78), (102, 77), (100, 77), (97, 75), (98, 74), (98, 74)]
+
+
+def test_partial_first_day_with_row_max_is_day_zero():
+    """MPX PFM issued 18:51Z: Monday has only evening samples but the
+    Max/Min row gives 62; the first period must be Monday 62/57, not
+    Tuesday's numbers labelled Monday (found 2026-09-14)."""
+    from pathlib import Path
+    from datetime import date
+    from meshcore_weather.parser.pfm import parse_pfm, downsample_to_daily
+    pts = parse_pfm((Path(__file__).parent / "fixtures" / "PFMMPX_20260914_1851Z.txt").read_bytes().decode("utf-8", "replace"))
+    mpls = [p for p in pts if p.name.startswith("Minneapolis")][0]
+    days = downsample_to_daily(mpls)
+    assert days[0].local_date == date(2026, 9, 14)
+    assert (days[0].high_f, days[0].low_f) == (62, 57)
+    assert (days[1].high_f, days[1].low_f) == (70, 51)

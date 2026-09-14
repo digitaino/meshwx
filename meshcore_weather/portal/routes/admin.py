@@ -506,3 +506,87 @@ async def radio_reconnect(request: Request) -> JSONResponse:
     await _bot(request).reconnect_radio()
     bot = _bot(request)
     return JSONResponse({"ok": True, "connected": bot.radio.connected, "error": bot._radio_last_error})
+
+
+# -- Audit: structured answers for scripts/audit.py -----------------------------------
+#
+# The bot never touches the internet; the audit script does, and compares
+# these structured answers with api.weather.gov, IEM, aviationweather.gov
+# and SWPC. Same services the text and binary replies use.
+
+
+@router.get("/audit/warnings")
+async def audit_warnings(request: Request, state: str = Query(..., min_length=2, max_length=2)) -> JSONResponse:
+    from meshcore_weather.protocol.warnings import extract_active_warnings
+    st = state.upper()
+    out = []
+    for w in extract_active_warnings(_bot(request).store, coverage=None):
+        ugcs = [u for u in (w.get("ugcs") or w.get("zones") or [])]
+        if not any(u[:2] == st for u in ugcs):
+            continue
+        out.append({
+            "office": w.get("vtec_office"), "phenomenon": w.get("vtec_phenomenon"),
+            "significance": w.get("vtec_significance"), "etn": w.get("vtec_etn"),
+            "expires": w["expires_at"].isoformat() if w.get("expires_at") else None,
+            "ugcs": sorted(u for u in ugcs if u[:2] == st),
+            "headline": (w.get("headline") or "")[:120],
+        })
+    return JSONResponse({"state": st, "events": out})
+
+
+@router.get("/audit/storms")
+async def audit_storms(request: Request, state: str = Query(..., min_length=2, max_length=2),
+                       hours: int = Query(6, ge=1, le=48)) -> JSONResponse:
+    from meshcore_weather.core import services
+    sr = services.storm_reports_for(_bot(request).store, state=state.upper(), limit=200, max_age_hours=hours)
+    return JSONResponse({"state": state.upper(), "reports": [
+        {"at": e["at"].isoformat(), "event": e["event"], "location": e["location"], "county": e.get("county"),
+         "state": e.get("state"), "mag": e.get("mag")} for e in (sr.entries if sr else [])]})
+
+
+@router.get("/audit/obs")
+async def audit_obs(request: Request, station: str = Query(..., min_length=4, max_length=4)) -> JSONResponse:
+    from meshcore_weather.core import services
+    from meshcore_weather.geodata import resolver
+    loc = resolver.resolve(station.upper())
+    if not loc:
+        raise HTTPException(404, "unknown station")
+    raw = services.raw_metar_for(_bot(request).store, loc)
+    ob = services.observation_for(_bot(request).store, loc)
+    return JSONResponse({
+        "station": station.upper(),
+        "metar": raw[2] if raw else None, "metar_station": raw[0] if raw else None,
+        "obs": None if ob is None else {"station": ob.station, "temp_f": ob.temp_f, "dewpoint_f": ob.dewpoint_f,
+                                        "wind_dir_deg": ob.wind_dir_deg, "wind_speed_mph": ob.wind_speed_mph,
+                                        "wind_gust_mph": ob.wind_gust_mph, "obs_utc_min": ob.obs_utc_min},
+    })
+
+
+@router.get("/audit/forecast")
+async def audit_forecast(request: Request, place: str = Query(..., min_length=2)) -> JSONResponse:
+    from meshcore_weather.core import services
+    from meshcore_weather.geodata import resolver
+    loc = resolver.resolve(place)
+    if not loc:
+        raise HTTPException(404, "unknown place")
+    fc = services.forecast_for(_bot(request).store, loc)
+    return JSONResponse({
+        "place": loc.get("name"), "lat": loc.get("lat"), "lon": loc.get("lon"),
+        "point": fc.point_name if fc else None, "point_km": fc.distance_km if fc else None,
+        "wfo": fc.wfo if fc else None, "issued": fc.issued_at.isoformat() if fc and fc.issued_at else None,
+        "start_date": fc.start_date.date().isoformat() if fc and fc.start_date else None,
+        "periods": [{"day": p["period_id"], "high_f": p["high_f"], "low_f": p["low_f"], "precip_pct": p.get("precip_pct", 0)}
+                    for p in (fc.periods if fc else [])],
+    })
+
+
+@router.get("/audit/space")
+async def audit_space(request: Request) -> JSONResponse:
+    from meshcore_weather.core import space_weather
+    sw = space_weather.space_weather_for(_bot(request).store)
+    if sw is None:
+        return JSONResponse({"available": False})
+    return JSONResponse({"available": True, "issued": sw.issued_at.isoformat(), "kp_max_24h": sw.kp_max_24h,
+                         "kp_forecast": sw.kp_forecast, "g_forecast": sw.g_forecast,
+                         "first_day": sw.first_day.isoformat() if sw.first_day else None,
+                         "kp_now": sw.kp_now, "kp_expected": sw.kp_expected, "sfi": sw.sfi, "ssn": sw.ssn})

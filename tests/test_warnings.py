@@ -78,3 +78,29 @@ def test_segments_of_one_event_are_merged():
     ws = [w for w in extract_active_warnings(store, coverage=None) if w.get("vtec_etn") == 11]
     assert len(ws) == 1
     assert set(ws[0].get("ugcs") or ws[0].get("zones")) >= {"TXZ213", "TXZ214", "TXZ215", "TXZ226", "TXZ227", "TXZ228", "TXZ229"}
+
+
+def test_cancelled_event_is_not_resurrected_by_the_older_product():
+    """CYS: NEW high wind warning at 11:29Z, CAN at 19:39Z. With both
+    products in the store the event must be gone (found 2026-09-14)."""
+    from datetime import datetime, timedelta, timezone
+    from meshcore_weather.parser.weather import WeatherStore
+    from meshcore_weather.protocol.warnings import extract_active_warnings
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    exp = (now + timedelta(hours=6)).strftime("%y%m%dT%H%MZ")
+    t_new, t_can = now - timedelta(hours=3), now - timedelta(minutes=20)
+
+    def prod(t, vtec, seq):
+        text = (f"WWUS75 KCYS {t:%d%H%M}\r\r\nNPWCYS\r\r\n\r\r\nURGENT - WEATHER MESSAGE\r\r\nNational Weather Service Cheyenne WY\r\r\n"
+                f"{t.strftime('%I%M %p').lstrip('0')} MDT {t.strftime('%a %b %d %Y')}\r\r\n\r\r\nWYZ101-102-{t:%d%H%M}-\r\r\n{vtec}\r\r\n"
+                "Laramie Range-\r\r\n...HIGH WIND WARNING...\r\r\n\r\r\n$$\r\r\n")
+        return {"filename": f"A_WWUS75KCYS{t:%d%H%M}_C_KWIN_{t:%Y%m%d%H%M%S}_{seq:06d}-1-NPWCYSWY.TXT", "raw_text": text}
+
+    store = WeatherStore()
+    store.ingest([prod(t_new, f"/O.NEW.KCYS.HW.W.0038.{t_new:%y%m%dT%H%MZ}-{exp}/", 1),
+                  prod(t_can, f"/O.CAN.KCYS.HW.W.0038.000000T0000Z-{exp}/", 2)])
+    assert [w for w in extract_active_warnings(store, coverage=None) if w.get("vtec_etn") == 38] == []
+    # Without the cancellation the event is active
+    store2 = WeatherStore()
+    store2.ingest([prod(t_new, f"/O.NEW.KCYS.HW.W.0038.{t_new:%y%m%dT%H%MZ}-{exp}/", 1)])
+    assert len([w for w in extract_active_warnings(store2, coverage=None) if w.get("vtec_etn") == 38]) == 1
