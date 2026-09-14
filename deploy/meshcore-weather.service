@@ -1,0 +1,23 @@
+# systemd unit for the receiver Pi. Install with:
+#   sudo cp deploy/meshcore-weather.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now meshcore-weather
+[Unit]
+Description=Meshcore Weather bot (EMWIN from goesproc -> LoRa mesh)
+After=network.target goesproc.service
+Wants=goesproc.service
+
+[Service]
+Type=simple
+User=digitaino
+Group=dialout
+WorkingDirectory=/home/digitaino/meshcore-weather
+EnvironmentFile=/home/digitaino/meshcore-weather/.env
+ExecStart=/home/digitaino/meshcore-weather/.venv/bin/meshcore-weather
+Restart=on-failure
+RestartSec=15
+# Keep the bot from starving goesrecv (the receiver must never drop packets)
+Nice=5
+MemoryMax=700M
+
+[Install]
+WantedBy=multi-user.target

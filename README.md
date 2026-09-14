@@ -198,6 +198,31 @@ meshcore-weather-cli remove <name>      # Remove a contact by name
 meshcore-weather-cli clear-contacts     # Remove all contacts (fresh start)
 ```
 
+## Running on the receiver Pi (no Docker)
+
+The production shape is one Raspberry Pi running goestools for the dish and
+this bot for the mesh, radio on USB. Docker is not needed there (and a 2 GB Pi
+has no room for the image build); a venv is enough:
+
+```bash
+git clone https://github.com/digitaino/meshwx.git ~/meshcore-weather
+cd ~/meshcore-weather
+python3 -m venv .venv && .venv/bin/pip install -e ".[portal]"
+cp deploy/pi.env.example .env        # edit: serial port, home city, admin key
+sudo cp deploy/meshcore-weather.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now meshcore-weather
+journalctl -u meshcore-weather -f
+```
+
+`MCW_EMWIN_SOURCE=sdr` makes the bot read goesproc's `emwin/YYYY-MM-DD/` tree
+directly; nothing is fetched from the internet. The bot starts without a
+radio and keeps retrying the serial port every minute, so the Heltec can be
+plugged in later. To try text commands from the Pi's shell:
+
+```bash
+.venv/bin/meshcore-weather-cli interactive
+```
+
 ## Configuration reference
 
 All settings are environment variables prefixed with `MCW_`. See `.env.example` for the full list. Most commonly adjusted:
