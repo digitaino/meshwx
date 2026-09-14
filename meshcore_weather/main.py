@@ -18,6 +18,8 @@ from meshcore_weather.parser.weather import WeatherStore, paginate
 
 logger = logging.getLogger(__name__)
 
+RADIO_RETRY_SECONDS = 60
+
 HELP_TEXT = (
     "GOES-E EMWIN off-grid weather\n"
     "wx = overview | wx <ST> = state\n"
@@ -59,6 +61,7 @@ class WeatherBot:
         self.store = WeatherStore()
         self._running = False
         self._refresh_task: asyncio.Task | None = None
+        self._radio_task: asyncio.Task | None = None
         self._broadcaster = None  # MeshWXBroadcaster, created if data channel configured
         self._portal = None  # PortalServer, created if portal enabled
         self._paging: dict[str, dict] = {}  # sender_key -> {full, offset, ts}
@@ -83,21 +86,21 @@ class WeatherBot:
         self.radio.on_advert(self._handle_advert)
 
         await self.emwin.start()
-        await self.radio.start()
         await self._refresh_store()
 
         self._running = True
         self._refresh_task = asyncio.create_task(self._refresh_loop())
 
-        # Start MeshWX binary broadcaster if data channel is configured
-        if self.radio.data_channel_idx is not None:
-            from meshcore_weather.protocol.broadcaster import MeshWXBroadcaster
-            self._broadcaster = MeshWXBroadcaster(self.store, self.radio)
-            await self._broadcaster.start()
-
-            # Register discovery ping handler — bots respond to pings on #meshwx-discover
-            if self.radio.discover_channel_idx is not None:
-                self.radio.on_discover_ping(self._broadcaster.scheduler.respond_to_discovery_ping)
+        # The radio may not be plugged in yet (a Pi whose Heltec arrives
+        # later, a USB cable pulled). Keep serving the store, portal and
+        # CLI, and keep trying the radio until it answers.
+        try:
+            await self.radio.start()
+        except Exception as e:
+            logger.warning("Radio not available (%s); retrying every %ds", e, RADIO_RETRY_SECONDS)
+            self._radio_task = asyncio.create_task(self._radio_retry_loop())
+        else:
+            await self._after_radio_connected()
 
         # Start local operator web portal if enabled
         if settings.portal_enabled:
@@ -108,15 +111,48 @@ class WeatherBot:
             except ImportError as e:
                 logger.warning("Portal disabled: %s (run `pip install meshcore-weather[portal]`)", e)
 
-        logger.info(
-            "Weather bot is running. Listening on channel %d (%s) + DMs",
-            self.radio.channel_idx,
-            settings.meshcore_channel,
-        )
+        if self.radio.channel_idx is not None:
+            logger.info(
+                "Weather bot is running. Listening on channel %d (%s) + DMs",
+                self.radio.channel_idx,
+                settings.meshcore_channel,
+            )
+        else:
+            logger.info("Weather bot is running without a radio (store, portal and CLI only)")
+
+    async def _after_radio_connected(self) -> None:
+        """Start the MeshWX broadcaster once a radio with a data channel is up."""
+        if self.radio.data_channel_idx is not None:
+            from meshcore_weather.protocol.broadcaster import MeshWXBroadcaster
+            self._broadcaster = MeshWXBroadcaster(self.store, self.radio)
+            await self._broadcaster.start()
+
+            # Register discovery ping handler — bots respond to pings on #meshwx-discover
+            if self.radio.discover_channel_idx is not None:
+                self.radio.on_discover_ping(self._broadcaster.scheduler.respond_to_discovery_ping)
+
+    async def _radio_retry_loop(self) -> None:
+        while self._running:
+            await asyncio.sleep(RADIO_RETRY_SECONDS)
+            try:
+                await self.radio.start()
+            except Exception as e:
+                logger.debug("Radio still not available: %s", e)
+                continue
+            logger.info("Radio connected after retry. Listening on channel %s (%s) + DMs",
+                        self.radio.channel_idx, settings.meshcore_channel)
+            await self._after_radio_connected()
+            return
 
     async def stop(self) -> None:
         logger.info("Shutting down Weather Bot")
         self._running = False
+        if self._radio_task:
+            self._radio_task.cancel()
+            try:
+                await self._radio_task
+            except asyncio.CancelledError:
+                pass
         if self._portal:
             await self._portal.stop()
         if self._broadcaster:

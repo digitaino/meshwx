@@ -1,6 +1,7 @@
-"""Fetch EMWIN weather products from NOAA internet sources.
+"""EMWIN product sources: the NOAA internet bundle, or the goestools
+output directory fed by a GOES satellite receiver (SDRSource).
 
-Strategy:
+Internet strategy:
 1. On startup, download the 3-hour bundle for initial coverage
 2. Every 2 minutes, download the 2-minute bundle (~43KB) for new products
 3. Accumulate products over time, expire after 12 hours
@@ -14,6 +15,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import re
 import zipfile
 from abc import ABC, abstractmethod
@@ -49,6 +51,45 @@ class EMWINSource(ABC):
 
 
 CACHE_FILE = Path(settings.data_dir) / "emwin_cache" / "products.jsonl"
+
+
+def parse_emwin_file(filename: str, raw_text: str) -> dict | None:
+    """Filename + body -> product dict. Shared by the zip and directory sources."""
+    product_id = "UNKNOWN"
+    station = "UNKNOWN"
+    awips_id = ""
+
+    m = EMWIN_FILENAME_RE.search(filename)
+    if m:
+        product_id = m.group(1)
+        station = m.group(2)
+        awips_id = m.group(4)
+
+    if product_id == "UNKNOWN":
+        for line in raw_text.splitlines()[:5]:
+            parts = line.strip().split()
+            if len(parts) >= 2 and len(parts[0]) >= 4 and parts[0].isalnum():
+                product_id = parts[0]
+                station = parts[1]
+                break
+
+    # Extract timestamp from filename
+    ts = datetime.now(timezone.utc)
+    m_ts = EMWIN_TS_RE.search(filename)
+    if m_ts:
+        try:
+            ts = datetime.strptime(m_ts.group(1), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+    return {
+        "product_id": product_id,
+        "station": station,
+        "awips_id": awips_id,
+        "timestamp": ts,
+        "raw_text": raw_text,
+        "filename": filename,
+    }
 
 
 class InternetSource(EMWINSource):
@@ -200,60 +241,124 @@ class InternetSource(EMWINSource):
         return products
 
     def _parse_emwin_file(self, filename: str, raw_text: str) -> dict | None:
-        product_id = "UNKNOWN"
-        station = "UNKNOWN"
-        awips_id = ""
-
-        m = EMWIN_FILENAME_RE.search(filename)
-        if m:
-            product_id = m.group(1)
-            station = m.group(2)
-            awips_id = m.group(4)
-
-        if product_id == "UNKNOWN":
-            for line in raw_text.splitlines()[:5]:
-                parts = line.strip().split()
-                if len(parts) >= 2 and len(parts[0]) >= 4 and parts[0].isalnum():
-                    product_id = parts[0]
-                    station = parts[1]
-                    break
-
-        # Extract timestamp from filename
-        ts = datetime.now(timezone.utc)
-        m_ts = EMWIN_TS_RE.search(filename)
-        if m_ts:
-            try:
-                ts = datetime.strptime(m_ts.group(1), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-            except ValueError:
-                pass
-
-        return {
-            "product_id": product_id,
-            "station": station,
-            "awips_id": awips_id,
-            "timestamp": ts,
-            "raw_text": raw_text,
-            "filename": filename,
-        }
+        return parse_emwin_file(filename, raw_text)
 
     async def fetch_products(self) -> list[dict]:
         return list(self._products.values())
 
 
 class SDRSource(EMWINSource):
-    """Future: Receive EMWIN products via SDR from GOES-16 satellite."""
+    """EMWIN products from the goestools output directory on disk.
+
+    goesproc's `emwin` handler writes every product as its own file under
+    `<sdr_emwin_dir>/YYYY-MM-DD/`, named exactly like the internet bundle
+    (`A_<WMO><stn><ddhhmm>_C_KWIN_<ts>_<seq>-N-<AWIPS>.TXT`), with the same
+    `\\r\\r\\n` bodies. So this source is a directory watcher and nothing
+    more: scan the date directories that can still hold products younger
+    than `emwin_max_age_hours`, read each new file as bytes (text mode
+    would turn `\\r\\r\\n` into blank lines and break pyIEM), and hand it to
+    the same parser the zip path uses. No network, no cache file: the
+    files on disk are the cache.
+    """
+
+    def __init__(self, root: Path | None = None):
+        self.root = Path(root or settings.sdr_emwin_dir).expanduser()
+        self._products: dict[str, dict] = {}
+        self._seen: set[str] = set()
+        self._poll_task: asyncio.Task | None = None
+        self._running = False
 
     async def start(self) -> None:
-        raise NotImplementedError(
-            "SDR source not yet implemented. "
-            "Set MCW_EMWIN_SOURCE=internet to use internet source."
-        )
+        if not self.root.is_dir():
+            raise FileNotFoundError(
+                f"SDR EMWIN directory {self.root} does not exist "
+                "(MCW_SDR_EMWIN_DIR; goesproc must be writing there)")
+        self._running = True
+        added = await asyncio.get_running_loop().run_in_executor(None, self.scan)
+        logger.info("SDR source: %d products on disk under %s", added, self.root)
+        self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def stop(self) -> None:
-        pass
+        self._running = False
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _poll_loop(self) -> None:
+        while self._running:
+            await asyncio.sleep(settings.sdr_poll_interval)
+            try:
+                new = await asyncio.get_running_loop().run_in_executor(None, self.scan)
+                if new:
+                    logger.info("SDR source: +%d new products (%d total)", new, len(self._products))
+            except Exception:
+                logger.exception("Error scanning SDR EMWIN directory")
+
+    def _candidate_dirs(self, now: datetime) -> list[Path]:
+        """Date directories that can still contain unexpired products."""
+        cutoff_day = (now - timedelta(hours=settings.emwin_max_age_hours + 24)).date()
+        dirs = []
+        for d in self.root.iterdir():
+            if not d.is_dir():
+                continue
+            try:
+                day = datetime.strptime(d.name, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if day >= cutoff_day:
+                dirs.append(d)
+        return sorted(dirs)
+
+    def scan(self, now: datetime | None = None) -> int:
+        """Pick up new .TXT files, drop expired ones. Returns the number added."""
+        now = now or datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=settings.emwin_max_age_hours)
+        settle = now.timestamp() - 2          # skip files goesproc may still be writing
+        added = 0
+        for d in self._candidate_dirs(now):
+            with os.scandir(d) as it:
+                for entry in it:
+                    name = entry.name
+                    if name in self._seen or not name.upper().endswith(".TXT"):
+                        continue
+                    m_ts = EMWIN_TS_RE.search(name)
+                    if m_ts:
+                        try:
+                            ts = datetime.strptime(m_ts.group(1), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+                        except ValueError:
+                            ts = None
+                        if ts is not None and ts < cutoff:
+                            self._seen.add(name)      # too old, never look again
+                            continue
+                    try:
+                        st = entry.stat()
+                    except OSError:
+                        continue
+                    if st.st_mtime > settle:
+                        continue
+                    try:
+                        raw = Path(entry.path).read_bytes().decode("utf-8", errors="replace").strip()
+                    except OSError:
+                        continue
+                    self._seen.add(name)
+                    if not raw:
+                        continue
+                    prod = parse_emwin_file(name, raw)
+                    if prod:
+                        self._products[name] = prod
+                        added += 1
+        # Expire
+        before = len(self._products)
+        self._products = {k: v for k, v in self._products.items() if v["timestamp"] > cutoff}
+        if before != len(self._products):
+            logger.debug("SDR source: expired %d products", before - len(self._products))
+        return added
 
     async def fetch_products(self) -> list[dict]:
-        return []
+        return list(self._products.values())
 
 
 def create_source() -> EMWINSource:

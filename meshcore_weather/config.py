@@ -19,8 +19,11 @@ class Settings(BaseSettings):
     meshcore_channel: str = "#digitaino-wx-bot"  # Channel name or index
 
     # EMWIN data source
-    emwin_source: str = "internet"  # "internet" or "sdr" (future)
+    emwin_source: str = "internet"  # "internet" or "sdr"
     emwin_poll_interval: int = 120  # seconds between data refreshes
+    # "sdr": goesproc's emwin output tree (YYYY-MM-DD/ dirs of .TXT files)
+    sdr_emwin_dir: str = "~/goes-images/emwin"
+    sdr_poll_interval: int = 30     # seconds between directory scans
     # Initial load uses 1-hour bundle for coverage, then polls 2-minute bundle
     emwin_base_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip"
     emwin_poll_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txtmin02.zip"
