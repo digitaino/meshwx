@@ -1720,7 +1720,7 @@ Portal.traffic = {
   render: function () {
     var self = this, el = document.getElementById("traffic-body"), html = [];
     this._events.forEach(function (ev) { if (self._show(ev)) html.push(self._fmt(ev)); });
-    el.innerHTML = html.join("") || '<div class="text-muted">nothing yet — a request on the channel or a DM will show up here</div>';
+    el.innerHTML = html.join("") || '<div class="text-muted">Nothing yet. A request on the channel or a DM will show up here.</div>';
     el.scrollTop = el.scrollHeight;
     this._status();
   },

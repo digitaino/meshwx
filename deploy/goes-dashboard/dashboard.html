@@ -29,8 +29,8 @@ td a{color:var(--acc);text-decoration:none}
 .hint{color:var(--dim);font-size:12px}.hidden{display:none!important}#msg{color:var(--warn);font-size:12px}
 .prose{font-size:13px;line-height:1.5;color:#c9d1d9}.prose p{margin:0 0 8px}.prose ol{margin:0 0 8px;padding-left:20px}.prose li{margin:2px 0}
 .prose code,.cmd td code{background:#0a0e14;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px;color:#e6edf3}
-.cmd td{white-space:normal;max-width:none}.cmd td:first-child{white-space:nowrap;width:1%}
-.feed{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#0a0e14;border:1px solid var(--line);border-radius:8px;padding:8px;max-height:340px;overflow:auto}
+.cmd td{white-space:normal;max-width:none}.cmd td:first-child,.cmd td.r{white-space:nowrap;width:1%}
+.feed{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#0a0e14;border:1px solid var(--line);border-radius:8px;padding:8px;height:250px;overflow:auto}
 .feed div{white-space:pre-wrap;word-break:break-word}.feed .t{color:var(--dim)}.feed .in{color:#58a6ff}.feed .out{color:#d2a8ff}.feed .drop{color:var(--warn)}.feed .who{font-weight:600}
 .tag{display:inline-block;padding:0 6px;border-radius:4px;font-size:11px;font-weight:600;background:#21262d;color:var(--dim);min-width:28px;text-align:center}
 </style></head><body>
@@ -51,20 +51,23 @@ td a{color:var(--acc);text-decoration:none}
 </header>
 <main>
 <section id="botView" style="display:contents">
- <div class="card c8"><h2>Mesh weather bot · <span id="botName">WX-AUS</span> <span class="hint" id="botSub"></span></h2>
+ <div class="card c4"><h2>Mesh weather bot · <span id="botName">WX-AUS</span></h2>
   <div class="prose">
-   <p><b>How it works.</b> The dish above receives the GOES-19 HRIT downlink. Inside that stream NOAA relays <b>EMWIN</b>: every National Weather Service text product — observations, forecasts, watches and warnings, storm reports, space weather — for the whole country. The bot parses those products as they land, with <b>no internet connection</b>, and answers questions over LoRa on the MeshCore mesh. Every reply fits in one mesh packet.</p>
-   <p><b>How to reach it on the Austin MeshCore network.</b></p>
+   <p class="hint" id="botSub"></p>
+   <p>The dish receives the GOES-19 HRIT downlink. NOAA relays EMWIN inside it: every National Weather Service text product for the whole country. The bot parses those products as they arrive and answers over LoRa on the MeshCore mesh. No internet connection is involved. A reply is one mesh packet.</p>
+   <p><b>To use it on the Austin mesh</b></p>
    <ol>
-    <li>Set your MeshCore radio to <b id="botRadio">the US preset (910.525 MHz, 62.5 kHz, SF7, CR5)</b>.</li>
-    <li>In the MeshCore app add the channel <code id="botChannel">#meshwx</code> (just the name — a <code>#</code> channel's key comes from its name, so anyone can join). This is the one request channel for every weather bot, everywhere.</li>
-    <li>Post a command there, for example <code>wx round rock tx</code>. <span id="botReplyHow">The bot replies by DM when it knows your node; a nearby newcomer gets one reply on the channel and the bot adverts so the next exchange can be a DM.</span></li>
-    <li>Or DM the node <code id="botNameDm">WX-AUS</code> directly for private replies. You need its advert in your contacts first: it adverts every few hours, and it adverts when a stranger talks to it on the channel.</li>
-    <li>The bot has products for the whole country, so <code>wx</code> and <code>warn</code> work for any US place. If another <code>WX-</code> bot is nearer to the place you ask about, that bot answers instead of this one.</li>
+    <li>Radio: <span id="botRadio">US MeshCore default (910.525 MHz, 62.5 kHz, SF7, CR5)</span>.</li>
+    <li>Add the channel <code id="botChannel">#meshwx</code> in the MeshCore app. Type the name only; the key is derived from it.</li>
+    <li>Post a command, for example <code>wx round rock tx</code>. <span id="botReplyHow">Replies go by DM when the bot knows your node.</span></li>
+    <li>Or DM <code id="botNameDm">WX-AUS</code> directly. Its advert has to be in your contacts first. It adverts every few hours and whenever a stranger talks to it on the channel.</li>
+    <li>Products cover the whole country. If another <code>WX-</code> bot is nearer to the place you ask about, that bot answers.</li>
    </ol>
-   <p class="hint">Apps: the MeshWX iOS app reads compact binary datagrams (warnings, observations, forecasts) on <code id="botDataChannel">#meshwx-data</code>. Weather for the local area is broadcast there on a schedule.</p>
+   <details><summary class="hint" style="cursor:pointer">Commands</summary>
+    <table class="cmd" id="botCmds"></table>
+    <p class="hint" style="margin-top:6px">Apps: the MeshWX iOS app reads binary datagrams on <code id="botDataChannel">#meshwx-data</code>.</p>
+   </details>
   </div>
-  <table class="cmd" id="botCmds"></table>
  </div>
  <div class="card c4"><h2>Bot · requests and replies</h2>
   <div class="tiles">
@@ -78,9 +81,9 @@ td a{color:var(--acc);text-decoration:none}
   <div class="hint" style="margin-top:8px" id="botStatsHint"></div>
   <div class="hint" id="botTop"></div>
  </div>
- <div class="card c12"><h2>Live on <span id="botChannel2">#meshwx</span> · what the bot sees and says <span class="hint" id="botFeedHint"></span></h2>
+ <div class="card c4"><h2>Live on <span id="botChannel2">#meshwx</span> <span class="hint" id="botFeedHint"></span></h2>
   <div class="feed" id="botFeed"><div class="hint">connecting to the bot…</div></div>
-  <div class="hint" style="margin-top:6px">Channel traffic is public by nature and shown as is. Direct messages are private: a DM shows only the command and the reply length, never who sent it.</div>
+  <div class="hint" style="margin-top:6px">Channel traffic is shown as is. A DM shows the command and reply length only.</div>
  </div>
 </section>
 <section id="recvView" style="display:contents">
@@ -212,10 +215,10 @@ function renderBot(d){const b=$('botBadge');
  const bot=d.bot||{},r=d.radio,st=d.stats||{},w=(st.windows||{})['24h']||{},lt=st.lifetime||{},lat=st.latency||{};
  b.textContent=bot.connected?(bot.tx_enabled?'BOT ON AIR':'BOT RX ONLY'):'BOT: NO RADIO';b.className='badge '+(bot.connected&&bot.tx_enabled?'ok':'warn');
  if(bot.name){$('botName').textContent=bot.name;$('botNameDm').textContent=bot.name}
- $('botSub').textContent=`· up ${fmtAge(bot.uptime_s||0)} · ${bot.products||0} NWS products in memory`+(bot.lat!=null?` · ${(+bot.lat).toFixed(2)}, ${(+bot.lon).toFixed(2)}`:'')+(d.peers&&d.peers.length?` · peers: ${d.peers.map(p=>p.name).join(', ')}`:'');
+ $('botSub').textContent=`up ${fmtAge(bot.uptime_s||0)} · ${bot.products||0} NWS products in memory`+(bot.lat!=null?` · ${(+bot.lat).toFixed(2)}, ${(+bot.lon).toFixed(2)}`:'')+(d.peers&&d.peers.length?` · peers: ${d.peers.map(p=>p.name).join(', ')}`:'');
  if(r)$('botRadio').textContent=`${r.preset?r.preset+': ':''}${r.freq_mhz} MHz, ${r.bw_khz} kHz, SF${r.sf}, CR${r.cr}`;
  const ch=(d.channels||{});if(ch.text){$('botChannel').textContent=ch.text;$('botChannel2').textContent=ch.text}if(ch.data)$('botDataChannel').textContent=ch.data;
- $('botReplyHow').textContent=bot.reply_mode==='channel'?'Right now the bot answers on the channel itself, so everyone on it sees the replies.':bot.reply_mode==='dm_only'?'The bot replies by DM only, so it must have your advert (see the next step).':'The bot replies by DM when it knows your node; a nearby newcomer gets one reply on the channel and the bot adverts so the next exchange can be a DM.';
+ $('botReplyHow').textContent=bot.reply_mode==='channel'?'Replies currently go out on the channel.':bot.reply_mode==='dm_only'?'Replies go by DM only, so the bot needs your advert (next step).':'Replies go by DM when the bot knows your node. Otherwise it answers once on the channel and adverts so the next exchange can be a DM.';
  if(d.commands&&!$('botCmds').childElementCount)$('botCmds').innerHTML=d.commands.map(c=>`<tr><td><code>${esc(c.cmd)}</code></td><td>${esc(c.what)}</td><td class="r"><code>${esc(c.example)}</code></td></tr>`).join('');
  $('b_req24').textContent=w.requests??'–';$('b_rep24').textContent=w.replies??'–';$('b_send24').textContent=w.senders??'–';
  $('b_lat').textContent=lat.median_ms!=null?lat.median_ms:'–';$('b_life').textContent=lt.requests??'–';
@@ -224,7 +227,7 @@ function renderBot(d){const b=$('botBadge');
  $('botStatsHint').textContent=`last 24 h: ${w.dm_replies||0} replies by DM, ${w.channel_replies||0} on the channel, ${w.dropped||0} not answered · ${w.chars_sent||0} characters sent`;
  const top=Object.entries(w.by_command||{}).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,v])=>`${k} ×${v}`).join(', ');$('botTop').textContent=top?'most asked: '+top:'';
  const feed=$('botFeed'),recent=d.recent||[];
- if(!botFeedInit){feed.innerHTML=recent.length?recent.map(botLine).join(''):'<div class="hint">quiet — nothing has been asked yet</div>';botFeedInit=true;botLastId=recent.length?recent[recent.length-1].id:0;feed.scrollTop=feed.scrollHeight}
+ if(!botFeedInit){feed.innerHTML=recent.length?recent.map(botLine).join(''):'<div class="hint">Nothing asked yet.</div>';botFeedInit=true;botLastId=recent.length?recent[recent.length-1].id:0;feed.scrollTop=feed.scrollHeight}
  else{const fresh=recent.filter(e=>e.id>botLastId);if(fresh.length){if(botLastId===0)feed.innerHTML='';const atBottom=feed.scrollHeight-feed.scrollTop-feed.clientHeight<40;feed.insertAdjacentHTML('beforeend',fresh.map(botLine).join(''));while(feed.childElementCount>300)feed.removeChild(feed.firstChild);botLastId=fresh[fresh.length-1].id;if(atBottom)feed.scrollTop=feed.scrollHeight}}
  $('botFeedHint').textContent=st.last_request_at?`· last request ${fmtAge(Math.max(0,Math.round(d.t-st.last_request_at)))} ago`:''}
 function pollBot(){fetch('/api/bot').then(r=>r.json()).then(renderBot).catch(()=>renderBot({online:false,error:'dashboard cannot reach the bot'})).finally(()=>setTimeout(pollBot,5000))}
