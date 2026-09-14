@@ -723,7 +723,14 @@ def main():
 
     def shutdown(sig):
         logger.info("Received signal %s, shutting down...", sig.name)
-        loop.create_task(bot.stop())
+
+        async def _stop_then_exit():
+            try:
+                await bot.stop()
+            finally:
+                loop.stop()          # without this run_forever() never returns
+
+        loop.create_task(_stop_then_exit())
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, shutdown, sig)
@@ -734,7 +741,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        loop.run_until_complete(bot.stop())
+        if bot._running:
+            loop.run_until_complete(bot.stop())
         loop.close()
 
     return 0

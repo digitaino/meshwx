@@ -21,6 +21,34 @@ ADVERT_INTERVAL = 86400  # 24 hours
 CONTACTS_REFRESH = 120  # 2 minutes
 
 
+# Opening the USB serial port toggles DTR/RTS, which resets the ESP32 on
+# Heltec-style boards. The node then boots for 2-3 s and never sees an
+# APP_START sent right after open, so meshcore_py's create_serial() gives up
+# after one try. Wait for the boot, then ask; ask again if it was still busy.
+SERIAL_BOOT_DELAYS = (3.0, 3.0, 5.0)
+
+
+async def _open_serial(port: str, baud: int) -> MeshCore | None:
+    from meshcore.serial_cx import SerialConnection
+    cx = SerialConnection(port, baud)
+    mc = MeshCore(cx)
+    await mc.dispatcher.start()
+    if await mc.connection_manager.connect() is None:
+        await mc.dispatcher.stop()
+        raise ConnectionError(f"could not open {port}")
+    for delay in SERIAL_BOOT_DELAYS:
+        await asyncio.sleep(delay)
+        try:
+            res = await mc.commands.send_appstart()
+        except Exception as e:
+            logger.debug("APP_START attempt failed: %s", e)
+            res = None
+        if res is not None and res.type != EventType.ERROR:
+            return mc
+    await mc.disconnect()
+    return None
+
+
 class MeshcoreRadio:
     """Interface to a Meshcore radio device using the official library."""
 
@@ -76,17 +104,38 @@ class MeshcoreRadio:
             self._mc = await MeshCore.create_tcp(host, int(tcp_port))
         else:
             logger.info("Connecting to Meshcore radio on %s @ %d baud", port, baud)
-            self._mc = await MeshCore.create_serial(port, baud)
+            self._mc = await _open_serial(port, baud)
         if self._mc is None:
             # meshcore_py returns None when the node never answers APP_START:
             # wrong firmware (BLE-only companion, repeater), wrong baud, or
             # the ESP32 is held in reset by the port's DTR/RTS lines.
             raise ConnectionError(
                 f"no companion response on {port} (is the firmware 'Companion Radio USB'?)")
+        try:
+            await self._configure_node()
+        except Exception:
+            # Leave nothing half-open: the retry loop opens the port again.
+            try:
+                await self._mc.disconnect()
+            except Exception:
+                pass
+            self._mc = None
+            self._running = False
+            raise
         self._running = True
 
-        # Resolve channel name to index
-        self._channel_idx = await self._resolve_channel(settings.meshcore_channel)
+    async def _configure_node(self) -> None:
+        """Resolve (or create) the bot's channels, subscribe, advertise."""
+        # Text channel: create it if the node does not have it yet (a fresh
+        # flash has only slot 0). Never slot 0: that is the public channel.
+        try:
+            self._channel_idx = await self._resolve_channel(settings.meshcore_channel)
+        except ValueError:
+            created = await self._create_channel(settings.meshcore_channel)
+            if created is None:
+                raise ConnectionError(f"could not create text channel {settings.meshcore_channel!r}: no free slot")
+            self._channel_idx = created
+            logger.info("Created text channel %d (%s)", created, settings.meshcore_channel)
         logger.info("Listening on channel %d (%s)", self._channel_idx, settings.meshcore_channel)
 
         # Resolve data channel for MeshWX binary protocol (if configured)
@@ -144,7 +193,7 @@ class MeshcoreRadio:
         self._advert_task = asyncio.create_task(self._advert_loop())
         self._contacts_task = asyncio.create_task(self._contacts_loop())
 
-        logger.info("Meshcore radio connected. Node: %s", self._mc.self_info.get("adv_name", "?"))
+        logger.info("Meshcore radio connected. Node: %s", self._mc.self_info.get("name") or self._mc.self_info.get("adv_name", "?"))
         logger.info("Radio TX: %s", "ENABLED" if settings.tx_enabled
                     else "DISABLED (receive-only passive observer)")
 
