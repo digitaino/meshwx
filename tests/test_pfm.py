@@ -409,3 +409,19 @@ def test_partial_first_day_with_row_max_is_day_zero():
     assert days[0].local_date == date(2026, 9, 14)
     assert (days[0].high_f, days[0].low_f) == (62, 57)
     assert (days[1].high_f, days[1].low_f) == (70, 51)
+
+
+def test_date_row_glued_to_previous_row_is_repaired():
+    """HGX PFM over the satellite, 2026-09-14: the 6-hourly Date row arrived
+    glued to the Heat row ("...Y  YDate          Thu 09/17/26 ..."), which
+    dated the extended days two days early. Simulated on the KEWX fixture."""
+    from pathlib import Path
+    from meshcore_weather.parser.pfm import parse_pfm, downsample_to_daily
+    raw = (Path(__file__).parent / "fixtures" / "PFMEWX_20260913_1851Z.txt").read_bytes().decode()
+    glued = raw.replace("\r\r\n\r\r\n\r\r\nDate           09/16", "Date           09/16", 1)   # 6-hourly Date row glued to the row above
+    assert glued != raw
+    def mabry(text):
+        pts = parse_pfm(text)
+        p = [x for x in pts if x.name.startswith("Austin Camp Mabry")][0]
+        return [(d.local_date.isoformat(), d.high_f, d.low_f) for d in downsample_to_daily(p)][:6]
+    assert mabry(glued) == mabry(raw)

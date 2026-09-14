@@ -339,31 +339,53 @@ class StormReports:
 def parse_lsr_entries(text: str) -> list[dict]:
     """Individual reports from an LSR product.
 
-    Each report is two fixed-width lines, columns separated by runs of
-    spaces:  time | event | location | lat lon   and on the next line
-    date | [magnitude] | county | ST | source.  Splitting on 2+ spaces and
-    anchoring on the coordinate and the two-letter state keeps this robust
-    when a column is empty (most flash-flood reports have no magnitude).
+    The NWS LSR layout is fixed-width, two lines per report:
+      cols 0-11 time | 12-28 event | 29-52 city location | 53- lat/lon
+      cols 0-11 date | 12-28 magnitude | 29-47 county | 48-49 ST | 53- source
+    Splitting on runs of spaces is not safe: a 16-character event
+    ("Non-Tstm Wnd Gst") leaves a single space before the location, which
+    hid every Billings wind report on 2026-09-14. Columns first, then a
+    loose split as the fallback for products with odd spacing.
     """
     import re
     entries = []
     lines = [l.rstrip() for l in text.splitlines()]
-    for i, line in enumerate(lines):
+    time_re = re.compile(r"^\d{4} [AP]M$")
+    latlon_re = re.compile(r"^\d{1,3}\.\d{2}[NS]\s+\d{1,3}\.\d{2}[EW]")
+    date_re = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+
+    def line1(line: str):
+        t, ev, loc, ll = line[0:12].strip(), line[12:29].strip(), line[29:53].strip(), line[53:].strip()
+        if time_re.match(t) and ev and latlon_re.match(ll):
+            return t, ev, loc
         parts = re.split(r"\s{2,}", line.strip())
-        if len(parts) < 4 or not re.match(r"^\d{4} [AP]M$", parts[0]) or not re.match(r"^\d{1,3}\.\d{2}[NS] ", parts[-1]):
-            continue
-        entry = {"time": parts[0], "event": parts[1], "location": " ".join(parts[2:-1]), "mag": "", "state": "",
-                 "county": "", "date": ""}
-        for j in range(i + 1, min(i + 3, len(lines))):
-            p2 = re.split(r"\s{2,}", lines[j].strip())
-            if len(p2) < 3 or not re.match(r"^\d{2}/\d{2}/\d{4}$", p2[0]):
-                continue
-            entry["date"] = p2[0]
+        if len(parts) >= 4 and time_re.match(parts[0]) and latlon_re.match(parts[-1]):
+            return parts[0], parts[1], " ".join(parts[2:-1])
+        return None
+
+    def line2(line: str):
+        d, mag, county, st = line[0:12].strip(), line[12:29].strip(), line[29:48].strip(), line[48:50].strip()
+        if date_re.match(d) and re.match(r"^[A-Z]{2}$", st):
+            return d, mag, county, st
+        p2 = re.split(r"\s{2,}", line.strip())
+        if len(p2) >= 3 and date_re.match(p2[0]):
             k = next((n for n, tok in enumerate(p2) if n >= 2 and re.match(r"^[A-Z]{2}$", tok)), None)
             if k is not None:
-                entry["state"] = p2[k]
-                entry["county"] = p2[k - 1]
-                entry["mag"] = " ".join(p2[1:k - 1]).strip()
+                return p2[0], " ".join(p2[1:k - 1]).strip(), p2[k - 1], p2[k]
+        return None
+
+    for i, line in enumerate(lines):
+        first = line1(line)
+        if not first:
+            continue
+        t, ev, loc = first
+        entry = {"time": t, "event": ev, "location": loc, "mag": "", "state": "", "county": "", "date": ""}
+        for j in range(i + 1, min(i + 3, len(lines))):
+            if not lines[j].strip():
+                continue
+            second = line2(lines[j])
+            if second:
+                entry["date"], entry["mag"], entry["county"], entry["state"] = second
             break
         entries.append(entry)
     return entries

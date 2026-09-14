@@ -322,6 +322,13 @@ def _split_glued_headers(lines: list[str]) -> list[str]:
     Without this the 6-hourly table is never recognised for that point."""
     out: list[str] = []
     for line in lines:
+        # "...Heat  Y  Y  YDate          Thu 09/17/26  Fri ..." (HGX over the
+        # satellite, 2026-09-14): the 6-hourly Date row glued to the row
+        # before it. Without the row the second table is dated two days early.
+        m = _GLUED_DATE_RE.search(line)
+        if m and line[:m.start()].strip():
+            out.append(line[:m.start()].rstrip())
+            line = line[m.start():]
         if "hrly" in line and not _HRLY_LOCAL_RE.match(line):
             parts = _GLUED_HRLY_RE.split(line, maxsplit=1)
             if len(parts) == 2 and _HRLY_LOCAL_RE.match(parts[1]):
@@ -330,6 +337,9 @@ def _split_glued_headers(lines: list[str]) -> list[str]:
                 continue
         out.append(line)
     return out
+
+
+_GLUED_DATE_RE = re.compile(r"(Date\s{2,}(?:[A-Z][a-z]{2}\s+)?\d{2}/\d{2}(?:/\d{2})?)")
 
 
 def parse_pfm(text: str) -> list[PFMPoint]:

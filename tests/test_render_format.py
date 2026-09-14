@@ -51,3 +51,12 @@ def test_lsr_parser_on_real_lines():
     ]
     sr = SimpleNamespace(entries=e)
     assert rt.storm_reports("in NY", sr, state="NY") == "2 storm reports in NY: FlashFld Little Falls NJ; Hail M1.00 INCH Mechanicville"
+
+
+def test_lsr_parser_handles_full_width_event_column():
+    from meshcore_weather.core.services import parse_lsr_entries
+    text = ("1235 PM     Non-Tstm Wnd Gst 2 NNE Laurel            45.70N 108.76W\r\r\n"
+            "09/14/2026  M58 MPH          Yellowstone        MT   Mesonet          \r\r\n")
+    e = parse_lsr_entries(text)
+    assert [(x["event"], x["location"], x["mag"], x["county"], x["state"], x["date"]) for x in e] == [
+        ("Non-Tstm Wnd Gst", "2 NNE Laurel", "M58 MPH", "Yellowstone", "MT", "09/14/2026")]
