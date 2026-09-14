@@ -1,6 +1,5 @@
 """Admin portal API: radio management, console, logs, settings, auth."""
 
-import base64
 from types import SimpleNamespace
 
 import pytest
@@ -144,14 +143,9 @@ def test_settings_env_whitelist(client, tmp_path):
     assert isinstance(c.get("/api/logs").json()["lines"], list)
 
 
-def test_basic_auth_when_admin_key_set(tmp_path, monkeypatch):
+def test_portal_has_no_login(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(settings, "admin_key", "s3cret")
+    monkeypatch.setattr(settings, "admin_key", "s3cret")   # only used by the mesh-side admin commands
     bot = WeatherBot()
     bot.radio = FakeRadio()
-    c = TestClient(create_app(bot))
-    assert c.get("/api/system").status_code == 401
-    ok = base64.b64encode(b"admin:s3cret").decode()
-    assert c.get("/api/system", headers={"Authorization": f"Basic {ok}"}).status_code == 200
-    bad = base64.b64encode(b"admin:nope").decode()
-    assert c.get("/api/system", headers={"Authorization": f"Basic {bad}"}).status_code == 401
+    assert TestClient(create_app(bot)).get("/api/system").status_code == 200

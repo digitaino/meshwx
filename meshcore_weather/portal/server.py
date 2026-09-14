@@ -2,8 +2,8 @@
 
 Runs alongside the bot as an asyncio task. This is the ADMIN portal
 (radio, receiver, text-bot console, schedule, settings, logs); the goestools
-dashboard on its own port is the public, read-only page. When MCW_ADMIN_KEY
-is set every request needs HTTP Basic auth with that key as the password.
+dashboard on its own port is the public, read-only page. The portal itself
+has no login: keep it on the LAN or put access control at the edge.
 """
 
 import asyncio
@@ -11,12 +11,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import base64
-import secrets
-
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -45,24 +41,6 @@ def create_app(bot: Any) -> FastAPI:
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     app.state.bot = bot
     app.state.templates = templates
-
-    if settings.admin_key:
-        key = settings.admin_key.strip()
-
-        @app.middleware("http")
-        async def _basic_auth(request: Request, call_next):
-            auth = request.headers.get("authorization", "")
-            ok = False
-            if auth.lower().startswith("basic "):
-                try:
-                    raw = base64.b64decode(auth[6:]).decode()
-                    ok = secrets.compare_digest(raw.split(":", 1)[-1], key)
-                except Exception:
-                    ok = False
-            if not ok:
-                return Response("admin portal: sign in with the admin key", status_code=401,
-                                headers={"WWW-Authenticate": 'Basic realm="meshcore-weather admin"'})
-            return await call_next(request)
 
     # Mount static files (served from local disk, no CDN)
     app.mount(
