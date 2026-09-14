@@ -1,0 +1,70 @@
+NWUS55 KBYZ 141941
+LSRBYZ
+
+Preliminary Local Storm Report
+National Weather Service Billings MT
+141 PM MDT Mon Sep 14 2026
+
+..TIME...   ...EVENT...      ...CITY LOCATION...     ...LAT.LON...
+..DATE...   ....MAG....      ..COUNTY LOCATION..ST.. ...SOURCE....
+            ..REMARKS..
+
+0115 PM     Non-Tstm Wnd Gst 2 SSW Big Timber        45.80N 109.97W
+09/14/2026  M59 MPH          Sweet Grass        MT   AWOS             
+
+            AWOS station K6S0 Big Timber. 
+
+1245 PM     Non-Tstm Wnd Gst 1 SW Springdale         45.72N 110.25W
+09/14/2026  M56 MPH          Park               MT   Mesonet          
+
+            Mesonet station MTSPD Springdale I-90 Mp 
+            352.3. 
+
+0100 PM     Non-Tstm Wnd Gst 9 ENE Broadview         46.16N 108.72W
+09/14/2026  M54 MPH          Musselshell        MT   Mesonet          
+
+            Mesonet station FW8212 Broadview. 
+
+0115 PM     Non-Tstm Wnd Gst 4 ENE Springdale        45.75N 110.16W
+09/14/2026  M54 MPH          Sweet Grass        MT   Mesonet          
+
+            Mesonet station SDLM8 Springdale. 
+
+1245 PM     Non-Tstm Wnd Gst 7 N Lavina              46.40N 108.95W
+09/14/2026  M53 MPH          Golden Valley      MT   Mesonet          
+
+            Mesonet station LVAM8 Lavina N. 
+
+0105 PM     Non-Tstm Wnd Gst 9 NE Hedgesville        46.54N 109.35W
+09/14/2026  M53 MPH          Golden Valley      MT   Mesonet          
+
+            Mesonet station RMYM8 Rothiemay W. 
+
+0130 PM     Non-Tstm Wnd Gst 11 SSE Klein            46.25N 108.46W
+09/14/2026  M51 MPH          Musselshell        MT   Mesonet          
+
+            Mesonet station MTBUL 11.1 SE Klein (MT 
+            DOT). 
+
+0115 PM     Non-Tstm Wnd Gst 2 SW Molt               45.84N 108.96W
+09/14/2026  M50 MPH          Stillwater         MT   Mesonet          
+
+            Mesonet station MOTM8 Molt S. 
+
+0121 PM     Non-Tstm Wnd Gst 6 S Lockwood            45.73N 108.40W
+09/14/2026  M50 MPH          Yellowstone        MT   Mesonet          
+
+            Mesonet station SDAM8 Soda Springs. 
+
+1250 PM     Non-Tstm Wnd Gst 12 SSE Billings         45.63N 108.49W
+09/14/2026  M49 MPH          Yellowstone        MT   Mesonet          
+
+            Mesonet station BNGM8 Billings S. 
+
+
+&&
+
+$$
+
+
+

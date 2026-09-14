@@ -1,0 +1,407 @@
+NWUS51 KOKX 140902
+LSROKX
+
+Preliminary Local Storm Report...Summary
+National Weather Service New York NY
+502 AM EDT Mon Sep 14 2026
+
+..TIME...   ...EVENT...      ...CITY LOCATION...     ...LAT.LON...
+..DATE...   ....MAG....      ..COUNTY LOCATION..ST.. ...SOURCE....
+            ..REMARKS..
+
+0730 AM     Flash Flood      1 NNE Little Falls      40.89N 74.21W
+09/13/2026                   Passaic            NJ   Fire Dept/Rescue 
+
+            2 ft of water at Planet Fitness and multiple 
+            businesses reported in Woodland Park in the 
+            vicinity of Andrews Drive. 
+
+0745 AM     Flash Flood      Paterson                40.92N 74.17W
+09/13/2026                   Passaic            NJ   Fire Dept/Rescue 
+
+            Fire department is responding to multiple 
+            vehicles trapped in flood waters in the city 
+            of Paterson. High water vehicle is also 
+            being used. 
+
+0750 AM     Flash Flood      1 SSE Paterson          40.91N 74.16W
+09/13/2026                   Passaic            NJ   Fire Dept/Rescue 
+
+            Vehicle stranded in flood waters on 21st 
+            Avenue near Martin Street. 
+
+0815 AM     Flash Flood      1 NE Rye                40.99N 73.67W
+09/13/2026                   Westchester        NY   Law Enforcement  
+
+            Road closed due to flooding at Midland 
+            Avenue and Cottage Street. 
+
+0815 AM     Flash Flood      1 SSW Rye               40.97N 73.69W
+09/13/2026                   Westchester        NY   Law Enforcement  
+
+            Rye Police Department reports numerous 
+            roadways closed due to flooding. Some of 
+            these include - Playland Parkway, Midland 
+            Ave @ Peck Ave, and Milton Road by the 
+            Marina. 
+
+0820 AM     Flash Flood      Port Chester            41.01N 73.67W
+09/13/2026                   Westchester        NY   Law Enforcement  
+
+            Road closed due to flooding along North 
+            Regan Street near Glen Avenue. 
+
+0830 AM     Flash Flood      2 NE Old Greenwich      41.05N 73.53W
+09/13/2026                   Fairfield          CT   Fire Dept/Rescue 
+
+            I-95 Exit 8 southbound is closed due to 
+            flooding on Elm St. in Stamford, CT. 
+            Numerous roads are flooded throughout the 
+            city. 
+
+0830 AM     Flash Flood      1 N Old Greenwich       41.05N 73.57W
+09/13/2026                   Fairfield          CT   Dept of Highways 
+
+            Cars avoiding 2 to 3 ft of standing water on 
+            I 95 at Laddins Rock Road and going on edge 
+            of shoulder to pass with water more than 
+            half way up tires. 
+
+0830 AM     Flash Flood      3 WSW Old Greenwich     41.02N 73.63W
+09/13/2026                   Fairfield          CT   Law Enforcement  
+
+            Widespread flooding across Greenwich. Law 
+            Enforcement shares photos of flooded cars. 
+            DOT cams show I-95 flooded. 
+
+0831 AM     Flash Flood      2 WNW Darien            41.06N 73.52W
+09/13/2026                   Fairfield          CT   Fire Dept/Rescue 
+
+            Stamford FD reports multiple vehicles with 
+            flood water up their windows on Hamilton 
+            Ave. 
+
+0834 AM     Flash Flood      2 ENE Old Greenwich     41.05N 73.53W
+09/13/2026                   Fairfield          CT   Fire Dept/Rescue 
+
+            Stamford FD reports active water rescue at 
+            intersection of Cherry and Jefferson. 
+
+0836 AM     Flash Flood      1 SW Rye                40.97N 73.69W
+09/13/2026                   Westchester        NY   Law Enforcement  
+
+            Water rescue of car stuck on Playland 
+            Parkway at underpass of Boston Post Road. 
+            Water up to car windows. 
+
+0838 AM     Flash Flood      1 WSW Elmsford          41.04N 73.83W
+09/13/2026                   Westchester        NY   Dept of Highways 
+
+            Flooding on NY 9A northbound between White 
+            House Rd (Greenburgh) and Worththington Rd 
+            with 2 lanes blocked. 
+
+0843 AM     Flash Flood      2 NE Old Greenwich      41.05N 73.53W
+09/13/2026                   Fairfield          CT   Fire Dept/Rescue 
+
+            Stamford FD reports multiple water rescues 
+            in progress at intersection of Grove and 
+            Broad St. 
+
+0848 AM     Flash Flood      2 NNE Norwalk           41.12N 73.41W
+09/13/2026                   Fairfield          CT   Law Enforcement  
+
+            Norwalk FD and PD list several dozen 
+            roadways across town that are closed due to 
+            widespread flooding. 
+
+0900 AM     Flash Flood      1 WSW Haworth           40.96N 74.01W
+09/13/2026                   Bergen             NJ   Law Enforcement  
+
+            Road closure with vehicle stranded in 
+            Haworth on Sunset Avenue. 
+
+0910 AM     Flash Flood      1 NNW Westport          41.14N 73.36W
+09/13/2026                   Fairfield          CT   Broadcast Media  
+
+            A cafe and businesses submerged in 
+            approximately 2 feet of water in downtown 
+            Westport just north of Route 1. Time 
+            estimated by radar. 
+
+0913 AM     Flash Flood      3 W Bridgeport          41.19N 73.25W
+09/13/2026                   Fairfield          CT   Public           
+
+            Severe flooding in Fairfield, CT on 
+            Springfield Road near Lt Owen Fish Park and 
+            on Fairfield Woods Road. Parking lots on 
+            Fairfield Woods have been inundated and cars 
+            are not able to move. Storm drains were 
+            overflowing as well. 
+
+0919 AM     Flash Flood      1 ESE Milford           41.22N 73.05W
+09/13/2026                   New Haven          CT   Public           
+
+            Cars stuck in floodwaters near Gulf Street 
+            and Buckingham Ave. 
+
+0930 AM     Flash Flood      New Haven               41.30N 72.92W
+09/13/2026                   New Haven          CT   Fire Dept/Rescue 
+
+            Corrects previous flash flood report from 
+            New Haven. Firefighters performed water 
+            rescues on Temple Street and Union Avenue 
+            due to multiple cars and busses stuck in 
+            flood waters. Numerous other roads closed 
+            due to flooding throughout the city of New 
+            Haven. 
+
+0930 AM     Flash Flood      1 N Maywood             40.92N 74.07W
+09/13/2026                   Bergen             NJ   Public           
+
+            The Herring Brook overflowed its banks 
+            causing flash flooding on West Spring Valley 
+            Ave at Swan Court in Paramus. Road 
+            impassable and closed. 
+
+0930 AM     Flash Flood      Norwood                 40.99N 73.96W
+09/13/2026                   Bergen             NJ   Law Enforcement  
+
+            Numerous road closures in Norwood with many 
+            reports of vehicles in water in the 
+            vicinity. 
+
+0940 AM     Flash Flood      1 NE Norwalk            41.10N 73.40W
+09/13/2026                   Fairfield          CT   Public           
+
+            Picture of car stuck in flood waters on East 
+            Ave at underpass of train tracks. 
+
+0943 AM     Flash Flood      1 S Hawthorne           41.10N 73.79W
+09/13/2026                   Westchester        NY   Dept of Highways 
+
+            DOT Flooding and Operational Activity and 
+            Road closure on Taconic State Parkway 
+            southbound at Stevens Avenue (Mount 
+            Pleasant) all lanes of 3 closed. 
+
+0946 AM     Flash Flood      Port Chester            41.00N 73.66W
+09/13/2026                   Westchester        NY   Fire Dept/Rescue 
+
+            Port Chester Fire Department responded to 
+            numerous water rescues across town. 
+
+0953 AM     Flash Flood      1 SW Glen Rock          40.95N 74.14W
+09/13/2026                   Bergen             NJ   Dept of Highways 
+
+            Flooding on NJ 208 Northbound North of Maple 
+            Ave (Glen Rock), All lanes closed. 
+
+1000 AM     Flash Flood      2 S North Branford      41.30N 72.76W
+09/13/2026                   New Haven          CT   Emergency Mngr   
+
+            Photo from Branford Office of Emergency 
+            Management shows several vehicles stuck in 
+            flooding on Leetes Island Road at East 
+            Industrial Drive. 
+
+1000 AM     Flash Flood      North Branford          41.33N 72.76W
+09/13/2026                   New Haven          CT   Law Enforcement  
+
+            Foxon road closed in multiple areas in North 
+            Branford, one due to a small landslide. 
+            North Branford police also report multiple 
+            other road closures due to flooding 
+            including West Pond Road, Circle Drive, 
+            Totoket Road, and Glen Road. 
+
+1000 AM     Flash Flood      2 SW Bridgeport         41.17N 73.23W
+09/13/2026                   Fairfield          CT   Fire Dept/Rescue 
+
+            Areas in between I95 and Kings Highway near 
+            Ash Creek and Rooster River in Fairfield 
+            flooded due to overflowed banks. Picture of 
+            a car completely submerged on Rutland Ave. 
+            Picture of rescue vehicle also stuck in 
+            floodwaters while conducting a rescue near a 
+            home. 
+
+1000 AM     Flash Flood      1 WSW Bridgeport        41.18N 73.22W
+09/13/2026                   Fairfield          CT   Fire Dept/Rescue 
+
+            Multiple people rescued from home on Renwick 
+            Drive due flash flooding when the Rooster 
+            River overflowed its banks. Police responded 
+            to multiple water rescues across the city of 
+            Bridgeport. Many roads were also closed due 
+            to flooding. 
+
+1000 AM     Flash Flood      Westport                41.14N 73.36W
+09/13/2026                   Fairfield          CT   Fire Dept/Rescue 
+
+            The Westport Fire department conducted 13 
+            rescues of motorists trapped in floodwaters, 
+            with several needing high water vehicles. 
+            Many roads across Westport were also closed 
+            to due flooding including Greens Farms Road 
+            at New Creek Road, Hillendale at Center 
+            Street, Sturges Highway, Wilton Road. and 
+            Crescent Road. Several basements were also 
+            flooded. Time Estimated By Radar. 
+
+1000 AM     Flash Flood      2 WNW Rowayton          41.08N 73.47W
+09/13/2026                   Fairfield          CT   Public           
+
+            Numerous roadways flooded across Darien. 
+            Some public photos and videos shows water 
+            about the hoods of many sedans. 
+
+1002 AM     Flash Flood      1 E Westport            41.12N 73.32W
+09/13/2026                   Fairfield          CT   Dept of Highways 
+
+            CT DOT reports multiple lanes of I-95 
+            southbound flooded between exits 18 and 19. 
+            Right and center lanes are closed. 
+
+1003 AM     Flash Flood      2 SE Derby              41.31N 73.06W
+09/13/2026                   New Haven          CT   Public           
+
+            Several videos shared showing Rt 34 taking 
+            on water and becoming impassable. 
+
+1003 AM     Flash Flood      Bridgeport              41.18N 73.20W
+09/13/2026                   Fairfield          CT   Public           
+
+            Video shows numerous roadways inundated with 
+            water including Coleman St. Cars stalled in 
+            floodwaters. 
+
+1017 AM     Flash Flood      1 ENE East Haddam       41.46N 72.44W
+09/13/2026                   Middlesex          CT   Public           
+
+            Video shows flooded business on Mt Parnassus 
+            Rd near CT 151. 
+
+1023 AM     Flash Flood      1 SW Oradell            40.94N 74.04W
+09/13/2026                   Bergen             NJ   Cocorahs         
+
+            Pyle Street closed due to flooding in front 
+            of River Dell High School. 
+
+1025 AM     Flash Flood      3 NNW Southport         41.18N 73.31W
+09/13/2026                   Fairfield          CT   Dept of Highways 
+
+            RT 15 Northbound closed between Exits 21 and 
+            27 because of Flooding. 
+
+1025 AM     Flash Flood      2 ENE Branford          41.29N 72.78W
+09/13/2026                   New Haven          CT   Law Enforcement  
+
+            Flood waters with vehicles unable to move on 
+            Patrick Lane near Francis Walsh School. 
+
+1027 AM     Flash Flood      1 ENE Paterson          40.92N 74.14W
+09/13/2026                   Passaic            NJ   Public           
+
+            Video shows numerous cars flooded on 11th 
+            Ave in Paterson. Some cars have water up to 
+            the windows. 
+
+1030 AM     Flash Flood      4 NE North Branford     41.38N 72.71W
+09/13/2026                   New Haven          CT   Law Enforcement  
+
+            A couple of smaller roads closed in North 
+            Guilford with numerous reports of 4 to 5 
+            inches within 2 to 2 and a half hours of 
+            rain in the vicinity. 
+
+1038 AM     Flash Flood      2 NNW White Plains      41.05N 73.77W
+09/13/2026                   Westchester        NY   Law Enforcement  
+
+            Numerous closed roads due to flooding. Some 
+            roads include - -Central Westchester Parkway 
+            near Orchard St, Haarlem Ave/Glenn St, and 
+            Haarlem Av/Holland Av. 
+
+1046 AM     Flash Flood      1 WNW Totowa            40.91N 74.24W
+09/13/2026                   Passaic            NJ   Fire Dept/Rescue 
+
+            Numerous flooded roads and cars in Wayne. 
+            Some roads includ - Riverview Drive and 
+            Edison Dr. 
+
+1046 AM     Flash Flood      2 S North Branford      41.30N 72.76W
+09/13/2026                   New Haven          CT   Emergency Mngr   
+
+            Numerous flood cars at intersection of 
+            Business Park Drive & Leetes Island Rd 
+            adjacent to I-95 in Branford. 
+
+1050 AM     Flash Flood      1 W Norwich             41.55N 72.11W
+09/13/2026                   New London         CT   Law Enforcement  
+
+            Road closure due to flooding by the train 
+            bridge on Wawecus Street. 
+
+1100 AM     Flash Flood      Norwich                 41.54N 72.09W
+09/13/2026                   New London         CT   Public           
+
+            Rogan Terrace road flooded. 
+
+1100 AM     Flash Flood      Norwich                 41.54N 72.09W
+09/13/2026                   New London         CT   Law Enforcement  
+
+            Corrects previous flash flood report from 
+            Norwich for report source. Rogan Terrace 
+            road flooded. 
+
+1112 AM     Flash Flood      New Haven               41.30N 72.92W
+09/13/2026                   New Haven          CT   Broadcast Media  
+
+            Corrects previous flash flood report from 
+            New Haven. Numerous flooded roads under 
+            multiple feet of water with stranded 
+            vehicles in New Haven. This includes Olive 
+            St and Water St. 
+
+1130 AM     Flash Flood      New Haven Airport       41.26N 72.89W
+09/13/2026                   New Haven          CT   Other Federal    
+
+            The Tweed New Haven Airport departure 
+            terminal is closed due to flash flooding in 
+            the area of the terminal. 
+
+1200 PM     Flash Flood      1 WNW Old Saybrook      41.30N 72.39W
+09/13/2026                   Middlesex          CT   Fire Dept/Rescue 
+
+            Elm Street at the railroad overpass closed 
+            due to flooding. 
+
+1200 PM     Flash Flood      3 N Southport           41.18N 73.29W
+09/13/2026                   Fairfield          CT   Broadcast Media  
+
+            Approximately 2 ft of water running through 
+            Greenfield Hill section of Fairfield. 
+            Footage shows a wide swath of running water 
+            with rapids running through a section of the 
+            neighborhood. 
+
+1230 PM     Flash Flood      New London              41.35N 72.10W
+09/13/2026                   New London         CT   Public           
+
+            Video of water up to the hood of a car on 
+            flooded road in New London. 
+
+0145 PM     Flash Flood      1 S River Edge          40.91N 74.04W
+09/13/2026                   Bergen             NJ   Cocorahs         
+
+            Johnson Ave and Main Street closed due to 
+            flooding in Hackensack. 
+
+
+&&
+
+$$
+
+
+

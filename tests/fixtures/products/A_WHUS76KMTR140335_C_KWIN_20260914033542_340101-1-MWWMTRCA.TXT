@@ -1,0 +1,289 @@
+WHUS76 KMTR 140335
+MWWMTR
+
+URGENT - MARINE WEATHER MESSAGE
+National Weather Service San Francisco Bay Area
+835 PM PDT Sun Sep 13 2026
+
+PZZ565-141145-
+/O.CAN.KMTR.GL.W.0029.000000T0000Z-260914T1000Z/
+/O.EXB.KMTR.SC.Y.0110.260914T0400Z-260915T1000Z/
+Coastal Waters from Point Pinos to Point Piedras Blancas
+California out to 10 NM-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY IN EFFECT UNTIL 3 AM PDT TUESDAY...
+...GALE WARNING IS CANCELLED...
+
+* WHAT...Northwest winds 15 to 25 kt with gusts up to 35 kt 
+  expected.
+
+* WHERE...Coastal Waters from Point Pinos to Point Piedras 
+  Blancas California out to 10 NM.
+
+* WHEN...Until 3 AM PDT Tuesday.
+
+* IMPACTS...Conditions will be hazardous to small craft.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Inexperienced mariners, especially those operating smaller
+vessels, should avoid navigating in hazardous conditions.
+
+&&
+
+$$
+
+PZZ560-141145-
+/O.EXP.KMTR.GL.W.0029.000000T0000Z-260914T0400Z/
+/O.EXB.KMTR.SC.Y.0110.260914T0400Z-260914T1000Z/
+/O.NEW.KMTR.SC.Y.0112.260914T2200Z-260915T0400Z/
+Coastal Waters from Pigeon Point to Point Pinos California out to
+10 NM-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY IN EFFECT UNTIL 3 AM PDT MONDAY...
+...SMALL CRAFT ADVISORY IN EFFECT FROM 3 PM TO 9 PM PDT MONDAY...
+...GALE WARNING WILL EXPIRE AT 9 PM PDT THIS EVENING...
+
+* WHAT...For the first Small Craft Advisory, northwest winds 15 
+  to 25 kt with gusts up to 30 kt expected. For the second Small 
+  Craft Advisory, northwest winds 15 to 20 kt with gusts up to 
+  30 kt expected.
+
+* WHERE...Coastal Waters from Pigeon Point to Point Pinos 
+  California out to 10 NM.
+
+* WHEN...For the first Small Craft Advisory, until 3 AM PDT 
+  Monday. For the second Small Craft Advisory, from 3 PM to 9 PM 
+  PDT Monday.
+
+* IMPACTS...Conditions will be hazardous to small craft.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Inexperienced mariners, especially those operating smaller
+vessels, should avoid navigating in hazardous conditions.
+
+&&
+
+$$
+
+PZZ535-141145-
+/O.EXP.KMTR.GL.W.0029.000000T0000Z-260914T0400Z/
+/O.EXB.KMTR.SC.Y.0110.260914T2200Z-260915T0400Z/
+Monterey Bay-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY IN EFFECT FROM 3 PM TO 9 PM PDT MONDAY...
+...GALE WARNING WILL EXPIRE AT 9 PM PDT THIS EVENING...
+
+* WHAT...West winds 10 to 20 kt with gusts up to 30 kt expected.
+
+* WHERE...Monterey Bay.
+
+* WHEN...From 3 PM to 9 PM PDT Monday.
+
+* IMPACTS...Conditions will be hazardous to small craft.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Inexperienced mariners, especially those operating smaller
+vessels, should avoid navigating in hazardous conditions.
+
+&&
+
+$$
+
+PZZ545-141145-
+/O.CAN.KMTR.SC.Y.0109.000000T0000Z-260914T1000Z/
+/O.EXB.KMTR.SC.Y.0110.260914T0400Z-260914T1000Z/
+/O.NEW.KMTR.SC.Y.0112.260914T2200Z-260915T0400Z/
+Coastal Waters from Point Reyes to Pigeon Point California out to
+10 NM-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY IN EFFECT UNTIL 3 AM PDT MONDAY...
+...SMALL CRAFT ADVISORY IN EFFECT FROM 3 PM TO 9 PM PDT MONDAY...
+
+* WHAT...For the first Small Craft Advisory, northwest winds 10 to
+  20 kt expected. For the second Small Craft Advisory, northwest
+  winds 10 to 20 kt expected.
+
+* WHERE...Coastal Waters from Point Reyes to Pigeon Point 
+  California out to 10 NM.
+
+* WHEN...For the first Small Craft Advisory, until 3 AM PDT 
+  Monday. For the second Small Craft Advisory, from 3 PM to 9 PM 
+  PDT Monday.
+
+* IMPACTS...Conditions will be hazardous to small craft.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Inexperienced mariners, especially those operating smaller
+vessels, should avoid navigating in hazardous conditions.
+
+&&
+
+$$
+
+PZZ540-141145-
+/O.CAN.KMTR.SC.Y.0107.000000T0000Z-260914T1000Z/
+/O.EXT.KMTR.SC.Y.0111.260914T0335Z-260915T1000Z/
+Coastal Waters from Point Arena to Point Reyes California out to
+10 NM-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY NOW IN EFFECT UNTIL 3 AM PDT TUESDAY...
+
+* WHAT...Northwest winds 10 to 20 kt with gusts up to 30 kt.
+
+* WHERE...Coastal Waters from Point Arena to Point Reyes 
+  California out to 10 NM.
+
+* WHEN...Until 3 AM PDT Tuesday.
+
+* IMPACTS...Conditions will be hazardous to small craft.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Inexperienced mariners, especially those operating smaller
+vessels, should avoid navigating in hazardous conditions.
+
+&&
+
+$$
+
+PZZ530-140445-
+/O.EXP.KMTR.SC.Y.0110.000000T0000Z-260914T0400Z/
+San Pablo Bay, Suisun Bay, the West Delta and  the San Francisco
+Bay north of the Bay Bridge-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY WILL EXPIRE AT 9 PM PDT THIS EVENING...
+
+Conditions have dropped below advisory criteria, therefore the
+Small Craft Advisory has been allowed to expire. 
+
+$$
+
+PZZ531-140445-
+/O.EXP.KMTR.SC.Y.0110.000000T0000Z-260914T0400Z/
+San Francisco Bay South of the Bay Bridge-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY WILL EXPIRE AT 9 PM PDT THIS EVENING...
+
+Conditions have dropped below advisory criteria, therefore the
+Small Craft Advisory has been allowed to expire. 
+
+$$
+
+PZZ570-141145-
+/O.CON.KMTR.SC.Y.0109.000000T0000Z-260915T1000Z/
+Waters from Point Arena to Point Reyes 10-60 NM-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY REMAINS IN EFFECT UNTIL 3 AM PDT
+TUESDAY...
+
+* WHAT...Northwest winds 15 to 25 kt with gusts up to 30 kt and 
+  seas 8 to 10 ft.
+
+* WHERE...Waters from Point Arena to Point Reyes 10-60 NM.
+
+* WHEN...Until 3 AM PDT Tuesday.
+
+* IMPACTS...Conditions will be hazardous to small craft.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Inexperienced mariners, especially those operating smaller
+vessels, should avoid navigating in hazardous conditions.
+
+&&
+
+$$
+
+PZZ571-141145-
+/O.CON.KMTR.SC.Y.0110.000000T0000Z-260915T1000Z/
+Waters from Point Reyes to Pigeon Point 10-60 NM-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY REMAINS IN EFFECT UNTIL 3 AM PDT
+TUESDAY...
+
+* WHAT...Northwest winds 15 to 25 kt with gusts up to 30 kt and 
+  seas 7 to 11 ft.
+
+* WHERE...Waters from Point Reyes to Pigeon Point 10-60 NM.
+
+* WHEN...Until 3 AM PDT Tuesday.
+
+* IMPACTS...Conditions will be hazardous to small craft.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Inexperienced mariners, especially those operating smaller
+vessels, should avoid navigating in hazardous conditions.
+
+&&
+
+$$
+
+PZZ575-141145-
+/O.CON.KMTR.SC.Y.0109.000000T0000Z-260915T1000Z/
+Waters from Pigeon Point to Point Pinos 10-60 NM-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY REMAINS IN EFFECT UNTIL 3 AM PDT
+TUESDAY...
+
+* WHAT...Northwest winds 15 to 25 kt with gusts up to 30 kt and 
+  seas 8 to 10 ft.
+
+* WHERE...Waters from Pigeon Point to Point Pinos 10-60 NM.
+
+* WHEN...Until 3 AM PDT Tuesday.
+
+* IMPACTS...Conditions will be hazardous to small craft.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Inexperienced mariners, especially those operating smaller
+vessels, should avoid navigating in hazardous conditions.
+
+&&
+
+$$
+
+PZZ576-141145-
+/O.CON.KMTR.SC.Y.0108.000000T0000Z-260915T1000Z/
+Waters from Point Pinos to Point Piedras Blancas 10-60 NM-
+835 PM PDT Sun Sep 13 2026
+
+...SMALL CRAFT ADVISORY REMAINS IN EFFECT UNTIL 3 AM PDT
+TUESDAY...
+
+* WHAT...Northwest winds 15 to 25 kt with gusts up to 30 kt and 
+  seas 8 to 10 ft.
+
+* WHERE...Waters from Point Pinos to Point Piedras Blancas 10- 
+  60 NM.
+
+* WHEN...Until 3 AM PDT Tuesday.
+
+* IMPACTS...Conditions will be hazardous to small craft.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Inexperienced mariners, especially those operating smaller
+vessels, should avoid navigating in hazardous conditions.
+
+&&
+
+$$
+
+For more information from the National Weather Service visit
+http://weather.gov/sanfrancisco

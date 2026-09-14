@@ -1,0 +1,101 @@
+WGUS63 KDMX 141624
+FFADMX
+
+URGENT - IMMEDIATE BROADCAST REQUESTED
+Flood Watch
+National Weather Service Des Moines IA
+1124 AM CDT Mon Sep 14 2026
+
+IAZ062-074-084-094-095-151230-
+/O.EXB.KDMX.FA.A.0013.000000T0000Z-260916T1800Z/
+/00000.0.ER.000000T0000Z.000000T0000Z.000000T0000Z.OO/
+Poweshiek-Marion-Lucas-Decatur-Wayne-
+Including the cities of Seymour, Grinnell, Leon, Humeston, Knoxville,
+Pella, Allerton, Corydon, Lamoni, and Chariton
+1124 AM CDT Mon Sep 14 2026
+
+...FLOOD WATCH IN EFFECT THROUGH WEDNESDAY AFTERNOON...
+
+* WHAT...Flash flooding caused by excessive rainfall continues to be
+  possible.
+
+* WHERE...Portions of central and south central Iowa.
+
+* WHEN...Through Wednesday afternoon.
+
+* IMPACTS...Excessive runoff may result in flooding of rivers,
+  creeks, streams, and other low-lying and flood-prone locations.
+
+* ADDITIONAL DETAILS...
+  - Several rounds of showers and thunderstorms are likely from this
+    midday today through tonight. While rainfall amounts in some
+    areas will be modest, there will be pockets of heavier rainfall
+    that may lead to flash flooding, especially if multiple rounds
+    fall in the same area. In addition, several more rounds of heavy
+    rainfall are expected later this week, from Wednesday onward, and
+    this watch might need to be extended or succeeded by more watches
+    later.
+
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+For the latest stream observations and forecasts refer to
+weather.gov/desmoines/water.
+
+&&
+
+$$
+
+IAZ025>028-034>039-045>050-057>061-070>073-081>083-092-093-151230-
+/O.EXT.KDMX.FA.A.0013.000000T0000Z-260916T1800Z/
+/00000.0.ER.000000T0000Z.000000T0000Z.000000T0000Z.OO/
+Wright-Franklin-Butler-Bremer-Calhoun-Webster-Hamilton-Hardin-Grundy-
+Black Hawk-Carroll-Greene-Boone-Story-Marshall-Tama-Audubon-Guthrie-
+Dallas-Polk-Jasper-Cass-Adair-Madison-Warren-Adams-Union-Clarke-
+Taylor-Ringgold-
+Including the cities of Shell Rock, Eagle Grove, Winterset,
+Marshalltown, Hampton, Guthrie Center, Cedar Falls, Allison,
+Waterloo, Ames, Gladbrook, Bedford, Boone, Lake City, Rockwell City,
+Carlisle, Waverly, Parkersburg, Pomeroy, Exira, Traer, Manson, Iowa
+Falls, Dysart, Creston, Panora, Wellsburg, Osceola, Earlham,
+Jefferson, Corning, Belmond, Audubon, Bayard, Atlantic, Stuart,
+Clarksville, Casey, Indianola, Tama, Mount Ayr, Toledo, Carroll, Des
+Moines, Conrad, Ackley, Grundy Center, Greene, Reinbeck, Greenfield,
+Lenox, Dike, Waukee, Adair, Aplington, Newton, Perry, Norwalk, New
+Market, Eldora, Clarion, Dumont, Adel, Fontanelle, Fort Dodge, and
+Webster City
+1124 AM CDT Mon Sep 14 2026
+
+...FLOOD WATCH NOW IN EFFECT THROUGH WEDNESDAY AFTERNOON...
+
+* WHAT...Flash flooding caused by excessive rainfall continues to be
+  possible.
+
+* WHERE...Portions of southwestern, central, and northeastern Iowa.
+
+* WHEN...Through Wednesday afternoon.
+
+* IMPACTS...Excessive runoff may result in flooding of rivers,
+  creeks, streams, and other low-lying and flood-prone locations.
+
+* ADDITIONAL DETAILS...
+  - Several rounds of showers and thunderstorms are likely from this
+    midday today through tonight. While rainfall amounts in some
+    areas will be modest, there will be pockets of heavier rainfall
+    that may lead to flash flooding, especially if multiple rounds
+    fall in the same area. In addition, several more rounds of heavy
+    rainfall are expected later this week, from Wednesday onward, and
+    this watch might need to be extended or succeeded by more watches
+    later.
+
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+For the latest stream observations and forecasts refer to
+weather.gov/desmoines/water.
+
+&&
+
+$$
+
+TDR

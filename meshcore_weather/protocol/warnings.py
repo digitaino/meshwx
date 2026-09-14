@@ -19,7 +19,7 @@ parse a product.
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import timedelta, datetime, timezone
 from pathlib import Path
 
 from pyiem.nws.products import parser as pyiem_parser
@@ -289,33 +289,26 @@ _parsed_cache: dict[str, object] = {}
 _PARSE_FAILED = object()
 
 
-def _extract_warnings_pyiem(store: WeatherStore) -> list[dict]:
-    """Parse each warning product via pyIEM and build canonical warning dicts.
+def _extract_warnings_pyiem(store: WeatherStore, now: datetime | None = None) -> list[dict]:
+    """Every active warning, from a replay of all warning-class products.
 
-    VTEC products: dedup key is (phenomenon, significance, office, etn) — the
-    VTEC event key that uniquely identifies a warning across its SVS updates.
-    Non-VTEC products (SPS): dedup key is (office, product_type, valid_time)
-    and expiry comes from the UGC line via `seg.ugcexpire`.
+    VTEC products go through `VtecTracker` (per-zone lifecycle, products in
+    issue order); the entry for an active event is built from the newest
+    segment that carried it, with the tracker's zone set and expiry.
+    Non-VTEC products (SPS) are one entry per segment, newest product wins.
     """
-    provider = _get_ugc_provider()
-    now = datetime.now(timezone.utc)
-    seen: dict[tuple, dict] = {}
-    results: list[dict] = []
-    # Events retired by a later product (CAN/EXP/UPG). Products are walked
-    # newest first, so a retirement is seen before the NEW/CON lines in the
-    # older products that would otherwise resurrect the event (CYS high wind
-    # warning cancelled at 19:39Z still showing at 20:10Z, 2026-09-14).
-    dead: set[tuple] = set()
+    from meshcore_weather.protocol.vtec_events import VtecTracker
 
-    # Products never change once stored, so each one is parsed with pyIEM
-    # exactly once. Without this a Pi 4 spent ~15 s per "wx" reply re-parsing
-    # ~300 warning products. Expiry is applied per call, below.
+    provider = _get_ugc_provider()
+    now = now or datetime.now(timezone.utc)
+
     products = list(store._products.values())      # snapshot: the warm-up runs off-loop
     live = {p.filename for p in products if p.product_type in _WARNING_PRODUCT_TYPES}
     for stale in [k for k in _parsed_cache if k not in live]:
         del _parsed_cache[stale]
 
-    for prod in sorted(products, key=lambda p: p.timestamp, reverse=True):
+    parsed_items: list[tuple] = []
+    for prod in products:
         if prod.product_type not in _WARNING_PRODUCT_TYPES:
             continue
         parsed = _parsed_cache.get(prod.filename)
@@ -328,46 +321,41 @@ def _extract_warnings_pyiem(store: WeatherStore) -> list[dict]:
             _parsed_cache[prod.filename] = parsed
         if parsed is _PARSE_FAILED:
             continue
+        parsed_items.append((parsed, prod))
 
+    results: list[dict] = []
+
+    # -- VTEC events: replay the lifecycle -----------------------------------
+    tracker = VtecTracker()
+    tracker.replay(parsed_items, until=now)
+    for ev in tracker.active(now):
+        entry = _segment_to_entry(ev.last_seg, ev.last_parsed, ev.last_prod, now,
+                                  vtec=ev.last_vtec, vtec_index=ev.last_vtec_index,
+                                  tracker_state=ev)
+        if entry is None:
+            continue
+        del entry["_dedup_key"]
+        results.append(entry)
+
+    # -- Non-VTEC (SPS): newest product per (office, type, valid) -------------
+    seen: set[tuple] = set()
+    for parsed, prod in sorted(parsed_items, key=lambda x: x[1].timestamp, reverse=True):
+        if prod.product_type not in _NON_VTEC_TYPES:
+            continue
         for seg in parsed.segments:
-            # A single segment can carry several VTEC events (e.g. one
-            # NEW + one CON line in the same NPW). Emit one entry per event;
-            # a segment without VTEC (SPS) yields a single entry.
-            vtecs = list(seg.vtec) if seg.vtec else [None]
-            for idx, vtec in enumerate(vtecs):
-                if vtec is not None:
-                    vkey = _vtec_key(vtec)
-                    if vtec.action in _CANCEL_ACTIONS:
-                        dead.add(vkey)
-                        continue
-                    if vkey in dead:
-                        continue
-                entry = _segment_to_entry(seg, parsed, prod, now, vtec=vtec, vtec_index=idx)
-                if entry is None:
-                    continue
-                key = entry["_dedup_key"]
-                if key in seen:
-                    # Same event in another segment (or an older product):
-                    # one advisory often spans several UGC segments. Keep
-                    # the first (newest) entry but take the union of areas,
-                    # otherwise a city in the second segment gets "no
-                    # warnings" (HGX heat advisory: 3 of 25 zones kept,
-                    # found against api.weather.gov 2026-09-14).
-                    first = seen[key]
-                    for fld in ("ugcs", "zones"):
-                        if entry.get(fld):
-                            merged = list(dict.fromkeys(list(first.get(fld) or []) + list(entry[fld])))
-                            first[fld] = merged
-                    continue
-                seen[key] = entry
-                del entry["_dedup_key"]
-                results.append(entry)
-
+            if seg.vtec:
+                continue
+            entry = _segment_to_entry(seg, parsed, prod, now)
+            if entry is None or entry["_dedup_key"] in seen:
+                continue
+            seen.add(entry["_dedup_key"])
+            del entry["_dedup_key"]
+            results.append(entry)
     return results
 
 
 def _segment_to_entry(
-    seg, parsed, prod, now: datetime, vtec=None, vtec_index: int = 0,
+    seg, parsed, prod, now: datetime, vtec=None, vtec_index: int = 0, tracker_state=None,
 ) -> dict | None:
     """Convert one VTEC event of a pyIEM product segment to a warning dict.
 
@@ -380,6 +368,10 @@ def _segment_to_entry(
     extractable data, etc.).
     """
     ugcs = [str(u) for u in seg.ugcs]
+    if tracker_state is not None:
+        # The event's current zones and times come from the lifecycle replay,
+        # not from this one segment.
+        ugcs = sorted(tracker_state.active_zones(now))
     if not ugcs:
         return None
 
@@ -387,18 +379,24 @@ def _segment_to_entry(
     if seg.vtec:
         if vtec is None:
             vtec = seg.vtec[0]
-        if vtec.action in _CANCEL_ACTIONS:
-            return None
-        expires_at = vtec.endts
-        if expires_at is None:
-            # Very rare: VTEC without end time. Fall back to UGC expiry.
-            expires_at = getattr(seg, "ugcexpire", None)
-        if expires_at is None:
-            return None
-        if expires_at <= now:
-            return None  # already expired
-
-        onset_at = vtec.begints  # when the warning becomes active
+        if tracker_state is not None:
+            expires_at = tracker_state.expires_at(now)
+            if expires_at is None:
+                # Until further notice: give the client something finite.
+                expires_at = now + timedelta(hours=12)
+            onset_at = tracker_state.onset_at(now)
+        else:
+            if vtec.action in _CANCEL_ACTIONS:
+                return None
+            expires_at = vtec.endts
+            if expires_at is None:
+                # Very rare: VTEC without end time. Fall back to UGC expiry.
+                expires_at = getattr(seg, "ugcexpire", None)
+            if expires_at is None:
+                return None
+            if expires_at <= now:
+                return None  # already expired
+            onset_at = vtec.begints  # when the warning becomes active
         wtype = VTEC_PHENOMENON_TO_WARN_TYPE.get(vtec.phenomena, WARN_OTHER)
         severity = VTEC_SEVERITY_MAP.get(vtec.significance, SEV_WARNING)
         dedup_key = (vtec.phenomena, vtec.significance, vtec.office, vtec.etn)
@@ -580,6 +578,7 @@ def _extract_warnings_fallback(store: WeatherStore) -> list[dict]:
 def extract_active_warnings(
     store: WeatherStore,
     coverage: Coverage | None = None,
+    now: datetime | None = None,
 ) -> list[dict]:
     """Extract all active warnings from the store.
 
@@ -591,7 +590,7 @@ def extract_active_warnings(
     convenience recomputed at extraction time.
     """
     try:
-        raw = _extract_warnings_pyiem(store)
+        raw = _extract_warnings_pyiem(store, now)
     except Exception as exc:
         logger.warning("pyIEM warning extraction crashed; falling back: %s", exc)
         raw = _extract_warnings_fallback(store)

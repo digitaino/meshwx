@@ -1,0 +1,163 @@
+FOMY50 PGUM 141806
+PFMGUM
+
+Point Forecast Matrices
+National Weather Service Tiyan GU
+406 AM ChST Tue Sep 15 2026
+
+GUZ001-150600-
+Guam International Airport-Tiyan GU
+13.48N 144.79E Elev. 248 ft
+406 AM ChST Tue Sep 15 2026
+
+Date                Tue 09/15/26            Wed 09/16/26            Thu 09/17/26
+ChST3hrly     01 04 07 10 13 16 19 22 01 04 07 10 13 16 19 22 01 04 07 10 13 16
+UTC 3hrly     15 18 21 00 03 06 09 12 15 18 21 00 03 06 09 12 15 18 21 00 03 06
+
+Max/Min                      86          76          87          78          87
+Temp                79 83 86 85 83 81 78 77 77 83 87 86 84 82 80 79 79 83 87 86
+Dewpt               78 78 78 78 79 79 78 77 77 79 79 79 79 80 79 79 79 79 79 79
+RH                  97 85 77 80 88 94100100100 88 77 80 85 94 97100100 88 77 80
+Wind dir            NW  N NW NW  N NW NW NW  W  W  W  W  W  W  W  W  W  W  W  W
+Wind spd             5  6 10 10  6  6  5  6  8  9 10 11 10  9  8  6  8  9 10 11
+Clouds              B2 B2 OV OV OV OV B2 B2 SC SC SC SC B1 B1 B1 B1 B1 B1 B1 B1
+PoP 12hr                     70          70          40          20          20
+QPF 12hr                   0.54        0.44        0.12        0.08        0.09
+Rain shwrs           C  C  L  L  L  L  C  C  S  S  S  S  S  S  S  S  S  S  S  S
+Tstms                S  S  S  S  S  S  S  S              S  S  S  S  S  S  S  S
+Heat index             92 98 97 94 89          93101100 97 93 87       95101100
+Max heat               92    98    96    86    93   101    99    91    95   101
+
+
+Date               Fri 09/18/26  Sat 09/19/26  Sun 09/20/26  Mon 09/21/26
+ChST6hrly     22   04 10 16 22   04 10 16 22   04 10 16 22   04 10 16
+UTC 6hrly     12   18 00 06 12   18 00 06 12   18 00 06 12   18 00 06
+
+Min/Max            79    87      79    87      79    87      79    87
+Temp          83   79 84 86 83   79 84 86 83   79 84 86 83   79 84 86
+Dewpt         80   79 79 79 80   79 79 79 80   79 79 79 79   79 78 79
+PWind dir           W     W       W    SW      SW     W       W     W
+Wind char          GN    GN      GN    LT      LT    LT      LT    LT
+Avg clouds    B1   B1 B1 B1 B1   B1 B1 SC B1   B1 B1 B1 B1   B1 B1 B1
+PoP 12hr           30    30      30    30      30    40      40    30
+Rain shwrs     C    C  C  C  C    C  C  S  C    C  C  C  C    C  C  C
+Tstms          S    S  S  S  S    S  S  S  S    S  S  S  S    S  S  S
+
+$$
+MPZ001-150600-
+Rota International Airport-Sinapalu MP
+14.17N 145.23E Elev. 592 ft
+406 AM ChST Tue Sep 15 2026
+
+Date                Tue 09/15/26            Wed 09/16/26            Thu 09/17/26
+ChST3hrly     01 04 07 10 13 16 19 22 01 04 07 10 13 16 19 22 01 04 07 10 13 16
+UTC 3hrly     15 18 21 00 03 06 09 12 15 18 21 00 03 06 09 12 15 18 21 00 03 06
+
+Max/Min                      86          75          87          77          87
+Temp                78 82 86 85 83 80 77 76 76 82 87 86 84 82 79 78 78 83 87 86
+Dewpt               78 78 79 79 79 79 77 76 76 79 79 79 79 80 79 78 78 79 79 79
+RH                 100 88 80 82 88 97100100100 91 77 80 85 94100100100 88 77 80
+Wind dir            NW  N  N NW NW NW  W NW NW NW NW NW  W  W  W  W  W  W  W  W
+Wind spd             3  5  5  8  8  5  4  5  8  8 10 11 10  8  6  5  6  8  9  9
+Clouds              B2 B2 OV OV OV OV B2 B2 SC SC SC SC SC SC SC SC SC SC SC SC
+PoP 12hr                     70          70          50          20          20
+QPF 12hr                   0.42        0.18        0.06        0.09        0.05
+Rain shwrs           L  L  L  L  L  L  C  C  S  S  S  S  S  S  S  S  S  S  S  S
+Tstms                S  S  S  S  S  S  S  S                                    
+Heat index             92 99 98 94 88          93101100 97 92          94101100
+Max heat               92    99    97          93   101    99    90    94   101
+
+
+Date               Fri 09/18/26  Sat 09/19/26  Sun 09/20/26  Mon 09/21/26
+ChST6hrly     22   04 10 16 22   04 10 16 22   04 10 16 22   04 10 16
+UTC 6hrly     12   18 00 06 12   18 00 06 12   18 00 06 12   18 00 06
+
+Min/Max            79    87      79    87      79    87      78    86
+Temp          83   79 84 86 83   79 84 86 83   79 84 86 82   79 83 85
+Dewpt         80   79 79 80 80   79 79 79 80   79 79 79 79   79 79 79
+PWind dir           W    SW      SW    SW      SW    SW       W     W
+Wind char          LT    GN      LT    LT      LT    LT      LT    LT
+Avg clouds    SC   SC SC SC SC   SC SC SC B1   B1 B1 B1 B1   B1 B1 B1
+PoP 12hr           20    20      20    20      30    30      30    30
+Rain shwrs     S    S  S  S  S    S  S  S  C    C  C  C  C    C  C  C
+Tstms          S    S  S  S  S    S  S  S  S    S  S  S  S    S  S  S
+
+$$
+MPZ002-150600-
+Tinian-San Jose MP
+14.97N 145.63E Elev. 74 ft
+406 AM ChST Tue Sep 15 2026
+
+Date                Tue 09/15/26            Wed 09/16/26            Thu 09/17/26
+ChST3hrly     01 04 07 10 13 16 19 22 01 04 07 10 13 16 19 22 01 04 07 10 13 16
+UTC 3hrly     15 18 21 00 03 06 09 12 15 18 21 00 03 06 09 12 15 18 21 00 03 06
+
+Max/Min                      86          76          87          77          87
+Temp                79 83 86 85 83 81 78 77 77 83 87 86 84 82 79 78 78 83 87 86
+Dewpt               79 79 79 79 79 79 78 77 77 79 79 79 79 79 79 78 78 79 79 79
+RH                 100 88 80 82 88 94100100100 88 77 80 85 91100100100 88 77 80
+Wind dir            NE NE  N  N  N  N  N NW NW NW NW NW NW NW  W  W  W  W  W  W
+Wind spd             6  8  2  8  8  8  6  4  6  8 10 12 10  8  6  6  8 10 11 11
+Clouds              B2 B2 B2 B2 OV OV OV OV SC SC SC SC SC SC SC SC SC SC SC SC
+PoP 12hr                     50          70          70          20          20
+QPF 12hr                   0.46        0.52        0.16        0.07        0.03
+Rain shwrs           C  C  C  C  L  L  L  L  S  S  S  S  S  S  S  S  S  S  S  S
+Tstms                      S  S  S  S  S  S                                    
+Heat index             93 99 98 94 90          93100100 96 91          94101100
+Max heat               93    99    97    86    93   100    99    90    94   101
+
+
+Date               Fri 09/18/26  Sat 09/19/26  Sun 09/20/26  Mon 09/21/26
+ChST6hrly     22   04 10 16 22   04 10 16 22   04 10 16 22   04 10 16
+UTC 6hrly     12   18 00 06 12   18 00 06 12   18 00 06 12   18 00 06
+
+Min/Max            79    87      79    87      79    87      78    87
+Temp          83   79 84 86 83   79 84 86 83   79 84 86 82   79 84 86
+Dewpt         79   79 79 80 80   79 79 79 80   79 78 79 79   79 79 79
+PWind dir           W    SW      SW    SW      SW    SW      SW     W
+Wind char          GN    GN      GN    LT      LT    LT      LT    LT
+Avg clouds    SC   SC SC SC SC   SC SC SC B1   B1 B1 B1 B1   B1 B1 B1
+PoP 12hr           10    10      20    20      30    30      30    30
+Rain shwrs     S    S  S  S  S    S  S  S  C    C  C  C  C    C  C  C
+Tstms                                      S    S  S  S  S    S  S  S
+
+$$
+MPZ003-150600-
+Saipan International Airport-Obyan MP
+15.11N 145.72E Elev. 215 ft
+406 AM ChST Tue Sep 15 2026
+
+Date                Tue 09/15/26            Wed 09/16/26            Thu 09/17/26
+ChST3hrly     01 04 07 10 13 16 19 22 01 04 07 10 13 16 19 22 01 04 07 10 13 16
+UTC 3hrly     15 18 21 00 03 06 09 12 15 18 21 00 03 06 09 12 15 18 21 00 03 06
+
+Max/Min                      86          76          87          77          87
+Temp                79 83 86 85 83 81 78 77 77 83 87 86 84 82 79 78 78 83 87 86
+Dewpt               79 79 79 79 79 80 78 77 77 79 79 79 79 79 79 78 78 79 79 79
+RH                 100 88 80 82 88 97100100100 88 77 80 85 91100100100 88 77 80
+Wind dir            NE NE  N  N  N  N  N  N NW NW NW NW NW NW  W  W  W  W  W  W
+Wind spd             9  6  3  9  9  6  5  6  6  8 10 11 10  8  6  6  8 10 11 11
+Clouds              B2 B2 B2 B2 OV OV OV OV SC SC SC SC SC SC SC SC SC SC SC SC
+PoP 12hr                     50          70          70          20          20
+QPF 12hr                   0.45        0.57        0.20        0.07        0.03
+Rain shwrs           C  C  C  C  L  L  L  L  S  S  S  S  S  S  S  S  S  S  S  S
+Tstms                      S  S  S  S  S  S                                    
+Heat index             93 99 98 95 90          93100100 96 91          94101100
+Max heat               93    99    97    86    93   100    99    90    94   101
+
+
+Date               Fri 09/18/26  Sat 09/19/26  Sun 09/20/26  Mon 09/21/26
+ChST6hrly     22   04 10 16 22   04 10 16 22   04 10 16 22   04 10 16
+UTC 6hrly     12   18 00 06 12   18 00 06 12   18 00 06 12   18 00 06
+
+Min/Max            79    87      79    87      79    87      79    87
+Temp          83   79 84 86 83   79 84 86 83   79 84 86 83   79 84 86
+Dewpt         79   79 79 80 80   79 79 79 79   79 78 78 79   79 79 79
+PWind dir           W    SW      SW    SW      SW    SW      SW     W
+Wind char          GN    GN      GN    LT      LT    LT      LT    LT
+Avg clouds    SC   SC SC SC SC   SC SC SC B1   B1 B1 B1 B1   B1 B1 B1
+PoP 12hr           10    10      10    20      30    30      30    30
+Rain shwrs     S    S  S  S  S    S  S  S  C    C  C  C  C    C  C  C
+Tstms                                      S    S  S  S  S    S  S  S
+
+$$

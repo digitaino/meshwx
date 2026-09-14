@@ -88,8 +88,42 @@ failure was a severe thunderstorm warning in its last minutes that NWS had
 already dropped while the expiring SVS was still in flight; the audit now
 gives such events a 15-minute grace.
 
+## The parser rebuild, not more patches
+
+Four rounds of "find a discrepancy, patch the regex" is not how a warning
+system earns trust, and most deployments will have no internet to audit
+against anyway. So the two parsers the audit kept catching were rebuilt on
+the actual structure of the products:
+
+- **Warnings: a VTEC lifecycle tracker** (`protocol/vtec_events.py`).
+  Products are replayed in issue order; each segment's action (NEW, CON,
+  EXT, EXA, EXB, COR, CAN, EXP, UPG) is applied per zone, so an event is a
+  set of zones each with its own begin and end. Partial cancellations, area
+  extensions, upgrades and successor events all fall out of the model
+  instead of needing special cases. The old "newest product wins, any CAN
+  kills the event" extractor is gone.
+- **PFM: structural row reconstruction.** Any table row label found mid-line
+  after data is a lost newline and is split there (not just the two cases
+  seen so far); the 6-hourly table is anchored on the day after the 3-hourly
+  table when its Date row did not survive; timezone labels are matched
+  case-insensitively and without a space (Guam's `ChST3hrly`); the
+  downsampler owns period dates.
+- **LSR: fixed columns**, per the NWS layout.
+
+The proof is a corpus of real products from the dish under
+`tests/fixtures/products/` (Cheyenne's watch-to-warning-to-cancel day, Paducah's
+replaced heat advisory, Monterey's per-zone marine advisories, Des Moines'
+flood watch extended in area and time, Houston's glued PFM, Guam's and
+San Juan's PFMs, Billings' wind reports) with the values checked against NWS
+pinned in `tests/test_lifecycle.py`. Those tests run with no network.
+
+Result: the audit script, run once after the rebuild, passes **155 of 155**
+with no in-flight notes. It stays in `scripts/audit.py` for whoever has an
+internet connection and wants to re-check; nothing in the bot depends on it.
+
 ## Standing rule
 
-The hourly audit is the acceptance test. A reply-format or parser change
-ships only when the next audit run is clean, and a red Overview card is a
-bug until proven to be a satellite gap.
+A reply-format or parser change ships with a fixture from a real product and
+a pinned expectation. When an audit run (wherever one can be run) shows a
+discrepancy, the fix is a fixture and a structural change, not a regex for
+that one product.

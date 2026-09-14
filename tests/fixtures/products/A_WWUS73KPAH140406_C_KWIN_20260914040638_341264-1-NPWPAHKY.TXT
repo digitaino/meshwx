@@ -1,0 +1,111 @@
+WWUS73 KPAH 140406
+NPWPAH
+
+URGENT - WEATHER MESSAGE
+National Weather Service Paducah KY
+1106 PM CDT Sun Sep 13 2026
+
+KYZ001-MOZ107>110-114-142200-
+/O.CAN.KPAH.HT.Y.0012.260914T1600Z-260915T0100Z/
+/O.EXT.KPAH.HT.Y.0013.260914T1600Z-260917T0000Z/
+Fulton-Carter-Ripley-Butler-Stoddard-New Madrid-
+Including the cities of Hickman, Van Buren, Poplar Bluff, Bloomfield,
+New Madrid, and Doniphan
+1106 PM CDT Sun Sep 13 2026
+
+...HEAT ADVISORY NOW IN EFFECT FROM 11 AM MONDAY TO 7 PM CDT
+WEDNESDAY...
+
+* WHAT...Daily peak heat index values up to 105 degrees.
+
+* WHERE...In Kentucky, Fulton County. In Missouri, Butler, Carter,
+  New Madrid, Ripley, and Stoddard Counties.
+
+* WHEN...From 11 AM Monday to 7 PM CDT Wednesday.
+
+* IMPACTS...Hot temperatures and high humidity may cause heat
+  illnesses.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Drink plenty of fluids, stay in an air-conditioned room, stay out of
+the sun, and check up on relatives and neighbors.
+
+&&
+
+$$
+
+KYZ002-003-006-MOZ111-112-142200-
+/O.EXT.KPAH.HT.Y.0013.260914T1600Z-260917T0000Z/
+Hickman-Carlisle-Graves-Scott-Mississippi-
+Including the cities of Bardwell, Charleston, Clinton, Mayfield, and
+Sikeston
+1106 PM CDT Sun Sep 13 2026
+
+...HEAT ADVISORY NOW IN EFFECT FROM 11 AM MONDAY TO 7 PM CDT
+WEDNESDAY...
+
+* WHAT...Daily peak heat index values up to 105 degrees.
+
+* WHERE...In Kentucky, Carlisle, Graves, and Hickman Counties. In
+  Missouri, Mississippi and Scott Counties.
+
+* WHEN...From 11 AM Monday to 7 PM CDT Wednesday.
+
+* IMPACTS...Hot temperatures and high humidity may cause heat
+  illnesses.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Drink plenty of fluids, stay in an air-conditioned room, stay out of
+the sun, and check up on relatives and neighbors.
+
+&&
+
+$$
+
+ILZ075>078-080>094-INZ081-082-085>088-KYZ004-005-007>022-MOZ076-086-
+087-100-142200-
+/O.EXT.KPAH.HT.Y.0013.260915T1600Z-260917T0000Z/
+Jefferson-Wayne IL-Edwards-Wabash-Perry IL-Franklin-Hamilton-
+White-Jackson-Williamson-Saline-Gallatin-Union-Johnson-Pope-Hardin-
+Alexander-Pulaski-Massac-Gibson-Pike-Posey-Vanderburgh-Warrick-
+Spencer-Ballard-McCracken-Livingston-Marshall-Calloway-Crittenden-
+Lyon-Trigg-Caldwell-Union KY-Webster-Hopkins-Christian-Henderson-
+Daviess-McLean-Muhlenberg-Todd-Perry MO-Bollinger-Cape Girardeau-
+Wayne MO-
+Including the cities of Mound City, Madisonville, Albion, Petersburg,
+Owensboro, Perryville, Carbondale, Golconda, Metropolis, Smithland,
+Jackson, Harrisburg, Vienna, Dixon, Marion, Marble Hill, Henderson,
+Elkton, Fort Branch, West Frankfort, Cairo, Jonesboro, Rockport,
+Poseyville, Hopkinsville, Cape Girardeau, Murray, Princeton,
+McLeansboro, Eddyville, Elizabethtown, Cadiz, Boonville, Wickliffe,
+Piedmont, Morganfield, Shawneetown, Benton, Fairfield, Carmi,
+Murphysboro, Pinckneyville, Greenville, Mount Vernon, Evansville,
+Calhoun, Mount Carmel, Paducah, and Herrin
+1106 PM CDT Sun Sep 13 2026 /1206 AM EDT Mon Sep 14 2026/
+
+...HEAT ADVISORY NOW IN EFFECT FROM 11 AM CDT /NOON EDT/ TUESDAY TO 7
+PM CDT /8 PM EDT/ WEDNESDAY...
+
+* WHAT...Daily peak heat index values up to 105 degrees.
+
+* WHERE...Portions of southern Illinois, southwest Indiana, western
+  Kentucky, and southeast Missouri.
+
+* WHEN...From 11 AM CDT /noon EDT/ Tuesday to 7 PM CDT /8 PM EDT/
+  Wednesday.
+
+* IMPACTS...Hot temperatures and high humidity may cause heat
+  illnesses.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Drink plenty of fluids, stay in an air-conditioned room, stay out of
+the sun, and check up on relatives and neighbors.
+
+&&
+
+$$
+
+DWS

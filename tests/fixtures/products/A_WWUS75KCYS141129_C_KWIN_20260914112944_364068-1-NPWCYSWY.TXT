@@ -1,0 +1,52 @@
+WWUS75 KCYS 141129
+NPWCYS
+
+URGENT - WEATHER MESSAGE
+National Weather Service Cheyenne WY
+529 AM MDT Mon Sep 14 2026
+
+WYZ106-109-141230-
+/O.CAN.KCYS.HW.A.0037.260914T1200Z-260915T0000Z/
+Central Laramie Range and Southwest Platte County-Central Carbon
+County-
+Including the cities of Bordeaux and Rawlins
+529 AM MDT Mon Sep 14 2026
+
+...HIGH WIND WATCH IS CANCELLED...
+
+Models indicate winds should remain just outside of high wind
+criteria. Therefore this High Wind Watch will be cancelled.
+
+$$
+
+WYZ110-141930-
+/O.UPG.KCYS.HW.A.0037.260914T1200Z-260915T0000Z/
+/O.NEW.KCYS.HW.W.0038.260914T1129Z-260915T0000Z/
+North Snowy Range Foothills-
+Including the cities of Arlington and Elk Mountain
+529 AM MDT Mon Sep 14 2026
+
+...HIGH WIND WARNING IN EFFECT UNTIL 6 PM MDT THIS EVENING...
+
+* WHAT...West winds 25 to 40 mph with gusts up to 60 mph possible.
+
+* WHERE...North Snowy Range Foothills including Arlington and Elk
+  Mountain along Interstate 80.
+
+* WHEN...Until 6 PM MDT this evening.
+
+* IMPACTS...Mainly to transportation. Strong cross winds will be
+  hazardous to light weight or high profile vehicles, including
+  campers and tractor trailers.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+A High Wind Watch means there is the potential for a hazardous high
+wind event. Sustained wind speeds of at least 40 MPH or gusts of 58
+MPH or stronger may occur. Continue to monitor the latest forecasts.
+
+&&
+
+$$
+
+CG

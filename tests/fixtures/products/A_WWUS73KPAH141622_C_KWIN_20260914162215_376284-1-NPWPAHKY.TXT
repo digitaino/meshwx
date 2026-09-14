@@ -1,0 +1,85 @@
+WWUS73 KPAH 141622
+NPWPAH
+
+URGENT - WEATHER MESSAGE
+National Weather Service Paducah KY
+1122 AM CDT Mon Sep 14 2026
+
+KYZ001>003-006-MOZ107>112-114-150915-
+/O.CON.KPAH.HT.Y.0013.000000T0000Z-260917T0000Z/
+Fulton-Hickman-Carlisle-Graves-Carter-Ripley-Butler-Stoddard-Scott-
+Mississippi-New Madrid-
+Including the cities of Clinton, Doniphan, Sikeston, Hickman,
+Bardwell, Mayfield, Poplar Bluff, New Madrid, Van Buren, Bloomfield,
+and Charleston
+1122 AM CDT Mon Sep 14 2026
+
+...HEAT ADVISORY REMAINS IN EFFECT UNTIL 7 PM CDT WEDNESDAY...
+
+* WHAT...Peak daily Heat Index values near 100 up to around 105
+  degrees expected.
+
+* WHERE...Portions of western Kentucky along and south of a Bardwell
+  to Mayfield line, and along and south of a Van Buren to Sikeston
+  line in southeast Missouri.
+
+* WHEN...Until 7 PM CDT Wednesday.
+
+* IMPACTS...Hot temperatures and high humidity may cause heat
+  illnesses.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Drink plenty of fluids, stay in an air-conditioned room, stay out of
+the sun, and check up on relatives and neighbors.
+
+&&
+
+$$
+
+ILZ075>078-080>094-INZ081-082-085>088-KYZ004-005-007>022-MOZ076-086-
+087-100-150915-
+/O.CON.KPAH.HT.Y.0013.260915T1600Z-260917T0000Z/
+Jefferson-Wayne IL-Edwards-Wabash-Perry IL-Franklin-Hamilton-
+White-Jackson-Williamson-Saline-Gallatin-Union-Johnson-Pope-Hardin-
+Alexander-Pulaski-Massac-Gibson-Pike-Posey-Vanderburgh-Warrick-
+Spencer-Ballard-McCracken-Livingston-Marshall-Calloway-Crittenden-
+Lyon-Trigg-Caldwell-Union KY-Webster-Hopkins-Christian-Henderson-
+Daviess-McLean-Muhlenberg-Todd-Perry MO-Bollinger-Cape Girardeau-
+Wayne MO-
+Including the cities of Perryville, Poseyville, Harrisburg,
+Princeton, Boonville, Dixon, Evansville, Paducah, Elizabethtown,
+Metropolis, Fairfield, Murphysboro, Owensboro, Marion, Henderson,
+Jackson, Albion, Vienna, Wickliffe, Calhoun, Elkton, Greenville,
+Cadiz, Mount Carmel, Shawneetown, Mount Vernon, Herrin, Cairo, Mound
+City, Murray, Piedmont, Marble Hill, Carbondale, McLeansboro,
+Smithland, Benton, Morganfield, Madisonville, Hopkinsville,
+Petersburg, Golconda, West Frankfort, Cape Girardeau, Eddyville,
+Carmi, Jonesboro, Rockport, Pinckneyville, and Fort Branch
+1122 AM CDT Mon Sep 14 2026 /1222 PM EDT Mon Sep 14 2026/
+
+...HEAT ADVISORY REMAINS IN EFFECT FROM 11 AM CDT /NOON EDT/ TUESDAY
+TO 7 PM CDT /8 PM EDT/ WEDNESDAY...
+
+* WHAT...Peak daily Heat Index values near 100 up to around 105
+  degrees expected.
+
+* WHERE...All of southern Illinois, southwest Indiana, western
+  Kentucky, and southeast Missouri.
+
+* WHEN...From 11 AM CDT /noon EDT/ Tuesday to 7 PM CDT /8 PM EDT/
+  Wednesday.
+
+* IMPACTS...Hot temperatures and high humidity may cause heat
+  illnesses.
+
+PRECAUTIONARY/PREPAREDNESS ACTIONS...
+
+Drink plenty of fluids, stay in an air-conditioned room, stay out of
+the sun, and check up on relatives and neighbors.
+
+&&
+
+$$
+
+07

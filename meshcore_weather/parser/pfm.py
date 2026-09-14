@@ -70,7 +70,7 @@ _ROW_PATTERNS = {
 # Local header: "CDT 3hrly", but Alaska/Guam/Hawaii write "AKDT3hrly" and
 # "ChST3hrly" (4-letter zone, no space), so the gap is optional.
 _HRLY_LOCAL_RE = re.compile(
-    r"^(?P<label>\s*[A-Z]{3,4}\s*(?P<interval>3hrly|6hrly))\s+(?P<hours>.+)$",
+    r"^(?P<label>\s*[A-Za-z]{3,4}\s*(?P<interval>3hrly|6hrly))\s+(?P<hours>.+)$",   # ChST (Guam) is mixed case
     re.IGNORECASE,
 )
 _HRLY_UTC_RE = re.compile(
@@ -312,7 +312,7 @@ def _build_slot_times(
 # -- Main parser --------------------------------------------------------------
 
 
-_GLUED_HRLY_RE = re.compile(r"(?<=\S)\s*(?=[A-Z]{3,4}\s+[36]hrly\s)")
+_GLUED_HRLY_RE = re.compile(r"(?<=\S)\s*(?=[A-Za-z]{3,4}\s+[36]hrly\s)")
 
 
 def _split_glued_headers(lines: list[str]) -> list[str]:
@@ -329,6 +329,13 @@ def _split_glued_headers(lines: list[str]) -> list[str]:
         if m and line[:m.start()].strip():
             out.append(line[:m.start()].rstrip())
             line = line[m.start():]
+        else:
+            # Generic: a row label glued after data ("...  Y  YTstms   S")
+            for gm in _GLUED_ROW_RE.finditer(line):
+                if gm.start() >= 14 and line[:gm.start()].strip() and _classify_row(line) is not None:
+                    out.append(line[:gm.start()].rstrip())
+                    line = line[gm.end():] if gm.end() > gm.start() else line[gm.start():]
+                    break
         if "hrly" in line and not _HRLY_LOCAL_RE.match(line):
             parts = _GLUED_HRLY_RE.split(line, maxsplit=1)
             if len(parts) == 2 and _HRLY_LOCAL_RE.match(parts[1]):
@@ -340,6 +347,16 @@ def _split_glued_headers(lines: list[str]) -> list[str]:
 
 
 _GLUED_DATE_RE = re.compile(r"(Date\s{2,}(?:[A-Z][a-z]{2}\s+)?\d{2}/\d{2}(?:/\d{2})?)")
+
+# Every row label a PFM table can carry. A label found mid-line, after
+# column 14, preceded by a data token, means NWS (or the link) dropped a
+# newline: split there. Structure over luck.
+_ROW_LABELS = ("Date", "Min/Max", "Max/Min", "Temp", "Dewpt", "RH", "Wind dir", "Wind spd", "Wind gust",
+               "Clouds", "PoP 12hr", "QPF 12hr", "Snow 12hr", "Rain shwrs", "Rain", "Tstms", "Snow", "Sleet",
+               "FrzgRain", "Obvis", "Heat", "Max heat", "Wind chill", "Min chill", "PWind dir", "Wind char",
+               "Avg clouds", "UTC 3hrly", "UTC 6hrly")
+_GLUED_ROW_RE = re.compile(
+    r"(?<=[\w%/])\s*(?=(?:" + "|".join(re.escape(l) for l in _ROW_LABELS) + r"|[A-Z][A-Za-z]{2,3} [36]hrly)\s{2,})")
 
 
 def parse_pfm(text: str) -> list[PFMPoint]:
@@ -425,10 +442,9 @@ def parse_pfm(text: str) -> list[PFMPoint]:
             if m_local and "UTC" not in line.upper():
                 # Extract the timezone abbreviation from the label
                 label = m_local.group("label").strip()
-                parts = label.split()
-                if parts:
-                    tz = parts[0].upper()
-                    tz_offset = _TZ_OFFSET.get(tz, 0)
+                m_tz = re.match(r"[A-Za-z]{3,4}", label)     # "ChST3hrly" has no space
+                if m_tz:
+                    tz_offset = _TZ_OFFSET.get(m_tz.group(0).upper(), 0)
                 break
 
         # One malformed point must not take down the whole product (seen in
@@ -632,6 +648,21 @@ def _parse_point_tables(lines: list[str], issue_time: datetime) -> list[PFMSlot]
         times = None
         if tz_off is not None:
             times = _slot_times_from_local(lines[i], date_row, tz_off, issue_time)
+        if (times is None or len(times) != len(utc_hours)) and interval == 6 and slots and tz_off is not None:
+            # The 6-hourly table always begins the local day after the
+            # 3-hourly table ends; rebuild its times from that fact when the
+            # Date row did not survive the link.
+            last_local = (slots[-1].dt + timedelta(hours=tz_off)).date()
+            start_local = last_local + timedelta(days=1)
+            local_hours = _parse_hour_tokens(m_local.group("hours"))
+            built, day, prev = [], start_local, -1
+            for h in local_hours:
+                if h <= prev:
+                    day += timedelta(days=1)
+                built.append((datetime(day.year, day.month, day.day, h) - timedelta(hours=tz_off)).replace(tzinfo=timezone.utc))
+                prev = h
+            if len(built) == len(utc_hours):
+                times = built
         if times is None or len(times) != len(utc_hours):
             # Fallback: UTC header anchored on the first Date token.
             start_date = _table_start_date(lines, i, issue_time)

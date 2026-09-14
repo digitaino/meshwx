@@ -1,0 +1,23 @@
+NWUS55 KBYZ 141942
+LSRBYZ
+
+Preliminary Local Storm Report
+National Weather Service Billings MT
+142 PM MDT Mon Sep 14 2026
+
+..TIME...   ...EVENT...      ...CITY LOCATION...     ...LAT.LON...
+..DATE...   ....MAG....      ..COUNTY LOCATION..ST.. ...SOURCE....
+            ..REMARKS..
+
+1235 PM     Non-Tstm Wnd Gst 2 NNE Laurel            45.70N 108.76W
+09/14/2026  M55 MPH          Yellowstone        MT   AWOS             
+
+            AWOS station K6S8 2 NNE Laurel. 
+
+
+&&
+
+$$
+
+
+
