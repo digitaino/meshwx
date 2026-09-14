@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Meshcore Weather Portal</title>
+  <title>Meshcore Weather Admin</title>
   <link rel="stylesheet" href="/static/portal.css">
   <link rel="stylesheet" href="/static/vendor/maplibre/maplibre-gl.css">
 </head>
@@ -12,11 +12,14 @@
     <div class="header-inner">
       <a href="#overview" class="brand" onclick="Portal.router.navigate('overview')">
         Meshcore Weather
-        <span class="brand-badge">GOES-E</span>
+        <span class="brand-badge">ADMIN</span>
       </a>
       <nav class="nav" id="main-nav">
         <a href="#overview" data-section="overview" class="active">Overview</a>
+        <a href="#radio" data-section="radio">Radio</a>
+        <a href="#textbot" data-section="textbot">Text Bot</a>
         <a href="#broadcast" data-section="broadcast">Broadcast</a>
+        <a href="#sdr" data-section="sdr">Satellite</a>
         <a href="#map" data-section="map">Weather Map</a>
         <a href="#system" data-section="system">System</a>
       </nav>
@@ -28,8 +31,9 @@
     <!-- ============ SECTION 1: OVERVIEW ============ -->
     <section id="section-overview" class="section active">
       <h1 class="page-title">Overview</h1>
-      <p class="page-subtitle">Coverage area, data, mesh activity, and bot status.</p>
+      <p class="page-subtitle">Receiver, feed, radio and bot at a glance.</p>
 
+      <div class="grid grid-5 mb-4" id="overview-health"></div>
       <div class="grid grid-5 mb-4" id="overview-stats"></div>
 
       <div class="card">
@@ -93,6 +97,166 @@
             </tbody>
           </table>
         </div>
+      </div>
+    </section>
+
+
+    <!-- ============ SECTION: RADIO ============ -->
+    <section id="section-radio" class="section">
+      <h1 class="page-title">Radio</h1>
+      <p class="page-subtitle">The MeshCore node on USB: identity, LoRa parameters, channels, contacts.</p>
+
+      <div class="grid grid-5 mb-4" id="radio-stats"></div>
+
+      <div class="card" id="radio-offline-card" style="display:none">
+        <div class="card-header"><div><div class="card-title">Radio not connected</div>
+          <div class="card-subtitle" id="radio-offline-reason"></div></div>
+          <button class="btn" onclick="Portal.radio.load()">Retry</button></div>
+        <div class="text-small text-muted">The bot keeps retrying the serial port every minute. The node must run the
+          <strong>Companion Radio (USB)</strong> firmware; a BLE-only companion or a repeater build never answers on serial.</div>
+      </div>
+
+      <div class="grid grid-2">
+        <div class="card">
+          <div class="card-header"><div><div class="card-title">Identity</div>
+            <div class="card-subtitle">Advertised name and location</div></div></div>
+          <label class="form-label">Node name</label>
+          <div class="input-row mb-4"><input class="input" id="radio-name" maxlength="31" placeholder="mesh-wx">
+            <button class="btn btn-primary" onclick="Portal.radio.saveName()">Save</button></div>
+          <div class="grid grid-2 mb-4">
+            <div><label class="form-label">Latitude</label><input class="input" id="radio-lat" placeholder="30.27"></div>
+            <div><label class="form-label">Longitude</label><input class="input" id="radio-lon" placeholder="-97.74"></div>
+          </div>
+          <div class="flex gap-2 mb-4"><button class="btn" onclick="Portal.radio.saveCoords()">Save location</button></div>
+          <div class="text-small text-muted text-mono" id="radio-pubkey"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><div><div class="card-title">LoRa parameters</div>
+            <div class="card-subtitle">Every node on the mesh must match these</div></div></div>
+          <div class="grid grid-4 mb-4">
+            <div><label class="form-label">Freq (MHz)</label><input class="input" id="radio-freq"></div>
+            <div><label class="form-label">BW (kHz)</label><input class="input" id="radio-bw"></div>
+            <div><label class="form-label">SF</label><input class="input" id="radio-sf"></div>
+            <div><label class="form-label">CR</label><input class="input" id="radio-cr"></div>
+          </div>
+          <div class="flex gap-2 mb-4" style="align-items:center">
+            <button class="btn btn-primary" onclick="Portal.radio.saveParams()">Apply</button>
+            <select class="input" id="radio-preset" style="max-width:220px"></select>
+            <button class="btn" onclick="Portal.radio.applyPreset()">Use preset</button>
+          </div>
+          <div class="grid grid-2 mb-4">
+            <div><label class="form-label">TX power (dBm)</label>
+              <div class="input-row"><input class="input" id="radio-txpower"><button class="btn" onclick="Portal.radio.saveTxPower()">Set</button></div></div>
+            <div><label class="form-label">Transmit</label>
+              <div class="flex gap-2" style="align-items:center"><span id="radio-tx-badge" class="badge badge-muted">?</span>
+                <button class="btn" id="radio-tx-toggle" onclick="Portal.radio.toggleTx()">Toggle</button></div>
+              <span class="form-hint">Off = receive-only. Adverts and every broadcast are suppressed.</span></div>
+          </div>
+          <div class="flex gap-2">
+            <button class="btn" onclick="Portal.radio.advert()">Send advert</button>
+            <button class="btn btn-danger" onclick="Portal.radio.reboot()">Reboot node</button>
+          </div>
+          <div id="radio-action-result" class="text-small mt-4"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div><div class="card-title">Channels</div>
+          <div class="card-subtitle">Slots 0-7 on the node. Slot 0 is the public channel and stays untouched. The bot's text, data and discovery channels are tagged.</div></div>
+          <button class="btn" onclick="Portal.radio.load()">Refresh</button></div>
+        <table class="table table-compact"><thead><tr><th>Slot</th><th>Name</th><th>Role</th><th>Secret</th><th></th></tr></thead>
+          <tbody id="radio-channels"><tr><td colspan="5" class="text-muted">Loading&hellip;</td></tr></tbody></table>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div><div class="card-title">Contacts</div>
+          <div class="card-subtitle">Nodes the radio has heard adverts from</div></div>
+          <button class="btn" onclick="Portal.radio.loadContacts()">Refresh</button></div>
+        <div style="max-height:360px;overflow:auto">
+          <table class="table table-compact"><thead><tr><th>Name</th><th>Type</th><th>Last advert</th><th>Path</th><th>Key</th></tr></thead>
+            <tbody id="radio-contacts"><tr><td colspan="5" class="text-muted">Not loaded</td></tr></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ SECTION: TEXT BOT ============ -->
+    <section id="section-textbot" class="section">
+      <h1 class="page-title">Text Bot</h1>
+      <p class="page-subtitle">The plain-MeshCore side: which channels the bot listens on, and a console that answers exactly like a DM.</p>
+
+      <div class="grid grid-2">
+        <div class="card">
+          <div class="card-header"><div><div class="card-title">Console</div>
+            <div class="card-subtitle">Type what a user would send. The reply is what they would get by DM.</div></div></div>
+          <div class="input-row mb-4">
+            <input class="input" id="console-input" placeholder="wx round rock tx" onkeydown="if(event.key==='Enter')Portal.textbot.send()">
+            <button class="btn btn-primary" onclick="Portal.textbot.send()">Send</button>
+          </div>
+          <div class="flex gap-2 mb-4" id="console-examples"></div>
+          <div id="console-log" class="text-mono text-small" style="max-height:420px;overflow:auto;white-space:pre-wrap"></div>
+        </div>
+
+        <div>
+          <div class="card">
+            <div class="card-header"><div><div class="card-title">Channels</div>
+              <div class="card-subtitle">Names the bot resolves on the node at startup</div></div></div>
+            <div class="mb-4"><label class="form-label">Text commands</label>
+              <input type="text" class="input" id="sys-ch-text" placeholder="#digitaino-wx-bot">
+              <span class="form-hint">Users send "wx Austin TX" here; replies go by DM only</span></div>
+            <div class="mb-4"><label class="form-label">Binary data (app)</label>
+              <input type="text" class="input" id="sys-ch-data" placeholder="#aus-meshwx-v4">
+              <span class="form-hint">Warnings, observations, forecasts as compact datagrams</span></div>
+            <div class="mb-4"><label class="form-label">Discovery</label>
+              <input type="text" class="input" id="sys-ch-discover" placeholder="#meshwx-discover">
+              <span class="form-hint">Apps ping here to find nearby bots</span></div>
+            <div class="flex gap-2 mb-4" style="align-items:center">
+              <button class="btn btn-primary" onclick="Portal.system.saveChannels(this)">Save</button>
+              <span id="sys-ch-status" class="text-small text-muted"></span></div>
+            <div class="text-small text-muted">Takes effect at the next restart. Never uses channel 0.</div>
+          </div>
+          <div class="card">
+            <div class="card-header"><div><div class="card-title">Commands</div>
+              <div class="card-subtitle">What "help" returns on the mesh</div></div></div>
+            <pre class="text-small text-mono" id="console-help" style="white-space:pre-wrap;margin:0"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ SECTION: SATELLITE ============ -->
+    <section id="section-sdr" class="section">
+      <h1 class="page-title">Satellite receiver</h1>
+      <p class="page-subtitle">goesrecv / goesproc on this Pi, and what the EMWIN feed is delivering to the bot.</p>
+
+      <div class="grid grid-5 mb-4" id="sdr-stats"></div>
+
+      <div class="grid grid-2">
+        <div class="card">
+          <div class="card-header"><div><div class="card-title">Signal</div>
+            <div class="card-subtitle" id="sdr-signal-sub"></div></div>
+            <div class="flex gap-2">
+              <button class="btn" id="sdr-mode-point" onclick="Portal.sdr.setMode('point')">Pointing mode</button>
+              <button class="btn" id="sdr-mode-receive" onclick="Portal.sdr.setMode('receive')">Receive mode</button>
+            </div></div>
+          <canvas id="sdr-chart" height="140" style="width:100%"></canvas>
+          <div class="text-small text-muted mt-4">Viterbi errors (line) and dropped packets (bars), last 15 minutes. Lower is better; drops should be zero.</div>
+          <div class="grid grid-3 mt-4" id="sdr-totals"></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><div><div class="card-title">EMWIN feed</div>
+            <div class="card-subtitle" id="sdr-feed-sub"></div></div>
+            <button class="btn" onclick="Portal.sdr.load()">Refresh</button></div>
+          <table class="table table-compact"><thead><tr><th>Product</th><th>Last hour</th></tr></thead>
+            <tbody id="sdr-feed-types"></tbody></table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div><div class="card-title">Public dashboard</div>
+          <div class="card-subtitle">The goestools page (read-only for visitors) with imagery and the constellation</div></div>
+          <a class="btn" id="sdr-dashboard-link" href="#" target="_blank">Open</a></div>
+        <div class="grid grid-3" id="sdr-services"></div>
       </div>
     </section>
 
@@ -178,7 +342,7 @@
     <!-- ============ SECTION 4: SYSTEM ============ -->
     <section id="section-system" class="section">
       <h1 class="page-title">System</h1>
-      <p class="page-subtitle">Coverage configuration, bot connection, and developer tools.</p>
+      <p class="page-subtitle">Coverage, host, settings, logs and developer tools.</p>
 
       <div class="card">
         <div class="card-header">
@@ -217,34 +381,39 @@
       </div>
 
       <div class="card">
-        <div class="card-header">
-          <div>
-            <div class="card-title">Radio Channels</div>
-            <div class="card-subtitle">Channel names for text commands, v3 data, and v4 deployment</div>
-          </div>
-        </div>
+        <div class="card-header"><div><div class="card-title">Bot &amp; host</div>
+          <div class="card-subtitle" id="sysinfo-sub"></div></div>
+          <button class="btn" onclick="Portal.sysinfo.load()">Refresh</button></div>
+        <div class="grid grid-5" id="sysinfo-stats"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div><div class="card-title">Settings (.env)</div>
+          <div class="card-subtitle">Saved to the env file; the bot picks them up at the next restart</div></div></div>
         <div class="grid grid-3 mb-4">
-          <div>
-            <label class="form-label">Text Commands</label>
-            <input type="text" class="input" id="sys-ch-text" placeholder="#digitaino-wx-bot">
-            <span class="form-hint">Chat channel for "wx Austin TX" text commands</span>
-          </div>
-          <div>
-            <label class="form-label">v4 Data (iOS App)</label>
-            <input type="text" class="input" id="sys-ch-data" placeholder="#aus-meshwx-v4">
-            <span class="form-hint">Binary broadcasts — warnings, forecasts, observations</span>
-          </div>
-          <div>
-            <label class="form-label">Discovery</label>
-            <input type="text" class="input" id="sys-ch-discover" placeholder="#meshwx-discover">
-            <span class="form-hint">Clients ping here to find nearby bots</span>
-          </div>
+          <div><label class="form-label">Serial port</label><input class="input" id="env-MCW_SERIAL_PORT"></div>
+          <div><label class="form-label">Home city</label><input class="input" id="env-MCW_HOME_CITIES"></div>
+          <div><label class="form-label">Coverage radius (km)</label><input class="input" id="env-MCW_HOME_RADIUS_KM"></div>
+          <div><label class="form-label">Timezone</label><input class="input" id="env-MCW_TIMEZONE"></div>
+          <div><label class="form-label">EMWIN source</label>
+            <select class="input" id="env-MCW_EMWIN_SOURCE"><option value="sdr">sdr (goesproc directory)</option><option value="internet">internet (NOAA bundle)</option></select></div>
+          <div><label class="form-label">EMWIN directory</label><input class="input" id="env-MCW_SDR_EMWIN_DIR"></div>
+          <div><label class="form-label">Log level</label>
+            <select class="input" id="env-MCW_LOG_LEVEL"><option>INFO</option><option>DEBUG</option><option>WARNING</option></select></div>
         </div>
-        <div class="flex gap-2 mb-4" style="align-items: center;">
-          <button class="btn btn-primary" onclick="Portal.system.saveChannels(this)">Save Channels</button>
-          <span id="sys-ch-status" class="text-small text-muted"></span>
-        </div>
-        <div class="text-small text-muted">Requires restart. Text products use v4 framing with FEC.</div>
+        <div class="flex gap-2" style="align-items:center">
+          <button class="btn btn-primary" onclick="Portal.sysinfo.saveEnv()">Save settings</button>
+          <span id="env-status" class="text-small text-muted"></span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div><div class="card-title">Logs</div>
+          <div class="card-subtitle">Last lines from the bot process</div></div>
+          <div class="flex gap-2">
+            <select class="input" id="logs-level" onchange="Portal.sysinfo.loadLogs()" style="max-width:140px">
+              <option value="">All</option><option value="INFO">Info+</option><option value="WARNING">Warnings+</option><option value="ERROR">Errors</option></select>
+            <button class="btn" onclick="Portal.sysinfo.loadLogs()">Refresh</button></div></div>
+        <div id="logs-body" class="text-mono text-small" style="max-height:420px;overflow:auto;white-space:pre-wrap"></div>
       </div>
 
       <div class="card">

@@ -166,7 +166,7 @@ var Portal = {
 
   router: {
     currentSection: null,
-    _sections: ["overview", "broadcast", "map", "system"],
+    _sections: ["overview", "radio", "textbot", "broadcast", "sdr", "map", "system"],
 
     init: function () {
       var self = this;
@@ -218,10 +218,14 @@ var Portal = {
 
       // Section lifecycle hooks
       if (prev === "map") Portal.weatherMap.onLeave();
+      if (prev === "sdr") Portal.sdr.onLeave();
       if (hash === "map") Portal.weatherMap.onEnter();
       if (hash === "overview") Portal.overview.refresh();
+      if (hash === "radio") Portal.radio.onEnter();
+      if (hash === "textbot") Portal.textbot.onEnter();
       if (hash === "broadcast") Portal.broadcast.onEnter();
-      if (hash === "system") Portal.system.onEnter();
+      if (hash === "sdr") Portal.sdr.onEnter();
+      if (hash === "system") { Portal.system.onEnter(); Portal.sysinfo.onEnter(); }
     },
   },
 
@@ -295,7 +299,21 @@ var Portal = {
       this._rendered = true;
     },
 
+    loadHealth: function () {
+      Promise.all([apiJson("/api/sdr").catch(function () { return null; }), apiJson("/api/radio").catch(function () { return null; })]).then(function (res) {
+        var sdr = res[0] || {}, radio = res[1] || {};
+        var st = (sdr.receiver || {}).stats || {}, feed = sdr.feed || {}, info = radio.info || {};
+        document.getElementById("overview-health").innerHTML =
+          statCard("Satellite", st.locked ? "locked" : (sdr.receiver && !sdr.receiver._error ? "no lock" : "?"), st.vit_avg != null ? "vit " + st.vit_avg + " · drops " + st.drops : "dashboard unreachable", st.locked ? "" : "text-muted") +
+          statCard("EMWIN feed", fmtAgeS(feed.newest_age_s), (feed.products_last_hour || 0) + " products/h") +
+          statCard("Radio", radio.connected ? "up" : "down", radio.connected ? (info.name || "") + " · " + info.radio_freq + " MHz" : (radio.serial_port || ""), radio.connected ? "" : "text-muted") +
+          statCard("Transmit", radio.tx_enabled ? "ON" : "OFF", radio.tx_enabled ? "on air" : "receive-only") +
+          statCard("Warnings", feed.warnings_last_hour != null ? feed.warnings_last_hour : "–", "warning-class products, last hour");
+      });
+    },
+
     refresh: function () {
+      this.loadHealth();
       fetch("/api/status").then(function (r) { return r.json(); }).then(function (data) {
         var grid = document.getElementById("overview-status-grid");
         grid.innerHTML =
@@ -868,7 +886,6 @@ var Portal = {
         this._initialized = true;
         this.render(window.__BOOT__);
         this.initPreviewMap();
-        this.loadChannels();
       }
     },
 
@@ -1151,3 +1168,290 @@ var Portal = {
 
 // Boot
 document.addEventListener("DOMContentLoaded", function () { Portal.init(); });
+
+// ---------------------------------------------------------------------------
+// Admin modules: radio, text bot console, satellite receiver, system info
+// ---------------------------------------------------------------------------
+
+function apiJson(url, opts) {
+  opts = opts || {};
+  if (opts.body && typeof opts.body !== "string") {
+    opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+    opts.body = JSON.stringify(opts.body);
+  }
+  return fetch(url, opts).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (d) {
+      if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+      return d;
+    });
+  });
+}
+
+function statCard(label, value, hint, cls) {
+  return '<div class="stat"><div class="stat-label">' + escapeHtml(label) + '</div>' +
+    '<div class="stat-value ' + (cls || "") + '">' + value + '</div>' +
+    '<div class="stat-hint">' + escapeHtml(hint || "") + '</div></div>';
+}
+
+function fmtAgeS(s) {
+  if (s == null) return "–";
+  if (s < 90) return s + "s";
+  if (s < 5400) return Math.round(s / 60) + "m";
+  if (s < 172800) return Math.round(s / 3600) + "h";
+  return Math.round(s / 86400) + "d";
+}
+
+Portal.radio = {
+  _state: null,
+  onEnter: function () { this.load(); },
+
+  load: function () {
+    var self = this;
+    apiJson("/api/radio").then(function (d) {
+      self._state = d;
+      self.render(d);
+    }).catch(function (e) { Portal.ui.showToast("Radio: " + e.message, false); });
+  },
+
+  render: function (d) {
+    var info = d.info || {};
+    var conn = d.connected;
+    document.getElementById("radio-offline-card").style.display = conn ? "none" : "";
+    document.getElementById("radio-offline-reason").textContent = conn ? "" : (d.error || "") + " (" + d.serial_port + " @ " + d.serial_baud + ")";
+    var stats =
+      statCard("Link", conn ? "up" : "down", d.serial_port, conn ? "" : "text-muted") +
+      statCard("Node", conn ? escapeHtml(info.name || "?") : "–", info.public_key ? info.public_key.slice(0, 12) + "…" : "") +
+      statCard("Frequency", info.radio_freq != null ? info.radio_freq + " MHz" : "–",
+        info.radio_bw != null ? "BW " + info.radio_bw + " kHz · SF" + info.radio_sf + " · CR" + info.radio_cr : "") +
+      statCard("TX power", info.tx_power != null ? info.tx_power + " dBm" : "–", info.max_tx_power != null ? "max " + info.max_tx_power : "") +
+      statCard("Battery", info.battery_mv ? (info.battery_mv / 1000).toFixed(2) + " V" : "–", d.tx_enabled ? "transmit ON" : "receive-only");
+    document.getElementById("radio-stats").innerHTML = stats;
+
+    var set = function (id, v) { var el = document.getElementById(id); if (el && document.activeElement !== el) el.value = v == null ? "" : v; };
+    set("radio-name", info.name); set("radio-lat", info.adv_lat); set("radio-lon", info.adv_lon);
+    set("radio-freq", info.radio_freq); set("radio-bw", info.radio_bw); set("radio-sf", info.radio_sf); set("radio-cr", info.radio_cr);
+    set("radio-txpower", info.tx_power);
+    document.getElementById("radio-pubkey").textContent = info.public_key ? "public key " + info.public_key : "";
+    var badge = document.getElementById("radio-tx-badge");
+    badge.textContent = d.tx_enabled ? "ON" : "OFF";
+    badge.className = "badge " + (d.tx_enabled ? "badge-danger" : "badge-success");
+    document.getElementById("radio-tx-toggle").textContent = d.tx_enabled ? "Disable transmit" : "Enable transmit";
+
+    var sel = document.getElementById("radio-preset");
+    sel.innerHTML = Object.keys(d.presets || {}).map(function (k) {
+      var p = d.presets[k];
+      return '<option value="' + k + '">' + escapeHtml(p.label) + " — " + p.freq_mhz + "/" + p.bw_khz + "/SF" + p.sf + "/CR" + p.cr + '</option>';
+    }).join("");
+
+    var tb = document.getElementById("radio-channels");
+    if (!conn) { tb.innerHTML = '<tr><td colspan="5" class="text-muted">Radio not connected</td></tr>'; return; }
+    var rows = [];
+    for (var i = 0; i < 8; i++) {
+      var ch = (d.channels || []).filter(function (c) { return c.idx === i; })[0] || { idx: i, name: "", role: null };
+      var roleBadge = ch.role ? '<span class="badge badge-success">' + ch.role + '</span>' : "";
+      var cfgMatch = "";
+      if (!ch.role && ch.name) {
+        var cfg = d.configured_channels || {};
+        if ([cfg.text, cfg.data, cfg.discover].indexOf(ch.name) !== -1) cfgMatch = '<span class="badge badge-warning">configured, not resolved</span>';
+      }
+      rows.push('<tr><td>' + i + (i === 0 ? ' <span class="text-muted">(public)</span>' : "") + '</td>' +
+        '<td>' + (i === 0 ? escapeHtml(ch.name || "public") :
+          '<input class="input" style="max-width:260px" id="radio-ch-' + i + '" value="' + escapeHtml(ch.name || "") + '" placeholder="(empty slot)">') + '</td>' +
+        '<td>' + roleBadge + cfgMatch + '</td>' +
+        '<td class="text-mono text-small text-muted">' + (ch.secret ? ch.secret.slice(0, 8) + "…" : "") + '</td>' +
+        '<td>' + (i === 0 ? "" :
+          '<button class="btn btn-mini" onclick="Portal.radio.saveChannel(' + i + ')">Save</button> ' +
+          (ch.name ? '<button class="btn btn-mini btn-danger" onclick="Portal.radio.clearChannel(' + i + ')">Clear</button>' : "")) + '</td></tr>');
+    }
+    tb.innerHTML = rows.join("");
+  },
+
+  _act: function (promise, okMsg) {
+    var self = this;
+    var out = document.getElementById("radio-action-result");
+    return promise.then(function (d) {
+      Portal.ui.showToast(okMsg || "Done", true);
+      if (d && d.note) out.textContent = d.note; else out.textContent = "";
+      self.load();
+    }).catch(function (e) { Portal.ui.showToast(e.message, false); out.textContent = e.message; });
+  },
+  saveName: function () { this._act(apiJson("/api/radio/name", { method: "POST", body: { name: document.getElementById("radio-name").value } }), "Name saved"); },
+  saveCoords: function () {
+    this._act(apiJson("/api/radio/coords", { method: "POST", body: { lat: parseFloat(document.getElementById("radio-lat").value), lon: parseFloat(document.getElementById("radio-lon").value) } }), "Location saved");
+  },
+  saveParams: function () {
+    var body = { freq_mhz: parseFloat(document.getElementById("radio-freq").value), bw_khz: parseFloat(document.getElementById("radio-bw").value),
+      sf: parseInt(document.getElementById("radio-sf").value, 10), cr: parseInt(document.getElementById("radio-cr").value, 10) };
+    if (!confirm("Change LoRa parameters to " + body.freq_mhz + " MHz / " + body.bw_khz + " kHz / SF" + body.sf + " / CR" + body.cr + "? Every node on the mesh must use the same values.")) return;
+    this._act(apiJson("/api/radio/params", { method: "POST", body: body }), "Radio parameters applied");
+  },
+  applyPreset: function () {
+    var k = document.getElementById("radio-preset").value;
+    var p = (this._state && this._state.presets || {})[k];
+    if (!p) return;
+    ["freq", "bw", "sf", "cr"].forEach(function (f) { document.getElementById("radio-" + f).value = p[{ freq: "freq_mhz", bw: "bw_khz", sf: "sf", cr: "cr" }[f]]; });
+  },
+  saveTxPower: function () { this._act(apiJson("/api/radio/txpower", { method: "POST", body: { dbm: parseInt(document.getElementById("radio-txpower").value, 10) } }), "TX power set"); },
+  toggleTx: function () {
+    var on = !(this._state && this._state.tx_enabled);
+    if (on && !confirm("Enable transmit? The bot will send adverts, DM replies and scheduled broadcasts on air.")) return;
+    this._act(apiJson("/api/radio/tx", { method: "POST", body: { enabled: on } }), on ? "Transmit enabled" : "Transmit disabled");
+  },
+  advert: function () { this._act(apiJson("/api/radio/advert", { method: "POST" }), "Advert requested"); },
+  reboot: function () { if (confirm("Reboot the radio node?")) this._act(apiJson("/api/radio/reboot", { method: "POST" }), "Rebooting"); },
+  saveChannel: function (i) {
+    var name = document.getElementById("radio-ch-" + i).value.trim();
+    if (!name) return this.clearChannel(i);
+    this._act(apiJson("/api/radio/channel", { method: "POST", body: { idx: i, name: name } }), "Channel " + i + " saved");
+  },
+  clearChannel: function (i) { if (confirm("Clear channel slot " + i + "?")) this._act(apiJson("/api/radio/channel/" + i, { method: "DELETE" }), "Channel " + i + " cleared"); },
+  loadContacts: function () {
+    apiJson("/api/radio/contacts").then(function (d) {
+      var tb = document.getElementById("radio-contacts");
+      if (!d.contacts.length) { tb.innerHTML = '<tr><td colspan="5" class="text-muted">No contacts</td></tr>'; return; }
+      var now = Date.now() / 1000;
+      tb.innerHTML = d.contacts.map(function (c) {
+        return '<tr><td>' + escapeHtml(c.name || "?") + '</td><td>' + ({ 1: "client", 2: "repeater", 3: "room" }[c.type] || c.type || "") + '</td>' +
+          '<td>' + (c.last_advert ? fmtAgeS(Math.round(now - c.last_advert)) + " ago" : "–") + '</td>' +
+          '<td>' + (c.out_path_len != null && c.out_path_len >= 0 ? c.out_path_len + " hops" : "flood") + '</td>' +
+          '<td class="text-mono text-small text-muted">' + (c.public_key || "").slice(0, 12) + '</td></tr>';
+      }).join("");
+    }).catch(function (e) { Portal.ui.showToast(e.message, false); });
+  },
+};
+
+Portal.textbot = {
+  _loaded: false,
+  onEnter: function () {
+    if (!this._loaded) {
+      this._loaded = true;
+      var ex = ["wx round rock tx", "forecast austin", "warn TX", "storm TX", "space", "metar KAUS", "help"];
+      document.getElementById("console-examples").innerHTML = ex.map(function (t) {
+        return '<button class="btn btn-mini" onclick="Portal.textbot.send(' + JSON.stringify(t).replace(/"/g, "&quot;") + ')">' + escapeHtml(t) + '</button>';
+      }).join("");
+      apiJson("/api/console/help").then(function (d) { document.getElementById("console-help").textContent = d.help; });
+      Portal.system.loadChannels();
+    }
+  },
+  send: function (preset) {
+    var input = document.getElementById("console-input");
+    var text = (preset || input.value).trim();
+    if (!text) return;
+    if (!preset) input.value = "";
+    var log = document.getElementById("console-log");
+    var id = "c" + Date.now();
+    log.insertAdjacentHTML("beforeend", '<div><span class="text-muted">you&gt;</span> ' + escapeHtml(text) + '</div><div id="' + id + '" class="text-muted">…</div>');
+    log.scrollTop = log.scrollHeight;
+    apiJson("/api/console", { method: "POST", body: { text: text } }).then(function (d) {
+      var el = document.getElementById(id);
+      var meta = '<span class="text-muted">[' + escapeHtml(d.command) + (d.location ? " · " + escapeHtml(d.location) : "") + " · " + d.ms + "ms]</span> ";
+      var chunks = d.chunks && d.chunks.length ? d.chunks : [d.reply || "(no reply)"];
+      el.className = "";
+      el.innerHTML = chunks.map(function (c, i) {
+        return '<div style="margin:2px 0 8px 0"><span class="badge badge-muted">DM ' + (i + 1) + "/" + chunks.length + " · " + c.length + "ch</span> " + escapeHtml(c) + "</div>";
+      }).join("") + meta;
+      log.scrollTop = log.scrollHeight;
+    }).catch(function (e) { document.getElementById(id).textContent = "error: " + e.message; });
+  },
+};
+
+Portal.sdr = {
+  _timer: null,
+  onEnter: function () { this.load(); this.loadHistory(); var s = this; this._timer = setInterval(function () { s.load(); s.loadHistory(); }, 10000); },
+  onLeave: function () { if (this._timer) clearInterval(this._timer); this._timer = null; },
+
+  load: function () {
+    apiJson("/api/sdr").then(function (d) {
+      var r = d.receiver || {}, st = r.stats || {}, feed = d.feed || {};
+      var err = r._error;
+      document.getElementById("sdr-dashboard-link").href = d.dashboard_url;
+      document.getElementById("sdr-stats").innerHTML =
+        statCard("Lock", err ? "?" : (st.locked ? "locked" : "no lock"), err ? "dashboard unreachable" : (st.lock_since ? "since " + fmtAgeS(Math.round(Date.now() / 1000 - st.lock_since)) + " ago" : ""), st.locked ? "" : "text-muted") +
+        statCard("Viterbi", st.vit_avg != null ? st.vit_avg : "–", "errors/frame, lower is better") +
+        statCard("Drops", st.drops != null ? st.drops : "–", "last interval") +
+        statCard("Feed", feed.products_last_hour != null ? feed.products_last_hour : "–", "products in the last hour") +
+        statCard("Newest file", fmtAgeS(feed.newest_age_s), feed.source === "sdr" ? "from the dish" : "internet feed");
+      document.getElementById("sdr-signal-sub").textContent = err ? err :
+        ("mode " + (r.mode || "?") + " · gain " + (st.gain != null ? st.gain.toFixed(1) : "?") + " · freq offset " + (st.freq != null ? Math.round(st.freq) + " Hz" : "?"));
+      document.getElementById("sdr-mode-point").className = "btn" + (r.mode === "point" ? " btn-primary" : "");
+      document.getElementById("sdr-mode-receive").className = "btn" + (r.mode === "receive" ? " btn-primary" : "");
+      var tot = st.totals || {};
+      document.getElementById("sdr-totals").innerHTML =
+        statCard("Packets", tot.packets != null ? tot.packets.toLocaleString() : "–", "since goesrecv start") +
+        statCard("Dropped", tot.drops != null ? tot.drops.toLocaleString() : "–", tot.packets ? (tot.drops * 100 / tot.packets).toFixed(2) + "%" : "") +
+        statCard("RS corrected", tot.rs_errors != null ? tot.rs_errors.toLocaleString() : "–", "bytes");
+      document.getElementById("sdr-feed-sub").textContent = feed.products_total + " products in the store · " + feed.warnings_last_hour + " warning-class in the last hour" + (feed.directory ? " · " + feed.directory : "");
+      document.getElementById("sdr-feed-types").innerHTML = (feed.top_types_last_hour || []).map(function (t) {
+        return '<tr><td class="text-mono">' + escapeHtml(t[0]) + '</td><td>' + t[1] + '</td></tr>';
+      }).join("") || '<tr><td colspan="2" class="text-muted">nothing in the last hour</td></tr>';
+      var svc = (r.status || {}).services || {};
+      var stt = r.status || {};
+      document.getElementById("sdr-services").innerHTML =
+        statCard("goesrecv", svc.goesrecv || "?", stt.goesrecv_up_s ? "up " + fmtAgeS(stt.goesrecv_up_s) : "") +
+        statCard("goesproc", svc.goesproc || "?", stt.counts ? (stt.counts.emwin_today || 0) + " EMWIN files today" : "") +
+        statCard("Pi", stt.temp ? stt.temp.toFixed(0) + "°C" : "–", stt.disk_free_gb ? stt.disk_free_gb + " GB free · load " + stt.load : "");
+    }).catch(function (e) { Portal.ui.showToast("Satellite: " + e.message, false); });
+  },
+
+  loadHistory: function () {
+    apiJson("/api/sdr/history").then(function (d) {
+      var h = d.history; if (!Array.isArray(h) || !h.length) return;
+      var c = document.getElementById("sdr-chart"); var ctx = c.getContext("2d");
+      var W = c.width = c.clientWidth || 600, H = c.height;
+      ctx.clearRect(0, 0, W, H);
+      var vit = h.map(function (r) { return r[1]; }), drops = h.map(function (r) { return r[3]; });
+      var vmax = Math.max(400, Math.max.apply(null, vit)), dmax = Math.max(5, Math.max.apply(null, drops));
+      var n = h.length, dx = W / n;
+      ctx.fillStyle = "rgba(225,29,72,0.6)";
+      drops.forEach(function (v, i) { if (v > 0) { var bh = v / dmax * (H - 20); ctx.fillRect(i * dx, H - bh, Math.max(1, dx), bh); } });
+      ctx.strokeStyle = "#06b6d4"; ctx.lineWidth = 1.5; ctx.beginPath();
+      vit.forEach(function (v, i) { var y = H - 10 - (v / vmax) * (H - 20); if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i * dx, y); });
+      ctx.stroke();
+      ctx.fillStyle = "#9ca3af"; ctx.font = "11px sans-serif";
+      ctx.fillText("vit " + vit[vit.length - 1] + " · drops " + drops[drops.length - 1], 6, 12);
+    }).catch(function () {});
+  },
+  setMode: function (mode) {
+    var self = this;
+    apiJson("/api/sdr/mode", { method: "POST", body: { mode: mode } }).then(function () { Portal.ui.showToast("Receiver in " + mode + " mode", true); self.load(); })
+      .catch(function (e) { Portal.ui.showToast(e.message, false); });
+  },
+};
+
+Portal.sysinfo = {
+  onEnter: function () { this.load(); this.loadLogs(); },
+  load: function () {
+    apiJson("/api/system").then(function (d) {
+      var b = d.bot || {}, h = d.host || {}, s = d.settings || {};
+      document.getElementById("sysinfo-sub").textContent = h.hostname + (b.git ? " · commit " + b.git : "");
+      document.getElementById("sysinfo-stats").innerHTML =
+        statCard("Bot up", fmtAgeS(b.uptime_s), b.radio_connected ? "radio connected" : "no radio") +
+        statCard("Host up", fmtAgeS(h.uptime_s), h.load ? "load " + h.load.join(" / ") : "") +
+        statCard("Memory", h.mem_available_mb != null ? h.mem_available_mb + " MB" : "–", "available of " + h.mem_total_mb) +
+        statCard("Disk", h.disk_free_gb != null ? h.disk_free_gb + " GB" : "–", "free · " + h.disk_used_pct + "% used") +
+        statCard("CPU temp", h.temp_c != null ? h.temp_c + "°C" : "–", b.products + " products");
+      var map = { MCW_SERIAL_PORT: "serial_port", MCW_HOME_CITIES: "home_cities", MCW_HOME_RADIUS_KM: "home_radius_km", MCW_TIMEZONE: "timezone",
+        MCW_EMWIN_SOURCE: "emwin_source", MCW_SDR_EMWIN_DIR: "sdr_emwin_dir", MCW_LOG_LEVEL: "log_level" };
+      Object.keys(map).forEach(function (k) { var el = document.getElementById("env-" + k); if (el && document.activeElement !== el && s[map[k]] != null) el.value = s[map[k]]; });
+    }).catch(function (e) { Portal.ui.showToast(e.message, false); });
+  },
+  saveEnv: function () {
+    var keys = ["MCW_SERIAL_PORT", "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_TIMEZONE", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR", "MCW_LOG_LEVEL"];
+    var body = {}; keys.forEach(function (k) { body[k] = document.getElementById("env-" + k).value; });
+    var st = document.getElementById("env-status"); st.textContent = "Saving…";
+    apiJson("/api/settings/env", { method: "POST", body: body }).then(function (d) { st.textContent = d.note; Portal.ui.showToast("Settings saved (restart to apply)", true); })
+      .catch(function (e) { st.textContent = e.message; });
+  },
+  loadLogs: function () {
+    var level = document.getElementById("logs-level").value;
+    apiJson("/api/logs?n=300" + (level ? "&level=" + level : "")).then(function (d) {
+      var el = document.getElementById("logs-body");
+      el.innerHTML = d.lines.map(function (l) {
+        var t = new Date(l.t * 1000).toTimeString().slice(0, 8);
+        var cls = l.level === "ERROR" || l.level === "CRITICAL" ? "badge-danger" : l.level === "WARNING" ? "badge-warning" : "badge-muted";
+        return '<div><span class="text-muted">' + t + '</span> <span class="badge ' + cls + '">' + l.level.slice(0, 4) + '</span> ' + escapeHtml(l.msg) + '</div>';
+      }).join("") || '<div class="text-muted">no log lines yet</div>';
+      el.scrollTop = el.scrollHeight;
+    }).catch(function (e) { Portal.ui.showToast(e.message, false); });
+  },
+};

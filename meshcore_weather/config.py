@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     # "sdr": goesproc's emwin output tree (YYYY-MM-DD/ dirs of .TXT files)
     sdr_emwin_dir: str = "~/goes-images/emwin"
     sdr_poll_interval: int = 30     # seconds between directory scans
+    # goestools dashboard (signal stats, pointing mode) proxied into the admin portal
+    sdr_dashboard_url: str = "http://127.0.0.1:8080"
     # Initial load uses 1-hour bundle for coverage, then polls 2-minute bundle
     emwin_base_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip"
     emwin_poll_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txtmin02.zip"

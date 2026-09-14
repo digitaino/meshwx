@@ -77,6 +77,12 @@ class MeshcoreRadio:
         else:
             logger.info("Connecting to Meshcore radio on %s @ %d baud", port, baud)
             self._mc = await MeshCore.create_serial(port, baud)
+        if self._mc is None:
+            # meshcore_py returns None when the node never answers APP_START:
+            # wrong firmware (BLE-only companion, repeater), wrong baud, or
+            # the ESP32 is held in reset by the port's DTR/RTS lines.
+            raise ConnectionError(
+                f"no companion response on {port} (is the firmware 'Companion Radio USB'?)")
         self._running = True
 
         # Resolve channel name to index
@@ -467,6 +473,179 @@ class MeshcoreRadio:
                 await self._mc.ensure_contacts(follow=True)
             except Exception:
                 logger.debug("Failed to refresh contacts")
+
+    # -- Management (portal) ---------------------------------------------------
+
+    @property
+    def connected(self) -> bool:
+        return self._mc is not None and self._running
+
+    def _require(self) -> MeshCore:
+        if not self.connected:
+            raise ConnectionError("radio not connected")
+        return self._mc
+
+    async def info(self) -> dict:
+        """Identity and radio parameters straight from the node, plus battery."""
+        mc = self._require()
+        si = dict(mc.self_info or {})
+        out = {
+            "name": si.get("name"),
+            "public_key": si.get("public_key"),
+            "radio_freq": si.get("radio_freq"),
+            "radio_bw": si.get("radio_bw"),
+            "radio_sf": si.get("radio_sf"),
+            "radio_cr": si.get("radio_cr"),
+            "tx_power": si.get("tx_power"),
+            "max_tx_power": si.get("max_tx_power"),
+            "adv_lat": si.get("adv_lat"),
+            "adv_lon": si.get("adv_lon"),
+            "adv_type": si.get("adv_type"),
+            "manual_add_contacts": si.get("manual_add_contacts"),
+            "battery_mv": None,
+            "channels": {"text": self._channel_idx, "data": self._data_channel_idx,
+                         "discover": self._discover_channel_idx},
+        }
+        try:
+            bat = await mc.commands.get_bat()
+            if bat.type == EventType.BATTERY:
+                out["battery_mv"] = bat.payload.get("level")
+        except Exception:
+            pass
+        return out
+
+    async def list_channels(self) -> list[dict]:
+        mc = self._require()
+        chans = []
+        for i in range(8):
+            try:
+                ch = await mc.commands.get_channel(i)
+            except Exception:
+                break
+            if ch.type != EventType.CHANNEL_INFO:
+                break
+            name = ch.payload.get("channel_name", "") or ""
+            secret = ch.payload.get("channel_secret", b"")
+            if isinstance(secret, (bytes, bytearray)):
+                secret = secret.hex()
+            chans.append({"idx": i, "name": name, "secret": secret or "",
+                          "role": self._role_for(i)})
+        return chans
+
+    def _role_for(self, idx: int) -> str | None:
+        if idx == self._channel_idx:
+            return "text"
+        if idx == self._data_channel_idx:
+            return "data"
+        if idx == self._discover_channel_idx:
+            return "discover"
+        return None
+
+    async def set_channel_name(self, idx: int, name: str, secret_hex: str | None = None) -> None:
+        mc = self._require()
+        if not 0 <= idx <= 7:
+            raise ValueError("channel index must be 0-7")
+        secret = bytes.fromhex(secret_hex) if secret_hex else None
+        res = await mc.commands.set_channel(idx, name, secret)
+        if res.type != EventType.OK:
+            raise RuntimeError(f"radio refused set_channel: {res.payload}")
+        # Re-resolve the bot's channels: the operator may have renamed one of ours.
+        for attr, ref in (("_channel_idx", settings.meshcore_channel),
+                          ("_data_channel_idx", settings.meshwx_channel),
+                          ("_discover_channel_idx", settings.meshwx_discover_channel)):
+            if ref:
+                try:
+                    setattr(self, attr, await self._resolve_channel(ref))
+                except ValueError:
+                    setattr(self, attr, None)
+
+    async def clear_channel(self, idx: int) -> None:
+        if idx == 0:
+            raise ValueError("channel 0 (public) cannot be cleared")
+        await self.set_channel_name(idx, "", "00" * 16)
+
+    async def set_name(self, name: str) -> None:
+        mc = self._require()
+        name = name.strip()
+        if not name or len(name.encode()) > 31:
+            raise ValueError("name must be 1-31 bytes")
+        res = await mc.commands.set_name(name)
+        if res.type != EventType.OK:
+            raise RuntimeError(f"radio refused set_name: {res.payload}")
+        mc.self_info["name"] = name
+
+    async def set_radio_params(self, freq_mhz: float, bw_khz: float, sf: int, cr: int) -> None:
+        mc = self._require()
+        if not (400 <= freq_mhz <= 1000):
+            raise ValueError("frequency must be 400-1000 MHz")
+        if bw_khz not in (7.8, 10.4, 15.6, 20.8, 31.25, 41.7, 62.5, 125, 250, 500):
+            raise ValueError("bandwidth must be a LoRa bandwidth in kHz (62.5, 125, 250, 500 ...)")
+        if not (5 <= sf <= 12) or not (5 <= cr <= 8):
+            raise ValueError("sf must be 5-12 and cr 5-8")
+        res = await mc.commands.set_radio(freq_mhz, bw_khz, sf, cr)
+        if res.type != EventType.OK:
+            raise RuntimeError(f"radio refused set_radio: {res.payload}")
+        mc.self_info.update({"radio_freq": freq_mhz, "radio_bw": bw_khz, "radio_sf": sf, "radio_cr": cr})
+
+    async def set_tx_power(self, dbm: int) -> None:
+        mc = self._require()
+        mx = (mc.self_info or {}).get("max_tx_power") or 30
+        if not (0 <= dbm <= mx):
+            raise ValueError(f"tx power must be 0-{mx} dBm")
+        res = await mc.commands.set_tx_power(dbm)
+        if res.type != EventType.OK:
+            raise RuntimeError(f"radio refused set_tx_power: {res.payload}")
+        mc.self_info["tx_power"] = dbm
+
+    async def set_coords(self, lat: float, lon: float) -> None:
+        mc = self._require()
+        res = await mc.commands.set_coords(lat, lon)
+        if res.type != EventType.OK:
+            raise RuntimeError(f"radio refused set_coords: {res.payload}")
+        mc.self_info.update({"adv_lat": lat, "adv_lon": lon})
+
+    async def advert_now(self, flood: bool = True) -> bool:
+        """Operator-requested advert. Honours the TX switch."""
+        if not settings.tx_enabled:
+            return False
+        mc = self._require()
+        res = await mc.commands.send_advert(flood=flood)
+        return res.type == EventType.OK
+
+    async def reboot(self) -> None:
+        mc = self._require()
+        try:
+            await mc.commands.reboot()
+        except Exception:
+            pass   # the node drops the link mid-command
+
+    async def contacts(self) -> list[dict]:
+        mc = self._require()
+        out = []
+        for key, c in (mc.contacts or {}).items():
+            out.append({
+                "public_key": key if isinstance(key, str) else str(key),
+                "name": c.get("adv_name"),
+                "type": c.get("type"),
+                "last_advert": c.get("last_advert"),
+                "lat": c.get("adv_lat"), "lon": c.get("adv_lon"),
+                "out_path_len": c.get("out_path_len"),
+            })
+        out.sort(key=lambda c: c.get("last_advert") or 0, reverse=True)
+        return out
+
+    async def stats(self) -> dict:
+        mc = self._require()
+        out: dict = {}
+        for label, fn, ev in (("core", mc.commands.get_stats_core, EventType.STATS_CORE),
+                              ("radio", mc.commands.get_stats_radio, EventType.STATS_RADIO),
+                              ("packets", mc.commands.get_stats_packets, EventType.STATS_PACKETS)):
+            try:
+                res = await fn()
+                out[label] = dict(res.payload) if res.type == ev else None
+            except Exception:
+                out[label] = None
+        return out
 
     @property
     def channel_idx(self) -> int | None:

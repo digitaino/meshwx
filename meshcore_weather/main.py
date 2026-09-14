@@ -62,6 +62,8 @@ class WeatherBot:
         self._running = False
         self._refresh_task: asyncio.Task | None = None
         self._radio_task: asyncio.Task | None = None
+        self._radio_last_error: str | None = None
+        self._started_at: float = time.time()
         self._broadcaster = None  # MeshWXBroadcaster, created if data channel configured
         self._portal = None  # PortalServer, created if portal enabled
         self._paging: dict[str, dict] = {}  # sender_key -> {full, offset, ts}
@@ -97,6 +99,7 @@ class WeatherBot:
         try:
             await self.radio.start()
         except Exception as e:
+            self._radio_last_error = str(e)
             logger.warning("Radio not available (%s); retrying every %ds", e, RADIO_RETRY_SECONDS)
             self._radio_task = asyncio.create_task(self._radio_retry_loop())
         else:
@@ -137,8 +140,10 @@ class WeatherBot:
             try:
                 await self.radio.start()
             except Exception as e:
+                self._radio_last_error = str(e)
                 logger.debug("Radio still not available: %s", e)
                 continue
+            self._radio_last_error = None
             logger.info("Radio connected after retry. Listening on channel %s (%s) + DMs",
                         self.radio.channel_idx, settings.meshcore_channel)
             await self._after_radio_connected()
