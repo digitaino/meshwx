@@ -10,3 +10,5 @@ User=digitaino
 WorkingDirectory=/home/digitaino/meshcore-weather
 ExecStart=/home/digitaino/meshcore-weather/.venv/bin/python scripts/audit.py --json /home/digitaino/meshcore-weather/data/audit.json
 Nice=10
+# The script exits 1 when a check fails; the JSON carries the verdict, the unit is not broken.
+SuccessExitStatus=1

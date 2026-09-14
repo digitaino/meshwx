@@ -69,6 +69,7 @@ class Audit:
                 self.rec("warnings", st, True, f"skipped: api.weather.gov {e}")
                 continue
             api_events: dict[str, set[str]] = {}
+            api_sent: dict[str, dt.datetime] = {}
             api_no_vtec = Counter()
             for f in api:
                 p = f["properties"]
@@ -76,12 +77,18 @@ class Audit:
                 vt = p.get("parameters", {}).get("VTEC") or []
                 if not vt:
                     api_no_vtec[p["event"]] += 1
+                try:
+                    sent = dt.datetime.fromisoformat(p["sent"])
+                except Exception:
+                    sent = None
                 for v in vt:
                     m = re.search(r"/O\.(\w+)\.[KPT](\w{3})\.(\w{2})\.(\w)\.(\d{4})\.", v)   # K=CONUS, P=Pacific/AK, T=PR
                     if not m or m.group(1) in ("CAN", "EXP"):
                         continue
                     key = f"{m.group(2)} {m.group(3)}.{m.group(4)}.{int(m.group(5))}"
                     api_events.setdefault(key, set()).update(ugcs)
+                    if sent and (key not in api_sent or sent > api_sent[key]):
+                        api_sent[key] = sent
             bot = self.bot_get("/api/audit/warnings", state=st)["events"]
             bot_events = {f"{e['office']} {e['phenomenon']}.{e['significance']}.{e['etn']}": set(e["ugcs"])
                           for e in bot if e.get("etn") is not None}
@@ -90,7 +97,12 @@ class Audit:
             soon = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=15)
             ending = {f"{e['office']} {e['phenomenon']}.{e['significance']}.{e['etn']}" for e in bot
                       if e.get("etn") is not None and e.get("expires") and dt.datetime.fromisoformat(e["expires"]) <= soon}
-            missing = sorted(set(api_events) - set(bot_events))
+            # Issued in the last few minutes: the product is on its way over the
+            # satellite (30 s directory scan, ~1 min end to end). Reported, not failed.
+            recent_cut = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=5)
+            just_issued = {k for k, t in api_sent.items() if t >= recent_cut}
+            missing = sorted(set(api_events) - set(bot_events) - just_issued)
+            missing_new = sorted((set(api_events) - set(bot_events)) & just_issued)
             extra = sorted(set(bot_events) - set(api_events) - ending)
             ending_extra = sorted((set(bot_events) - set(api_events)) & ending)
             zone_gaps = []
@@ -108,6 +120,8 @@ class Audit:
                 detail += " | " + "; ".join(zone_gaps)
             if ending_extra:
                 detail += f" | expiring within 15 min, not counted: {', '.join(ending_extra)}"
+            if missing_new:
+                detail += f" | issued in the last 5 min, not yet on the satellite: {', '.join(missing_new)}"
             self.rec("warnings", st, ok, detail)
 
     # -- storms -----------------------------------------------------------------
