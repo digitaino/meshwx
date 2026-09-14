@@ -61,6 +61,14 @@ def clean_text(value: str, max_len: int) -> str:
 
 CONTACT_TYPE_NAMES = {1: "client", 2: "repeater", 3: "room", 4: "sensor"}
 
+# Companion firmware autoadd_config bits (MyMesh.cpp, v1.17.1). The type
+# bits only take effect when manual_add_contacts is set.
+AUTOADD_OVERWRITE_OLDEST = 0x01
+AUTOADD_CHAT = 0x02
+AUTOADD_REPEATER = 0x04
+AUTOADD_ROOM = 0x08
+AUTOADD_SENSOR = 0x10
+
 
 def plan_contact_removals(contacts: dict, slots: int, keep_free: int, admin_key: str,
                           peer_prefix: str, own_key: str = "") -> list[tuple[str, str, str]]:
@@ -113,6 +121,8 @@ class MeshcoreRadio:
         self._contacts_task: asyncio.Task | None = None
         self._mqtt: MqttPublisher | None = None
         self.last_advert_at: float = 0.0
+        self.device: dict = {}                 # DEVICE_INFO: firmware build, model, capacity
+        self.max_contacts: int = settings.contact_slots
         # Shared send lock — prevents the scheduler and on-demand
         # request handler from interleaving messages on the data channel.
         # Without this, a client DM triggering respond_to_data_request
@@ -230,12 +240,37 @@ class MeshcoreRadio:
         except Exception:
             logger.debug("Could not set node time")
 
-        # Ensure auto-add contacts is enabled so adverts create contacts
+        # What the node knows about itself: firmware build and contact capacity.
         try:
-            await self._mc.commands.set_autoadd_config(1)
-            logger.info("Auto-add contacts enabled")
+            dq = await self._mc.commands.send_device_query()
+            if dq.type == EventType.DEVICE_INFO:
+                self.device = dict(dq.payload)
+                if self.device.get("max_contacts"):
+                    self.max_contacts = int(self.device["max_contacts"])
+                logger.info("Node firmware %s (%s), %s contact slots", self.device.get("ver"),
+                            self.device.get("fw_build"), self.max_contacts)
         except Exception:
-            logger.debug("Could not set auto-add config")
+            logger.debug("Device query failed")
+
+        # Contact policy on the node itself. The firmware only consults the
+        # per-type auto-add bits when manual-add mode is on, so:
+        #   housekeeping on : manual mode + (overwrite oldest | companions):
+        #                     repeaters, rooms and sensors are never stored
+        #   housekeeping off: everything auto-adds, oldest overwritten when full
+        try:
+            if settings.contact_housekeeping:
+                await self._mc.commands.set_autoadd_config(AUTOADD_OVERWRITE_OLDEST | AUTOADD_CHAT)
+                await self._mc.commands.set_manual_add_contacts(True)
+                logger.info("Node stores companion contacts only (overwrite oldest when full)")
+            else:
+                await self._mc.commands.set_autoadd_config(AUTOADD_OVERWRITE_OLDEST)
+                await self._mc.commands.set_manual_add_contacts(False)
+                logger.info("Node auto-adds every contact (overwrite oldest when full)")
+            # self_info is a snapshot from APP_START; take a fresh one so the
+            # portal shows the policy the node is actually running.
+            await self._mc.commands.send_appstart()
+        except Exception:
+            logger.debug("Could not set contact auto-add policy")
 
         # Auto-refresh contacts when adverts arrive
         self._mc.auto_update_contacts = True
@@ -549,10 +584,18 @@ class MeshcoreRadio:
         # The event marks contacts dirty; after ensure_contacts we can check
         # We don't get the name directly from the event, but we can check
         # pending contacts
+        # Each pending entry is handled once. In manual-add mode the node
+        # pushes every discovered node here, stored or not; only companions
+        # (the people who can DM) reach the bot.
         pending = self._mc._pending_contacts
         for key, contact in list(pending.items()):
+            pending.pop(key, None)
             name = clean_text(contact.get("adv_name", "unknown"), 40) or "unknown"
             prefix = str(key)[:12].lower()
+            ctype = contact.get("type")
+            if ctype not in (None, 1):
+                logger.debug("Advert from %s %s (%s): not stored", CONTACT_TYPE_NAMES.get(ctype, ctype), name, prefix)
+                continue
             logger.info("New advert from %s (%s)", name, prefix)
             try:
                 await self._advert_handler(name, prefix)
@@ -616,7 +659,7 @@ class MeshcoreRadio:
         if not settings.contact_housekeeping or not self._mc:
             return self.last_housekeeping
         contacts = dict(self._mc.contacts or {})
-        plan = plan_contact_removals(contacts, settings.contact_slots, settings.contact_keep_free,
+        plan = plan_contact_removals(contacts, self.max_contacts, settings.contact_keep_free,
                                      settings.admin_key, settings.peer_bot_prefix,
                                      (self._mc.self_info or {}).get("public_key", ""))
         removed = 0
@@ -643,7 +686,7 @@ class MeshcoreRadio:
         left = dict(self._mc.contacts or {})
         people = sum(1 for c in left.values() if c.get("type") == 1)
         self.last_housekeeping = {"t": time.time(), "removed": removed, "kept": len(left), "people": people,
-                                  "note": f"removed {removed}, {len(left)} left ({people} people) of {settings.contact_slots} slots"}
+                                  "note": f"removed {removed}, {len(left)} left ({people} people) of {self.max_contacts} slots"}
         if removed:
             logger.info("Contacts housekeeping: %s", self.last_housekeeping["note"])
         return self.last_housekeeping

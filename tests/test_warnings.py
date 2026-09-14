@@ -59,11 +59,11 @@ def test_segment_with_two_vtec_lines_yields_two_warnings():
 def test_segments_of_one_event_are_merged():
     """One heat advisory, two UGC segments in the same product: the event
     must cover the zones of both segments."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     from meshcore_weather.parser.weather import WeatherStore
     from meshcore_weather.protocol.warnings import extract_active_warnings
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    exp = (now.replace(hour=23, minute=0) if now.hour < 23 else now).strftime("%y%m%dT%H%MZ")
+    exp = (now + timedelta(hours=6)).strftime("%y%m%dT%H%MZ")     # not "23Z today": that is now, 23:00-23:59Z
     day = now.strftime("%d%H%M")
     text = (
         f"WWUS74 KHGX {day}\r\r\nNPWHGX\r\r\n\r\r\nURGENT - WEATHER MESSAGE\r\r\nNational Weather Service Houston/Galveston TX\r\r\n"

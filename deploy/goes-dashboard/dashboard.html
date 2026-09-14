@@ -193,7 +193,7 @@ fetch('/api/state').then(r=>r.json()).then(render).finally(connect);
 
 // ---- mesh weather bot (read-only bundle proxied from the bot's portal) ----
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-let botLastId=0,botFeedInit=false;
+let botLastId=0,botFeedInit=false,botStarted=null;
 function botLine(ev){const ts=new Date(ev.t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
  const tr=ev.transport==='channel'?'CH':ev.transport==='dm'?'DM':ev.kind.startsWith('advert')?'ADV':'';const who=ev.sender?`<span class="who">${esc(ev.sender)}</span> `:'';
  const cmd=ev.command?` <span class="t">[${esc(ev.command)}${ev.location?' · '+esc(ev.location):''}]</span>`:'';let cls='in',body='';
@@ -227,6 +227,8 @@ function renderBot(d){const b=$('botBadge');
  $('botStatsHint').textContent=`last 24 h: ${w.dm_replies||0} replies by DM, ${w.channel_replies||0} on the channel, ${w.dropped||0} not answered · ${w.chars_sent||0} characters sent`;
  const top=Object.entries(w.by_command||{}).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,v])=>`${k} ×${v}`).join(', ');$('botTop').textContent=top?'most asked: '+top:'';
  const feed=$('botFeed'),recent=d.recent||[];
+ if(botStarted!==null&&st.started!==botStarted)botFeedInit=false;   // the bot restarted: ids start over, redraw
+ botStarted=st.started||null;
  if(!botFeedInit){feed.innerHTML=recent.length?recent.map(botLine).join(''):'<div class="hint">Nothing asked yet.</div>';botFeedInit=true;botLastId=recent.length?recent[recent.length-1].id:0;feed.scrollTop=feed.scrollHeight}
  else{const fresh=recent.filter(e=>e.id>botLastId);if(fresh.length){if(botLastId===0)feed.innerHTML='';const atBottom=feed.scrollHeight-feed.scrollTop-feed.clientHeight<40;feed.insertAdjacentHTML('beforeend',fresh.map(botLine).join(''));while(feed.childElementCount>300)feed.removeChild(feed.firstChild);botLastId=fresh[fresh.length-1].id;if(atBottom)feed.scrollTop=feed.scrollHeight}}
  $('botFeedHint').textContent=st.last_request_at?`· last request ${fmtAge(Math.max(0,Math.round(d.t-st.last_request_at)))} ago`:''}

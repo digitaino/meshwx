@@ -107,3 +107,28 @@ def test_housekeeping_off_touches_nothing(monkeypatch):
     r._mc = FakeMC({"bb" * 32: _c("Repeater", 2)})
     asyncio.run(r.housekeep_contacts())
     assert r._mc.commands.removed == [] and "bb" * 32 in r._mc.contacts
+
+
+class PendingMC(FakeMC):
+    def __init__(self, contacts, pending):
+        super().__init__(contacts)
+        self._pending_contacts = pending
+
+    async def ensure_contacts(self, follow=False):
+        pass
+
+
+def test_pending_adverts_are_handled_once_and_only_for_companions():
+    r = MeshcoreRadio()
+    seen = []
+
+    async def handler(name, prefix):
+        seen.append((name, prefix))
+
+    r.on_advert(handler)
+    r._mc = PendingMC({}, {"aa" * 32: _c("Newcomer", 1), "bb" * 32: _c("Some Repeater", 2), "cc" * 32: _c("A Room", 3)})
+    asyncio.run(r._on_advert(None))
+    assert seen == [("Newcomer", "aa" * 6)]
+    assert r._mc._pending_contacts == {}                 # consumed: the next advert does not replay them
+    asyncio.run(r._on_advert(None))
+    assert seen == [("Newcomer", "aa" * 6)]
