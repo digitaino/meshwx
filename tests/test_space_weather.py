@@ -64,3 +64,14 @@ def test_service_bytes_and_text_agree():
 def test_missing_products():
     assert sw.space_weather_for(WeatherStore()) is None
     assert sw.render(None).startswith("No space weather")
+
+
+def test_indices_only_still_answers():
+    store = WeatherStore()
+    store.ingest([{"filename": "A_AXXX81KWNP140017_C_KWIN_20260914001747_331851-2-DAYINDUS.TXT",
+                   "raw_text": _text("DAYINDUS_20260914_0017Z.txt")}])
+    obj = sw.space_weather_for(store)
+    assert obj is not None and obj.kp_forecast == [] and obj.sfi == 114
+    text = sw.render(obj)
+    assert text.startswith("Kp forecast not received yet") and "SFI 114" in text
+    assert len(obj.to_bytes()) == 25

@@ -209,13 +209,18 @@ def _newest(store: WeatherStore, emwin_id: str) -> EMWINProduct | None:
 def space_weather_for(store: WeatherStore) -> SpaceWeather | None:
     """Latest 3-Day Forecast merged with the latest Daily Indices."""
     tdf = _newest(store, "DAYTDFUS")
-    if tdf is None:
-        return None
-    f = parse_3day_forecast(tdf.raw_text)
     ind = _newest(store, "DAYINDUS")
+    if tdf is None and ind is None:
+        return None
+    # Either product alone is still worth answering with: the forecast
+    # without indices, or (a stale feed) the indices without a Kp forecast.
+    f = parse_3day_forecast(tdf.raw_text) if tdf else {
+        "issued_at": None, "kp_max_24h": 0.0, "kp_forecast": [], "g_forecast": [],
+        "s1_prob": [], "r12_prob": [], "r3_prob": [],
+    }
     i = parse_daily_indices(ind.raw_text) if ind else {}
     return SpaceWeather(
-        issued_at=f["issued_at"] or tdf.timestamp,
+        issued_at=f["issued_at"] or (tdf.timestamp if tdf else ind.timestamp),
         kp_max_24h=f["kp_max_24h"],
         kp_forecast=f["kp_forecast"],
         g_forecast=f["g_forecast"],
@@ -238,13 +243,17 @@ def render(sw: SpaceWeather | None) -> str:
     from meshcore_weather.core.render_text import _cap, _local
     from datetime import timedelta
     days = [(_local(sw.issued_at) + timedelta(days=n + 1)).strftime("%a") for n in range(3)]
-    kps = "/".join(f"{k:.1f}" for k in sw.kp_forecast)
-    gmax = max(sw.g_forecast) if sw.g_forecast else 0
-    gtxt = ""
-    if gmax:
-        when = days[sw.g_forecast.index(gmax)]
-        gtxt = f" (G{gmax} {when})"
-    bits = [f"Kp now {sw.kp_max_24h:.1f}, next 3d {kps}{gtxt}"]
+    bits = []
+    if sw.kp_forecast:
+        kps = "/".join(f"{k:.1f}" for k in sw.kp_forecast)
+        gmax = max(sw.g_forecast) if sw.g_forecast else 0
+        gtxt = ""
+        if gmax:
+            when = days[sw.g_forecast.index(gmax)]
+            gtxt = f" (G{gmax} {when})"
+        bits.append(f"Kp now {sw.kp_max_24h:.1f}, next 3d {kps}{gtxt}")
+    else:
+        bits.append("Kp forecast not received yet")
     solar = []
     if sw.sfi:
         solar.append(f"SFI {sw.sfi}")
