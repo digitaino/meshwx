@@ -1,0 +1,9 @@
+[Unit]
+Description=GOES station retention cleanup
+
+[Service]
+Type=oneshot
+# 32 GB card: images 1 day, EMWIN/text 3 days (the bot's longest retention is 48 h), panic at 70 %
+Environment=IMG_DAYS=1 TEXT_DAYS=3 MAX_PCT=70
+User=digitaino
+ExecStart=/home/digitaino/goes/cleanup.sh
