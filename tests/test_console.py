@@ -195,3 +195,15 @@ def test_bad_coordinates_are_ignored(bot):
     bot._rate_limit.clear()                     # the 5-second spacing, not what is under test
     asyncio.run(bot._handle_dm("ab" * 6, "Tommy", "@30.27,-97.74 help"))
     assert bot._user_locations[bot._normalize_key("ab" * 6)] == (30.27, -97.74)
+
+
+def test_an_old_wxq_prefix_is_an_ordinary_dm_and_meets_the_rate_limit(bot):
+    # v4's WXQ/MWX requests used to skip the 5-second check; v5 has only `>` requests.
+    from meshcore_weather.traffic import traffic_log
+    traffic_log._events.clear()
+    bot.radio.contacts["Tommy"] = {"public_key": "ab" * 32, "adv_name": "Tommy"}
+    asyncio.run(bot._handle_dm("ab" * 6, "Tommy", "help"))
+    asyncio.run(bot._handle_dm("ab" * 6, "Tommy", "WXQ0102"))
+    dropped = traffic_log.recent(20, kinds=("dropped",))
+    assert [e.get("reason") for e in dropped] == ["rate limit"]
+    assert len(bot.radio.dms) == 1

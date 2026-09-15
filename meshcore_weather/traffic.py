@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 KINDS = {
     "channel_in": ("in", True),      # text on the request channel
     "dm_in": ("in", True),           # a DM (public view: command only)
-    "data_request": ("in", True),    # binary WXQ/MWX request (app)
+    "data_request": ("in", True),    # an app's `>` request
     "peer": ("in", True),            # another WX-* bot's message, ignored
     "advert": ("in", True),          # a node adverted (we learned/refreshed a contact)
     "reply_dm": ("out", True),       # our DM reply

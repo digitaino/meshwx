@@ -829,9 +829,8 @@ class MeshcoreRadio:
         sender = clean_text(sender, 40) or "unknown"
         text = clean_text(text, 200)
 
-        # A data-only channel carries no conversation; only the legacy app
-        # request prefixes still reach the text handler.
-        if not on_text_channel and not text.upper().startswith(("WXQ", "MWX")):
+        # A data-only channel carries no conversation.
+        if not on_text_channel:
             return
 
         hops = payload.get("path_len")

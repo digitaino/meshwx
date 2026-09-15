@@ -429,20 +429,7 @@ class WeatherBot:
             return
 
         prefix = self._normalize_key(pubkey_prefix)
-        # Binary data requests (WXQ/MWX prefixes) bypass the 5-second per-user
-        # rate check — they have their own per-(data_type, location) rate limit
-        # at the broadcaster level (5 min), and iOS clients legitimately fire
-        # multiple binary requests back-to-back when fetching different data
-        # types for the same location. The 5-second check is meant for human
-        # users typing text commands like "wx austin" / "forecast", not for
-        # apps doing structured queries.
-        is_binary_request = text.startswith("WXQ") or text.startswith("MWX")
-        req = None
-        command = location = ""
-        if is_binary_request:
-            traffic_log.record("data_request", sender=sender_name, key=prefix, text=text[:24], transport="dm")
-        else:
-            req = traffic_log.record("dm_in", sender=sender_name, key=prefix, text=text)
+        req = traffic_log.record("dm_in", sender=sender_name, key=prefix, text=text)
 
         # Parse @lat,lng prefix for location-aware commands
         loc_match = re.match(r"^@(-?\d+\.?\d*),(-?\d+\.?\d*)\s+(.*)", text)
@@ -461,13 +448,13 @@ class WeatherBot:
                 self._user_locations[prefix] = (lat, lon)
                 logger.info("Cached location for %s: %.4f, %.4f", sender_name, lat, lon)
 
-        if not is_binary_request:
-            command, location = await self._parse(text)
-            traffic_log.update(req, command=command, location=location)
-            if not self._rate_check(prefix, follow_up=(command == "more")):
-                logger.debug("DM rate-limited from %s", sender_name)
-                traffic_log.record("dropped", reason="rate limit", req=req)
-                return
+        # Every DM meets the people's limiter, `>` app requests included (spec 8.2).
+        command, location = await self._parse(text)
+        traffic_log.update(req, command=command, location=location)
+        if not self._rate_check(prefix, follow_up=(command == "more")):
+            logger.debug("DM rate-limited from %s", sender_name)
+            traffic_log.record("dropped", reason="rate limit", req=req)
+            return
 
         # They're DMing us — DMs work both ways, clear all blocks
         if sender_name and sender_name != "unknown":

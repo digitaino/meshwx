@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     # Data channel: the binary datagrams for the app (GRP_DATA). Empty = off.
     # It may name the same channel as meshcore_channel, and in v5 it does:
     # one #meshwx slot carries both the text conversation and the datagrams.
-    meshwx_channel: str = "#meshwx-data"
+    meshwx_channel: str = "#meshwx"
     meshwx_refresh_cooldown: int = 300    # min seconds between app refreshes per region
 
     # Coverage targeting — bot broadcasts only data affecting these areas.
