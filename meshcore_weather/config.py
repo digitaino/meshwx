@@ -53,7 +53,11 @@ class Settings(BaseSettings):
     # again (byte-identical: nodes that got it drop it, nodes that missed it
     # take it). DMs use the recipient's ACK instead. 0 = measure only.
     retransmit_max: int = 1
-    echo_window_s: float = 5.0
+    # Observed echo delays on the Austin mesh run to about 4 s on a quiet
+    # loop, so 5 s left no margin and a third of the replies were flooded
+    # twice for nothing. The window is also extended by whatever time the
+    # event loop spent blocked (delivery.LoopLag).
+    echo_window_s: float = 8.0
     retransmit_per_hour: int = 30
     mesh_quiet_s: int = 600               # no repeat heard from anyone for this long: don't bother
     # Optional CoreScope instance (internet): "stats" annotates each reply with

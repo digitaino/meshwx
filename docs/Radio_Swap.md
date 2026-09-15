@@ -119,11 +119,25 @@ Wio-SX1262, Heltec T114 and so on. What changes between boards:
 | TX off | transmit is switched off | nothing, or enable it |
 | **TX suspect** | 3+ sends in a row got no echo while other nodes' repeats were heard | run Test transmit twice; if both fail, swap the radio |
 | **hearing nothing** | no packet from anyone for the configured time (default 30 min) | check the antenna, then Test transmit; a deaf radio is a dead radio |
-| unclear | sends unheard and no repeater heard either | the mesh may be quiet; check CoreScope |
+| unclear | sends unheard, and either no repeater was heard or this bot's own event loop was stalling | check the Loop lag tile first, then CoreScope |
 
 The node's own counters sit under the verdict: a noise floor well above
 about −105 dBm on a quiet channel means interference or a failing front
 end; airtime totals reset on reboot.
+
+**Loop lag** is the tile to read before blaming the radio. The bot runs the
+EMWIN parser, the portal and the schedulers on one thread, so a long
+synchronous stretch delays the handler that matches a repeater's echo. A
+packet the mesh repeated then looks unrepeated, and the whole message goes
+out a second time for nothing. Two things keep that from happening: the
+store never re-parses a product it already holds, and the echo window is
+extended by however long the loop actually spent blocked. When lag passes
+2% of wall-clock time the verdict says so instead of accusing the
+transmitter. Anything above zero for more than a moment is worth a look.
+
+The echo window itself defaults to 8 seconds. Measured echoes on the Austin
+mesh arrive inside about 4 seconds on an unloaded loop, so the old 5-second
+window left no margin and roughly a third of replies were flooded twice.
 
 The 24-hour delivery window survives restarts (`data/delivery_outcomes.json`).
 

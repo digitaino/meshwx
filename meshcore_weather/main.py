@@ -104,9 +104,14 @@ class WeatherBot:
         logger.info("  EMWIN source: %s", settings.emwin_source)
         logger.info("  Channel: %s", settings.meshcore_channel)
 
+        from meshcore_weather.meshcore.delivery import loop_lag
         from meshcore_weather.portal import logbuf
         logbuf.install(asyncio.get_running_loop())   # console buffer catches everything from here on
         traffic_log.install(asyncio.get_running_loop())
+        # Watch how late our own event loop runs: a stalled loop delays the
+        # echo handler and would otherwise read as a radio that cannot
+        # transmit (see meshcore/delivery.py LoopLag).
+        loop_lag.start()
         resolver.load()   # also sets the resolver home from MCW_HOME_CITIES
         if settings.emwin_source == "sdr":
             from meshcore_weather.sdr_monitor import SdrMonitor
@@ -251,6 +256,8 @@ class WeatherBot:
                 pass
         await self.radio.stop()
         await self.emwin.stop()
+        from meshcore_weather.meshcore.delivery import loop_lag
+        await loop_lag.stop()
         traffic_log.flush(force=True)
         logger.info("Weather bot stopped")
 

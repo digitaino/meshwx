@@ -128,6 +128,7 @@ class Outbound:
     acked_at: float | None = None
     skipped: str | None = None
     observed: dict | None = None
+    lag_given_s: float = 0.0                     # window extended by a blocked loop
     done: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
@@ -136,6 +137,90 @@ class Outbound:
 
 
 OUTCOMES_KEEP_S = 86400
+#: How long after a send to ask CoreScope who heard it. Observers report
+#: over several seconds, so an answer taken during the echo wait is far too
+#: early to put on the record.
+SCOPE_LATE_S = 45
+
+
+class LoopLag:
+    """How far behind the event loop is running its callbacks.
+
+    The bot shares one thread with the EMWIN parser, the portal and the
+    schedulers, so a long synchronous stretch delays the handler that
+    matches a repeater's echo against what we sent. Counting that delay
+    against the echo window makes a packet the mesh *did* repeat look
+    unrepeated, and the bot floods the whole message a second time for
+    nothing. This measures the delay so the window can give it back.
+    """
+
+    #: Lag is judged over this trailing window, never over the life of the
+    #: process: one slow start-up must not read as a permanently sick loop.
+    RECENT_S = 300.0
+
+    def __init__(self, interval: float = 0.5, jitter: float = 0.05):
+        self.interval = interval
+        self.jitter = jitter          # ordinary scheduling noise, not a stall
+        self.total = 0.0              # cumulative, monotonic: the echo window reads deltas off this
+        self.worst = 0.0              # worst single stall since start
+        self.last = 0.0
+        self.since = time.time()
+        self._recent: deque[tuple[float, float]] = deque()
+        self._task: asyncio.Task | None = None
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            self.since = time.time()
+            self._task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        task, self._task = self._task, None
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _run(self) -> None:
+        while True:
+            t0 = time.monotonic()
+            await asyncio.sleep(self.interval)
+            late = time.monotonic() - t0 - self.interval
+            if late > self.jitter:
+                self.total += late
+                self.last = late
+                self.worst = max(self.worst, late)
+                self._recent.append((time.time(), late))
+            self._prune()
+
+    def _prune(self) -> None:
+        cut = time.time() - self.RECENT_S
+        while self._recent and self._recent[0][0] < cut:
+            self._recent.popleft()
+
+    @property
+    def pct(self) -> float:
+        """Share of the trailing window the loop spent running late."""
+        self._prune()
+        if not self._recent:
+            return 0.0
+        span = min(self.RECENT_S, max(1.0, time.time() - self.since))
+        return 100.0 * sum(late for _, late in self._recent) / span
+
+    @property
+    def recent_worst(self) -> float:
+        self._prune()
+        return max((late for _, late in self._recent), default=0.0)
+
+    def stats(self) -> dict:
+        return {"running": self._task is not None and not self._task.done(),
+                "pct": round(self.pct, 2), "recent_worst_s": round(self.recent_worst, 2),
+                "window_s": int(self.RECENT_S), "last_s": round(self.last, 2),
+                "total_s": round(self.total, 1), "worst_s": round(self.worst, 2)}
+
+
+loop_lag = LoopLag()
 
 
 class DeliveryTracker:
@@ -241,13 +326,27 @@ class DeliveryTracker:
             return f"mesh quiet: no repeat heard in {int((now - self.last_repeat_heard_at) / 60)} min"
         return None
 
+    async def _wait_for_echo(self, ob: Outbound) -> None:
+        """Wait out the echo window, giving back any time the event loop
+        spent blocked. A handler that ran late is not evidence that nobody
+        repeated us, and acting on it costs a whole retransmission."""
+        deadline = time.monotonic() + ob.window_s
+        lag_at_start = loop_lag.total
+        while not ob.heard:
+            given = min(loop_lag.total - lag_at_start, ob.window_s)
+            ob.lag_given_s = given
+            remaining = deadline + given - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                await asyncio.wait_for(ob.done.wait(), remaining)
+            except asyncio.TimeoutError:
+                pass
+
     async def _watch(self, ob: Outbound) -> None:
         try:
             while True:
-                try:
-                    await asyncio.wait_for(ob.done.wait(), ob.window_s)
-                except asyncio.TimeoutError:
-                    pass
+                await self._wait_for_echo(ob)
                 if ob.heard:
                     break
                 if ob.attempts > settings.retransmit_max:
@@ -296,22 +395,35 @@ class DeliveryTracker:
             traffic_log.update(ob.ev, delivery=d, push=True)
         logger.info("Delivery %s: %s", ob.kind, d["result"] + (f" via {fmt_path(ob.via)}" if ob.via else "") +
                     (f" ({d['echo_ms']} ms)" if d.get("echo_ms") is not None else "") +
-                    (f", {ob.attempts - 1} retransmit" if ob.attempts > 1 else ""))
+                    (f", {ob.attempts - 1} retransmit" if ob.attempts > 1 else "") +
+                    (f", waited {ob.lag_given_s:.1f}s longer for a stalled loop" if ob.lag_given_s else ""))
         if not ob.heard and ob.give_up is not None:
             try:
                 await ob.give_up()
             except Exception:
                 logger.exception("give-up hook failed")
-        if settings.scope_url and ob.hash and ob.observed is None and settings.scope_mode in ("stats", "decide"):
+        # Always take the late reading, even when the decide-mode lookup
+        # during the wait already filled `observed`: that one ran seconds
+        # after the send, before the observers had reported, and leaving it
+        # on the record makes a well-repeated packet read "direct only: 1".
+        if settings.scope_url and ob.hash and settings.scope_mode in ("stats", "decide"):
             t = asyncio.create_task(self._annotate_from_scope(ob))
             self._tasks.add(t)
             t.add_done_callback(self._tasks.discard)
 
     async def _annotate_from_scope(self, ob: Outbound) -> None:
-        """A minute later, ask CoreScope who heard it (statistics only)."""
-        await asyncio.sleep(45)
-        ob.observed = await scope_lookup(settings.scope_url, ob.hash, ob.ptype)
-        if ob.ev is not None and ob.observed:
+        """A minute later, ask CoreScope who heard it (statistics only).
+        A thinner answer never replaces a fuller one: observers report over
+        several seconds, so later is normally better, but a lookup that
+        half-failed must not erase what we already knew."""
+        await asyncio.sleep(SCOPE_LATE_S)
+        late = await scope_lookup(settings.scope_url, ob.hash, ob.ptype)
+        if not late:
+            return
+        if late.get("observers", 0) < (ob.observed or {}).get("observers", 0):
+            return
+        ob.observed = late
+        if ob.ev is not None:
             from meshcore_weather.traffic import traffic_log
             traffic_log.update(ob.ev, delivery=self.outcome(ob), push=True)
 
@@ -331,6 +443,7 @@ class DeliveryTracker:
                 "via": fmt_path(ob.via) if ob.via else None, "snr": ob.echo_snr,
                 "acked": ob.acked_at is not None, "rtt_ms": rtt_ms,
                 "attempts": ob.attempts, "resent": ob.attempts - 1, "skipped": ob.skipped,
+                "lag_given_s": round(ob.lag_given_s, 2) or None,
                 "observed_by": (ob.observed or {}).get("observers"),
                 "observed_repeats": (ob.observed or {}).get("repeated_by"),
                 "observed_paths": (ob.observed or {}).get("paths")}
@@ -342,7 +455,8 @@ class DeliveryTracker:
         out: dict = {"rx_frames": self.rx_frames, "rx_repeats": self.rx_repeats,
                      "last_repeat_heard_at": self.last_repeat_heard_at or None,
                      "last_rx_at": self.last_rx_at or None,
-                     "pending": len(self._by_hash) + len(self._by_ack), "windows": {}}
+                     "pending": len(self._by_hash) + len(self._by_ack),
+                     "loop_lag": loop_lag.stats(), "windows": {}}
         rows = list(self._outcomes)
         for label, secs in (("1h", 3600), ("24h", 86400)):
             cut = now - secs

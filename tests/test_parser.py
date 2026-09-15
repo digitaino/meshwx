@@ -96,3 +96,21 @@ class TestLocationResolver:
         resolver.load()
         r = resolver.resolve("Zzxqvw")
         assert r is None
+
+
+def test_ingest_skips_products_already_held():
+    """The sources hand back their whole cache every poll. Re-parsing all
+    of it on the event loop is what used to stall the echo handler."""
+    store = WeatherStore()
+    batch = [_make_emwin("ZFPEWXTX", "TXZ192-\n.TODAY...Sunny. High 85."),
+             _make_emwin("RWREWXTX", "SKY/WX TMP\nAUSTIN SUNNY 85 55 40 S10 30.05")]
+    assert store.ingest(batch) == 2
+    assert store.ingest(batch) == 0
+    assert len(store._products) == 2
+
+    parsed = []
+    real = store._parse
+    store._parse = lambda raw: (parsed.append(raw["filename"]), real(raw))[1]
+    fresh = _make_emwin("AFDEWXTX", "...SHORT TERM...\nHot.")
+    assert store.ingest(batch + [fresh]) == 1
+    assert parsed == [fresh["filename"]]          # the 2 known ones never reached the parser

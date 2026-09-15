@@ -662,7 +662,7 @@ var Portal = {
     },
     renderHealth: function (d) {
       var h = d.health || {}, fw = d.firmware || {}, dev = d.device || {}, rs = (d.radio_stats || {}).radio || null;
-      var w1 = ((d.delivery || {})["1h"]) || {}, w24 = ((d.delivery || {})["24h"]) || {};
+      var w1 = ((d.delivery || {})["1h"]) || {}, w24 = ((d.delivery || {})["24h"]) || {}, lag = d.loop_lag || null;
       var labels = { ok: ["OK", "badge-success"], idle: ["idle", "badge-muted"], tx_off: ["TX off", "badge-muted"],
                      tx_suspect: ["TX suspect", "badge-danger"], rx_silent: ["hearing nothing", "badge-danger"], unknown: ["unclear", "badge-warning"] };
       var lb = labels[h.verdict] || ["?", "badge-muted"];
@@ -676,7 +676,10 @@ var Portal = {
         tile("Unheard streak", String(h.unheard_streak || 0), "sends in a row with no echo", (h.unheard_streak || 0) >= 3 ? "bad" : "") +
         tile("Noise floor", rs && rs.noise_floor != null ? rs.noise_floor + " dBm" : "–", rs ? "last RSSI " + rs.last_rssi + " · SNR " + rs.last_snr : "node counters unavailable",
           rs && rs.noise_floor != null && rs.noise_floor > -95 ? "warn" : "") +
-        tile("Airtime", rs ? Math.round((rs.tx_air_secs || 0) / 60) + " min TX" : "–", rs ? Math.round((rs.rx_air_secs || 0) / 60) + " min RX since boot" : "");
+        tile("Airtime", rs ? Math.round((rs.tx_air_secs || 0) / 60) + " min TX" : "–", rs ? Math.round((rs.rx_air_secs || 0) / 60) + " min RX since boot" : "") +
+        tile("Loop lag", lag && lag.running ? lag.recent_worst_s + " s" : "–",
+          lag && lag.running ? "worst stall in " + Math.round((lag.window_s || 300) / 60) + " min · late " + lag.pct + "% of it" : "not being measured",
+          lag && lag.pct >= 2 ? "warn" : "");
       $("health-node").innerHTML = "Firmware " + esc(fw.ver || "?") + (fw.ok ? ' <span class="badge badge-success">GRP_DATA ok</span>' :
         ' <span class="badge badge-danger">needs ' + esc(fw.min || "1.15") + "+ for the app datagrams</span>") +
         (dev.model ? " · " + esc(dev.model) : "") + (dev.max_contacts ? " · " + dev.max_contacts + " contact slots" : "");

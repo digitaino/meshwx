@@ -504,3 +504,17 @@ def test_manual_is_the_default_and_a_foreign_radio_holds_its_advert(monkeypatch)
     r.pending_adoption = None
     asyncio.run(r._send_advert())
     assert sent == [True]
+
+
+def test_a_stalled_event_loop_is_not_blamed_on_the_radio():
+    """Unheard echoes while this bot's own loop was blocked say nothing
+    about the transmitter, so the card must not cry tx_suspect."""
+    now = 10_000.0
+    rows = [_row(now - 300 + i * 30, False) for i in range(3)]
+    kw = dict(outcomes=rows, last_rx_at=now - 5, last_repeat_heard_at=now - 60, rx_frames=50,
+              started_at=now - 3600, tx_enabled=True, rx_silent_s=1800, now=now)
+    assert health.assess(**kw)["verdict"] == "tx_suspect"
+    assert health.assess(**kw)["loop_lag_pct"] == 0.0
+    lagged = health.assess(loop_lag_pct=9.0, **kw)
+    assert lagged["verdict"] == "unknown" and "event loop ran late" in lagged["reason"]
+    assert lagged["loop_lag_pct"] == 9.0

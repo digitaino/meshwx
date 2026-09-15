@@ -176,3 +176,117 @@ def test_dm_uses_the_ack_and_re_registers_the_new_code(fast):
     ob2 = Outbound(kind="dm", hash=None, ack="c0de", resend=resend, window_s=0.05, give_up=give_up)
     _track(fast, ob2)
     assert fast.outcome(ob2)["result"] == "no_ack" and gave_up == [True]   # the path gets reset
+
+
+# -- the CoreScope reading on the record, and a stalled event loop --
+
+
+def test_the_late_scope_reading_replaces_the_early_thin_one(fast, monkeypatch):
+    """Decide mode asks CoreScope seconds after the send, before the
+    observers have reported. That answer must not be what the portal shows."""
+    monkeypatch.setattr(settings, "scope_url", "http://scope")
+    monkeypatch.setattr(settings, "scope_mode", "decide")
+    monkeypatch.setattr(delivery, "SCOPE_LATE_S", 0)
+    early = {"observers": 1, "repeated_by": 0, "direct_by": 1, "paths": []}
+    full = {"observers": 14, "repeated_by": 14, "direct_by": 0, "paths": ["AB"]}
+
+    ob = _outbound([], ev={"delivery": None})
+    ob.observed = early
+    monkeypatch.setattr(delivery, "scope_lookup", lambda *a, **k: _async(full))
+    asyncio.run(fast._annotate_from_scope(ob))
+    assert ob.observed == full
+    assert fast.outcome(ob)["observed_repeats"] == 14
+
+    ob2 = _outbound([])                      # a thinner late answer is ignored
+    ob2.observed = full
+    monkeypatch.setattr(delivery, "scope_lookup", lambda *a, **k: _async(early))
+    asyncio.run(fast._annotate_from_scope(ob2))
+    assert ob2.observed == full
+
+    ob3 = _outbound([])                      # so is a failed one
+    ob3.observed = full
+    monkeypatch.setattr(delivery, "scope_lookup", lambda *a, **k: _async(None))
+    asyncio.run(fast._annotate_from_scope(ob3))
+    assert ob3.observed == full
+
+
+def _async(value):
+    async def go():
+        return value
+    return go()
+
+
+def test_finish_asks_corescope_again_even_when_decide_mode_filled_it(fast, monkeypatch):
+    monkeypatch.setattr(settings, "scope_url", "http://scope")
+    monkeypatch.setattr(settings, "scope_mode", "decide")
+    asked = []
+
+    async def annotate(ob):
+        asked.append(ob)
+
+    monkeypatch.setattr(fast, "_annotate_from_scope", annotate)
+    ob = _outbound([])
+    ob.observed = {"observers": 1, "repeated_by": 0}
+
+    async def run():
+        await fast._finish(ob)
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert len(asked) == 1
+
+
+def test_a_blocked_loop_extends_the_echo_window(fast):
+    """Time the loop spent blocked is given back, capped at one more
+    window: a late handler is not proof that nobody repeated us."""
+    import time as _time
+    ob = _outbound([])
+    ob.window_s = 0.1
+    base = delivery.loop_lag.total
+
+    async def run():
+        t0 = _time.monotonic()
+        waiter = asyncio.create_task(fast._wait_for_echo(ob))
+        await asyncio.sleep(0.02)
+        delivery.loop_lag.total += 0.5          # a long synchronous parse
+        await waiter
+        return _time.monotonic() - t0
+
+    try:
+        elapsed = asyncio.run(run())
+    finally:
+        delivery.loop_lag.total = base
+    assert ob.lag_given_s == pytest.approx(0.1, abs=0.02)      # capped at the window
+    assert elapsed >= 0.19
+
+
+def test_loop_lag_notices_a_synchronous_stall():
+    import time as _time
+    lag = delivery.LoopLag(interval=0.02, jitter=0.01)
+
+    async def run():
+        lag.start()
+        await asyncio.sleep(0.03)        # let it take a clean sample first
+        _time.sleep(0.2)                 # block the loop the way a big parse does
+        await asyncio.sleep(0.05)
+        await lag.stop()
+
+    asyncio.run(run())
+    assert lag.worst >= 0.15 and lag.total >= 0.15 and lag.pct > 0
+    assert lag.recent_worst >= 0.15
+    assert lag.stats()["running"] is False
+
+
+def test_loop_lag_is_judged_on_a_window_not_on_the_whole_run():
+    """A stall while the bot was starting must not brand the loop slow for
+    the rest of the process's life, or the health card would never dare
+    call a real transmit fault."""
+    lag = delivery.LoopLag(interval=0.02, jitter=0.01)
+    lag.RECENT_S = 0.2
+    lag.since = delivery.time.time() - 600           # long-running process
+    lag.total = 30.0                                 # ancient start-up stall
+    lag.worst = 5.4
+    lag._recent.append((delivery.time.time() - 10, 5.4))
+    assert lag.pct == 0.0 and lag.recent_worst == 0.0    # aged out of the window
+    st = lag.stats()
+    assert st["total_s"] == 30.0 and st["worst_s"] == 5.4 and st["pct"] == 0.0

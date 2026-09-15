@@ -27,6 +27,9 @@ import time
 # phone apps with this release; older nodes never deliver the v5 packets.
 MIN_FIRMWARE = (1, 15, 0)
 TX_SUSPECT_STREAK = 3
+#: Share of wall-clock time the event loop may run late before an unheard
+#: echo says more about this software than about the radio.
+LAG_SUSPECT_PCT = 2.0
 MESH_ALIVE_S = 600                # a repeat from someone else this recently = the mesh is up
 CHANNEL_KINDS = ("channel_text", "channel_data")
 
@@ -55,7 +58,8 @@ def unheard_streak(outcomes: list[tuple]) -> int:
 
 
 def assess(*, outcomes: list[tuple], last_rx_at: float, last_repeat_heard_at: float, rx_frames: int,
-           started_at: float, tx_enabled: bool, rx_silent_s: float, now: float | None = None) -> dict:
+           started_at: float, tx_enabled: bool, rx_silent_s: float, loop_lag_pct: float = 0.0,
+           now: float | None = None) -> dict:
     now = now or time.time()
     streak = unheard_streak(outcomes)
     rx_age = (now - last_rx_at) if last_rx_at else (now - started_at)
@@ -67,6 +71,11 @@ def assess(*, outcomes: list[tuple], last_rx_at: float, last_repeat_heard_at: fl
         verdict, reason = "rx_silent", f"nothing heard from anyone for {int(rx_age / 60)} min"
     elif not tx_enabled:
         verdict, reason = "tx_off", "transmit is off; the receiver is " + ("hearing traffic" if rx_frames else "quiet")
+    elif streak >= TX_SUSPECT_STREAK and mesh_alive and loop_lag_pct >= LAG_SUSPECT_PCT:
+        verdict = "unknown"
+        reason = (f"{streak} sends in a row got no echo, but this bot's own event loop ran late "
+                  f"{loop_lag_pct:.0f}% of the time: the echo may have arrived and been handled too late "
+                  f"to count. Fix the stall before suspecting the radio")
     elif streak >= TX_SUSPECT_STREAK and mesh_alive:
         verdict = "tx_suspect"
         reason = (f"{streak} sends in a row got no echo while repeats from other nodes were heard "
@@ -85,6 +94,7 @@ def assess(*, outcomes: list[tuple], last_rx_at: float, last_repeat_heard_at: fl
         "last_rx_at": last_rx_at or None, "rx_age_s": int(rx_age) if last_rx_at else None,
         "last_repeat_heard_at": last_repeat_heard_at or None,
         "last_heard_send_at": last_heard_send,
+        "loop_lag_pct": round(loop_lag_pct, 2),
         "checked_at": now,
     }
 

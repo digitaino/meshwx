@@ -119,8 +119,17 @@ class WeatherStore:
         self._products: dict[str, EMWINProduct] = {}  # keyed by filename
 
     def ingest(self, raw_products: list[dict]) -> int:
-        count = 0
+        count = known = 0
         for raw in raw_products:
+            # The sources hand back their whole cache every poll, so this
+            # used to re-parse ~14k products a minute on the event loop and
+            # stall everything sharing the thread, the handler that matches
+            # a repeater's echo included. A filename names one product for
+            # ever, so one already in the store never needs parsing again.
+            name = raw.get("filename")
+            if name and name in self._products:
+                known += 1
+                continue
             prod = self._parse(raw)
             if prod:
                 self._products[prod.filename] = prod
@@ -135,8 +144,9 @@ class WeatherStore:
             if not is_expired(v.product_type, v.timestamp, now)
         }
         expired = before - len(self._products)
-        logger.info("Ingested %d/%d products%s",
+        logger.info("Ingested %d/%d products%s%s",
                      count, len(raw_products),
+                     f", {known} already held" if known else "",
                      f" (expired {expired})" if expired else "")
         return count
 

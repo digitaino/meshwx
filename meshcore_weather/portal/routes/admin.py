@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 
 from meshcore_weather.activity import activity_log
 from meshcore_weather.config import settings
-from meshcore_weather.meshcore.delivery import delivery_tracker
+from meshcore_weather.meshcore.delivery import delivery_tracker, loop_lag
 from meshcore_weather.portal import logbuf
 from meshcore_weather.portal.sse import sse_response
 from meshcore_weather.traffic import KINDS as TRAFFIC_KINDS, traffic_log
@@ -816,7 +816,8 @@ def _health_verdict() -> dict:
     t = delivery_tracker
     return assess(outcomes=t.recent_outcomes(200), last_rx_at=t.last_rx_at,
                   last_repeat_heard_at=t.last_repeat_heard_at, rx_frames=t.rx_frames, started_at=t.started_at,
-                  tx_enabled=settings.tx_enabled, rx_silent_s=settings.radio_rx_silent_min * 60)
+                  tx_enabled=settings.tx_enabled, rx_silent_s=settings.radio_rx_silent_min * 60,
+                  loop_lag_pct=loop_lag.pct)
 
 
 async def _radio_stats_cached(radio) -> dict | None:
@@ -844,6 +845,7 @@ async def radio_health(request: Request) -> JSONResponse:
         "firmware": firmware_check(device.get("ver")),
         "device": device,
         "delivery": delivery_tracker.stats()["windows"],
+        "loop_lag": loop_lag.stats(),
         "radio_stats": await _radio_stats_cached(radio),
         "profile": radio.profile_status() if hasattr(radio, "profile_status") else None,
     }
