@@ -143,7 +143,7 @@ class AppResponder:
             lat = lon = point = None
             if not arg and ctx.home is not None:
                 lat, lon = ctx.home
-            elif arg.isdigit():
+            elif arg.isdigit() and len(arg) <= 4:      # a point index; 5 digits is a ZIP
                 b.tables.load()
                 try:
                     point = int(arg)
@@ -198,8 +198,8 @@ class AppResponder:
         """`>metar` / `>taf`. A request that names a station gets that
         station's own report, starting `METAR <ICAO>` / `TAF <ICAO>`, or Not
         available: the app files the text under the ICAO it asked for, so a
-        neighbour's report would land on the wrong airport. A place gets the
-        nearest reporting station, labelled with its ICAO and distance."""
+        neighbour's report would land on the wrong airport. A place or ZIP gets
+        the nearest reporting station, labelled with its ICAO and distance."""
         from meshcore_weather.core import render_text, services
         icao = arg.upper()
         resolver.load()

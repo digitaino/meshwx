@@ -27,7 +27,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 - **An admin portal** for the radio, receiver, text bot, schedule, logs and settings, and a **public dashboard** on the Pi that shows the receiver and a redacted live feed of the bot.
 - **An accuracy audit.** `scripts/audit.py` compares the bot's answers with api.weather.gov, IEM, aviationweather.gov and SWPC; `deploy/` has an hourly timer for it and the portal's Overview shows the result.
 - **CoreScope hooks.** Optional MQTT publishing of every raw packet the radio hears, for the CoreScope packet analyzer (`corescope/`), and an optional CoreScope lookup that records who heard each packet and can veto a resend.
-- **Preload bundle** (`client_data/`, about 17 MB, 15 MB of it the optional zone and county polygons) that ships with every app: the office, station and state index tables, zones, counties, places, METAR stations, PFM forecast points and the protocol enums.
+- **Preload bundle** (`client_data/`, about 18 MB, 15 MB of it the optional zone and county polygons) that ships with every app: the office, station and state index tables, zones, counties, places, US ZIP codes, METAR stations, PFM forecast points and the protocol enums.
 - **pyIEM-powered parsing** — the reference Python library for NWS text products (VTEC, UGC, polygons), run fully offline with a UGC provider built from the bundled zones.
 
 ## Status
@@ -78,9 +78,9 @@ the answer always comes back on `#meshwx` as v5 messages.
 | `>w SV.W.EWX.42`, `>w TXC453`, `>w TXZ192` | One warning by identity, or the warnings touching a county or zone |
 | `>wt SV.W.EWX.42` | That warning's narrative as Text |
 | `>o`, `>o KAUS` | Observations for the coverage stations, or for one station |
-| `>f`, `>f 102`, `>f round rock tx` | Forecast for the home point, a PFM point index, or a place |
+| `>f`, `>f 102`, `>f round rock tx`, `>f 78701` | Forecast for the home point, a PFM point index (1-4 digits), a place, or a ZIP (5 digits or ZIP+4) |
 | `>afd EWX` | Forecast discussion |
-| `>metar KAUS`, `>taf KAUS` | That station's own report, or Not available; a place gets the nearest reporting station |
+| `>metar KAUS`, `>taf KAUS` | That station's own report, or Not available; a place or ZIP gets the nearest reporting station |
 | `>space`, `>storm TX`, `>rain TX`, `>hwo` | Space weather, storm reports, rainfall, hazardous weather outlook |
 | `>sat` | The bot's GOES receiver, one line of Text |
 
@@ -105,6 +105,7 @@ the request rules.
 | `protocol.json` | Version, message types, event codes and names, sky codes, text subjects, Not available reasons |
 | `index.json` | The tables the wire indexes into: `offices` (the 125 WFOs in alphabetical order, then `NHC` at 125 and `WNS` at 126), `stations`, `states`. Append-only; `version` 2 |
 | `stations.json`, `pfm_points.json`, `places.json` | Station, forecast point and place lookup |
+| `zips.json` | US ZIP (Census 2020 ZCTA) to its point and nearest place; the bot resolves ZIPs from the same table |
 | `zones.json`, `counties.json` | Names and centroids for zone and county codes |
 | `zones.geojson`, `counties.geojson` | Polygons; optional downloads |
 | `wfos.json` | Office states and positions, in `index.json` `offices` order |
@@ -448,15 +449,15 @@ command is read as a place: `austin tx` means `wx austin tx`.
 
 | Command | Example | Reply |
 |---------|---------|-------|
-| `wx <city ST or station>` | `wx Austin TX`, `wx KAUS`, `wx AUS` | Current conditions, today's high/low, active warnings |
+| `wx <city ST, station or ZIP>` | `wx Austin TX`, `wx KAUS`, `wx AUS`, `wx 78701` | Current conditions, today's high/low, active warnings |
 | `wx`, `wx <state>` | `wx TX`, `TX`, `wx texas` | National or state overview |
-| `forecast <city ST>` | `forecast Miami FL` | Daily forecast from the nearest PFM point |
-| `warn`, `warn <ST>`, `warn <city ST>` | `warn KS` | Active watches, warnings and advisories: national, a state, or a place |
-| `outlook <city ST>` | `outlook Des Moines IA` | Hazardous weather outlook |
+| `forecast <city ST or ZIP>` | `forecast Miami FL`, `forecast 02134` | Daily forecast from the nearest PFM point |
+| `warn`, `warn <ST>`, `warn <city ST or ZIP>` | `warn KS`, `warn 78701` | Active watches, warnings and advisories: national, a state, or a place |
+| `outlook <city ST or ZIP>` | `outlook Des Moines IA` | Hazardous weather outlook |
 | `storm [ST or city ST]` | `storm SD` | Storm reports from the last 6 hours (the home state without an argument) |
 | `rain [ST or city ST]` | `rain FL` | Rainfall reports (the home state without an argument) |
-| `metar <ICAO or city ST>` | `metar KJFK` | Raw METAR |
-| `taf <ICAO or city ST>` | `taf KJFK` | Terminal aerodrome forecast |
+| `metar <ICAO, city ST or ZIP>` | `metar KJFK`, `metar 78701` | Raw METAR |
+| `taf <ICAO, city ST or ZIP>` | `taf KJFK` | Terminal aerodrome forecast |
 | `space` | `space` | Space weather |
 | `sat` | `sat` | The bot's GOES receiver: lock, signal quality, packets dropped in the last minute, age of the newest EMWIN file. A bot on internet EMWIN says it has no receiver |
 | `more` | `more` | The next page of the last long reply |
@@ -580,7 +581,7 @@ meshcore_weather/
 │
 ├── client_data/           # Preload bundle for apps (package data; spec section 9)
 │   ├── protocol.json, index.json, wfos.json
-│   ├── stations.json, pfm_points.json, places.json
+│   ├── stations.json, pfm_points.json, places.json, zips.json
 │   ├── zones.json, zones.geojson, counties.json, counties.geojson
 │   └── regions.json, state_index.json, weather_dict.json   # v3/v4, not used by v5
 │

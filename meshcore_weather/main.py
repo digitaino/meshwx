@@ -11,7 +11,7 @@ from pathlib import Path
 
 from meshcore_weather.config import settings
 from meshcore_weather.emwin.fetcher import create_source
-from meshcore_weather.geodata import resolver
+from meshcore_weather.geodata import resolver, zip_code
 from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.nlp import parse_intent
 from meshcore_weather.core.pages import split_pages
@@ -26,8 +26,8 @@ RADIO_RETRY_SECONDS = 60
 # One message, under the channel budget, no newlines (phones wrap it).
 # A DM already is the private reply, so it does not say "DM me".
 HELP_TEXT_DM = (
-    "Weather bot: wx/forecast/warn <city ST> | warn/storm/rain <ST> | "
-    "metar <ICAO> | space | sat | more"
+    "Weather bot: wx/forecast/warn <city ST|ZIP> | warn/storm/rain <ST> | "
+    "metar <ICAO|ZIP> | space | sat | more"
 )
 HELP_TEXT = HELP_TEXT_DM + ". DM me for private replies"
 
@@ -849,7 +849,7 @@ class WeatherBot:
         from meshcore_weather.core import render_text, services
         loc = resolver.resolve(location)
         if not loc:
-            return f"Unknown location: {location}"
+            return f"Unknown {'ZIP' if zip_code(location) else 'location'}: {location}"
         if kind == "warn":
             return render_text.warnings(loc, services.warnings_for(self.store, loc))
         if kind == "forecast":
@@ -875,7 +875,9 @@ class WeatherBot:
             target = location or (settings.home_cities.split(",")[0].strip() if settings.home_cities else "")
             loc = resolver.resolve(target) if target else None
             if not loc or not loc.get("zones"):
-                return f"Unknown location: {location}" if location else "Usage: rain <ST or city ST>"
+                if not location:
+                    return "Usage: rain <ST or city ST>"
+                return f"Unknown {'ZIP' if zip_code(location) else 'location'}: {location}"
             state = loc["zones"][0][:2]
             label = f"in {state}"
         else:

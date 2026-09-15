@@ -17,6 +17,7 @@ deployment location. The bot's broadcaster reads from this directory via
 
 import io
 import json
+import math
 import re
 import sys
 import zipfile
@@ -36,6 +37,16 @@ NWS_ZONES_SHAPEFILE_URL = (
     "https://www.weather.gov/source/gis/Shapefiles/WSOM/z_16ap26.zip"
 )
 NWS_ZONES_SHAPEFILE_MD5 = "b883244e367c51f493d93ff4feaad9f0"
+
+# US Census Bureau 2020 Gazetteer, ZIP Code Tabulation Areas (public domain).
+# Not fetched by the builder: download it and unzip it into .cache/census/
+# (the .zip as downloaded also works). Without it zips.json is kept as is.
+ZCTA_GAZETTEER_URL = (
+    "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2020_Gazetteer/"
+    "2020_Gaz_zcta_national.zip"
+)
+ZCTA_GAZETTEER = ROOT / ".cache" / "census" / "2020_Gaz_zcta_national.txt"
+ZCTA_SOURCE = "US Census Bureau 2020 ZCTA Gazetteer"
 
 # Fallback EMWIN bundle URL if local cache is empty (dev-box builds)
 EMWIN_BUNDLE_URL = (
@@ -525,6 +536,92 @@ def build_pfm_points(out_dir: Path) -> None:
     print(f"  pfm_points:    {len(ordered):>6} points, {size:.0f} KB")
 
 
+def _read_gazetteer(path: Path) -> list[tuple[str, float, float]]:
+    """(ZIP, lat, lon) per ZCTA, sorted by ZIP, from the tab-separated
+    gazetteer (.txt, or the .zip it ships in). Points rounded to 4 decimals."""
+    if path.suffix == ".zip":
+        with zipfile.ZipFile(path) as zf:
+            name = next(n for n in zf.namelist() if n.lower().endswith(".txt"))
+            text = zf.read(name).decode("utf-8")
+    else:
+        text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    head = [h.strip() for h in lines[0].split("\t")]
+    gi, ai, oi = head.index("GEOID"), head.index("INTPTLAT"), head.index("INTPTLONG")
+    rows: dict[str, tuple[float, float]] = {}
+    for line in lines[1:]:
+        f = [x.strip() for x in line.split("\t")]
+        if len(f) <= max(gi, ai, oi) or not f[gi].isdigit():
+            continue
+        rows.setdefault(f[gi].zfill(5), (round(float(f[ai]), 4), round(float(f[oi]), 4)))
+    return [(z, la, lo) for z, (la, lo) in sorted(rows.items())]
+
+
+def _nearest_places(points: list[tuple[float, float]], places: list) -> list[int]:
+    """Index of the nearest place to each (lat, lon) by great circle, ties to
+    the lower index. Places sit in 1-degree cells: a point scans outward to a
+    first candidate, then every cell that could hold one as near."""
+    cells: dict[tuple[int, int], list[tuple[float, float, float, int]]] = {}
+    for i, p in enumerate(places):
+        la, lo = math.radians(p[2]), math.radians(p[3])
+        cells.setdefault((math.floor(p[2]), math.floor(p[3]) % 360), []).append((la, lo, math.cos(la), i))
+
+    def scan(keys, la, lo, cl, best):
+        for key in keys:
+            for pla, plo, pcl, i in cells.get(key, ()):
+                # Haversine term: ranks like the distance, exact at short range.
+                h = math.sin((pla - la) / 2) ** 2 + cl * pcl * math.sin((plo - lo) / 2) ** 2
+                if h < best[0] or (h == best[0] and i < best[1]):
+                    best = (h, i)
+        return best
+
+    out = []
+    for lat, lon in points:
+        la, lo, cl = math.radians(lat), math.radians(lon), math.cos(math.radians(lat))
+        ci, cj = math.floor(lat), math.floor(lon)
+        best, r = (math.inf, -1), 0
+        while best[1] < 0 and r <= 180:
+            ring = {(ci + di, (cj + dj) % 360) for di in range(-r, r + 1) for dj in range(-r, r + 1)
+                    if max(abs(di), abs(dj)) == r}
+            best = scan(ring, la, lo, cl, best)
+            r += 1
+        d = 2 * math.asin(min(1.0, math.sqrt(best[0])))       # radians
+        dlat = math.degrees(d) + 1e-9
+        dlon = (math.degrees(math.asin(math.sin(d) / cl)) + 1e-9
+                if d < math.pi / 2 and math.sin(d) < cl else 180.0)
+        box = {(i, j % 360) for i in range(math.floor(lat - dlat), math.floor(lat + dlat) + 1)
+               for j in range(math.floor(lon - dlon), math.floor(lon + dlon) + 1)}
+        out.append(scan(box, la, lo, cl, best)[1])
+    return out
+
+
+def build_zips(out_dir: Path, source: Path = ZCTA_GAZETTEER, places: list | None = None) -> None:
+    """ZIP -> internal point and nearest bundled place (ZCTA_GAZETTEER_URL).
+
+    Output: {"version": 1, "source": ..., "zips": [["78701", 30.2711, -97.7437, 12345], ...]}
+    Sorted by ZIP, 5 characters with leading zeros. The last field indexes
+    places.json `places`: the nearest place by great circle, ties to the lower
+    index. Bot and apps resolve a ZIP by exact lookup here. ZCTAs approximate
+    delivery ZIPs: PO-box-only and some business ZIPs have no row (unknown ZIP).
+    """
+    if not source.exists() and source.with_suffix(".zip").exists():
+        source = source.with_suffix(".zip")
+    path = out_dir / "zips.json"
+    if not source.exists():
+        kept = "existing zips.json kept" if path.exists() else "no zips.json"
+        print(f"  zips.json:     SKIPPED ({source} missing, {kept}; get {ZCTA_GAZETTEER_URL})")
+        return
+    rows = _read_gazetteer(source)
+    if places is None:
+        places = json.loads((GEODATA / "places.json").read_text())
+    nearest = _nearest_places([(la, lo) for _, la, lo in rows], places)
+    out = {"version": 1, "source": ZCTA_SOURCE,
+           "zips": [[z, la, lo, i] for (z, la, lo), i in zip(rows, nearest)]}
+    path.write_text(json.dumps(out, separators=(",", ":")))
+    size = path.stat().st_size / 1024 / 1024
+    print(f"  zips.json:     {len(rows):>6} ZIPs, {size:.1f} MB")
+
+
 def main():
     # Default output goes inside the package so it ships as package-data
     # and is available at runtime regardless of deployment location.
@@ -535,6 +632,7 @@ def main():
     print(f"Building client preload bundle in {out_dir}/")
     build_zones(out_dir)
     build_places(out_dir)
+    build_zips(out_dir)
     build_stations(out_dir)
     build_wfos(out_dir)
     build_state_index(out_dir)

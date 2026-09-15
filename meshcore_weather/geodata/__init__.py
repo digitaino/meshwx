@@ -1,20 +1,31 @@
-"""Offline geolocation: resolve city names, station IDs, and zone codes.
+"""Offline geolocation: resolve city names, ZIP codes, station IDs, and zone codes.
 
 Bundled data files (~1.7 MB total):
     zones.json   - 4,029 NWS forecast zones with centroids, counties, WFO IDs
     places.json  - 32,333 US Census places with coordinates
     stations.json - 2,237 active US METAR stations with coordinates
+ZIPs come from the app bundle's client_data/zips.json, so the bot and the
+app resolve a ZIP from the same table.
 """
 
 import json
 import logging
 import math
+import re
 import unicodedata
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).parent
+
+_ZIP_RE = re.compile(r"(\d{5})(?:-\d{4})?")
+
+
+def zip_code(text: str) -> str | None:
+    """'78701' or ZIP+4 '78701-1234' -> '78701'; anything else None."""
+    m = _ZIP_RE.fullmatch(text.strip())
+    return m.group(1) if m else None
 
 
 def _load_json(name: str):
@@ -35,6 +46,7 @@ class LocationResolver:
     Handles:
         - Station IDs: "KAUS" → zone TXZ192, WFO EWX
         - Zone codes: "TXZ192" → directly
+        - ZIP or ZIP+4: "78701", "78701-1234" → "Austin, TX 78701"
         - City + state: "Austin TX" → zone TXZ192
         - City only: "Austin" → best guess (largest/first match)
         - State only: "TX" → all zones in state
@@ -49,6 +61,7 @@ class LocationResolver:
         self._zones: dict = {}      # zone_code -> {n, w, s, la, lo, c}
         self._places: list = []     # [[NAME, STATE, lat, lon, population], ...]
         self._stations: dict = {}   # ICAO -> {n, s, la, lo}
+        self._zips: dict | None = None   # ZIP -> [lat, lon, place index], loaded on first ZIP
         self._loaded = False
         self._home: tuple[float, float] | None = None   # bot coverage centre
         self._poly_tree = None      # shapely STRtree over public zone polygons
@@ -142,6 +155,12 @@ class LocationResolver:
             return None
 
         upper = query.upper()
+
+        # 0. ZIP or ZIP+4 (78701, 78701-1234): the ZIP table or nothing, never
+        # a city prefix. Zones (TXZ192) and stations (4 characters) never match.
+        zip5 = zip_code(upper)
+        if zip5:
+            return self._resolve_zip(zip5)
 
         # 1. Direct zone code (e.g. TXZ192)
         if len(upper) >= 5 and upper[2] == "Z" and upper[3:].isdigit():
@@ -420,6 +439,27 @@ class LocationResolver:
         ordered, others = self._rank_candidates(matches)
         return self._result_for_place(ordered[0], others)
 
+    def _load_zips(self) -> dict:
+        """ZIP -> [lat, lon, place index] from client_data/zips.json, the table
+        apps ship, so a ZIP resolves the same in the app and the bot."""
+        if self._zips is None:
+            try:
+                path = Path(__file__).resolve().parent.parent / "client_data" / "zips.json"
+                self._zips = {r[0]: r[1:] for r in json.loads(path.read_text())["zips"]}
+            except Exception as exc:   # missing or bad file: every ZIP is unknown
+                logger.warning("ZIP table unavailable (%s)", exc)
+                self._zips = {}
+        return self._zips
+
+    def _resolve_zip(self, zip5: str) -> dict | None:
+        """A ZIP resolves as its point, labelled with the table's nearest place:
+        'Austin, TX 78701'. Not in the table (PO-box-only, some business ZIPs): None."""
+        row = self._load_zips().get(zip5)
+        if not row or not 0 <= row[2] < len(self._places):
+            return None
+        p = self._places[row[2]]
+        return self.resolve_by_coords(row[0], row[1], name=f"{self._clean_place_name(p[0])}, {p[1]} {zip5}")
+
     def resolve_by_place_index(self, idx: int) -> dict | None:
         """Resolve a place index to zone info (for LOC_PLACE requests)."""
         self.load()
@@ -428,8 +468,9 @@ class LocationResolver:
         p = self._places[idx]
         return self.resolve_by_coords(p[2], p[3])
 
-    def resolve_by_coords(self, lat: float, lon: float) -> dict | None:
-        """Resolve GPS coordinates to zone info (for location-aware DM)."""
+    def resolve_by_coords(self, lat: float, lon: float, name: str | None = None) -> dict | None:
+        """Resolve GPS coordinates to zone info (for location-aware DM).
+        `name` labels the result; without one, the nearest place does."""
         self.load()
         zones, method = self._zones_for_point(lat, lon, n=2)
         if not zones:
@@ -437,15 +478,15 @@ class LocationResolver:
         wfos = list({self._zones[z]["w"] for z in zones if z in self._zones})
         stations = self.rank_stations(lat, lon)
         station = stations[0][0] if stations else None
-        # Find nearest place name
-        best_place = None
-        best_d = float("inf")
-        for p in self._places:
-            d = _haversine(lat, lon, p[2], p[3])
-            if d < best_d:
-                best_d = d
-                best_place = p
-        name = f"{best_place[0].title()}, {best_place[1]}" if best_place else f"{lat:.2f}, {lon:.2f}"
+        if name is None:
+            best_place = None
+            best_d = float("inf")
+            for p in self._places:
+                d = _haversine(lat, lon, p[2], p[3])
+                if d < best_d:
+                    best_d = d
+                    best_place = p
+            name = f"{best_place[0].title()}, {best_place[1]}" if best_place else f"{lat:.2f}, {lon:.2f}"
         return {
             "zones": zones,
             "zone_method": method,

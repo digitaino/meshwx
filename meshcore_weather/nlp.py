@@ -3,6 +3,7 @@
 Supported formats:
     wx Austin TX
     wx KAUS
+    wx 78701            (a ZIP or ZIP+4 is a place like any other)
     forecast Miami FL
     warn FL
     metar KJFK

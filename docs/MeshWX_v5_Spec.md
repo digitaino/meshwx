@@ -8,8 +8,9 @@ Revision 3 fixes bot behaviour that disagreed with revision 2 and states
 rules revision 2 left out: when `seq` is assigned, how a full digest may be
 cut, unknown observation fields, what `first` counts from, the request
 limits, named-station METAR and TAF replies, `>f <index>`, and two offices
-appended to the bundle. It also adds `>sat`. The wire layout did not
-change. If you hold revision 2, read section 16 first.
+appended to the bundle. It also adds `>sat`, and US ZIP codes as places
+with the bundle file `zips.json`. The wire layout did not change. If you
+hold revision 2, read section 16 first.
 
 Revision 2 corrected statements in sections 1, 6, 7, 8.2, 8.3, 12 and 13
 that described behaviour this bot does not have. If you hold revision 1,
@@ -380,6 +381,7 @@ type and get a text DM back.
 | `>f` | Forecast for the bot's home point |
 | `>f 102` | Forecast for point index 102; `point` is 102 whenever the forecast is at that point's coordinates (section 7) |
 | `>f round rock tx` | Forecast for a place the bot resolves (nearest point; `point` may be 0xFFFF) |
+| `>f 78701`, `>f 78701-1234` | Forecast for a US ZIP, looked up in `zips.json` (section 9) and answered like a place. A ZIP not in the table gets Not available reason 1 |
 | `>afd EWX` | Forecast discussion, Text subject 1 |
 | `>space` | Space weather summary, Text subject 2 |
 | `>metar KAUS` | That station's own METAR from the last 120 minutes, Text subject 5, starting `METAR KAUS`. Never another station's: without one, Not available reason 0, request `m` |
@@ -389,7 +391,10 @@ type and get a text DM back.
 | `>sat` | The bot's GOES receiver now, one line, Text subject 8: lock, signal good/fair/poor, packets dropped in the last minute, age of the newest EMWIN file. A receiver that is not reporting is answered as Text saying so. A Not available for it would carry `s`, the letter `>space` and `>storm` use |
 
 A request "names a station" when its argument is a 4-character ICAO code
-the bot knows; anything else is resolved as a place.
+the bot knows; anything else is resolved as a place. For `>f`, 5 digits (or
+ZIP+4, `78701-1234`) is a ZIP and 1-4 digits is a point index. A ZIP also
+works wherever a place does (`>metar 78701`, `>taf 78701`, `>hwo 78701`);
+`>w` and `>o` take no ZIP (the app resolves one to UGCs and stations itself).
 
 Rules the bot applies:
 
@@ -461,6 +466,7 @@ here; the bot never sends names.
 | `stations.json` | 185 KB | ICAO → name, state, lat, lon | Station search, labels, map pins |
 | `pfm_points.json` | 104 KB | `points`: ordered list `[name, office, lat, lon, zone]`; the list position is the `point` u16 | Forecast labels, "forecast for my location" (nearest point by distance) |
 | `places.json` | 1.4 MB | `places`: list `[NAME, ST, lat, lon, population]` | Place search and autocomplete |
+| `zips.json` | 1.1 MB | `version` (1), `source`, and `zips`: list `["78701", 30.2706, -97.7426, 29645]` sorted by ZIP: the ZIP as a 5-character string (leading zeros kept, `00901`), the ZCTA's internal point (lat, lon, 4 decimals), and the index into `places.json` `places` of the nearest place by great circle. US Census Bureau 2020 ZCTA Gazetteer (public domain), 33,144 ZIPs including Puerto Rico. ZCTAs approximate delivery ZIPs: PO-box-only and some business ZIPs have no entry and are unknown ZIPs | ZIP search. Take the first 5 digits (ZIP+4 `78701-1234` too) and look them up exactly, never by prefix. Label from the place index plus the ZIP (the bot drops Census suffixes such as `zona urbana` and title-cases: `San Juan, PR 00901`). Then the point is a coordinate like any other: nearest `pfm_points` entry, nearest station, zone and county from the polygons. The bot resolves `wx 78701` and `>f 78701` from this same table |
 | `zones.json` | 355 KB | Zone id (`TXZ192`) → name, office, state, lat, lon | Naming the areas of a warning; zone lookup for a place |
 | `zones.geojson` | 10 MB | Zone polygons (`code` property, e.g. `TXZ192`) | Filling a zone-based warning on the map. Optional download; the app can fall back to the zone centroid pin |
 | `counties.json` | 227 KB | County UGC (`TXC453`) → name, state, representative lat/lon | Naming the counties of a storm-based warning; centroid pin |
@@ -548,14 +554,14 @@ a sender the bot cannot DM gets one reply on the channel instead. Long
 replies are paged with "(1/3) more"; send `more` for the next page.
 
 ```
-wx <city ST|ST>       conditions, today's high/low, warnings (a state or nothing: overview)
-forecast <city ST>    next days, one line per day
-warn <city ST|ST>     active watches, warnings, advisories
-storm <ST|city ST>    storm reports, last 6 hours
-rain <ST|city ST>     rainfall totals
-metar <ICAO|city ST>  latest airport observation
-taf <ICAO|city ST>    terminal aerodrome forecast
-outlook <city ST>     hazardous weather outlook
+wx <city ST|ZIP|ST>       conditions, today's high/low, warnings (a state or nothing: overview)
+forecast <city ST|ZIP>    next days, one line per day
+warn <city ST|ZIP|ST>     active watches, warnings, advisories
+storm <ST|city ST>        storm reports, last 6 hours
+rain <ST|city ST>         rainfall totals
+metar <ICAO|city ST|ZIP>  latest airport observation
+taf <ICAO|city ST|ZIP>    terminal aerodrome forecast
+outlook <city ST|ZIP>     hazardous weather outlook
 space                 space weather
 sat                   satellite receiver: lock, signal, drops, newest EMWIN
 more                  next page of the last long reply
@@ -571,6 +577,8 @@ binary path does not cover.
   Match by prefix on the name, then rank by distance to the user (or the
   bot), then by population. Always show the state; 207 names appear in
   more than one state. Round Rock exists in TX and AZ.
+- **ZIPs**: 5 digits (or ZIP+4) is an exact `zips.json` lookup, then a
+  coordinate like any other (section 9). Not in the table: unknown ZIP.
 - **Stations**: `stations.json` by ICAO prefix or by name substring; show
   distance.
 - **Points**: for "forecast here", take the nearest `pfm_points` entry by
@@ -661,9 +669,10 @@ rules:
 | 8.2, 10.4 | (none) | `>sat` and the text command `sat` report the bot's GOES receiver as one line, Text subject 8 |
 | 8.2 | Said coverage filtered only the bare `>w` and `>o` | The bare `>d` is filtered too |
 | 9 | Pointed at the top-level `text_subjects` and `not_available_reasons` in `protocol.json` | Use the tables under `v5`; the top-level ones are v4 |
+| 8.2, 9, 10.4 | (none) | A US ZIP (`78701`, or ZIP+4 `78701-1234`) works wherever a place does: people's commands, `>f`, `>metar`, `>taf`, `>hwo`. For `>f`, 5 digits is a ZIP and 1-4 digits a point index. New bundle file `zips.json` (Census 2020 ZCTAs): the bot and the app resolve a ZIP from the same table |
 
 The wire layout did not change, so a revision 2 decoder decodes every
-revision 3 packet. Update the bundle's `index.json` and `wfos.json`, apply
+revision 3 packet. Add the bundle's `zips.json`, update `index.json` and `wfos.json`, apply
 the digest rule in section 5, hide unknown observation fields, and label
 forecast days from `issued` and `first`.
 
