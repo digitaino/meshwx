@@ -46,6 +46,10 @@ REQUEST_KINDS = ("channel_in", "dm_in")
 REPLY_KINDS = ("reply_dm", "reply_channel")
 
 _FLUSH_EVERY_S = 60
+# Saved beside the counters so the rolling windows, the reply latency and the
+# live feed outlive a restart: a week of tally rows and the newest events.
+_KEEP_TALLY_S = 7 * 86400
+_KEEP_EVENTS = 300
 
 
 def _empty_counters() -> dict:
@@ -66,9 +70,11 @@ class TrafficLog:
         self._path = path
         self._last_flush = 0.0
         self._dirty = False
+        self._recent_dirty = False
         self.lifetime = _empty_counters()
         self.lifetime["since"] = self._started
         self._load()
+        self._load_recent()
 
     # -- persistence ---------------------------------------------------------------
 
@@ -86,22 +92,68 @@ class TrafficLog:
         except Exception as e:      # a corrupt file is not worth a crash
             logger.warning("Ignoring traffic stats file %s: %s", self._path, e)
 
+    def _recent_path(self) -> Path | None:
+        return self._path.with_name("traffic_recent.json") if self._path else None
+
+    def _load_recent(self) -> None:
+        path = self._recent_path()
+        if not path or not path.exists():
+            return
+        try:
+            d = json.loads(path.read_text())
+            cut = time.time() - _KEEP_TALLY_S
+            tally = [tuple(r) for r in d.get("tally") or []
+                     if isinstance(r, list) and len(r) == 5 and isinstance(r[0], (int, float))
+                     and r[0] >= cut and r[1] in KINDS]
+            events = []
+            for ev in (d.get("events") or [])[-_KEEP_EVENTS:]:
+                if (isinstance(ev, dict) and ev.get("kind") in KINDS and isinstance(ev.get("id"), int)
+                        and isinstance(ev.get("t"), (int, float))):
+                    ev["dir"], ev["_public"] = KINDS[ev["kind"]]
+                    events.append(ev)
+            # Ids only go up: a feed holding id N takes a lower id for an update of an old line.
+            seq = max([int(d.get("seq") or 0)] + [ev["id"] for ev in events])
+        except Exception as e:      # corrupt: the windows start empty, the counters stand
+            logger.warning("Ignoring traffic recent file %s: %s", path, e)
+            return
+        self._tally.extend(tally)
+        self._events.extend(events)
+        self._seq = seq
+
+    @staticmethod
+    def _at_rest(ev: dict) -> dict:
+        """An event as written to disk: the admin view without the text of
+        anything sent or received by DM, which stays in memory only."""
+        out = TrafficLog.to_admin(ev)
+        if ev.get("transport") == "dm" or (ev["kind"] == "dropped" and ev.get("transport") != "channel"):
+            out["text"] = None
+        return out
+
     def flush(self, force: bool = False) -> None:
-        if not self._path or not self._dirty:
+        if not self._path or not (self._dirty or self._recent_dirty):
             return
         now = time.time()
         if not force and now - self._last_flush < _FLUSH_EVERY_S:
             return
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._path.with_suffix(".tmp")
             with self._lock:
-                data = json.dumps(self.lifetime)
-            tmp.write_text(data)
-            tmp.replace(self._path)
+                files = [(self._path, json.dumps(self.lifetime))]
+                if self._recent_dirty:
+                    cut = now - _KEEP_TALLY_S
+                    files.append((self._recent_path(), json.dumps({
+                        "seq": self._seq,
+                        "tally": [list(r) for r in self._tally if r[0] >= cut],
+                        "events": [self._at_rest(ev) for ev in list(self._events)[-_KEEP_EVENTS:]],
+                    }, default=str)))
+                self._dirty = self._recent_dirty = False
+            for path, data in files:
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(data)
+                tmp.replace(path)
             self._last_flush = now
-            self._dirty = False
         except Exception as e:
+            self._dirty = self._recent_dirty = True
             logger.warning("Could not write traffic stats: %s", e)
 
     # -- recording -----------------------------------------------------------------
@@ -139,6 +191,7 @@ class TrafficLog:
             self._events.append(ev)
             self._tally.append((now, kind, command, sender if transport == "channel" else key, chars or 0))
             self._count(kind, command, transport, chars)
+            self._recent_dirty = True
             subs, loop = list(self._subs), self._loop
         if subs and loop is not None:
             for q in subs:
@@ -200,6 +253,7 @@ class TrafficLog:
             for k, v in fields.items():
                 if k in ev:
                     ev[k] = v
+            self._recent_dirty = True
             subs, loop = list(self._subs), self._loop
         if push and subs and loop is not None:
             for q in subs:

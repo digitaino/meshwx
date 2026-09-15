@@ -104,6 +104,18 @@ and reply length only, admin and console traffic not at all. No settings,
 no contacts, no other node's key (peer bots appear by name and position).
 The portal serves the same endpoint on its own port, like the rest of it.
 
+## What the traffic log writes to disk
+
+Beside the lifetime counters (`traffic_stats.json` in the data directory),
+`traffic_recent.json` keeps a week of per-message tallies (time, kind,
+command, and the sender's channel name or the first 12 hex of a DM sender's
+key) and the newest 300 events, so the rolling counters, the reply latency
+and the live feed survive a restart. The events are what the portal's Text
+Bot page shows, without the text of anything received or sent by DM (DM
+requests, DM replies, admin commands): that text is only ever held in
+memory. After a restart an old DM shows its command and reply length, as on
+the public page.
+
 ## Residual risks, stated plainly
 
 1. Anyone who can reach the portal can operate it, including pointing mode,

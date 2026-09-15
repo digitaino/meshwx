@@ -138,6 +138,42 @@ def test_lifetime_counters_survive_a_restart(tmp_path):
     assert TrafficLog(path=p).lifetime["requests"] == 0      # corrupt file: start over, no crash
 
 
+def test_windows_latency_and_the_feed_survive_a_restart(tmp_path):
+    """After a restart the dashboard read 0 requests · 24 h and no median
+    while the lifetime count stood: only `lifetime` was saved."""
+    p = tmp_path / "traffic_stats.json"
+    t = TrafficLog(path=p)
+    req = t.record("channel_in", sender="A", text="wx austin", command="wx")
+    t.record("reply_channel", text="Austin TX: 91F", chars=14, req=req)
+    dm = t.record("dm_in", sender="Tommy", key="ab" * 6, text="wx my house", command="wx")
+    t.record("reply_dm", text="Kyle TX: 88F", chars=12, req=dm)
+    t.flush(force=True)
+
+    t2 = TrafficLog(path=p)
+    st = t2.stats()
+    assert st["windows"]["24h"]["requests"] == 2 and st["windows"]["7d"]["replies"] == 2
+    assert st["windows"]["24h"]["senders"] == 2 and st["latency"]["median_ms"] is not None
+    public = t2.recent(10, public=True)
+    assert _kinds(public) == ["channel_in", "reply_channel", "dm_in", "reply_dm"]
+    assert public[0]["text"] == "wx austin" and public[2]["text"] is None and public[2]["command"] == "wx"
+    saved = (tmp_path / "traffic_recent.json").read_text()
+    assert "wx my house" not in saved and "Kyle TX" not in saved             # DM text never reaches disk
+    assert t2.recent(10)[2]["sender"] == "Tommy" and t2.recent(10)[2]["text"] is None
+    assert t2.record("channel_in", sender="B", text="help")["id"] > public[-1]["id"]   # since_id still works
+
+    (tmp_path / "traffic_recent.json").write_text("[1, 2")
+    t3 = TrafficLog(path=p)
+    assert t3.stats()["windows"]["24h"]["requests"] == 0 and t3.lifetime["requests"] == 3
+
+
+def test_help_by_dm_does_not_say_dm_me(bot):
+    asyncio.run(bot._handle_dm("ab" * 32, "Tommy", "help"))
+    dm = bot.radio.dms[-1][1]
+    assert dm.startswith("Weather bot:") and "DM me" not in dm
+    asyncio.run(bot._handle_channel_message("1", "Stranger", "help", 1))
+    assert bot.radio.channel_sent[-1][1].endswith("DM me for private replies")
+
+
 def test_unknown_kind_is_refused():
     with pytest.raises(ValueError):
         TrafficLog().record("bogus")

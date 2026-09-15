@@ -24,10 +24,12 @@ logger = logging.getLogger(__name__)
 RADIO_RETRY_SECONDS = 60
 
 # One message, under the channel budget, no newlines (phones wrap it).
-HELP_TEXT = (
+# A DM already is the private reply, so it does not say "DM me".
+HELP_TEXT_DM = (
     "Weather bot: wx/forecast/warn <city ST> | warn/storm/rain <ST> | "
-    "metar <ICAO> | space | sat | more. DM me for private replies"
+    "metar <ICAO> | space | sat | more"
 )
+HELP_TEXT = HELP_TEXT_DM + ". DM me for private replies"
 
 
 STATE_NAMES = {
@@ -694,10 +696,12 @@ class WeatherBot:
         self._paging[key] = {"pages": pages, "next": 1, "ts": now, "command": command}
         return pages
 
-    def reply_chunk(self, command: str, location: str, sender_key: str) -> tuple[str | None, bool]:
+    def reply_chunk(self, command: str, location: str, sender_key: str,
+                    dm: bool = False) -> tuple[str | None, bool]:
         """The one message this person gets now, and whether a 'more' would
         fetch another. Shared by the DM path, channel mode, the CLI and the
-        portal console, so they all page the same way."""
+        portal console, so they all page the same way. `dm`: the reply goes
+        by DM (help then leaves out "DM me")."""
         now = time.time()
         self._prune_sessions(now)
         if command == "more":
@@ -710,7 +714,7 @@ class WeatherBot:
             session["next"] += 1
             session["ts"] = now
             return page, session["next"] < len(session["pages"])
-        response = self._process_command(command, location)
+        response = HELP_TEXT_DM if dm and command == "help" else self._process_command(command, location)
         if not response:
             return None, False
         pages = self._start_session(sender_key, (command + " " + location).strip(), response)
@@ -719,7 +723,7 @@ class WeatherBot:
     async def _respond_dm(self, pubkey_prefix: str, sender_name: str, command: str, location: str,
                           req: dict | None = None) -> None:
         """Send the reply as a DM."""
-        chunk, _ = self.reply_chunk(command, location, self.person_key(sender_name, pubkey_prefix))
+        chunk, _ = self.reply_chunk(command, location, self.person_key(sender_name, pubkey_prefix), dm=True)
         if not chunk:
             traffic_log.record("dropped", reason="nothing to say", req=req, sender=sender_name, key=pubkey_prefix)
             return

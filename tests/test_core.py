@@ -80,6 +80,13 @@ class TestResolver:
         assert r["zones"][0] == "TXZ192"
         assert r["station_km"] == 0.0
 
+    def test_station_id_with_digits(self):
+        # 140 stations in the table carry digits (K1A6, KC09); a bare number is not one.
+        assert resolver.resolve("K1A6")["station"] == "K1A6"
+        assert resolver.resolve("kc09")["station"] == "KC09"
+        assert resolver.resolve("1234") is None
+        assert resolver.resolve("kyle")["station"] != "KYLE"
+
 
 # -- Services -----------------------------------------------------------------
 

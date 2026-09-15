@@ -147,8 +147,8 @@ class LocationResolver:
         if len(upper) >= 5 and upper[2] == "Z" and upper[3:].isdigit():
             return self._resolve_zone(upper)
 
-        # 2. Station ID (e.g. KAUS, TJSJ - any 4-letter ICAO code in our database)
-        if len(upper) == 4 and upper.isalpha() and upper in self._stations:
+        # 2. Station ID (e.g. KAUS, TJSJ, K1A6 - any 4-character ID in our database)
+        if len(upper) == 4 and upper.isalnum() and not upper.isdigit() and upper in self._stations:
             return self._resolve_station(upper)
 
         # 2b. 3-letter code (e.g. AUS → KAUS, SJU → TJSJ, HNL → PHNL)
