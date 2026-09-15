@@ -26,8 +26,8 @@ synthesized from the operator's env-var coverage config
 backward compat for existing deployments without requiring any
 manual migration.
 
-The /schedule portal page provides CRUD management of jobs via the
-/api/schedule/* endpoints.
+The portal's Broadcasts section manages jobs through the /api/schedule/*
+endpoints.
 """
 
 from meshcore_weather.schedule.models import BroadcastJob, BroadcastConfig

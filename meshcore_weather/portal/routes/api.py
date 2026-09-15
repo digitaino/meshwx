@@ -1,12 +1,11 @@
-"""JSON/API routes for the portal (HTMX partials and data endpoints)."""
+"""JSON routes: the EMWIN product browser, the broadcast log and its
+counters, the bot's channel names, and the broadcast schedule (CRUD, run now)."""
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 from meshcore_weather.activity import activity_log
-from meshcore_weather.geodata import resolver
-from meshcore_weather.protocol.coverage import Coverage
-from meshcore_weather.protocol.warnings import extract_active_warnings
+from meshcore_weather.portal.sse import sse_response
 from meshcore_weather.schedule.models import (
     BroadcastJob,
     LOCATION_TYPES,
@@ -21,153 +20,8 @@ def _get_scheduler(request: Request):
     bot = request.app.state.bot
     broadcaster = getattr(bot, "_broadcaster", None)
     if broadcaster is None or not hasattr(broadcaster, "scheduler"):
-        raise HTTPException(503, "scheduler not available")
+        raise HTTPException(503, "broadcasts are off: no data channel configured")
     return broadcaster.scheduler
-
-
-# -- Coverage preview & save --
-
-@router.get("/coverage/preview")
-async def coverage_preview(
-    cities: str = Query("", description="Comma-separated city,state pairs"),
-    states: str = Query("", description="Comma-separated 2-letter state codes"),
-    wfos: str = Query("", description="Comma-separated 3-letter WFO codes"),
-) -> JSONResponse:
-    """Compute coverage from the given inputs without saving it."""
-    city_list = [c.strip() for c in cities.split(",") if c.strip()]
-    state_list = [s.strip() for s in states.split(",") if s.strip()]
-    wfo_list = [w.strip() for w in wfos.split(",") if w.strip()]
-
-    cov = Coverage.from_sources(cities=city_list, states=state_list, wfos=wfo_list)
-    return JSONResponse({
-        "zones": sorted(cov.zones),
-        "zone_count": len(cov.zones),
-        "bbox": cov.bbox,
-        "region_ids": sorted(cov.region_ids),
-        "summary": cov.summary(),
-    })
-
-
-@router.post("/coverage/save")
-async def coverage_save(request: Request) -> JSONResponse:
-    """Deprecated — coverage is bootstrap config loaded from environment.
-
-    Previously this endpoint tried to rewrite `.env` in place, which
-    crashed because the container runs as a non-root user and the file
-    is owned by root. More importantly, the whole premise — "web UI
-    edits environment variables that the process has already loaded" —
-    doesn't actually work cleanly since env vars are process-start
-    state.
-
-    Runtime broadcast configuration lives in `data/broadcast_config.json`
-    now and is managed by the /schedule page. This endpoint remains so
-    the existing /config form doesn't 404, but it returns a clear
-    explanation instead of attempting a file write.
-    """
-    return JSONResponse(
-        {
-            "ok": False,
-            "error": "coverage_is_bootstrap_config",
-            "message": (
-                "Coverage (home_cities/home_states/home_wfos) is loaded "
-                "from environment variables at bot startup and cannot be "
-                "changed live from the portal. To change coverage, edit "
-                ".env on the host and restart the container. To change "
-                "what the bot broadcasts without touching coverage, use "
-                "the Schedule page (/schedule) — that lets you add, "
-                "remove, and configure individual broadcast jobs at "
-                "runtime without a restart."
-            ),
-        },
-        status_code=400,
-    )
-
-
-# -- Autocomplete helpers --
-
-@router.get("/autocomplete/city")
-async def autocomplete_city(q: str = Query("", min_length=2)) -> JSONResponse:
-    """Suggest city+state matches for the config form."""
-    resolver.load()
-    q_upper = q.upper().strip()
-    matches = []
-    for place in resolver._places:
-        name, state = place[0], place[1]
-        if name.upper().startswith(q_upper):
-            matches.append(f"{name.title()}, {state}")
-            if len(matches) >= 10:
-                break
-    return JSONResponse({"matches": matches})
-
-
-@router.get("/autocomplete/wfo")
-async def autocomplete_wfo(q: str = Query("", min_length=1)) -> JSONResponse:
-    """Suggest WFO codes."""
-    resolver.load()
-    q_upper = q.upper().strip()
-    wfos = sorted({z["w"] for z in resolver._zones.values() if z.get("w")})
-    matches = [w for w in wfos if w.startswith(q_upper)][:10]
-    return JSONResponse({"matches": matches})
-
-
-# -- Warnings --
-
-@router.get("/warnings")
-async def list_warnings(request: Request) -> JSONResponse:
-    """List all active warnings with coverage tag."""
-    bot = request.app.state.bot
-    broadcaster = getattr(bot, "_broadcaster", None)
-    coverage = broadcaster.coverage if broadcaster else None
-
-    # Get all warnings (no filter)
-    all_warnings = extract_active_warnings(bot.store, coverage=None)
-
-    # Build JSON-safe response objects. Warning dicts contain a datetime
-    # `expires_at` field (added in the v3 pyIEM port) which json.dumps can't
-    # serialize directly — convert to ISO 8601 string here.
-    out: list[dict] = []
-    for w in all_warnings:
-        if coverage is None or coverage.is_empty():
-            in_cov = True
-        else:
-            # Use the full UGC list (zones + county FIPS) for coverage
-            # matching, not just the Z-only zones list. County-FIPS-only
-            # warnings (FFW, SVR with TXC### codes) would be missed
-            # if we only checked Z-codes.
-            ugcs = w.get("ugcs") or w.get("zones", [])
-            in_cov = (
-                coverage.covers_any(ugcs)
-                or coverage.covers_polygon(w.get("vertices", []))
-            )
-
-        verts = w.get("vertices", [])
-        bbox = None
-        if verts:
-            lats = [v[0] for v in verts]
-            lons = [v[1] for v in verts]
-            bbox = [min(lats), min(lons), max(lats), max(lons)]
-
-        expires_at = w.get("expires_at")
-        out.append({
-            "warning_type": w.get("warning_type"),
-            "severity": w.get("severity"),
-            "expires_at": expires_at.isoformat() if expires_at else None,
-            "expiry_minutes": w.get("expiry_minutes"),
-            "headline": w.get("headline"),
-            "zones": w.get("zones", []),
-            "ugcs": w.get("ugcs", []),
-            "product_type": w.get("product_type"),
-            "vtec_action": w.get("vtec_action"),
-            "vtec_phenomenon": w.get("vtec_phenomenon"),
-            "vtec_significance": w.get("vtec_significance"),
-            "vtec_office": w.get("vtec_office"),
-            "vtec_etn": w.get("vtec_etn"),
-            "in_coverage": in_cov,
-            "bbox": bbox,
-            "vertices": verts,  # kept for /data map view
-        })
-
-    return JSONResponse({"warnings": out, "count": len(out)})
 
 
 # -- EMWIN product browser --
@@ -189,7 +43,7 @@ async def list_products(
     office: str = Query(""),
     state: str = Query(""),
     q: str = Query(""),
-    limit: int = Query(100),
+    limit: int = Query(100, ge=1, le=500),
 ) -> JSONResponse:
     """List ingested EMWIN products with optional filters."""
     bot = request.app.state.bot
@@ -205,7 +59,6 @@ async def list_products(
             continue
         if q_lower and q_lower not in prod.raw_text.lower():
             continue
-        # Get first non-empty line as preview
         preview = ""
         for line in prod.raw_text.splitlines():
             line = line.strip()
@@ -224,7 +77,7 @@ async def list_products(
         if len(results) >= limit:
             break
 
-    return JSONResponse({"products": results, "count": len(results)})
+    return JSONResponse({"products": results, "count": len(results), "limit": limit})
 
 
 @router.get("/products/{filename}")
@@ -245,90 +98,32 @@ async def get_product(request: Request, filename: str) -> JSONResponse:
     })
 
 
-# -- Status + actions --
-
-@router.get("/status")
-async def get_status(request: Request) -> JSONResponse:
-    """Bot operational status."""
-    bot = request.app.state.bot
-    broadcaster = getattr(bot, "_broadcaster", None)
-    scheduler = broadcaster.scheduler if broadcaster else None
-    cfg = scheduler.current_config() if scheduler else None
-    return JSONResponse({
-        "radio": {
-            "channel_idx": bot.radio.channel_idx,
-            "data_channel_idx": bot.radio.data_channel_idx,
-        },
-        "store": {
-            "product_count": len(bot.store._products),
-        },
-        "broadcaster": {
-            "running": broadcaster is not None,
-            "coverage": broadcaster.coverage.summary() if broadcaster else None,
-        },
-        "contacts": {
-            "known": len(bot._known_contacts) if hasattr(bot, "_known_contacts") else 0,
-        },
-    })
-
+# -- Broadcast log (binary side: jobs, app requests, beacons) --
 
 @router.get("/activity")
 async def get_activity(
     limit: int = Query(100, ge=1, le=500),
 ) -> JSONResponse:
-    """Return the most recent activity log entries."""
+    """Return the most recent broadcast-log entries."""
     return JSONResponse({"events": activity_log.recent(limit)})
 
 
 @router.get("/activity/stream")
 async def activity_stream():
-    """Server-Sent Events stream of real-time activity log entries.
-
-    The portal's activity feed connects to this endpoint and receives
-    new events as they happen — no polling, no refresh needed. Each
-    SSE event is a JSON-encoded activity log entry.
-
-    Usage in JavaScript:
-        const es = new EventSource('/api/activity/stream');
-        es.onmessage = (e) => {
-            const event = JSON.parse(e.data);
-            appendToActivityLog(event);
-        };
-    """
-    import json
-    from starlette.responses import StreamingResponse
-
-    async def event_generator():
+    """SSE stream of broadcast-log entries as they happen."""
+    async def items():
         async for event in activity_log.subscribe():
-            data = json.dumps(event.to_dict())
-            yield f"data: {data}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # nginx compatibility
-        },
-    )
+            yield event.to_dict()
+    return sse_response(items())
 
 
 @router.get("/stats")
-async def get_stats(
-    window: int = Query(60, ge=1, le=1440, description="Time window in minutes"),
-) -> JSONResponse:
-    """Return aggregate send stats for the given time window."""
-    windows = [window]
-    # Always include a few standard windows for the UI
-    for w in [5, 15, 60, 360, 1440]:
-        if w not in windows:
-            windows.append(w)
-    windows.sort()
-    return JSONResponse({
-        "stats": [activity_log.stats(w) for w in windows],
-    })
+async def get_stats() -> JSONResponse:
+    """Messages and bytes sent on the data channel over the standard windows."""
+    return JSONResponse({"stats": [activity_log.stats(w) for w in (5, 15, 60, 360, 1440)]})
 
+
+# -- Channel names --
 
 @router.post("/settings/channels")
 async def set_channels(request: Request) -> JSONResponse:
@@ -390,104 +185,56 @@ async def set_channels(request: Request) -> JSONResponse:
     })
 
 
+# -- Broadcast schedule --
+
 @router.post("/actions/broadcast")
-async def trigger_broadcast(request: Request) -> JSONResponse:
-    """Manually trigger a scheduler tick — runs any jobs whose interval
-    has elapsed right now. For per-job control use the /api/schedule/jobs/
-    {id}/run-now endpoint which force-runs a specific job regardless of
-    its schedule.
-    """
+async def run_due_jobs(request: Request) -> JSONResponse:
+    """Run every enabled job whose interval has elapsed. A job that is not
+    due sends nothing; use /schedule/jobs/{id}/run-now to force one."""
     scheduler = _get_scheduler(request)
     sent = await scheduler.tick()
     return JSONResponse({"ok": True, "messages_sent": sent})
 
 
-@router.post("/actions/v2-request")
-async def trigger_v2_request(request: Request) -> JSONResponse:
-    """Simulate a v2 data request for testing (bypasses rate limit with force flag).
+# What each product is and which location types its builder understands
+# (schedule/executor.py). Every PRODUCT_TYPES entry must appear here.
+PRODUCT_INFO = {
+    "warnings":       {"label": "Warnings (full)",        "desc": "Re-broadcast ALL active warnings (safety net)", "locations": ["coverage"]},
+    "warnings_delta": {"label": "Warnings (delta)",       "desc": "Only new/changed warnings since last cycle", "locations": ["coverage"]},
+    "warnings_near":  {"label": "Warnings near zone",     "desc": "Warnings affecting a specific zone", "locations": ["zone"]},
+    "observation":    {"label": "Observation",            "desc": "Current conditions for a point", "locations": ["city", "station", "zone"]},
+    "forecast":       {"label": "Forecast",               "desc": "Multi-day forecast for a point", "locations": ["city", "zone", "pfm_point"]},
+    "outlook":        {"label": "Hazardous Outlook",      "desc": "Hazardous weather outlook", "locations": ["coverage", "wfo"]},
+    "metar":          {"label": "METAR",                  "desc": "Raw METAR observation for a station", "locations": ["station"]},
+    "taf":            {"label": "TAF",                    "desc": "Terminal aerodrome forecast for a station", "locations": ["station"]},
+    "storm_reports":  {"label": "Storm Reports",          "desc": "Local storm reports (LSR)", "locations": ["coverage", "wfo"]},
+    "rain_obs":       {"label": "Rain Observations",      "desc": "Rain-reporting cities", "locations": ["coverage"]},
+    "fire_weather":   {"label": "Fire Weather",           "desc": "Fire weather forecast (FWF) for the zone a place is in", "locations": ["city", "zone"]},
+    "daily_climate":  {"label": "Daily Climate",          "desc": "Regional temperature and precipitation summary (RTP)", "locations": ["coverage", "wfo"]},
+    "nowcast":        {"label": "Nowcast",                "desc": "Short-term forecast (NOW) for a place or an office", "locations": ["city", "zone", "wfo"]},
+    "afd":            {"label": "Area Forecast Discussion", "desc": "AFD text from a forecast office", "locations": ["wfo"]},
+    "space_weather":  {"label": "Space Weather",          "desc": "SWPC space weather indices", "locations": ["coverage"]},
+}
 
-    Body: {"data_type": "wx"|"forecast"|"metar", "location": "Austin TX"}
-    """
-    from meshcore_weather.protocol.meshwx import (
-        DATA_FORECAST, DATA_METAR, DATA_WX, LOC_STATION, LOC_ZONE
-    )
-    body = await request.json()
-    data_type_str = body.get("data_type", "wx")
-    location_str = body.get("location", "")
-
-    bot = request.app.state.bot
-    broadcaster = getattr(bot, "_broadcaster", None)
-    if not broadcaster:
-        raise HTTPException(400, "Broadcaster not running")
-
-    # Resolve the location string to a zone or station
-    resolved = resolver.resolve(location_str)
-    if not resolved:
-        raise HTTPException(400, f"Could not resolve: {location_str}")
-
-    # Prefer zone, fall back to station
-    zones = resolved.get("zones", [])
-    station = resolved.get("station")
-    if zones:
-        loc = {"type": LOC_ZONE, "zone": zones[0]}
-    elif station:
-        loc = {"type": LOC_STATION, "station": station}
-    else:
-        raise HTTPException(400, "Could not build location ref")
-
-    data_map = {"wx": DATA_WX, "forecast": DATA_FORECAST, "metar": DATA_METAR}
-    data_type = data_map.get(data_type_str)
-    if data_type is None:
-        raise HTTPException(400, f"Unknown data_type: {data_type_str}")
-
-    # Bypass rate limit by clearing this entry
-    loc_key = broadcaster._location_key(loc)
-    rate_key = f"{data_type}:{loc_key}"
-    if hasattr(broadcaster, "_v2_rate_limit"):
-        broadcaster._v2_rate_limit.pop(rate_key, None)
-
-    req = {"data_type": data_type, "location": loc, "client_newest": 0, "flags": 0}
-    await broadcaster.respond_to_data_request(req)
-    return JSONResponse({"ok": True, "location": loc, "data_type": data_type_str})
-
-
-# -- Broadcast schedule (CRUD) ------------------------------------------------
+LOCATION_INFO = {
+    "coverage":  {"label": "Coverage area",    "desc": "All zones in the operator's configured coverage", "placeholder": "(leave empty)"},
+    "city":      {"label": "City",             "desc": "Resolved to nearest NWS zone", "placeholder": "e.g. Austin TX"},
+    "station":   {"label": "Station (ICAO)",   "desc": "4-letter ICAO code", "placeholder": "e.g. KAUS"},
+    "zone":      {"label": "NWS Zone",         "desc": "6-character UGC zone code", "placeholder": "e.g. TXZ192"},
+    "wfo":       {"label": "Forecast Office",  "desc": "3-letter WFO code", "placeholder": "e.g. EWX"},
+    "pfm_point": {"label": "PFM Point",        "desc": "Numeric index into pfm_points.json", "placeholder": "e.g. 103"},
+}
 
 
 @router.get("/schedule/meta")
 async def schedule_meta() -> JSONResponse:
-    """Return rich metadata for the job form: products with descriptions,
-    location types, and which locations each product supports."""
-
-    product_info = {
-        "warnings":       {"label": "Warnings (full)",        "desc": "Re-broadcast ALL active warnings (safety net)", "locations": ["coverage"]},
-        "warnings_delta": {"label": "Warnings (delta)",       "desc": "Only new/changed warnings since last cycle", "locations": ["coverage"]},
-        "warnings_near":  {"label": "Warnings near zone",     "desc": "Warnings affecting a specific zone", "locations": ["zone"]},
-        "observation":    {"label": "Observation",            "desc": "Current conditions for a point", "locations": ["city", "station", "zone"]},
-        "forecast":       {"label": "Forecast",              "desc": "Multi-day forecast for a point", "locations": ["city", "zone", "pfm_point"]},
-        "outlook":        {"label": "Hazardous Outlook",     "desc": "Hazardous weather outlook", "locations": ["coverage", "wfo"]},
-        "metar":          {"label": "METAR",                 "desc": "Raw METAR observation for a station", "locations": ["station"]},
-        "taf":            {"label": "TAF",                   "desc": "Terminal aerodrome forecast for a station", "locations": ["station"]},
-        "storm_reports":  {"label": "Storm Reports",         "desc": "Local storm reports (LSR)", "locations": ["coverage", "wfo"]},
-        "rain_obs":       {"label": "Rain Observations",     "desc": "Rain-reporting cities", "locations": ["coverage"]},
-        "afd":            {"label": "Area Forecast Discussion", "desc": "AFD text from a forecast office", "locations": ["wfo"]},
-        "space_weather":  {"label": "Space Weather",         "desc": "SWPC space weather indices", "locations": ["coverage"]},
-    }
-
-    location_info = {
-        "coverage":  {"label": "Coverage area",    "desc": "All zones in the operator's configured coverage", "placeholder": "(leave empty)"},
-        "city":      {"label": "City",             "desc": "Resolved to nearest NWS zone", "placeholder": "e.g. Austin TX"},
-        "station":   {"label": "Station (ICAO)",   "desc": "4-letter ICAO code", "placeholder": "e.g. KAUS"},
-        "zone":      {"label": "NWS Zone",         "desc": "6-character UGC zone code", "placeholder": "e.g. TXZ192"},
-        "wfo":       {"label": "Forecast Office",  "desc": "3-letter WFO code", "placeholder": "e.g. EWX"},
-        "pfm_point": {"label": "PFM Point",        "desc": "Numeric index into pfm_points.json", "placeholder": "e.g. 103"},
-    }
-
+    """Metadata for the job form: products with descriptions, location
+    types, and which locations each product supports."""
     return JSONResponse({
         "products": sorted(PRODUCT_TYPES),
         "location_types": sorted(LOCATION_TYPES),
-        "product_info": product_info,
-        "location_info": location_info,
+        "product_info": PRODUCT_INFO,
+        "location_info": LOCATION_INFO,
     })
 
 

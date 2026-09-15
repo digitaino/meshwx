@@ -158,7 +158,7 @@ class MeshWXBroadcaster:
                     await asyncio.sleep(TX_SPACING)
 
         req_label = {1: "radar (retired)", 2: "warnings", 3: "warnings"}.get(request_type, str(request_type))
-        activity_log.record(EventDir.IN, "v1_refresh",
+        activity_log.record(EventDir.IN, "refresh",
             f"Region 0x{region_id:X} refresh ({req_label})",
             {"region_id": region_id, "request_type": request_type})
         logger.info("MeshWX refresh for region 0x%X (type=%d)", region_id, request_type)
@@ -198,7 +198,7 @@ class MeshWXBroadcaster:
         _dt_names = {0: "wx", 1: "forecast", 2: "outlook", 3: "storm_reports",
                      4: "rain_obs", 5: "metar", 6: "taf", 7: "warnings_near"}
         dt_name = _dt_names.get(data_type, f"0x{data_type:02x}")
-        activity_log.record(EventDir.IN, "v2_request",
+        activity_log.record(EventDir.IN, "app_request",
             f"Data request: {dt_name} for {loc_key}",
             {"data_type": data_type, "data_type_name": dt_name, "location": loc_key})
 
@@ -257,7 +257,7 @@ class MeshWXBroadcaster:
                     for m in msgs:
                         await self._transmit_response(m)
                         self._v2_cache[cache_key] = (now, m)
-                    activity_log.record(EventDir.OUT, "v2_response",
+                    activity_log.record(EventDir.OUT, "app_response",
                         f"Warning detail: {len(msgs)} chunk(s) for {loc_key}",
                         {"data_type": data_type, "location": loc_key, "chunks": len(msgs)})
                     return
@@ -297,7 +297,7 @@ class MeshWXBroadcaster:
             "Sent v2 response type=0x%02x for %s (%d bytes)",
             msg[0], cache_key, len(msg),
         )
-        activity_log.record(EventDir.OUT, "v2_response",
+        activity_log.record(EventDir.OUT, "app_response",
             f"Response: {dt_name} for {loc_key} ({len(msg)}B)",
             {"data_type_name": dt_name, "location": loc_key, "bytes": len(msg), "msg_type": f"0x{msg[0]:02x}"})
         activity_log.record_send(1, len(msg))

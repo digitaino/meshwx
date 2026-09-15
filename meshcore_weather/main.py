@@ -153,7 +153,7 @@ class WeatherBot:
             logger.info("Weather bot is running without a radio (store, portal and CLI only)")
 
     async def _after_radio_connected(self) -> None:
-        """Start the MeshWX broadcaster once a radio with a data channel is up."""
+        """Start the data-channel broadcaster once a radio with a data channel is up."""
         if self.radio.data_channel_idx is not None:
             from meshcore_weather.protocol.broadcaster import MeshWXBroadcaster
             self._broadcaster = MeshWXBroadcaster(self.store, self.radio)
@@ -478,12 +478,12 @@ class WeatherBot:
             if ch_key in self._paging and prefix not in self._paging:
                 self._paging[prefix] = self._paging.pop(ch_key)
 
-        # MeshWX refresh request (e.g. "MWX310000")
+        # App refresh request (e.g. "MWX310000")
         if text.startswith("MWX") and len(text) >= 7 and self._broadcaster:
             await self._handle_meshwx_refresh(text, prefix, sender_name)
             return
 
-        # MeshWX v2 data request (e.g. "WXQ" + hex-encoded 0x02 message)
+        # App data request ("WXQ" + hex-encoded 0x02 message)
         if text.startswith("WXQ") and self._broadcaster:
             await self._handle_meshwx_data_request(text, prefix, sender_name)
             return
@@ -518,7 +518,7 @@ class WeatherBot:
         self._dm_blocked.discard(contact_name)
 
     async def _handle_meshwx_refresh(self, text: str, prefix: str, sender_name: str) -> None:
-        """Handle a MeshWX refresh request DM (e.g. 'MWX310000')."""
+        """Handle an app refresh request DM (e.g. 'MWX310000')."""
         try:
             region_byte = int(text[3:5], 16)
             region_id = (region_byte >> 4) & 0x0F
@@ -526,14 +526,14 @@ class WeatherBot:
             client_newest = int(text[5:9], 16) if len(text) >= 9 else 0
         except (ValueError, IndexError):
             return
-        logger.info("MeshWX refresh from %s: region=0x%X type=%d newest=%d",
+        logger.info("App refresh from %s: region=0x%X type=%d newest=%d",
                      sender_name, region_id, request_type, client_newest)
         await self._broadcaster.broadcast_region(region_id, request_type)
 
     async def _handle_meshwx_data_request(
         self, text: str, prefix: str, sender_name: str
     ) -> None:
-        """Handle a MeshWX v2 data request DM.
+        """Handle an app data request DM (WXQ + hex).
 
         Format: 'WXQ' + hex-encoded 0x02 data request message.
         The bot parses the request, builds the response, and broadcasts
@@ -548,7 +548,7 @@ class WeatherBot:
             return
 
         logger.info(
-            "MeshWX data request from %s: type=%d loc=%s",
+            "App data request from %s: type=%d loc=%s",
             sender_name, req["data_type"], req["location"],
         )
 
@@ -637,7 +637,7 @@ class WeatherBot:
 
         if cmd == "broadcast":
             if not self._broadcaster:
-                await self.radio.send_dm(prefix, "MeshWX broadcast not enabled.")
+                await self.radio.send_dm(prefix, "Broadcasts are off: no data channel configured.")
                 return "disabled"
             await self.radio.send_dm(prefix, "Running scheduler tick...")
             try:
@@ -649,7 +649,7 @@ class WeatherBot:
 
         if cmd == "warnings-broadcast":
             if not self._broadcaster:
-                await self.radio.send_dm(prefix, "MeshWX broadcast not enabled.")
+                await self.radio.send_dm(prefix, "Broadcasts are off: no data channel configured.")
                 return "disabled"
             try:
                 sent = await self._broadcaster.scheduler.run_job_now("warnings-coverage")
@@ -666,7 +666,7 @@ class WeatherBot:
             if not settings.tx_enabled:
                 await self.radio.send_dm(prefix, "TX disabled — test ping suppressed.")
                 return "tx-disabled"
-            await self.radio._mc.commands.send_chan_msg(ch, "MeshWX test ping")
+            await self.radio._mc.commands.send_chan_msg(ch, "test ping")
             await self.radio.send_dm(prefix, f"Sent text test on ch {ch}.")
             return "test"
 

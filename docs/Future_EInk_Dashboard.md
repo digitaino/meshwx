@@ -21,7 +21,7 @@ The user-facing pitch: "**A real weather station that doesn't need WiFi or the i
 Every architectural decision in MeshWX (v3/v4) happens to be exactly what an embedded receiver wants. None of it was deliberately chosen for the e-ink use case, but it falls out of the airtime-first principle:
 
 - **Structured binary fields, not text** — an MCU can decode a `0x30` observation in ~50 lines of C: read 16 bytes, unpack int8s, look up sky code in a static table, render to display. No string parsing, no JSON, no allocations.
-- **Periodic broadcasts at human time scales** — bot pushes a full cycle once per `MCW_MESHWX_BROADCAST_INTERVAL` (default 3600s = 1 hour). E-ink refreshes naturally fit that cadence (1-3 seconds per refresh, ~50,000 refresh lifetime → years of hourly updates).
+- **Periodic broadcasts at human time scales** — each broadcast job runs on its own `interval_minutes` (the default jobs are hourly). E-ink refreshes naturally fit that cadence (1-3 seconds per refresh, ~50,000 refresh lifetime → years of hourly updates).
 - **COBS encoding eliminates null bytes** — same trick that fixes the meshcore firmware companion-protocol truncation also makes parsing trivially robust on a tiny MCU buffer.
 - **136-byte max payload** — fits in any LoRa-class radio buffer with room to spare.
 - **Tiny per-message size** — observation 16B, forecast 21B, warning 50-100B, radar grid 134B. Whole hourly cycle is well under 1 KB.

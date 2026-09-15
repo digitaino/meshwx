@@ -38,14 +38,15 @@ class Settings(BaseSettings):
     reply_mode: str = "dm"
     channel_reply_max_hops: int = 2       # strangers further than this get no channel reply
     peer_bot_prefix: str = "WX-"          # other weather bots advert with this name prefix
-    # The node's contact table (100 slots on the companion firmware) is what
-    # makes DMs possible: a person the node has not stored cannot be DMed.
+    # The node's contact table is what makes DMs possible: a person the node
+    # has not stored cannot be DMed. The firmware reports its capacity (350 on
+    # a Heltec V3); contact_slots is only the fallback when it does not.
     # Housekeeping removes repeaters, rooms and sensors from it (a DM path is
     # a list of repeater hashes, not contacts) and, when the people alone
     # approach the limit, the ones heard longest ago. The admin key and
     # peer bots are never removed. Off = the firmware's own behaviour.
     contact_housekeeping: bool = True
-    contact_slots: int = 100              # MAX_CONTACTS of the companion firmware
+    contact_slots: int = 100              # fallback when DEVICE_INFO has no max_contacts
     contact_keep_free: int = 10           # room left for newcomers after a housekeeping run
     # Initial load uses 1-hour bundle for coverage, then polls 2-minute bundle
     emwin_base_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip"
@@ -55,12 +56,11 @@ class Settings(BaseSettings):
     # Data storage
     data_dir: Path = Path("data")
 
-    # MeshWX data channel — all v4-framed broadcasts go here (empty = disabled)
-    meshwx_channel: str = "#meshwx-data"  # binary broadcasts; folds into #meshwx with GRP_DATA
-    # Discovery channel — beacon broadcast for client auto-discovery
+    # Data channel: the binary broadcasts for the app (v4 frames). Empty = off.
+    meshwx_channel: str = "#meshwx-data"
+    # Discovery channel: apps ping here, the bot answers with a beacon
     meshwx_discover_channel: str = "#meshwx-discover"
-    meshwx_broadcast_interval: int = 3600  # seconds between broadcasts
-    meshwx_refresh_cooldown: int = 300    # min seconds between refresh per region
+    meshwx_refresh_cooldown: int = 300    # min seconds between app refreshes per region
 
     # Coverage targeting — bot broadcasts only data affecting these areas.
     # Comma-separated lists, all optional, all additive (union). Empty = broadcast everything.

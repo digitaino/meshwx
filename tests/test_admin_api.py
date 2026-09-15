@@ -240,3 +240,63 @@ def test_env_values_are_single_printable_lines(client, tmp_path):
     r = c.post("/api/settings/env", json={"MCW_TIMEZONE": "America/Chicago\nMCW_TX_ENABLED=true"})
     assert r.status_code == 400
     assert "MCW_TX_ENABLED=true" not in (tmp_path / ".env").read_text() if (tmp_path / ".env").exists() else True
+
+
+# -- The revamped portal: one overview call, validated settings, removed routes --
+
+
+class FakeEmwin:
+    async def fetch_products(self):
+        return []
+
+
+def test_overview_bundles_everything_the_landing_page_shows(client, monkeypatch):
+    c, bot = client
+    bot.emwin = FakeEmwin()
+    d = c.get("/api/overview").json()
+    for key in ("satellite", "feed", "radio", "textbot", "broadcasts", "problems", "audit", "host", "bot", "recent"):
+        assert key in d, key
+    assert d["radio"]["connected"] is True and d["radio"]["name"] == "mesh-wx" and d["radio"]["tx_enabled"] is False
+    assert d["radio"]["reply_mode"] == settings.reply_mode
+    assert d["broadcasts"]["running"] is False and d["broadcasts"]["jobs_total"] == 0
+    assert "requests_1h" in d["textbot"] and isinstance(d["recent"], list)
+    assert isinstance(d["problems"]["last_hour"], int) and d["host"]["hostname"]
+
+
+def test_system_reports_coverage_and_live_keys(client):
+    c, _ = client
+    d = c.get("/api/system").json()
+    assert "summary" in d["coverage"] and "zones" in d["coverage"] and "cities" in d["coverage"]
+    assert "MCW_TIMEZONE" in d["live_keys"] and "MCW_EMWIN_SOURCE" not in d["live_keys"]
+
+
+def test_bad_settings_are_refused_before_env_is_touched(client, tmp_path):
+    c, _ = client
+    env = tmp_path / ".env"
+    assert c.post("/api/settings/env", json={"MCW_HOME_RADIUS_KM": "far"}).status_code == 400
+    assert c.post("/api/settings/env", json={"MCW_REPLY_MODE": "shout"}).status_code == 400
+    assert c.post("/api/settings/env", json={"MCW_CONTACT_HOUSEKEEPING": "maybe"}).status_code == 400
+    assert c.post("/api/settings/env", json={"MCW_LOG_LEVEL": "LOUD"}).status_code == 400
+    assert c.post("/api/settings/env", json={}).status_code == 400
+    assert not env.exists() or "MCW_HOME_RADIUS_KM=far" not in env.read_text()
+    r = c.post("/api/settings/env", json={"MCW_HOME_RADIUS_KM": "90", "MCW_CONTACT_KEEP_FREE": "5"}).json()
+    assert r["applied"] == ["MCW_CONTACT_KEEP_FREE", "MCW_HOME_RADIUS_KM"] and r["note"] == "Applied now"
+    assert settings.home_radius_km == 90 and settings.contact_keep_free == 5
+
+
+def test_job_form_metadata_covers_every_product(client):
+    from meshcore_weather.schedule.models import LOCATION_TYPES, PRODUCT_TYPES
+    c, _ = client
+    meta = c.get("/api/schedule/meta").json()
+    assert set(meta["product_info"]) == PRODUCT_TYPES
+    for p, info in meta["product_info"].items():
+        assert info["locations"] and set(info["locations"]) <= LOCATION_TYPES, p
+
+
+def test_legacy_routes_are_gone(client):
+    c, _ = client
+    for path in ("/api/status", "/api/warnings", "/api/coverage/save", "/api/coverage/preview",
+                 "/api/autocomplete/city", "/api/radio/stats", "/config", "/schedule", "/data"):
+        assert c.get(path).status_code in (404, 405), path
+    assert c.post("/api/actions/v2-request", json={}).status_code in (404, 405)
+    assert c.get("/").status_code == 200 and "Meshcore Weather" in c.get("/").text

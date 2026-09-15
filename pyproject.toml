@@ -57,11 +57,8 @@ meshcore_weather = [
     "client_data/*.json",
     "client_data/*.geojson",
     "portal/templates/*.html",
-    "portal/templates/partials/*.html",
     "portal/static/*.css",
     "portal/static/*.js",
-    "portal/static/vendor/**/*",
-    "portal/static/geo/*.geojson",
 ]
 
 [tool.ruff]

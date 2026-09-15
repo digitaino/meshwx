@@ -101,25 +101,24 @@ MCW_HOME_WFOS=EWX,FWD,HGX,SJT                   # NWS offices — narrows warnin
 
 Coverage determines which warnings get filtered to your area, and which home cities get proactive obs/forecast broadcasts. On first run, the bot synthesizes a default broadcast schedule from your coverage config.
 
-### Then manage everything else from the web admin
+### Then manage everything else from the admin portal
 
-Open **`http://localhost:8080/schedule`** and you'll see a live table of all broadcast jobs with their last-run / next-run / bytes-sent stats. From there:
+The portal (`MCW_PORTAL_PORT`, 8081 on the Pi) is one page with six sections.
+Each setting lives in exactly one place, next to the status it affects:
 
-- **Add a new job** — pick a product (observation, forecast, outlook, storm_reports, rain_obs, metar, taf, warnings, warnings_near, fire_weather, nowcast, qpf), pick a location type (station, zone, wfo, pfm_point, region, coverage, city), enter the location ID, set the interval, save.
-- **Enable/disable** jobs without deleting them
-- **Edit** intervals, names, or targets
-- **Run now** to force-broadcast a job immediately regardless of schedule
-- **Delete** jobs
+| Section | What it shows | What you set there |
+|---|---|---|
+| **Overview** | Dish lock, feed age, radio link, transmit and reply mode, answers in the last hour, jobs, log problems, audit result, host. Refreshes every 15 s; the header strip repeats the three that matter on every page. | nothing |
+| **Text Bot** | Request/reply counters, the live feed of the channel and DMs (with why a request was not answered), a "try a command" box that runs the DM path, the `help` text | reply mode (with a confirmation before `channel`), stranger hop limit, advert interval, peer-bot prefix |
+| **Broadcasts** | Jobs with last/next run and bytes, data-channel counters, the broadcast log (jobs, app requests, beacons) | jobs (add, edit, enable, run now, delete), "run due jobs" |
+| **Radio** | Link, node, LoRa parameters, battery, all 8 channel slots, the contact table with housekeeping status | node name and location, LoRa preset or parameters, TX power, transmit on/off, the three channel names, contact housekeeping |
+| **Satellite** | goesrecv lock and signal history, goesproc, what the EMWIN feed delivered, a browser for every product in the store | pointing / receive mode |
+| **System** | Logs (satellite, radio, bot; live, filterable), host stats | coverage (cities, radius, states, offices), serial port, EMWIN source and directory, timezone, log level, restart |
 
-Changes take effect within 30 seconds (the scheduler picks up config changes on its next tick) — no restart required. The config persists at `data/broadcast_config.json` across deploys because `data/` is a Docker volume.
-
-### Other portal pages
-
-- `/` — dashboard with bot state, coverage summary, and live activity feed
-- `/data` — live map of active warnings
-- `/schedule` — broadcast schedule management with CRUD
-- `/status` — radio connection state, contact list, manual broadcast trigger
-- `/config` — read-only view of coverage (edit via `.env` + restart)
+Settings are written to `.env` and applied live where the bot can (the
+response says which keys need a restart). Values are validated before the
+file is touched. The schedule persists in `data/broadcast_config.json`.
+The portal has no login: keep it on the LAN or gate it at the edge.
 
 ### Example schedule you might configure
 
@@ -157,7 +156,7 @@ The container will:
 1. Connect to your configured serial radio (or TCP radio proxy)
 2. Start fetching EMWIN data from NOAA every 2 minutes
 3. Bootstrap a default broadcast schedule from your `.env` coverage config
-4. Launch the web admin portal on `http://localhost:8080`
+4. Launch the admin portal on `http://localhost:8080`
 5. Start the broadcast scheduler
 
 ### Without Docker
@@ -348,7 +347,7 @@ meshcore_weather/
 ├── config.py              # Settings loaded from env vars (pydantic-settings)
 ├── main.py                # Entry point, DM/channel routing, command dispatch
 ├── nlp.py                 # Typo-tolerant text command parser
-├── activity.py            # In-memory activity log + SSE streaming for portal
+├── activity.py            # Broadcast log (data-channel events) for the portal
 ├── cli.py                 # CLI helpers for testing + radio admin
 │
 ├── emwin/
@@ -372,13 +371,16 @@ meshcore_weather/
 │   ├── executor.py        # Product → builder registry (data-driven)
 │   └── scheduler.py       # Tick loop, per-job intervals, radio transmission
 │
-├── portal/                # FastAPI + Jinja2 web admin
-│   ├── server.py
+├── portal/                # FastAPI admin portal (one page, hash routing, no build step)
+│   ├── server.py          # app factory, mutation header check, uvicorn lifecycle
+│   ├── sse.py             # SSE helper with heartbeats (logs, traffic, broadcast log)
+│   ├── logbuf.py          # log ring buffer behind System > Logs
 │   ├── routes/
-│   │   ├── pages.py       # HTML endpoints (dashboard, schedule, config, status, data)
-│   │   └── api.py         # JSON API (schedule CRUD, warnings, actions)
-│   ├── templates/         # Jinja2 templates
-│   └── static/            # CSS + bundled vendor libs (MapLibre, HTMX)
+│   │   ├── pages.py       # GET / (the page)
+│   │   ├── api.py         # products, broadcast log, channels, schedule CRUD
+│   │   └── admin.py       # overview, radio, satellite, console, traffic, settings, audit
+│   ├── templates/app.html
+│   └── static/            # portal.js + portal.css, nothing vendored
 │
 ├── client_data/           # Preload bundle shipped to clients (package-data)
 │   ├── zones.json         # NWS forecast zones
@@ -434,7 +436,7 @@ Shipped:
 - [x] Daily climate summaries (RTP → 0x3A)
 - [x] QPF precipitation grids (0x12)
 - [x] Unified per-job broadcast schedule system (any product, any location, any interval)
-- [x] Web admin portal with schedule management + CRUD API + activity feed
+- [x] Admin portal: overview, text bot feed and console, broadcasts, radio, satellite, logs and settings
 - [x] Preload bundle (`client_data/`) with PFM points, zone polygons, places, stations
 - [x] Data request reactive path (`WXQ` DM + broadcast response)
 - [x] Legacy text-command interface with typo-tolerant parser

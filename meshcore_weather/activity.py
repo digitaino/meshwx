@@ -1,7 +1,8 @@
 """In-memory activity log for the portal.
 
-Provides a bounded circular buffer of recent events (requests received,
-responses sent, scheduled broadcasts) that the portal can display.
+The broadcast log: a bounded ring of what happened on the data channel
+(scheduled broadcasts, app requests and responses, beacons, throttling)
+for the portal's Broadcasts section.
 Also tracks rolling aggregate stats (message counts, bytes) by time window.
 
 Supports real-time streaming via SSE: call `subscribe()` to get an async
@@ -26,7 +27,7 @@ class EventDir(str, Enum):
 class Event:
     ts: float
     direction: EventDir
-    event_type: str  # e.g. "v2_request", "v2_response", "v1_refresh", "broadcast", "send_fail"
+    event_type: str  # "broadcast", "beacon", "app_request", "app_response", "refresh", "throttled"
     summary: str     # one-line human description
     detail: dict = field(default_factory=dict)  # structured metadata
 

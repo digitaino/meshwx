@@ -1,12 +1,11 @@
-"""Admin API: the radio, the satellite receiver, the text bot console, logs,
-host status, .env settings, and the request/reply traffic feed. Everything
-here is operator-only except /public/bot, the read-only bundle the goestools
-dashboard proxies for the public page. The portal has no login: keep it on
-the LAN or gate it at the edge (see server.py)."""
+"""Admin API: the overview, the radio, the satellite receiver, the text bot
+console, logs, host status, coverage, .env settings, and the request/reply
+traffic feed. Everything here is operator-only except /public/bot, the
+read-only bundle the goestools dashboard proxies for the public page. The
+portal has no login: keep it on the LAN or gate it at the edge (see server.py)."""
 
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 import subprocess
@@ -22,6 +21,7 @@ from fastapi.responses import JSONResponse
 from meshcore_weather.activity import activity_log
 from meshcore_weather.config import settings
 from meshcore_weather.portal import logbuf
+from meshcore_weather.portal.sse import sse_response
 from meshcore_weather.traffic import KINDS as TRAFFIC_KINDS, traffic_log
 
 router = APIRouter()
@@ -261,11 +261,6 @@ async def radio_contacts(request: Request) -> JSONResponse:
     return JSONResponse({"contacts": await _run(_radio_call(request).contacts())})
 
 
-@router.get("/radio/stats")
-async def radio_stats(request: Request) -> JSONResponse:
-    return JSONResponse(await _run(_radio_call(request).stats()))
-
-
 # -- Satellite receiver -----------------------------------------------------------
 
 
@@ -324,19 +319,6 @@ async def sdr_mode(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "mode": mode})
 
 
-@router.post("/sdr/gain")
-async def sdr_gain(request: Request) -> JSONResponse:
-    body = await _body(request)
-    try:
-        gain = int(body["gain"])
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(400, "gain required")
-    res = await _dashboard(f"/meter/gain/{gain}", "POST")
-    if res and res.get("_error"):
-        raise HTTPException(502, res["_error"])
-    return JSONResponse({"ok": True, "gain": gain})
-
-
 # -- Text bot console ----------------------------------------------------------------
 
 
@@ -369,7 +351,7 @@ async def console_help(request: Request) -> JSONResponse:
     return JSONResponse({"help": HELP_TEXT})
 
 
-# -- Request/reply traffic: what the bot sees on #meshwx and by DM ---------------------
+# -- Request/reply traffic: what the bot sees on its channel and by DM -----------------
 
 
 def _kinds_arg(kinds: str | None) -> tuple[str, ...] | None:
@@ -390,16 +372,7 @@ async def traffic(n: int = Query(200, ge=1, le=1000), kinds: str | None = None,
 @router.get("/traffic/stream")
 async def traffic_stream():
     """SSE stream of new conversation events."""
-    import json
-    from starlette.responses import StreamingResponse
-
-    async def gen():
-        yield "data: " + json.dumps({"hello": True}) + "\n\n"
-        async for ev in traffic_log.subscribe():
-            yield "data: " + json.dumps(ev) + "\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+    return sse_response(traffic_log.subscribe())
 
 
 # What "help" says, spelled out for a web page.
@@ -499,16 +472,7 @@ async def logs(n: int = Query(300, ge=1, le=2000), level: str | None = None,
 @router.get("/logs/stream")
 async def logs_stream():
     """SSE stream of every new log line, tagged with its category."""
-    import json
-    from starlette.responses import StreamingResponse
-
-    async def gen():
-        yield "data: " + json.dumps({"hello": True}) + "\n\n"
-        async for line in logbuf.subscribe():
-            yield "data: " + json.dumps(line) + "\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+    return sse_response(logbuf.subscribe())
 
 
 def _git_rev() -> str | None:
@@ -548,6 +512,28 @@ def _host() -> dict:
     return out
 
 
+def _coverage_info(bot) -> dict:
+    """The coverage the broadcasts filter on, as configured right now."""
+    from meshcore_weather.protocol.coverage import Coverage
+    broadcaster = getattr(bot, "_broadcaster", None)
+    cov = broadcaster.coverage if broadcaster is not None else None
+    if cov is None:
+        try:
+            cov = Coverage.from_config()
+        except Exception:
+            cov = None
+    src = (cov.sources if cov is not None else None) or {}
+    empty = cov is None or cov.is_empty()
+    return {
+        "cities": list(src.get("cities") or []),
+        "states": list(src.get("states") or []),
+        "wfos": list(src.get("wfos") or []),
+        "radius_km": settings.home_radius_km,
+        "zones": 0 if empty else len(cov.zones),
+        "summary": "No coverage filter: broadcasts cover everything the feed carries" if empty else cov.summary(),
+    }
+
+
 @router.get("/system")
 async def system(request: Request) -> JSONResponse:
     bot = _bot(request)
@@ -564,8 +550,97 @@ async def system(request: Request) -> JSONResponse:
             "broadcaster": bot._broadcaster is not None,
         },
         "host": _host(),
+        "coverage": _coverage_info(bot),
         "settings": safe,
         "env_writable": sorted(ENV_WRITABLE),
+        "live_keys": sorted(_LIVE_KEYS),
+    })
+
+
+def _audit_summary() -> dict:
+    """The most recent scripts/audit.py run (data/audit.json), summarised."""
+    import json
+    path = Path(settings.data_dir) / "audit.json"
+    if not path.exists():
+        return {"available": False}
+    try:
+        d = json.loads(path.read_text())
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+    res = d.get("results", [])
+    fails = [r for r in res if not r.get("ok")]
+    by_check: dict = {}
+    for r in res:
+        c = by_check.setdefault(r["check"], {"pass": 0, "fail": 0})
+        c["pass" if r.get("ok") else "fail"] += 1
+    return {"available": True, "at": d.get("at"), "passed": len(res) - len(fails), "failed": len(fails),
+            "by_check": by_check, "failures": fails[:20]}
+
+
+@router.get("/overview")
+async def overview(request: Request) -> JSONResponse:
+    """Everything the Overview page and the header strip show, in one call:
+    dish, feed, radio, transmit, text bot, broadcasts, problems, audit, host."""
+    bot = _bot(request)
+    radio = bot.radio
+    receiver = await _dashboard("/api/state") or {}
+    feed = await _feed_stats(bot)
+    st = receiver.get("stats") or {}
+    info = await _radio_info_cached(radio) or {}
+    tstats = traffic_log.stats()
+    w1, w24 = tstats["windows"]["1h"], tstats["windows"]["24h"]
+    broadcaster = getattr(bot, "_broadcaster", None)
+    jobs_total = jobs_enabled = 0
+    next_in = None
+    if broadcaster is not None:
+        cfg = broadcaster.scheduler.current_config()
+        for job in cfg.jobs:
+            jobs_total += 1
+            if not job.enabled:
+                continue
+            jobs_enabled += 1
+            n = broadcaster.scheduler.job_status(job.id).get("next_run_in_seconds")
+            if n is not None:
+                next_in = n if next_in is None else min(next_in, n)
+    counts = logbuf.counts()
+    started = getattr(bot, "_started_at", None)
+    return JSONResponse({
+        "t": time.time(),
+        "satellite": {
+            "reachable": not receiver.get("_error"),
+            "error": receiver.get("_error"),
+            "mode": receiver.get("mode"),
+            "locked": bool(st.get("locked")),
+            "vit_avg": st.get("vit_avg"),
+            "drops": st.get("drops"),
+        },
+        "feed": {k: feed.get(k) for k in ("source", "products_total", "products_last_hour",
+                                          "warnings_last_hour", "newest_age_s")},
+        "radio": {
+            "connected": radio.connected,
+            "error": None if radio.connected else (getattr(bot, "_radio_last_error", None) or "not connected"),
+            "name": info.get("name"),
+            "freq_mhz": info.get("radio_freq"),
+            "battery_mv": info.get("battery_mv"),
+            "tx_enabled": settings.tx_enabled,
+            "reply_mode": settings.reply_mode,
+        },
+        "textbot": {
+            "requests_1h": w1["requests"], "replies_1h": w1["replies"], "dropped_1h": w1["dropped"],
+            "requests_24h": w24["requests"], "replies_24h": w24["replies"], "dropped_24h": w24["dropped"],
+            "senders_24h": w24["senders"],
+            "last_request_at": tstats.get("last_request_at"), "last_reply_at": tstats.get("last_reply_at"),
+        },
+        "broadcasts": {
+            "running": broadcaster is not None,
+            "jobs_total": jobs_total, "jobs_enabled": jobs_enabled, "next_run_in_s": next_in,
+            "1h": activity_log.stats(60), "24h": activity_log.stats(1440),
+        },
+        "problems": {"last_hour": counts.get("problems", 0)},
+        "audit": _audit_summary(),
+        "host": _host(),
+        "bot": {"uptime_s": int(time.time() - started) if started else None, "git": _git_rev()},
+        "recent": traffic_log.recent(12),
     })
 
 
@@ -573,7 +648,33 @@ async def system(request: Request) -> JSONResponse:
 _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM",
               "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_TX_ENABLED",
               "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
-              "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE"}
+              "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE", "MCW_SDR_DASHBOARD_URL"}
+
+# Value checks, run before anything touches .env: a bad value must never be
+# persisted, because the next start would refuse the file.
+_INT_KEYS = {"MCW_SERIAL_BAUD", "MCW_HOME_RADIUS_KM", "MCW_SDR_POLL_INTERVAL", "MCW_CHANNEL_REPLY_MAX_HOPS",
+             "MCW_ADVERT_INTERVAL_HOURS", "MCW_CONTACT_KEEP_FREE"}
+_BOOL_KEYS = {"MCW_TX_ENABLED", "MCW_CONTACT_HOUSEKEEPING"}
+_CHOICES = {"MCW_REPLY_MODE": ("dm", "channel", "dm_only"), "MCW_EMWIN_SOURCE": ("sdr", "internet"),
+            "MCW_LOG_LEVEL": ("DEBUG", "INFO", "WARNING", "ERROR")}
+_TRUE = ("1", "true", "yes", "on")
+_FALSE = ("0", "false", "no", "off")
+
+
+def _validate_updates(updates: dict[str, str]) -> None:
+    for key, val in updates.items():
+        if val == "":
+            continue                      # empty = comment the key out, back to the default
+        if key in _INT_KEYS and not val.lstrip("-").isdigit():
+            raise HTTPException(400, f"{key}: must be a whole number")
+        if key in _INT_KEYS and int(val) < 0:
+            raise HTTPException(400, f"{key}: must not be negative")
+        if key in _BOOL_KEYS and val.lower() not in _TRUE + _FALSE:
+            raise HTTPException(400, f"{key}: must be true or false")
+        if key in _CHOICES and val not in _CHOICES[key]:
+            raise HTTPException(400, f"{key}: must be one of " + ", ".join(_CHOICES[key]))
+        if key.endswith("_CHANNEL") and not (val.startswith("#") or val.isdigit()):
+            raise HTTPException(400, f"{key}: must start with '#' or be a slot number")
 
 
 async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
@@ -583,33 +684,33 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
     applied: list[str] = []
     coverage_changed = False
     for key, val in updates.items():
-        if key not in _LIVE_KEYS:
-            continue
+        if key not in _LIVE_KEYS or val == "":
+            continue                      # an emptied key takes its default at the next start
         if key == "MCW_TIMEZONE":
             settings.timezone = val
         elif key == "MCW_LOG_LEVEL":
             logging.getLogger().setLevel(getattr(logging, val.upper(), logging.INFO))
             settings.log_level = val
         elif key == "MCW_TX_ENABLED":
-            settings.tx_enabled = val.strip().lower() in ("1", "true", "yes", "on")
+            settings.tx_enabled = val.strip().lower() in _TRUE
         elif key == "MCW_REPLY_MODE":
-            if val not in ("dm", "channel", "dm_only"):
-                raise HTTPException(400, "reply mode must be dm, channel or dm_only")
             settings.reply_mode = val
+        elif key == "MCW_SDR_DASHBOARD_URL":
+            settings.sdr_dashboard_url = val
         elif key in ("MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS"):
             setattr(settings, key[4:].lower(), int(val))
         elif key == "MCW_PEER_BOT_PREFIX":
             settings.peer_bot_prefix = val
         elif key == "MCW_CONTACT_HOUSEKEEPING":
-            settings.contact_housekeeping = val.strip().lower() in ("1", "true", "yes", "on")
+            settings.contact_housekeeping = val.strip().lower() in _TRUE
         elif key == "MCW_CONTACT_KEEP_FREE":
             settings.contact_keep_free = max(0, int(val))
         elif key in ("MCW_HOME_CITIES", "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_HOME_RADIUS_KM"):
             attr = key[4:].lower()
-            setattr(settings, attr, int(val) if key.endswith("_KM") and val.isdigit() else val)
+            setattr(settings, attr, int(val) if key.endswith("_KM") else val)
             coverage_changed = True
         elif key in ("MCW_SERIAL_PORT", "MCW_SERIAL_BAUD"):
-            setattr(settings, key[4:].lower(), int(val) if key.endswith("BAUD") and val.isdigit() else val)
+            setattr(settings, key[4:].lower(), int(val) if key.endswith("BAUD") else val)
         applied.append(key)
     if coverage_changed:
         try:
@@ -629,11 +730,22 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
 @router.post("/settings/env")
 async def settings_env(request: Request) -> JSONResponse:
     body = await _body(request)
-    updates = {str(k): str(v) for k, v in body.items()}
+    updates = {str(k): str(v).strip() for k, v in body.items()}
+    if not updates:
+        raise HTTPException(400, "nothing to change")
+    bad = set(updates) - ENV_WRITABLE
+    if bad:
+        raise HTTPException(400, f"not writable: {', '.join(sorted(bad))}")
+    _validate_updates(updates)
     _write_env(updates)
     applied = await _apply_live(_bot(request), updates)
     pending = sorted(set(updates) - set(applied))
-    note = "Applied now" if not pending else "Applied now: " + ", ".join(applied) + ". Needs a restart: " + ", ".join(pending) if applied else "Needs a restart: " + ", ".join(pending)
+    if applied and pending:
+        note = "Applied now: " + ", ".join(sorted(applied)) + ". Needs a restart: " + ", ".join(pending)
+    elif applied:
+        note = "Applied now"
+    else:
+        note = "Saved; needs a restart: " + ", ".join(pending)
     return JSONResponse({"ok": True, "applied": sorted(applied), "restart_needed": pending, "note": note})
 
 
@@ -737,22 +849,5 @@ async def audit_space(request: Request) -> JSONResponse:
 
 @router.get("/audit/last")
 async def audit_last() -> JSONResponse:
-    """Result of the most recent scripts/audit.py run (written by the audit
-    timer to data/audit.json), summarised for the Overview page."""
-    import json
-    from pathlib import Path
-    path = Path(settings.data_dir) / "audit.json"
-    if not path.exists():
-        return JSONResponse({"available": False})
-    try:
-        d = json.loads(path.read_text())
-    except Exception as e:
-        return JSONResponse({"available": False, "error": str(e)})
-    res = d.get("results", [])
-    fails = [r for r in res if not r.get("ok")]
-    by_check: dict = {}
-    for r in res:
-        c = by_check.setdefault(r["check"], {"pass": 0, "fail": 0})
-        c["pass" if r.get("ok") else "fail"] += 1
-    return JSONResponse({"available": True, "at": d.get("at"), "passed": len(res) - len(fails), "failed": len(fails),
-                         "by_check": by_check, "failures": fails[:20]})
+    """Result of the most recent scripts/audit.py run (data/audit.json)."""
+    return JSONResponse(_audit_summary())

@@ -1,4 +1,8 @@
-// Meshcore Weather Portal — SPA controller + MapLibre helpers.
+// Meshcore Weather admin portal: one page, hash routing, vanilla JS.
+//
+// Sections: overview, textbot, broadcasts, radio, satellite, system (logs |
+// settings). One poller feeds the header strip and the Overview; every other
+// section loads on enter and stops its timers and streams on leave.
 
 // Every state-changing request carries a header a cross-site page cannot
 // add without a CORS preflight (which the server never grants). The server
@@ -16,1201 +20,18 @@
     return nativeFetch.call(window, url, opts);
   };
 })();
-// All map data served from /static/geo/ — fully offline.
 
 // ---------------------------------------------------------------------------
-// Map helpers (reused by Weather Map section + System preview map)
+// Helpers
 // ---------------------------------------------------------------------------
 
-function buildWeatherMapStyle() {
-  return {
-    version: 8,
-    name: "Meshcore Weather",
-    sources: {
-      countries: { type: "geojson", data: "/static/geo/countries.geojson" },
-      states: { type: "geojson", data: "/static/geo/states.geojson" },
-      cities: { type: "geojson", data: "/static/geo/cities.geojson" },
-    },
-    layers: [
-      { id: "background", type: "background", paint: { "background-color": "#1b2636" } },
-      { id: "countries-fill", type: "fill", source: "countries", paint: { "fill-color": "#2a3546", "fill-opacity": 1 } },
-      {
-        id: "states-fill", type: "fill", source: "states",
-        filter: ["==", ["get", "admin"], "United States of America"],
-        paint: { "fill-color": "#334259", "fill-opacity": 1 },
-      },
-      {
-        id: "states-line", type: "line", source: "states",
-        paint: { "line-color": "#5a6a80", "line-width": ["interpolate", ["linear"], ["zoom"], 3, 0.3, 6, 0.7, 10, 1.2] },
-      },
-      {
-        id: "countries-line", type: "line", source: "countries",
-        paint: { "line-color": "#8fa3bd", "line-width": ["interpolate", ["linear"], ["zoom"], 3, 0.5, 6, 1.0, 10, 1.6] },
-      },
-      {
-        id: "city-dots", type: "circle", source: "cities",
-        filter: [">", ["get", "pop"], 100000],
-        paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 3, 1.5, 6, 3, 10, 5],
-          "circle-color": "#f5f5f7", "circle-opacity": 0.7,
-          "circle-stroke-color": "#0a1220", "circle-stroke-width": 0.5,
-        },
-      },
-    ],
-  };
-}
-
-const WARNING_COLORS = {
-  1: "#e11d48", 2: "#f59e0b", 3: "#06b6d4", 4: "#3b82f6",
-  5: "#a855f7", 6: "#f97316", 7: "#dc2626", 8: "#0891b2",
-  9: "#fbbf24", 15: "#9ca3af",
-};
-
-const WARNING_TYPE_NAMES = {
-  1: "Tornado", 2: "Severe T-Storm", 3: "Flash Flood", 4: "Flood",
-  5: "Winter Storm", 6: "High Wind", 7: "Fire", 8: "Marine",
-  9: "Special", 15: "Other",
-};
-
-function createWeatherMap(elementId, options) {
-  options = options || {};
-  var map = new maplibregl.Map({
-    container: elementId,
-    style: buildWeatherMapStyle(),
-    center: options.center || [-96, 38],
-    zoom: options.zoom || 3.5,
-    minZoom: 1,
-    maxZoom: 10,
-    attributionControl: false,
-  });
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-  return map;
-}
-
-function addWarningsLayer(map, warnings) {
-  var sourceId = "warnings";
-  var features = warnings
-    .filter(function (w) { return w.vertices && w.vertices.length >= 3; })
-    .map(function (w) {
-      return {
-        type: "Feature",
-        properties: {
-          type: w.warning_type,
-          severity: w.severity,
-          color: WARNING_COLORS[w.warning_type] || WARNING_COLORS[15],
-          name: WARNING_TYPE_NAMES[w.warning_type] || "Unknown",
-          headline: w.headline || "",
-          in_coverage: w.in_coverage !== false,
-        },
-        geometry: {
-          type: "Polygon",
-          coordinates: [w.vertices.map(function (v) { return [v[1], v[0]]; })],
-        },
-      };
-    });
-
-  var data = { type: "FeatureCollection", features: features };
-
-  if (map.getSource(sourceId)) {
-    map.getSource(sourceId).setData(data);
-  } else {
-    map.addSource(sourceId, { type: "geojson", data: data });
-    map.addLayer({
-      id: "warnings-fill", type: "fill", source: sourceId,
-      paint: {
-        "fill-color": ["get", "color"],
-        "fill-opacity": ["case", ["==", ["get", "in_coverage"], true], 0.35, 0.12],
-      },
-    });
-    map.addLayer({
-      id: "warnings-line", type: "line", source: sourceId,
-      paint: {
-        "line-color": ["get", "color"],
-        "line-width": ["case", ["==", ["get", "in_coverage"], true], 2, 1],
-        "line-opacity": ["case", ["==", ["get", "in_coverage"], true], 1, 0.4],
-      },
-    });
-    map.on("click", "warnings-fill", function (e) {
-      var f = e.features[0];
-      var html =
-        '<div style="font-family:var(--font-sans,sans-serif);font-size:13px;">' +
-        '<strong style="color:' + f.properties.color + '">' + f.properties.name + '</strong>' +
-        '<div style="margin-top:4px;">' + escapeHtml(f.properties.headline) + '</div>' +
-        (f.properties.in_coverage ? '' : '<div style="margin-top:6px;color:#9ca3af;font-size:11px;">Outside coverage</div>') +
-        '</div>';
-      new maplibregl.Popup().setLngLat(e.lngLat).setHTML(html).addTo(map);
-    });
-    map.on("mouseenter", "warnings-fill", function () { map.getCanvas().style.cursor = "pointer"; });
-    map.on("mouseleave", "warnings-fill", function () { map.getCanvas().style.cursor = ""; });
-  }
-}
-
-function addCoverageLayer(map, bbox) {
-  if (!bbox) return;
-  var n = bbox[0], s = bbox[1], w = bbox[2], e = bbox[3];
-  var sourceId = "coverage";
-  var data = {
-    type: "FeatureCollection",
-    features: [{
-      type: "Feature", properties: {},
-      geometry: { type: "Polygon", coordinates: [[[w, n], [e, n], [e, s], [w, s], [w, n]]] },
-    }],
-  };
-  if (map.getSource(sourceId)) {
-    map.getSource(sourceId).setData(data);
-  } else {
-    map.addSource(sourceId, { type: "geojson", data: data });
-    map.addLayer({
-      id: "coverage-line", type: "line", source: sourceId,
-      paint: { "line-color": "#22d3ee", "line-width": 2, "line-dasharray": [3, 2], "line-opacity": 0.7 },
-    });
-  }
-}
-
-function escapeHtml(s) {
-  return String(s || "").replace(/[&<>"']/g, function (c) {
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
   });
 }
 
-// ---------------------------------------------------------------------------
-// Portal SPA controller
-// ---------------------------------------------------------------------------
-
-var Portal = {
-
-  // -- Router ---------------------------------------------------------------
-
-  router: {
-    currentSection: null,
-    _sections: ["overview", "console", "radio", "textbot", "broadcast", "sdr", "map", "system"],
-
-    init: function () {
-      var self = this;
-      // Wire nav links
-      document.querySelectorAll("#main-nav a[data-section]").forEach(function (a) {
-        a.addEventListener("click", function (e) {
-          e.preventDefault();
-          self.navigate(a.dataset.section);
-        });
-      });
-      // Also handle in-page hash links (quick actions)
-      document.querySelectorAll('a[href^="#"]').forEach(function (a) {
-        if (a.dataset.section) return; // already handled above
-        a.addEventListener("click", function (e) {
-          var target = a.getAttribute("href").replace("#", "");
-          if (self._sections.indexOf(target) !== -1) {
-            e.preventDefault();
-            self.navigate(target);
-          }
-        });
-      });
-      window.addEventListener("hashchange", function () { self._onHashChange(); });
-      this._onHashChange();
-    },
-
-    navigate: function (section) {
-      if (this._sections.indexOf(section) === -1) section = "overview";
-      if (section === this.currentSection) return;
-      window.location.hash = "#" + section;
-    },
-
-    _onHashChange: function () {
-      var hash = (window.location.hash || "#overview").replace("#", "");
-      if (this._sections.indexOf(hash) === -1) hash = "overview";
-      if (hash === this.currentSection) return;
-
-      var prev = this.currentSection;
-      this.currentSection = hash;
-
-      // Update nav
-      document.querySelectorAll("#main-nav a[data-section]").forEach(function (a) {
-        a.classList.toggle("active", a.dataset.section === hash);
-      });
-
-      // Update sections
-      document.querySelectorAll(".section").forEach(function (sec) {
-        sec.classList.toggle("active", sec.id === "section-" + hash);
-      });
-
-      // Section lifecycle hooks
-      if (prev === "map") Portal.weatherMap.onLeave();
-      if (prev === "sdr") Portal.sdr.onLeave();
-      if (prev === "console") Portal.console.onLeave();
-      if (prev === "textbot") Portal.traffic.onLeave();
-      if (hash === "console") Portal.console.onEnter();
-      if (hash === "map") Portal.weatherMap.onEnter();
-      if (hash === "overview") Portal.overview.refresh();
-      if (hash === "radio") Portal.radio.onEnter();
-      if (hash === "textbot") Portal.textbot.onEnter();
-      if (hash === "broadcast") Portal.broadcast.onEnter();
-      if (hash === "sdr") Portal.sdr.onEnter();
-      if (hash === "system") { Portal.system.onEnter(); Portal.sysinfo.onEnter(); }
-    },
-  },
-
-  // -- UI utilities ---------------------------------------------------------
-
-  ui: {
-    _toastTimer: null,
-
-    showToast: function (msg, ok) {
-      if (ok === undefined) ok = true;
-      var el = document.getElementById("toast");
-      el.textContent = msg;
-      el.className = "toast" + (ok ? "" : " err");
-      el.style.display = "block";
-      clearTimeout(this._toastTimer);
-      this._toastTimer = setTimeout(function () { el.style.display = "none"; }, 3500);
-    },
-
-    openModal: function (html, wide) {
-      var content = document.getElementById("modal-content");
-      content.innerHTML = html;
-      content.className = "modal-content" + (wide ? " modal-wide" : "");
-      document.getElementById("modal-overlay").style.display = "flex";
-    },
-
-    closeModal: function () {
-      document.getElementById("modal-overlay").style.display = "none";
-      document.getElementById("modal-content").innerHTML = "";
-    },
-
-    formatAgo: function (seconds) {
-      if (seconds == null) return "\u2014";
-      if (seconds < 60) return seconds + "s";
-      if (seconds < 3600) return Math.floor(seconds / 60) + "m";
-      if (seconds < 86400) return Math.floor(seconds / 3600) + "h";
-      return Math.floor(seconds / 86400) + "d";
-    },
-  },
-
-  // -- Overview section -----------------------------------------------------
-
-  overview: {
-    _rendered: false,
-
-    render: function (boot) {
-      var zoneCount = boot.zone_count || 0;
-      var el = document.getElementById("overview-stats");
-      el.innerHTML =
-        '<div class="stat"><div class="stat-label">Coverage Zones</div>' +
-          '<div class="stat-value">' + (zoneCount || "All") + '</div>' +
-          '<div class="stat-hint">' + (zoneCount ? "Filtered broadcast" : "No filter set") + '</div></div>' +
-        '<div class="stat"><div class="stat-label">EMWIN Products</div>' +
-          '<div class="stat-value">' + boot.product_count + '</div>' +
-          '<div class="stat-hint">In store (last 12h)</div></div>' +
-        '<div class="stat"><div class="stat-label">Data Channel</div>' +
-          '<div class="stat-value">' +
-            (boot.data_channel != null
-              ? '<span class="dot dot-green"></span>#' + boot.data_channel
-              : '<span class="dot dot-gray"></span>Off') +
-          '</div><div class="stat-hint">MeshWX binary broadcast</div></div>' +
-        '<div class="stat"><div class="stat-label">Text Channel</div>' +
-          '<div class="stat-value">' +
-            (boot.channel_idx != null
-              ? '<span class="dot dot-green"></span>#' + boot.channel_idx
-              : '<span class="dot dot-gray"></span>Off') +
-          '</div><div class="stat-hint">Meshtastic channel</div></div>';
-
-      document.getElementById("overview-coverage-text").textContent =
-        boot.coverage_summary || "No coverage filter set. Broadcasting for the entire CONUS.";
-
-      this._rendered = true;
-    },
-
-    loadHealth: function () {
-      Promise.all([apiJson("/api/sdr").catch(function () { return null; }), apiJson("/api/radio").catch(function () { return null; })]).then(function (res) {
-        var sdr = res[0] || {}, radio = res[1] || {};
-        var st = (sdr.receiver || {}).stats || {}, feed = sdr.feed || {}, info = radio.info || {};
-        document.getElementById("overview-health").innerHTML =
-          statCard("Satellite", st.locked ? "locked" : (sdr.receiver && !sdr.receiver._error ? "no lock" : "?"), st.vit_avg != null ? "vit " + st.vit_avg + " · drops " + st.drops : "dashboard unreachable", st.locked ? "" : "text-muted") +
-          statCard("EMWIN feed", fmtAgeS(feed.newest_age_s), (feed.products_last_hour || 0) + " products/h") +
-          statCard("Radio", radio.connected ? "up" : "down", radio.connected ? (info.name || "") + " · " + info.radio_freq + " MHz" : (radio.serial_port || ""), radio.connected ? "" : "text-muted") +
-          statCard("Transmit", radio.tx_enabled ? "ON" : "OFF", radio.reply_mode === "channel" ? "reply mode CHANNEL: every reply floods" : (radio.tx_enabled ? "on air · replies by DM" : "receive-only"), radio.reply_mode === "channel" ? "badge-danger" : "") +
-          statCard("Warnings", feed.warnings_last_hour != null ? feed.warnings_last_hour : "–", "warning-class products, last hour");
-      });
-    },
-
-    loadAudit: function () {
-      apiJson("/api/audit/last").then(function (d) {
-        var el = document.getElementById("overview-audit");
-        if (!d.available) { el.textContent = "No audit result yet (the audit timer writes data/audit.json hourly)."; return; }
-        var when = new Date(d.at).toLocaleString();
-        var parts = Object.keys(d.by_check).map(function (k) {
-          var c = d.by_check[k]; return '<span class="badge ' + (c.fail ? "badge-danger" : "badge-success") + '">' + k + " " + c.pass + "/" + (c.pass + c.fail) + '</span>';
-        }).join(" ");
-        var html = '<div class="mb-4">' + when + " — <strong>" + d.passed + " passed, " + d.failed + " failed</strong> " + parts + '</div>';
-        if (d.failures.length) {
-          html += d.failures.map(function (f) { return '<div><span class="badge badge-danger">FAIL</span> ' + escapeHtml(f.check + " " + f.subject) + ': <span class="text-muted">' + escapeHtml(f.detail) + '</span></div>'; }).join("");
-        }
-        el.innerHTML = html;
-      }).catch(function () {});
-    },
-
-    refresh: function () {
-      this.loadHealth();
-      this.loadAudit();
-      fetch("/api/status").then(function (r) { return r.json(); }).then(function (data) {
-        var grid = document.getElementById("overview-status-grid");
-        grid.innerHTML =
-          '<div class="stat"><div class="stat-label">Text Channel</div>' +
-            '<div class="stat-value"><span class="dot dot-green"></span>#' + (data.radio.channel_idx || "?") + '</div></div>' +
-          '<div class="stat"><div class="stat-label">Data Channel</div>' +
-            '<div class="stat-value">' +
-              (data.radio.data_channel_idx != null
-                ? '<span class="dot dot-green"></span>#' + data.radio.data_channel_idx
-                : '<span class="dot dot-gray"></span>Off') +
-            '</div></div>' +
-          '<div class="stat"><div class="stat-label">EMWIN Products</div>' +
-            '<div class="stat-value">' + data.store.product_count + '</div></div>' +
-          '<div class="stat"><div class="stat-label">Known Contacts</div>' +
-            '<div class="stat-value">' + data.contacts.known + '</div></div>';
-
-        document.getElementById("overview-status-time").textContent =
-          "Updated " + new Date().toLocaleTimeString();
-      }).catch(function (e) {
-        document.getElementById("overview-status-time").textContent = "Load failed: " + e.message;
-      });
-
-      this.loadActivity();
-      this.loadStats();
-    },
-
-    _activitySSE: null,
-    _activityCount: 0,
-    _MAX_ACTIVITY_ROWS: 200,
-
-    _renderActivityRow: function (e) {
-      var ts = new Date((e.ts || 0) * 1000);
-      var timeStr = ts.toLocaleTimeString();
-      var dirBadge = e.direction === "in"
-        ? '<span class="badge badge-success">IN</span>'
-        : '<span class="badge badge-muted">OUT</span>';
-      var typeLabel = {
-        v2_request: "Data Request",
-        v2_response: "Response",
-        v1_refresh: "Refresh",
-        broadcast: "Broadcast",
-        throttled: "Throttled",
-      }[e.event_type] || e.event_type;
-      return '<tr>' +
-        '<td class="text-small text-muted">' + timeStr + '</td>' +
-        '<td>' + dirBadge + '</td>' +
-        '<td class="text-small">' + escapeHtml(typeLabel) + '</td>' +
-        '<td class="text-small">' + escapeHtml(e.summary) + '</td></tr>';
-    },
-
-    loadActivity: function () {
-      var self = this;
-      // Load the backlog via REST — real-time updates come from the
-      // global activityPanel SSE stream which feeds BOTH the panel
-      // AND this Overview section's activity table.
-      fetch("/api/activity?limit=100").then(function (r) { return r.json(); }).then(function (data) {
-        var tbody = document.getElementById("activity-body");
-        var events = data.events || [];
-        document.getElementById("activity-log-count").textContent =
-          events.length + " events (live)";
-        if (!events.length) {
-          tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No activity yet — waiting for events...</td></tr>';
-        } else {
-          tbody.innerHTML = events.map(function (e) {
-            return self._renderActivityRow(e);
-          }).join("");
-        }
-      }).catch(function () {
-        document.getElementById("activity-body").innerHTML =
-          '<tr><td colspan="4" class="text-muted">Load failed</td></tr>';
-      });
-    },
-
-    loadStats: function () {
-      fetch("/api/stats").then(function (r) { return r.json(); }).then(function (data) {
-        var el = document.getElementById("overview-stats-windows");
-        var stats = data.stats || [];
-        el.innerHTML = stats.map(function (s) {
-          var label = s.window_minutes < 60
-            ? s.window_minutes + "m"
-            : (s.window_minutes / 60) + "h";
-          var kb = s.bytes >= 1024
-            ? (s.bytes / 1024).toFixed(1) + " KB"
-            : s.bytes + " B";
-          return '<div class="stat">' +
-            '<div class="stat-label">Last ' + label + '</div>' +
-            '<div class="stat-value">' + s.messages + '</div>' +
-            '<div class="stat-hint">' + kb + '</div></div>';
-        }).join("");
-      });
-    },
-  },
-
-  // -- Broadcast Control section --------------------------------------------
-
-  broadcast: {
-    _jobsLoaded: false,
-    _metaLoaded: false,
-    _refreshTimer: null,
-    _meta: null,
-
-    onEnter: function () {
-      if (!this._metaLoaded) this.loadMeta();
-      if (!this._jobsLoaded) this.loadJobs();
-      this._startAutoRefresh();
-    },
-
-    switchTab: function (tab) {
-      document.querySelectorAll("#broadcast-tabs .sub-tab").forEach(function (btn) {
-        btn.classList.toggle("active", btn.dataset.tab === tab);
-      });
-      document.getElementById("broadcast-tab-jobs").classList.toggle("active", tab === "jobs");
-      document.getElementById("broadcast-tab-products").classList.toggle("active", tab === "products");
-      if (tab === "products") Portal.products.onEnter();
-    },
-
-    _startAutoRefresh: function () {
-      this._stopAutoRefresh();
-      var self = this;
-      this._refreshTimer = setInterval(function () { self.loadJobs(); }, 30000);
-    },
-
-    _stopAutoRefresh: function () {
-      if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
-    },
-
-    loadMeta: function () {
-      var self = this;
-      fetch("/api/schedule/meta").then(function (r) { return r.json(); }).then(function (data) {
-        self._meta = data;
-        self._metaLoaded = true;
-      });
-    },
-
-    _productLabel: function (key) {
-      var meta = this._meta || {};
-      var info = (meta.product_info || {})[key];
-      return info ? info.label : key;
-    },
-
-    _locationLabel: function (key) {
-      var meta = this._meta || {};
-      var info = (meta.location_info || {})[key];
-      return info ? info.label : key;
-    },
-
-    loadJobs: function () {
-      var self = this;
-      fetch("/api/schedule/jobs").then(function (r) {
-        if (!r.ok) throw new Error(r.status);
-        return r.json();
-      }).then(function (data) {
-        self._jobsLoaded = true;
-        var tbody = document.getElementById("jobs-body");
-        if (!data.jobs || data.jobs.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="9" class="text-muted">No broadcast jobs configured.</td></tr>';
-          return;
-        }
-        tbody.innerHTML = data.jobs.map(function (j) {
-          var prodLabel = self._productLabel(j.product);
-          var locLabel = self._locationLabel(j.location_type);
-          var locDetail = j.location_id ? ": " + escapeHtml(j.location_id) : "";
-          return '<tr>' +
-            '<td><strong>' + escapeHtml(j.name) + '</strong><br><code class="text-muted">' + escapeHtml(j.id) + '</code></td>' +
-            '<td>' + escapeHtml(prodLabel) + '</td>' +
-            '<td>' + escapeHtml(locLabel) + locDetail + '</td>' +
-            '<td>' + j.interval_minutes + 'm</td>' +
-            '<td>' + (j.last_run_seconds_ago != null ? Portal.ui.formatAgo(j.last_run_seconds_ago) + " ago" : "never") + '</td>' +
-            '<td>' + (j.next_run_in_seconds != null ? "in " + Portal.ui.formatAgo(j.next_run_in_seconds) : "next tick") + '</td>' +
-            '<td>' + j.last_bytes + ' <span class="text-muted">(' + j.last_msg_count + ' msg)</span></td>' +
-            '<td><button class="btn-mini" onclick="Portal.broadcast.toggleJob(\'' + j.id + '\')">' +
-              (j.enabled ? "on" : "off") + '</button></td>' +
-            '<td class="actions">' +
-              '<button class="btn-mini" onclick="Portal.broadcast.runNow(\'' + j.id + '\')">Run now</button> ' +
-              '<button class="btn-mini" onclick="Portal.broadcast.editJob(\'' + j.id + '\')">Edit</button> ' +
-              '<button class="btn-mini danger" onclick="Portal.broadcast.deleteJob(\'' + j.id + '\')">Delete</button>' +
-            '</td></tr>';
-        }).join("");
-      }).catch(function (e) {
-        Portal.ui.showToast("Failed to load jobs: " + e.message, false);
-      });
-    },
-
-    openJobModal: function (mode, job) {
-      var meta = this._meta || {};
-      var pInfo = meta.product_info || {};
-      var lInfo = meta.location_info || {};
-      var isEdit = mode === "edit" && job;
-
-      var editLocId = isEdit ? (job.location_id || "") : "";
-
-      var selectedProduct = isEdit ? job.product : (meta.products || [])[0] || "";
-      var productOpts = (meta.products || []).map(function (p) {
-        var info = pInfo[p] || {};
-        var label = info.label || p;
-        return '<option value="' + p + '"' + (p === selectedProduct ? ' selected' : '') +
-          '>' + escapeHtml(label) + '</option>';
-      }).join("");
-
-      // Location options filtered by selected product
-      var validLocs = (pInfo[selectedProduct] || {}).locations || meta.location_types || [];
-      var selectedLoc = isEdit ? job.location_type : validLocs[0] || "";
-      var locOpts = validLocs.map(function (t) {
-        var info = lInfo[t] || {};
-        return '<option value="' + t + '"' + (t === selectedLoc ? ' selected' : '') +
-          '>' + escapeHtml(info.label || t) + '</option>';
-      }).join("");
-
-      var locPlaceholder = (lInfo[selectedLoc] || {}).placeholder || "";
-      var showLocId = selectedLoc !== "coverage";
-
-      var html =
-        '<h2>' + (isEdit ? "Edit broadcast job" : "New broadcast job") + '</h2>' +
-        '<form onsubmit="Portal.broadcast.saveJob(event)">' +
-          '<input type="hidden" id="jf-mode" value="' + mode + '">' +
-          '<input type="hidden" id="jf-original-id" value="' + (isEdit ? job.id : "") + '">' +
-
-          '<label>ID (slug)' +
-            '<input type="text" id="jf-id" required pattern="[a-z0-9_-]+" maxlength="64"' +
-            ' value="' + (isEdit ? escapeHtml(job.id) : "") + '"' + (isEdit ? ' readonly' : '') + '>' +
-          '</label>' +
-
-          '<label>Display name' +
-            '<input type="text" id="jf-name" required maxlength="120"' +
-            ' value="' + (isEdit ? escapeHtml(job.name) : "") + '">' +
-          '</label>' +
-
-          '<label>Product' +
-            '<select id="jf-product" required onchange="Portal.broadcast._onProductChange()">' + productOpts + '</select>' +
-            '<span class="form-hint" id="jf-product-desc">' + escapeHtml((pInfo[selectedProduct] || {}).desc || "") + '</span>' +
-          '</label>' +
-
-          '<label>Location' +
-            '<select id="jf-loctype" required onchange="Portal.broadcast._onLocTypeChange()">' + locOpts + '</select>' +
-          '</label>' +
-
-          '<div id="jf-locid-group"' + (showLocId ? '' : ' style="display:none"') + '>' +
-            '<label>Location ID' +
-              '<input type="text" id="jf-locid" placeholder="' + escapeHtml(locPlaceholder) + '"' +
-              ' value="' + escapeHtml(editLocId) + '">' +
-            '</label>' +
-          '</div>' +
-
-          '<label>Interval (minutes)' +
-            '<input type="number" id="jf-interval" required min="1" max="10080"' +
-            ' value="' + (isEdit ? job.interval_minutes : 60) + '">' +
-          '</label>' +
-
-          '<label class="checkbox"><input type="checkbox" id="jf-enabled"' +
-            (isEdit ? (job.enabled ? " checked" : "") : " checked") + '> Enabled</label>' +
-
-          '<div class="flex gap-2 mt-4">' +
-            '<button type="submit" class="btn btn-primary">Save</button>' +
-            '<button type="button" class="btn" onclick="Portal.ui.closeModal()">Cancel</button>' +
-          '</div>' +
-        '</form>';
-
-      Portal.ui.openModal(html);
-    },
-
-    _onProductChange: function () {
-      var meta = this._meta || {};
-      var pInfo = meta.product_info || {};
-      var lInfo = meta.location_info || {};
-      var product = document.getElementById("jf-product").value;
-      var info = pInfo[product] || {};
-
-      // Update product description
-      document.getElementById("jf-product-desc").textContent = info.desc || "";
-
-      // Rebuild location dropdown with valid options for this product
-      var validLocs = info.locations || meta.location_types || [];
-      var locSel = document.getElementById("jf-loctype");
-      var currentLoc = locSel.value;
-      locSel.innerHTML = validLocs.map(function (t) {
-        var li = lInfo[t] || {};
-        return '<option value="' + t + '">' + escapeHtml(li.label || t) + '</option>';
-      }).join("");
-      // Keep current selection if still valid
-      if (validLocs.indexOf(currentLoc) !== -1) {
-        locSel.value = currentLoc;
-      }
-
-      this._onLocTypeChange();
-    },
-
-    _onLocTypeChange: function () {
-      var meta = this._meta || {};
-      var lInfo = meta.location_info || {};
-      var locType = document.getElementById("jf-loctype").value;
-      var info = lInfo[locType] || {};
-
-      // Show/hide location ID field
-      var locGroup = document.getElementById("jf-locid-group");
-      locGroup.style.display = locType === "coverage" ? "none" : "";
-
-      // Update placeholder
-      var locInput = document.getElementById("jf-locid");
-      locInput.placeholder = info.placeholder || "";
-    },
-
-    saveJob: function (ev) {
-      ev.preventDefault();
-      var mode = document.getElementById("jf-mode").value;
-      var product = document.getElementById("jf-product").value;
-      var locId = document.getElementById("jf-locid").value.trim();
-
-      var body = {
-        id: document.getElementById("jf-id").value.trim(),
-        name: document.getElementById("jf-name").value.trim(),
-        product: product,
-        location_type: document.getElementById("jf-loctype").value,
-        location_id: locId,
-        interval_minutes: parseInt(document.getElementById("jf-interval").value, 10),
-        enabled: document.getElementById("jf-enabled").checked,
-      };
-      var origId = document.getElementById("jf-original-id").value;
-      var url = mode === "edit"
-        ? "/api/schedule/jobs/" + encodeURIComponent(origId)
-        : "/api/schedule/jobs";
-      var method = mode === "edit" ? "PUT" : "POST";
-      var self = this;
-
-      fetch(url, {
-        method: method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }).then(function (r) {
-        if (!r.ok) return r.json().then(function (d) { throw new Error(d.detail || r.status); });
-        return r.json();
-      }).then(function () {
-        Portal.ui.showToast("Job saved");
-        Portal.ui.closeModal();
-        self.loadJobs();
-      }).catch(function (e) {
-        Portal.ui.showToast("Save failed: " + e.message, false);
-      });
-    },
-
-    toggleJob: function (id) {
-      var self = this;
-      fetch("/api/schedule/jobs/" + encodeURIComponent(id) + "/toggle", { method: "POST" })
-        .then(function (r) { if (!r.ok) throw new Error(r.status); self.loadJobs(); })
-        .catch(function () { Portal.ui.showToast("Toggle failed", false); });
-    },
-
-    runNow: function (id) {
-      var self = this;
-      fetch("/api/schedule/jobs/" + encodeURIComponent(id) + "/run-now", { method: "POST" })
-        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-        .then(function (data) {
-          Portal.ui.showToast("Job ran: " + data.messages_sent + " message(s) sent");
-          setTimeout(function () { self.loadJobs(); }, 500);
-        })
-        .catch(function () { Portal.ui.showToast("Run failed", false); });
-    },
-
-    editJob: function (id) {
-      var self = this;
-      fetch("/api/schedule/jobs").then(function (r) { return r.json(); }).then(function (data) {
-        var job = data.jobs.find(function (j) { return j.id === id; });
-        if (!job) { Portal.ui.showToast("Job not found", false); return; }
-        self.openJobModal("edit", job);
-      });
-    },
-
-    deleteJob: function (id) {
-      if (!confirm("Delete job " + id + "?")) return;
-      var self = this;
-      fetch("/api/schedule/jobs/" + encodeURIComponent(id), { method: "DELETE" })
-        .then(function (r) { if (!r.ok) throw new Error(r.status); Portal.ui.showToast("Job deleted"); self.loadJobs(); })
-        .catch(function () { Portal.ui.showToast("Delete failed", false); });
-    },
-  },
-
-  // -- Products sub-tab -----------------------------------------------------
-
-  products: {
-    _filtersLoaded: false,
-    _loadTimer: null,
-
-    onEnter: function () {
-      if (!this._filtersLoaded) this.loadFilters();
-      this.load();
-    },
-
-    loadFilters: function () {
-      var self = this;
-      fetch("/api/products/filters").then(function (r) { return r.json(); }).then(function (data) {
-        self._populateSelect("filter-type", data.types);
-        self._populateSelect("filter-office", data.offices);
-        self._populateSelect("filter-state", data.states);
-        self._filtersLoaded = true;
-      });
-    },
-
-    _populateSelect: function (id, items) {
-      var sel = document.getElementById(id);
-      var current = sel.value;
-      // Keep the "All" option, replace the rest
-      sel.innerHTML = '<option value="">' + sel.options[0].textContent + '</option>';
-      items.forEach(function (item) {
-        var opt = document.createElement("option");
-        opt.value = item;
-        opt.textContent = item;
-        sel.appendChild(opt);
-      });
-      sel.value = current;
-    },
-
-    debouncedLoad: function () {
-      clearTimeout(this._loadTimer);
-      var self = this;
-      this._loadTimer = setTimeout(function () { self.load(); }, 300);
-    },
-
-    load: function () {
-      var params = new URLSearchParams({
-        type: document.getElementById("filter-type").value,
-        office: document.getElementById("filter-office").value,
-        state: document.getElementById("filter-state").value,
-        q: document.getElementById("filter-q").value,
-      });
-      var tbody = document.getElementById("products-tbody");
-      fetch("/api/products?" + params).then(function (r) { return r.json(); }).then(function (data) {
-        if (!data.products.length) {
-          tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state">No products match the filters.</div></td></tr>';
-          document.getElementById("products-summary").textContent = "";
-          return;
-        }
-        tbody.innerHTML = data.products.map(function (p) {
-          var ts = new Date(p.timestamp);
-          var tsStr = ts.toISOString().slice(0, 16).replace("T", " ");
-          return '<tr onclick="Portal.products.openProduct(\'' + escapeHtml(p.filename) + '\')">' +
-            '<td class="text-mono"><strong>' + escapeHtml(p.product_type) + '</strong></td>' +
-            '<td class="text-mono">' + escapeHtml(p.office || "") + '</td>' +
-            '<td class="text-mono">' + escapeHtml(p.state || "") + '</td>' +
-            '<td class="text-small text-muted">' + tsStr + ' UTC</td>' +
-            '<td class="text-small">' + escapeHtml(p.preview || "") + '</td></tr>';
-        }).join("");
-        document.getElementById("products-summary").textContent =
-          "Showing " + data.products.length + " of possibly more (limit 100). Apply filters to narrow.";
-      }).catch(function (e) {
-        tbody.innerHTML = '<tr><td colspan="5">Failed: ' + escapeHtml(e.message) + '</td></tr>';
-      });
-    },
-
-    openProduct: function (filename) {
-      fetch("/api/products/" + encodeURIComponent(filename))
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          var html =
-            '<div class="card-header"><div class="card-title">' +
-              escapeHtml(data.emwin_id) + ' \u2014 ' + escapeHtml(data.product_type) +
-            '</div><button class="btn" onclick="Portal.ui.closeModal()">Close</button></div>' +
-            '<pre class="text-mono" style="white-space:pre-wrap;background:var(--color-bg);padding:var(--space-4);border-radius:var(--radius-sm);max-height:60vh;overflow:auto;">' +
-              escapeHtml(data.raw_text) + '</pre>';
-          Portal.ui.openModal(html, true);
-        })
-        .catch(function (e) { Portal.ui.showToast("Failed: " + e.message, false); });
-    },
-  },
-
-  // -- Weather Map section --------------------------------------------------
-
-  weatherMap: {
-    _map: null,
-    _mapReady: false,
-    _refreshTimer: null,
-    _firstLoad: true,
-
-    init: function () {
-      // Lazy — MapLibre throws if container has 0 dimensions (hidden section).
-      // Actual creation deferred to first onEnter().
-    },
-
-    _ensureMap: function () {
-      if (this._map) return;
-      this._map = createWeatherMap("map");
-      var self = this;
-      this._map.on("load", function () {
-        self._mapReady = true;
-        var boot = window.__BOOT__;
-        if (boot._coverageBbox) addCoverageLayer(self._map, boot._coverageBbox);
-        self.loadAndRender();
-      });
-    },
-
-    onEnter: function () {
-      this._ensureMap();
-      if (this._map) {
-        requestAnimationFrame(function () {
-          Portal.weatherMap._map.resize();
-          // Load data after resize if map was already ready
-          if (Portal.weatherMap._mapReady) Portal.weatherMap.loadAndRender();
-        });
-      }
-      this._startAutoRefresh();
-    },
-
-    onLeave: function () {
-      this._stopAutoRefresh();
-    },
-
-    _startAutoRefresh: function () {
-      this._stopAutoRefresh();
-      var self = this;
-      this._refreshTimer = setInterval(function () { self.loadAndRender(); }, 60000);
-    },
-
-    _stopAutoRefresh: function () {
-      if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
-    },
-
-    loadAndRender: function () {
-      if (!this._mapReady) return;
-      var self = this;
-      fetch("/api/warnings").then(function (r) { return r.json(); }).then(function (data) {
-        addWarningsLayer(self._map, data.warnings);
-
-        // Build legend
-        var typesPresent = [];
-        var seen = {};
-        data.warnings.forEach(function (w) {
-          if (!seen[w.warning_type]) { seen[w.warning_type] = true; typesPresent.push(w.warning_type); }
-        });
-        typesPresent.sort(function (a, b) { return a - b; });
-
-        var legendHtml = '<div class="legend-title">Active Warnings</div>';
-        if (typesPresent.length === 0) {
-          legendHtml = '<div class="legend-title">No Active Warnings</div>';
-        } else {
-          typesPresent.forEach(function (t) {
-            legendHtml += '<div class="legend-item">' +
-              '<span class="legend-swatch" style="background:' + (WARNING_COLORS[t] || "#9ca3af") + '"></span>' +
-              (WARNING_TYPE_NAMES[t] || "Unknown") + '</div>';
-          });
-        }
-        document.getElementById("map-legend").innerHTML = legendHtml;
-
-        var inCov = data.warnings.filter(function (w) { return w.in_coverage; }).length;
-        document.getElementById("map-status").innerHTML =
-          data.count + " active &middot; <strong>" + inCov + "</strong> in coverage";
-
-        // On first load, fit to coverage bbox if available
-        if (self._firstLoad) {
-          self._firstLoad = false;
-          var boot = window.__BOOT__;
-          if (boot._coverageBbox) {
-            var b = boot._coverageBbox;
-            self._map.fitBounds([[b[2], b[1]], [b[3], b[0]]], { padding: 40, maxZoom: 6, duration: 0 });
-          }
-        }
-      }).catch(function (e) {
-        document.getElementById("map-status").textContent = "Load failed";
-        console.error(e);
-      });
-    },
-  },
-
-  // -- System section -------------------------------------------------------
-
-  system: {
-    _previewMap: null,
-    _previewReady: false,
-    _initialized: false,
-
-    onEnter: function () {
-      if (!this._initialized) {
-        this._initialized = true;
-        this.render(window.__BOOT__);
-        this.initPreviewMap();
-      }
-    },
-
-    render: function (boot) {
-      var src = boot.coverage_sources || {};
-      this._renderTags("sys-cities", src.cities || []);
-      this._renderTags("sys-states", src.states || []);
-      this._renderTags("sys-wfos", src.wfos || []);
-      document.getElementById("sys-coverage-summary").textContent =
-        boot.coverage_summary || "No coverage filter set \u2014 broadcasting for the entire CONUS.";
-    },
-
-    _renderTags: function (elId, items) {
-      var el = document.getElementById(elId);
-      if (!items.length) {
-        el.innerHTML = '<span class="text-muted text-small" style="padding:4px 8px;">None</span>';
-        return;
-      }
-      el.innerHTML = items.map(function (item) {
-        return '<span class="tag">' + escapeHtml(item) + '</span>';
-      }).join("");
-    },
-
-    initPreviewMap: function () {
-      this._previewMap = createWeatherMap("sys-preview-map", { zoom: 3, center: [-96, 38] });
-      var self = this;
-      this._previewMap.on("load", function () {
-        self._previewReady = true;
-        self.loadCoveragePreview();
-      });
-    },
-
-    loadCoveragePreview: function () {
-      if (!this._previewReady) return;
-      var boot = window.__BOOT__;
-      var src = boot.coverage_sources || {};
-      var params = new URLSearchParams({
-        cities: (src.cities || []).join(","),
-        states: (src.states || []).join(","),
-        wfos: (src.wfos || []).join(","),
-      });
-      var self = this;
-      fetch("/api/coverage/preview?" + params).then(function (r) { return r.json(); }).then(function (data) {
-        document.getElementById("sys-preview-summary").textContent = data.summary;
-        if (data.bbox) {
-          addCoverageLayer(self._previewMap, data.bbox);
-          var b = data.bbox;
-          self._previewMap.fitBounds([[b[2], b[1]], [b[3], b[0]]], { padding: 40, maxZoom: 6, duration: 400 });
-          // Store for weather map too
-          window.__BOOT__._coverageBbox = data.bbox;
-        }
-      }).catch(function () {
-        document.getElementById("sys-preview-summary").textContent = "Preview failed";
-      });
-    },
-
-    loadChannels: function () {
-      // Live truth from the radio API: configured names + the slot each role sits on.
-      apiJson("/api/radio").then(function (d) {
-        var cfg = d.configured_channels || {};
-        var set = function (id, v) { var el = document.getElementById(id); if (document.activeElement !== el) el.value = v || ""; };
-        set("sys-ch-text", cfg.text); set("sys-ch-data", cfg.data); set("sys-ch-discover", cfg.discover);
-        var slots = (d.info && d.info.channels) || {};
-        var parts = ["text", "data", "discover"].map(function (r) {
-          return r + ": " + (slots[r] != null ? "slot " + slots[r] : (cfg[r] ? "not on node" : "off"));
-        });
-        document.getElementById("sys-ch-status").textContent = d.connected ? "On the node — " + parts.join(", ") : "Radio not connected; names apply when it connects";
-      }).catch(function () {});
-    },
-
-    saveChannels: function (btn) {
-      var statusEl = document.getElementById("sys-ch-status");
-      statusEl.textContent = "Saving\u2026";
-      btn.disabled = true;
-      var body = {
-        text_channel: document.getElementById("sys-ch-text").value.trim(),
-        data_channel: document.getElementById("sys-ch-data").value.trim(),
-        discover_channel: document.getElementById("sys-ch-discover").value.trim(),
-      };
-      fetch("/api/settings/channels", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }).then(function (r) {
-        if (!r.ok) return r.json().then(function (d) { throw new Error(d.detail || r.status); });
-        return r.json();
-      }).then(function (d) {
-        statusEl.innerHTML = '<span style="color:var(--color-success);">' + escapeHtml(d.note || "Saved") + '</span>';
-        Portal.ui.showToast(d.note || "Saved", true);
-        Portal.system.loadChannels();
-      }).catch(function (e) {
-        statusEl.innerHTML = '<span style="color:var(--color-danger);">' + escapeHtml(e.message) + '</span>';
-      }).finally(function () { btn.disabled = false; });
-    },
-  },
-
-  // -- Shared actions -------------------------------------------------------
-
-  actions: {
-    broadcast: function (btn) {
-      btn.disabled = true;
-      var resultEls = [
-        document.getElementById("overview-action-result"),
-        document.getElementById("sys-action-result"),
-      ].filter(Boolean);
-
-      resultEls.forEach(function (el) { el.textContent = "Running\u2026"; });
-
-      fetch("/api/actions/broadcast", { method: "POST" }).then(function (r) {
-        if (r.ok) {
-          resultEls.forEach(function (el) {
-            el.innerHTML = '<span style="color:var(--color-success);">Done</span>';
-          });
-          Portal.ui.showToast("Broadcast triggered");
-        } else {
-          return r.json().then(function (d) { throw new Error(d.detail || r.statusText); });
-        }
-      }).catch(function (e) {
-        resultEls.forEach(function (el) {
-          el.innerHTML = '<span style="color:var(--color-danger);">' + escapeHtml(e.message) + '</span>';
-        });
-      }).finally(function () { btn.disabled = false; });
-    },
-
-    v2Request: function (btn) {
-      btn.disabled = true;
-      var resultEl = document.getElementById("sys-action-result");
-      resultEl.textContent = "Sending\u2026";
-
-      fetch("/api/actions/v2-request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data_type: document.getElementById("v2-data-type").value,
-          location: document.getElementById("v2-location").value.trim(),
-        }),
-      }).then(function (r) {
-        if (!r.ok) return r.json().then(function (d) { throw new Error(d.detail || r.status); });
-        return r.json();
-      }).then(function (data) {
-        resultEl.innerHTML = '<span style="color:var(--color-success);">Sent ' +
-          escapeHtml(data.data_type) + ' for ' + escapeHtml(JSON.stringify(data.location)) + '</span>';
-      }).catch(function (e) {
-        resultEl.innerHTML = '<span style="color:var(--color-danger);">' + escapeHtml(e.message) + '</span>';
-      }).finally(function () { btn.disabled = false; });
-    },
-  },
-
-  // -- Init -----------------------------------------------------------------
-
-  // -- Persistent Activity Panel (visible on all pages) ----------------------
-
-  activityPanel: {
-    _sse: null,
-    _count: 0,
-    _MAX_ROWS: 150,
-
-    init: function () {
-      var self = this;
-      // Load backlog then start SSE
-      fetch("/api/activity?limit=50").then(function (r) { return r.json(); }).then(function (data) {
-        var events = data.events || [];
-        var tbody = document.getElementById("panel-activity-body");
-        self._count = events.length;
-        if (!events.length) {
-          tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Waiting for events...</td></tr>';
-        } else {
-          tbody.innerHTML = events.map(function (e) { return self._row(e); }).join("");
-        }
-        self._updateCount();
-        self._startSSE();
-      }).catch(function () {});
-    },
-
-    toggle: function () {
-      var panel = document.getElementById("activity-panel");
-      if (panel.classList.contains("expanded")) {
-        panel.classList.remove("expanded");
-        panel.classList.add("collapsed");
-      } else {
-        panel.classList.remove("collapsed");
-        panel.classList.add("expanded");
-      }
-    },
-
-    _row: function (e) {
-      var ts = new Date((e.ts || 0) * 1000);
-      var time = ts.toLocaleTimeString();
-      var dir = e.direction === "in"
-        ? '<span class="badge badge-success">IN</span>'
-        : '<span class="badge badge-muted">OUT</span>';
-      var labels = {
-        v2_request: "Request", v2_response: "Response", v1_refresh: "Refresh",
-        broadcast: "Broadcast", throttled: "Throttled", send_fail: "Send Fail",
-      };
-      var type = labels[e.event_type] || e.event_type;
-      return '<tr><td class="text-muted">' + time + '</td><td>' + dir +
-        '</td><td>' + escapeHtml(type) + '</td><td>' + escapeHtml(e.summary) + '</td></tr>';
-    },
-
-    _updateCount: function () {
-      var el = document.getElementById("panel-event-count");
-      if (el) el.textContent = "(" + this._count + " events)";
-    },
-
-    _startSSE: function () {
-      if (this._sse) { this._sse.close(); this._sse = null; }
-      var self = this;
-      var es = new EventSource("/api/activity/stream");
-      this._sse = es;
-
-      es.onmessage = function (msg) {
-        try {
-          var e = JSON.parse(msg.data);
-          var tbody = document.getElementById("panel-activity-body");
-          if (!tbody) return;
-          // Remove placeholder
-          var ph = tbody.querySelector("td[colspan]");
-          if (ph) tbody.innerHTML = "";
-          // Prepend
-          var tmp = document.createElement("div");
-          tmp.innerHTML = '<table><tbody>' + self._row(e) + '</tbody></table>';
-          var tr = tmp.querySelector("tr");
-          if (tr) {
-            tr.classList.add("row-new");
-            tbody.insertBefore(tr, tbody.firstChild);
-          }
-          self._count++;
-          self._updateCount();
-          // Trim
-          while (tbody.children.length > self._MAX_ROWS) tbody.removeChild(tbody.lastChild);
-
-          // Also update the Overview page's activity log if it exists
-          var overviewBody = document.getElementById("activity-body");
-          if (overviewBody && overviewBody !== tbody) {
-            var tmp2 = document.createElement("div");
-            tmp2.innerHTML = '<table><tbody>' + Portal.overview._renderActivityRow(e) + '</tbody></table>';
-            var tr2 = tmp2.querySelector("tr");
-            if (tr2) {
-              tr2.style.backgroundColor = "rgba(0, 150, 255, 0.15)";
-              overviewBody.insertBefore(tr2, overviewBody.firstChild);
-              setTimeout(function () { tr2.style.backgroundColor = ""; }, 1500);
-            }
-            while (overviewBody.children.length > 200) overviewBody.removeChild(overviewBody.lastChild);
-            var countEl = document.getElementById("activity-log-count");
-            if (countEl) countEl.textContent = overviewBody.children.length + " events (live)";
-          }
-        } catch (err) {}
-      };
-
-      es.onerror = function () {
-        var el = document.getElementById("panel-event-count");
-        if (el) el.textContent = "(reconnecting...)";
-      };
-      es.onopen = function () { self._updateCount(); };
-    },
-  },
-
-  init: function () {
-    var boot = window.__BOOT__ || {};
-
-    // Render overview from boot data immediately
-    this.overview.render(boot);
-
-    // Start the persistent activity panel SSE stream
-    this.activityPanel.init();
-
-    // Map init is lazy — created on first visit to #map section
-    // (MapLibre throws if container has 0 dimensions while hidden)
-
-    // Keyboard shortcut: Escape closes modal
-    document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") Portal.ui.closeModal();
-    });
-
-    // Start router (reads hash, activates correct section)
-    this.router.init();
-  },
-};
-
-// Boot
-document.addEventListener("DOMContentLoaded", function () { Portal.init(); });
-
-// ---------------------------------------------------------------------------
-// Admin modules: radio, text bot console, satellite receiver, system info
-// ---------------------------------------------------------------------------
-
-function apiJson(url, opts) {
+function api(url, opts) {
   opts = opts || {};
   if (opts.body && typeof opts.body !== "string") {
     opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
@@ -1224,524 +45,979 @@ function apiJson(url, opts) {
   });
 }
 
-function statCard(label, value, hint, cls) {
-  return '<div class="stat"><div class="stat-label">' + escapeHtml(label) + '</div>' +
+function tile(label, value, hint, cls, href) {
+  var inner = '<div class="stat-label">' + esc(label) + '</div>' +
     '<div class="stat-value ' + (cls || "") + '">' + value + '</div>' +
-    '<div class="stat-hint">' + escapeHtml(hint || "") + '</div></div>';
+    '<div class="stat-hint" title="' + esc(hint || "") + '">' + esc(hint || "") + '</div>';
+  return href ? '<a class="stat" href="' + href + '">' + inner + '</a>' : '<div class="stat">' + inner + '</div>';
 }
 
-function fmtAgeS(s) {
-  if (s == null) return "–";
+function ago(s) {
+  if (s == null || isNaN(s)) return "–";
+  s = Math.max(0, Math.round(s));
   if (s < 90) return s + "s";
   if (s < 5400) return Math.round(s / 60) + "m";
   if (s < 172800) return Math.round(s / 3600) + "h";
   return Math.round(s / 86400) + "d";
 }
 
-Portal.radio = {
-  _state: null,
-  onEnter: function () { this.load(); },
+function agoAt(t) { return t ? ago(Date.now() / 1000 - t) : "–"; }
 
-  load: function () {
-    var self = this;
-    apiJson("/api/radio").then(function (d) {
-      self._state = d;
-      self.render(d);
-    }).catch(function (e) { Portal.ui.showToast("Radio: " + e.message, false); });
-  },
+function nextRun(s) { return s == null ? "nothing due" : s === 0 ? "due at the next tick" : "next in " + ago(s); }
 
-  render: function (d) {
-    var info = d.info || {};
-    var conn = d.connected;
-    document.getElementById("radio-offline-card").style.display = conn ? "none" : "";
-    document.getElementById("radio-offline-reason").textContent = conn ? "" : (d.error || "") + " (" + d.serial_port + " @ " + d.serial_baud + ")";
-    var stats =
-      statCard("Link", conn ? "up" : "down", d.serial_port, conn ? "" : "text-muted") +
-      statCard("Node", conn ? escapeHtml(info.name || "?") : "–", info.public_key ? info.public_key.slice(0, 12) + "…" : "") +
-      statCard("Frequency", info.radio_freq != null ? info.radio_freq + " MHz" : "–",
-        info.radio_bw != null ? "BW " + info.radio_bw + " kHz · SF" + info.radio_sf + " · CR" + info.radio_cr : "") +
-      statCard("TX power", info.tx_power != null ? info.tx_power + " dBm" : "–", info.max_tx_power != null ? "max " + info.max_tx_power : "") +
-      statCard("Battery", info.battery_mv ? (info.battery_mv / 1000).toFixed(2) + " V" : "–", d.tx_enabled ? "transmit ON" : "receive-only");
-    document.getElementById("radio-stats").innerHTML = stats;
-    this.renderHousekeeping(d.housekeeping);
+function hhmmss(t) { return new Date(t * 1000).toTimeString().slice(0, 8); }
 
-    var set = function (id, v) { var el = document.getElementById(id); if (el && document.activeElement !== el) el.value = v == null ? "" : v; };
-    set("radio-name", info.name); set("radio-lat", info.adv_lat); set("radio-lon", info.adv_lon);
-    set("radio-freq", info.radio_freq); set("radio-bw", info.radio_bw); set("radio-sf", info.radio_sf); set("radio-cr", info.radio_cr);
-    set("radio-txpower", info.tx_power);
-    document.getElementById("radio-pubkey").textContent = info.public_key ? "public key " + info.public_key : "";
-    var badge = document.getElementById("radio-tx-badge");
-    badge.textContent = d.tx_enabled ? "ON" : "OFF";
-    badge.className = "badge " + (d.tx_enabled ? "badge-danger" : "badge-success");
-    document.getElementById("radio-tx-toggle").textContent = d.tx_enabled ? "Disable transmit" : "Enable transmit";
+function $(id) { return document.getElementById(id); }
 
-    var sel = document.getElementById("radio-preset");
-    sel.innerHTML = Object.keys(d.presets || {}).map(function (k) {
-      var p = d.presets[k];
-      return '<option value="' + k + '">' + escapeHtml(p.label) + " — " + p.freq_mhz + "/" + p.bw_khz + "/SF" + p.sf + "/CR" + p.cr + '</option>';
-    }).join("");
+function setVal(id, v) {
+  var el = $(id);
+  if (el && document.activeElement !== el) el.value = v == null ? "" : v;
+}
 
-    var tb = document.getElementById("radio-channels");
-    if (!conn) { tb.innerHTML = '<tr><td colspan="5" class="text-muted">Radio not connected</td></tr>'; return; }
-    var rows = [];
-    for (var i = 0; i < 8; i++) {
-      var ch = (d.channels || []).filter(function (c) { return c.idx === i; })[0] || { idx: i, name: "", role: null };
-      var roleBadge = ch.role ? '<span class="badge badge-success">' + ch.role + '</span>' : "";
-      var cfgMatch = "";
-      if (!ch.role && ch.name) {
-        var cfg = d.configured_channels || {};
-        if ([cfg.text, cfg.data, cfg.discover].indexOf(ch.name) !== -1) cfgMatch = '<span class="badge badge-warning">configured, not resolved</span>';
+function setDot(id, cls) { var el = $(id); if (el) el.className = "dot " + cls; }
+
+// A live stream: hello frame → green dot, error → red dot, items → onEvent.
+function liveStream(url, onEvent, dotId) {
+  var es = new EventSource(url);
+  setDot(dotId, "dot-gray");
+  es.onopen = function () { setDot(dotId, "dot-green"); };
+  es.onerror = function () { setDot(dotId, "dot-red"); };
+  es.onmessage = function (m) {
+    var d; try { d = JSON.parse(m.data); } catch (e) { return; }
+    if (!d || d.hello) { setDot(dotId, "dot-green"); return; }
+    onEvent(d);
+  };
+  return es;
+}
+
+function appendLine(el, html, max) {
+  var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  el.insertAdjacentHTML("beforeend", html);
+  while (el.childElementCount > max) el.removeChild(el.firstChild);
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// The portal
+// ---------------------------------------------------------------------------
+
+var Portal = {
+
+  // -- Router: #section or #system/tab ----------------------------------------
+
+  router: {
+    sections: ["overview", "textbot", "broadcasts", "radio", "satellite", "system"],
+    legacy: { console: "system/logs", sdr: "satellite", broadcast: "broadcasts", map: "overview" },
+    current: null,
+
+    init: function () {
+      var self = this;
+      window.addEventListener("hashchange", function () { self.apply(); });
+      this.apply();
+    },
+
+    go: function (target) { window.location.hash = "#" + target; },
+
+    apply: function () {
+      var raw = (window.location.hash || "#overview").slice(1);
+      if (this.legacy[raw]) raw = this.legacy[raw];
+      var parts = raw.split("/"), sec = parts[0], sub = parts[1] || null;
+      if (this.sections.indexOf(sec) === -1) { sec = "overview"; sub = null; }
+      if (sec !== this.current) {
+        var prev = this.current;
+        if (prev && Portal[prev].onLeave) Portal[prev].onLeave();
+        this.current = sec;
+        document.querySelectorAll("#main-nav a[data-section]").forEach(function (a) {
+          a.classList.toggle("active", a.dataset.section === sec);
+        });
+        document.querySelectorAll(".section").forEach(function (s) {
+          s.classList.toggle("active", s.id === "section-" + sec);
+        });
+        window.scrollTo(0, 0);
+        if (Portal[sec].onEnter) Portal[sec].onEnter();
       }
-      rows.push('<tr><td>' + i + (i === 0 ? ' <span class="text-muted">(public)</span>' : "") + '</td>' +
-        '<td>' + (i === 0 ? escapeHtml(ch.name || "public") :
-          '<input class="input" style="max-width:260px" id="radio-ch-' + i + '" value="' + escapeHtml(ch.name || "") + '" placeholder="(empty slot)">') + '</td>' +
-        '<td>' + roleBadge + cfgMatch + '</td>' +
-        '<td class="text-mono text-small text-muted">' + (ch.secret ? ch.secret.slice(0, 8) + "…" : "") + '</td>' +
-        '<td>' + (i === 0 ? "" :
-          '<button class="btn btn-mini" onclick="Portal.radio.saveChannel(' + i + ')">Save</button> ' +
-          (ch.name && !ch.role ? '<button class="btn btn-mini btn-danger" onclick="Portal.radio.clearChannel(' + i + ')">Clear</button>' : "")) + '</td></tr>');
-    }
-    tb.innerHTML = rows.join("");
+      if (sec === "system") Portal.system.showTab(sub || "logs");
+    },
   },
 
-  _act: function (promise, okMsg) {
-    var self = this;
-    var out = document.getElementById("radio-action-result");
-    return promise.then(function (d) {
-      Portal.ui.showToast(okMsg || "Done", true);
-      if (d && d.note) out.textContent = d.note; else out.textContent = "";
-      self.load();
-    }).catch(function (e) { Portal.ui.showToast(e.message, false); out.textContent = e.message; });
-  },
-  saveName: function () { this._act(apiJson("/api/radio/name", { method: "POST", body: { name: document.getElementById("radio-name").value } }), "Name saved"); },
-  saveCoords: function () {
-    this._act(apiJson("/api/radio/coords", { method: "POST", body: { lat: parseFloat(document.getElementById("radio-lat").value), lon: parseFloat(document.getElementById("radio-lon").value) } }), "Location saved");
-  },
-  saveParams: function () {
-    var body = { freq_mhz: parseFloat(document.getElementById("radio-freq").value), bw_khz: parseFloat(document.getElementById("radio-bw").value),
-      sf: parseInt(document.getElementById("radio-sf").value, 10), cr: parseInt(document.getElementById("radio-cr").value, 10) };
-    if (!confirm("Change LoRa parameters to " + body.freq_mhz + " MHz / " + body.bw_khz + " kHz / SF" + body.sf + " / CR" + body.cr + "? Every node on the mesh must use the same values.")) return;
-    this._act(apiJson("/api/radio/params", { method: "POST", body: body }), "Radio parameters applied");
-  },
-  applyPreset: function () {
-    var k = document.getElementById("radio-preset").value;
-    var p = (this._state && this._state.presets || {})[k];
-    if (!p) return;
-    ["freq", "bw", "sf", "cr"].forEach(function (f) { document.getElementById("radio-" + f).value = p[{ freq: "freq_mhz", bw: "bw_khz", sf: "sf", cr: "cr" }[f]]; });
-  },
-  saveTxPower: function () { this._act(apiJson("/api/radio/txpower", { method: "POST", body: { dbm: parseInt(document.getElementById("radio-txpower").value, 10) } }), "TX power set"); },
-  toggleTx: function () {
-    var on = !(this._state && this._state.tx_enabled);
-    if (on && !confirm("Enable transmit? The bot will send adverts, DM replies and scheduled broadcasts on air.")) return;
-    this._act(apiJson("/api/radio/tx", { method: "POST", body: { enabled: on } }), on ? "Transmit enabled" : "Transmit disabled");
-  },
-  advert: function () { this._act(apiJson("/api/radio/advert", { method: "POST" }), "Advert requested"); },
-  reboot: function () { if (confirm("Reboot the radio node?")) this._act(apiJson("/api/radio/reboot", { method: "POST" }), "Rebooting"); },
-  saveChannel: function (i) {
-    var name = document.getElementById("radio-ch-" + i).value.trim();
-    if (!name) return this.clearChannel(i);
-    this._act(apiJson("/api/radio/channel", { method: "POST", body: { idx: i, name: name } }), "Channel " + i + " saved");
-  },
-  clearChannel: function (i) { if (confirm("Clear channel slot " + i + "?")) this._act(apiJson("/api/radio/channel/" + i, { method: "DELETE" }), "Channel " + i + " cleared"); },
-  renderHousekeeping: function (h) {
-    if (!h) return;
-    var cb = document.getElementById("radio-housekeeping");
-    if (cb && document.activeElement !== cb) cb.checked = !!h.enabled;
-    var sub = document.getElementById("radio-contacts-sub");
-    if (sub) sub.textContent = h.last && h.last.t ? "Housekeeping " + fmtAgeS(Math.round(Date.now() / 1000 - h.last.t)) + " ago: " + h.last.note :
-      (h.enabled ? "Housekeeping on, not run yet" : "Housekeeping off: the firmware keeps whatever it hears");
-  },
-  saveHousekeeping: function () {
-    var on = document.getElementById("radio-housekeeping").checked;
-    this._act(apiJson("/api/settings/env", { method: "POST", body: { MCW_CONTACT_HOUSEKEEPING: on ? "true" : "false" } }),
-      on ? "Housekeeping on" : "Housekeeping off");
-  },
-  housekeepNow: function () {
-    var self = this;
-    apiJson("/api/radio/housekeep", { method: "POST", body: {} }).then(function (d) {
-      Portal.ui.showToast(d.note, true); self.load(); self.loadContacts();
-    }).catch(function (e) { Portal.ui.showToast(e.message, false); });
-  },
-  loadContacts: function () {
-    apiJson("/api/radio/contacts").then(function (d) {
-      var tb = document.getElementById("radio-contacts");
-      if (!d.contacts.length) { tb.innerHTML = '<tr><td colspan="5" class="text-muted">No contacts</td></tr>'; return; }
-      var now = Date.now() / 1000;
-      tb.innerHTML = d.contacts.map(function (c) {
-        return '<tr><td>' + escapeHtml(c.name || "?") + '</td><td>' + ({ 1: "client", 2: "repeater", 3: "room" }[c.type] || c.type || "") + '</td>' +
-          '<td>' + (c.heard ? fmtAgeS(Math.max(0, Math.round(now - c.heard))) + " ago" : "–") + '</td>' +
-          '<td>' + (c.out_path_len != null && c.out_path_len >= 0 ? c.out_path_len + " hops" : "flood") + '</td>' +
-          '<td class="text-mono text-small text-muted">' + (c.public_key || "").slice(0, 12) + '</td></tr>';
-      }).join("");
-    }).catch(function (e) { Portal.ui.showToast(e.message, false); });
-  },
-};
+  // -- UI -----------------------------------------------------------------------
 
-Portal.textbot = {
-  _loaded: false,
-  onEnter: function () {
-    if (!this._loaded) {
-      this._loaded = true;
-      var ex = ["wx round rock tx", "forecast austin", "warn TX", "storm TX", "space", "metar KAUS", "help"];
-      document.getElementById("console-examples").innerHTML = ex.map(function (t) {
-        return '<button class="btn btn-mini" onclick="Portal.textbot.send(' + JSON.stringify(t).replace(/"/g, "&quot;") + ')">' + escapeHtml(t) + '</button>';
-      }).join("");
-      apiJson("/api/console/help").then(function (d) { document.getElementById("console-help").textContent = d.help; });
-    }
-    Portal.system.loadChannels();
-    this.loadReplyMode();
-    Portal.traffic.onEnter();
+  ui: {
+    _toastTimer: null,
+    toast: function (msg, ok) {
+      var el = $("toast");
+      el.textContent = msg;
+      el.className = "toast" + (ok === false ? " err" : "");
+      el.hidden = false;
+      clearTimeout(this._toastTimer);
+      this._toastTimer = setTimeout(function () { el.hidden = true; }, 3500);
+    },
+    openModal: function (html, wide) {
+      var c = $("modal-content");
+      c.innerHTML = html;
+      c.className = "modal-content" + (wide ? " modal-wide" : "");
+      $("modal-overlay").hidden = false;
+    },
+    closeModal: function () { $("modal-overlay").hidden = true; $("modal-content").innerHTML = ""; },
   },
-  loadReplyMode: function () {
-    apiJson("/api/radio").then(function (d) {
-      var set = function (id, v) { var el = document.getElementById(id); if (document.activeElement !== el && v != null) el.value = v; };
-      set("reply-mode", d.reply_mode); set("reply-max-hops", d.channel_reply_max_hops);
-      apiJson("/api/system").then(function (sy) { set("advert-hours", (sy.settings || {}).advert_interval_hours); });
-      var peers = d.peer_bots || [];
-      document.getElementById("peer-bots").textContent = peers.length ? peers.map(function (p) { return p.name + " (" + p.lat.toFixed(2) + "," + p.lon.toFixed(2) + ")"; }).join(", ") : "none";
-    }).catch(function () {});
+
+  // -- One poller for the header strip and the Overview -------------------------
+
+  poll: {
+    _timer: null, last: null,
+    start: function () {
+      var self = this;
+      this.tick();
+      this._timer = setInterval(function () { self.tick(); }, 15000);
+    },
+    tick: function () {
+      var self = this;
+      api("/api/overview").then(function (d) {
+        self.last = d;
+        Portal.header.render(d);
+        if (Portal.router.current === "overview") Portal.overview.render(d);
+      }).catch(function (e) {
+        Portal.header.offline(e.message);
+        if (Portal.router.current === "overview") $("ov-updated").textContent = "Portal unreachable: " + e.message;
+      });
+    },
   },
-  saveReplyMode: function () {
-    var body = { MCW_REPLY_MODE: document.getElementById("reply-mode").value,
-      MCW_CHANNEL_REPLY_MAX_HOPS: document.getElementById("reply-max-hops").value,
-      MCW_ADVERT_INTERVAL_HOURS: document.getElementById("advert-hours").value };
-    var st = document.getElementById("reply-mode-status");
-    apiJson("/api/settings/env", { method: "POST", body: body }).then(function (d) { st.textContent = d.note; Portal.ui.showToast("Reply mode applied", true); })
-      .catch(function (e) { st.textContent = e.message; Portal.ui.showToast(e.message, false); });
+
+  header: {
+    render: function (d) {
+      var sat = d.satellite || {}, r = d.radio || {};
+      var s = $("strip-sat"), ra = $("strip-radio"), tx = $("strip-tx");
+      s.className = "strip-item" + (sat.locked ? "" : sat.reachable ? " warn" : " bad");
+      s.innerHTML = '<span class="dot ' + (sat.locked ? "dot-green" : sat.reachable ? "dot-yellow" : "dot-red") + '"></span>' +
+        (sat.locked ? "dish locked" : sat.reachable ? "no lock" : "dish ?");
+      ra.className = "strip-item" + (r.connected ? "" : " bad");
+      ra.innerHTML = '<span class="dot ' + (r.connected ? "dot-green" : "dot-red") + '"></span>' + (r.connected ? esc(r.name || "radio up") : "radio down");
+      var mode = r.reply_mode;
+      var txCls = !r.tx_enabled ? "" : mode === "channel" ? " bad" : "";
+      tx.className = "strip-item" + txCls;
+      tx.innerHTML = '<span class="dot ' + (!r.tx_enabled ? "dot-gray" : mode === "channel" ? "dot-red" : "dot-green") + '"></span>' +
+        (!r.tx_enabled ? "TX off" : mode === "channel" ? "TX on · CHANNEL replies" : mode === "dm_only" ? "TX on · DM only" : "TX on · DM");
+    },
+    offline: function (msg) {
+      ["strip-sat", "strip-radio", "strip-tx"].forEach(function (id) {
+        var el = $(id); el.className = "strip-item bad"; el.innerHTML = '<span class="dot dot-red"></span>' + esc(id === "strip-sat" ? "portal ?" : "");
+      });
+    },
   },
-  send: function (preset) {
-    var input = document.getElementById("console-input");
-    var text = (preset || input.value).trim();
-    if (!text) return;
-    if (!preset) input.value = "";
-    var log = document.getElementById("console-log");
-    var id = "c" + Date.now();
-    log.insertAdjacentHTML("beforeend", '<div><span class="text-muted">you&gt;</span> ' + escapeHtml(text) + '</div><div id="' + id + '" class="text-muted">…</div>');
-    log.scrollTop = log.scrollHeight;
-    apiJson("/api/console", { method: "POST", body: { text: text } }).then(function (d) {
-      var el = document.getElementById(id);
-      var meta = '<span class="text-muted">[' + escapeHtml(d.command) + (d.location ? " · " + escapeHtml(d.location) : "") + " · " + d.ms + "ms]</span> ";
-      el.className = "";
-      el.innerHTML = '<div style="margin:2px 0 8px 0"><span class="badge badge-muted">DM · ' + d.chars + 'ch</span> ' +
-        escapeHtml(d.reply || "(no reply)") + (d.has_more ? ' <span class="badge badge-warning">more available — send "more"</span>' : "") + "</div>" + meta;
+
+  // -- Overview -----------------------------------------------------------------
+
+  overview: {
+    onEnter: function () {
+      if (Portal.poll.last) this.render(Portal.poll.last);
+      Portal.poll.tick();
+    },
+    render: function (d) {
+      var sat = d.satellite || {}, feed = d.feed || {}, r = d.radio || {}, tb = d.textbot || {}, bc = d.broadcasts || {};
+      var pr = d.problems || {}, au = d.audit || {}, host = d.host || {};
+      var satVal = !sat.reachable ? "unreachable" : sat.locked ? "locked" : "no lock";
+      var satCls = !sat.reachable ? "bad" : sat.locked ? "ok" : "warn";
+      var satHint = !sat.reachable ? (sat.error || "goestools dashboard down") :
+        "vit " + (sat.vit_avg != null ? sat.vit_avg : "?") + " · drops " + (sat.drops != null ? sat.drops : "?") + " · " + (sat.mode || "") + " mode";
+      var feedAge = feed.newest_age_s;
+      var feedCls = feedAge == null ? "bad" : feedAge > 1800 ? "warn" : "";
+      var mode = r.reply_mode;
+      var txCls = !r.tx_enabled ? "dim" : mode === "channel" ? "bad" : "ok";
+      var txHint = !r.tx_enabled ? "receive only: no replies, no broadcasts" :
+        mode === "channel" ? "reply mode CHANNEL: every reply floods the mesh" : mode === "dm_only" ? "replies by DM only" : "replies by DM; a close stranger gets one channel reply";
+      var lastReq = tb.last_request_at ? agoAt(tb.last_request_at) + " ago" : "no requests yet";
+      var answering = tb.requests_1h ? tb.replies_1h + " / " + tb.requests_1h : (tb.requests_24h ? tb.replies_24h + " / " + tb.requests_24h : "quiet");
+      var bcVal = !bc.running ? "off" : bc.jobs_enabled + " of " + bc.jobs_total + " jobs";
+      var bcHint = !bc.running ? "no data channel configured" :
+        nextRun(bc.next_run_in_s) + " · " + ((bc["24h"] || {}).messages || 0) + " msgs / 24 h";
+      var auVal = !au.available ? "–" : au.passed + " / " + (au.passed + au.failed);
+      var auCls = !au.available ? "dim" : au.failed ? "bad" : "ok";
+      var auHint = !au.available ? "no audit result yet (hourly timer)" : "passed · " + (au.at ? new Date(au.at).toLocaleTimeString() : "");
+      $("ov-tiles").innerHTML =
+        tile("Satellite", satVal, satHint, satCls, "#satellite") +
+        tile("Feed", feedAge != null ? ago(feedAge) + " old" : "no products", (feed.products_last_hour || 0) + " products/h · " + (feed.warnings_last_hour || 0) + " warnings/h · " + (feed.products_total || 0) + " in store", feedCls, "#satellite") +
+        tile("Radio", r.connected ? "up" : "down", r.connected ? (r.name || "") + " · " + (r.freq_mhz != null ? r.freq_mhz + " MHz" : "") + (r.battery_mv ? " · " + (r.battery_mv / 1000).toFixed(2) + " V" : "") : (r.error || ""), r.connected ? "ok" : "bad", "#radio") +
+        tile("Transmit", r.tx_enabled ? "ON" : "OFF", txHint, txCls, "#textbot") +
+        tile("Answering", answering, (tb.requests_1h ? "replies / requests, last hour" : "replies / requests, 24 h") + " · last request " + lastReq + (tb.dropped_24h ? " · " + tb.dropped_24h + " not answered / 24 h" : ""), tb.dropped_1h ? "warn" : "", "#textbot") +
+        tile("Broadcasts", bcVal, bcHint, bc.running ? "" : "dim", "#broadcasts") +
+        tile("Problems", pr.last_hour || 0, "warnings and errors in the log, last hour", pr.last_hour ? "warn" : "ok", "#system/logs") +
+        tile("Audit", auVal, auHint, auCls, "#overview") +
+        tile("Host", host.disk_used_pct != null ? host.disk_used_pct + "% disk" : "–", (host.temp_c != null ? host.temp_c + "°C · " : "") + (host.mem_available_mb != null ? host.mem_available_mb + " MB free" : "") + (host.load ? " · load " + host.load[0] : ""), host.disk_used_pct > 85 ? "bad" : host.disk_used_pct > 70 ? "warn" : "", "#system/settings") +
+        tile("Bot", ago((d.bot || {}).uptime_s) + " up", "commit " + ((d.bot || {}).git || "?") + " · host up " + ago(host.uptime_s), "", "#system/settings");
+      $("ov-updated").textContent = "Updated " + new Date().toLocaleTimeString();
+
+      var rec = $("ov-recent");
+      var lines = (d.recent || []).map(function (ev) { return Portal.traffic.fmt(ev); });
+      rec.innerHTML = lines.join("") || '<div class="text-muted">Nothing yet. A request on the channel or a DM shows up here.</div>';
+      rec.scrollTop = rec.scrollHeight;
+
+      var el = $("ov-audit");
+      if (!au.available) { el.textContent = "No audit result yet. The audit timer writes data/audit.json every hour."; return; }
+      var parts = Object.keys(au.by_check || {}).map(function (k) {
+        var c = au.by_check[k];
+        return '<span class="badge ' + (c.fail ? "badge-danger" : "badge-success") + '">' + esc(k) + " " + c.pass + "/" + (c.pass + c.fail) + '</span>';
+      }).join(" ");
+      var html = '<div class="mb-2">' + esc(new Date(au.at).toLocaleString()) + ": <strong>" + au.passed + " passed, " + au.failed + ' failed</strong></div><div class="chips mb-2">' + parts + "</div>";
+      (au.failures || []).forEach(function (f) {
+        html += '<div><span class="badge badge-danger">fail</span> ' + esc(f.check + " " + f.subject) + ': <span class="text-muted">' + esc(f.detail) + "</span></div>";
+      });
+      el.innerHTML = html;
+    },
+  },
+
+  // -- Text bot: traffic feed and stats ------------------------------------------
+
+  traffic: {
+    _events: [], _max: 1500, _kind: "all", _sse: null, _lastId: 0, _timer: null,
+    _filters: {
+      all: null,
+      channel: ["channel_in", "reply_channel", "peer"],
+      dm: ["dm_in", "reply_dm", "dm_failed", "admin"],
+      dropped: ["dropped", "dm_failed"],
+      adverts: ["advert", "advert_out"],
+      apps: ["data_request"],
+    },
+
+    start: function () {
+      var self = this;
+      api("/api/traffic?n=400").then(function (d) {
+        self._events = d.events || [];
+        self._lastId = self._events.length ? self._events[self._events.length - 1].id : 0;
+        self.renderStats(d.stats);
+        self.render();
+        self._connect();
+      }).catch(function (e) { Portal.ui.toast("Traffic: " + e.message, false); });
+      if (this._timer) clearInterval(this._timer);
+      this._timer = setInterval(function () {
+        api("/api/traffic?n=1").then(function (d) { self.renderStats(d.stats); }).catch(function () {});
+      }, 30000);
+    },
+    stop: function () {
+      if (this._sse) { this._sse.close(); this._sse = null; }
+      if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    },
+    _connect: function () {
+      var self = this;
+      if (this._sse) this._sse.close();
+      this._sse = liveStream("/api/traffic/stream", function (ev) {
+        if (ev.id && ev.id <= self._lastId) return;
+        self._lastId = ev.id || self._lastId;
+        self._events.push(ev);
+        if (self._events.length > self._max) self._events.splice(0, self._events.length - self._max);
+        if (self._show(ev)) appendLine($("traffic-body"), self.fmt(ev), self._max);
+        self._status();
+      }, "traffic-dot");
+    },
+    _status: function () { $("traffic-status").textContent = this._events.length + " events"; },
+    setKind: function (k) {
+      this._kind = k;
+      document.querySelectorAll("#traffic-kinds .sub-tab").forEach(function (b) { b.classList.toggle("active", b.dataset.k === k); });
+      this.render();
+    },
+    _show: function (ev) { var f = this._filters[this._kind]; return !f || f.indexOf(ev.kind) !== -1; },
+    renderStats: function (st) {
+      if (!st) return;
+      var w24 = st.windows["24h"], w1 = st.windows["1h"], lt = st.lifetime, lat = st.latency || {};
+      var top = Object.keys(w24.by_command || {}).sort(function (a, b) { return w24.by_command[b] - w24.by_command[a]; }).slice(0, 3)
+        .map(function (k) { return k + " " + w24.by_command[k]; }).join(", ");
+      var since = lt.since ? new Date(lt.since * 1000).toLocaleDateString() : "";
+      $("traffic-stats").innerHTML =
+        tile("Requests · 24 h", w24.requests, w1.requests + " in the last hour" + (top ? " · " + top : "")) +
+        tile("Replies · 24 h", w24.replies, w24.dm_replies + " by DM · " + w24.channel_replies + " on the channel · " + w24.chars_sent + " chars") +
+        tile("Not answered · 24 h", w24.dropped, "rate limits, hop gate, budgets, nearer bot", w24.dropped ? "warn" : "") +
+        tile("Senders · 24 h", w24.senders, w24.senders ? "distinct nodes" : "nobody yet") +
+        tile("Reply time", lat.median_ms != null ? lat.median_ms + " ms" : "–", lat.p90_ms != null ? "median · p90 " + lat.p90_ms + " ms" : "receipt to send") +
+        tile("Since " + since, lt.requests + " req", lt.replies + " replies · " + lt.dropped + " dropped · " + lt.by_transport.dm + " DM / " + lt.by_transport.channel + " channel");
+    },
+    fmt: function (ev) {
+      var ts = hhmmss(ev.t);
+      var arrow = ev.dir === "in" ? '<span class="in">← in </span>' : '<span class="out">→ out</span>';
+      var tr = ev.transport === "channel" ? "CH" : ev.transport === "dm" ? "DM" : ev.transport === "console" ? "WEB" : (ev.kind || "").indexOf("advert") === 0 ? "ADV" : "";
+      var who = ev.sender ? esc(ev.sender) : (ev.key ? '<span class="text-muted">' + esc(ev.key) + "</span>" : "");
+      var body = "", cls = "badge-muted";
+      var cmd = ev.command ? ' <span class="text-muted">[' + esc(ev.command) + (ev.location ? " · " + esc(ev.location) : "") + "]</span>" : "";
+      switch (ev.kind) {
+        case "channel_in": case "dm_in":
+          body = esc(ev.text) + cmd + (ev.hops != null ? ' <span class="text-muted">' + ev.hops + " hops</span>" : "");
+          break;
+        case "reply_dm": case "reply_channel":
+          cls = "badge-success";
+          body = esc(ev.text) + ' <span class="text-muted">' + (ev.chars || 0) + " ch" + (ev.ms != null ? " · " + ev.ms + " ms" : "") + (ev.ok === false ? " · TX off" : "") + "</span>";
+          break;
+        case "dropped":
+          cls = "badge-warning";
+          body = '<span class="warn-text">not answered: ' + esc(ev.reason) + "</span>" + cmd;
+          break;
+        case "dm_failed": cls = "badge-danger"; body = '<span class="bad-text">DM failed</span> ' + esc(ev.text); break;
+        case "peer": body = '<span class="text-muted">peer bot, ignored:</span> ' + esc(ev.text); break;
+        case "advert": body = '<span class="text-muted">advert heard</span>'; break;
+        case "advert_out": body = '<span class="text-muted">our advert (flood)</span>'; break;
+        case "data_request": body = '<span class="text-muted">app data request</span> ' + esc(ev.text); break;
+        case "admin": body = '<span class="text-muted">admin command:</span> ' + esc(ev.command); break;
+        case "console": body = esc(ev.text) + ' <span class="text-muted">[' + esc(ev.command) + (ev.location ? " · " + esc(ev.location) : "") + " · " + (ev.chars || 0) + " ch]</span>"; break;
+        default: body = esc(ev.text || ev.reason || "");
+      }
+      return '<div class="console-line"><span class="text-muted">' + ts + "</span> " + arrow + " " +
+        '<span class="badge ' + cls + '" style="min-width:34px;text-align:center">' + (tr || esc(ev.kind)) + "</span> " +
+        (who ? "<b>" + who + "</b> " : "") + body + "</div>";
+    },
+    render: function () {
+      var self = this, el = $("traffic-body"), html = [];
+      this._events.forEach(function (ev) { if (self._show(ev)) html.push(self.fmt(ev)); });
+      el.innerHTML = html.join("") || '<div class="text-muted">Nothing yet. A request on the channel or a DM will show up here.</div>';
+      el.scrollTop = el.scrollHeight;
+      this._status();
+    },
+  },
+
+  // -- Text bot: command tester, behaviour, channels line -------------------------
+
+  textbot: {
+    _loaded: false, _orig: {},
+    _keys: ["MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX"],
+
+    onEnter: function () {
+      if (!this._loaded) {
+        this._loaded = true;
+        var ex = ["wx round rock tx", "forecast austin", "warn TX", "storm TX", "space", "metar KAUS", "more", "help"];
+        $("try-examples").innerHTML = ex.map(function (t) {
+          return '<button class="btn btn-mini" onclick="Portal.textbot.send(' + JSON.stringify(t).replace(/"/g, "&quot;") + ')">' + esc(t) + "</button>";
+        }).join("");
+        api("/api/console/help").then(function (d) { $("help-text").textContent = d.help; }).catch(function () {});
+      }
+      this.loadBehaviour();
+      Portal.traffic.start();
+    },
+    onLeave: function () { Portal.traffic.stop(); },
+
+    loadBehaviour: function () {
+      var self = this;
+      api("/api/radio").then(function (d) {
+        var cfg = d.configured_channels || {}, slots = (d.info && d.info.channels) || {};
+        $("traffic-title").textContent = cfg.text || "the channel";
+        var line = function (role, label) {
+          var name = cfg[role];
+          if (!name) return "<div><b>" + label + ":</b> off</div>";
+          var where = !d.connected ? "applied when the radio connects" : slots[role] != null ? "slot " + slots[role] : "not resolved on the node";
+          return "<div><b>" + label + ":</b> " + esc(name) + ' <span class="text-muted">(' + where + ")</span></div>";
+        };
+        $("listening").innerHTML = line("text", "Text commands") + line("data", "Data") + line("discover", "Discovery");
+        var peers = d.peer_bots || [];
+        $("peer-bots").textContent = "Peer bots heard: " + (peers.length ? peers.map(function (p) { return p.name + " (" + p.lat.toFixed(2) + "," + p.lon.toFixed(2) + ")"; }).join(", ") : "none") +
+          ". A request that names a place is answered only by the nearest bot.";
+        self._orig.MCW_REPLY_MODE = d.reply_mode; setVal("env-MCW_REPLY_MODE", d.reply_mode);
+        self._orig.MCW_CHANNEL_REPLY_MAX_HOPS = String(d.channel_reply_max_hops); setVal("env-MCW_CHANNEL_REPLY_MAX_HOPS", d.channel_reply_max_hops);
+      }).catch(function (e) { $("listening").textContent = "Radio state unavailable: " + e.message; });
+      api("/api/system").then(function (sy) {
+        var s = sy.settings || {};
+        self._orig.MCW_ADVERT_INTERVAL_HOURS = String(s.advert_interval_hours); setVal("env-MCW_ADVERT_INTERVAL_HOURS", s.advert_interval_hours);
+        self._orig.MCW_PEER_BOT_PREFIX = s.peer_bot_prefix || ""; setVal("env-MCW_PEER_BOT_PREFIX", s.peer_bot_prefix);
+      }).catch(function () {});
+    },
+    saveBehaviour: function (btn) {
+      var self = this, body = {};
+      this._keys.forEach(function (k) { var v = $("env-" + k).value.trim(); if (v !== (self._orig[k] == null ? "" : self._orig[k])) body[k] = v; });
+      var st = $("behaviour-status");
+      if (!Object.keys(body).length) { st.textContent = "Nothing changed"; return; }
+      if (body.MCW_REPLY_MODE === "channel" && !confirm("Switch to CHANNEL replies? Every answer will flood the mesh through every repeater in range. Use this for testing only.")) {
+        setVal("env-MCW_REPLY_MODE", this._orig.MCW_REPLY_MODE); return;
+      }
+      btn.disabled = true; st.textContent = "Saving…";
+      api("/api/settings/env", { method: "POST", body: body }).then(function (d) {
+        st.textContent = d.note; Portal.ui.toast("Behaviour saved"); self.loadBehaviour(); Portal.poll.tick();
+      }).catch(function (e) { st.textContent = e.message; Portal.ui.toast(e.message, false); })
+        .finally(function () { btn.disabled = false; });
+    },
+    send: function (preset) {
+      var input = $("try-input");
+      var text = (preset || input.value).trim();
+      if (!text) return;
+      if (!preset) input.value = "";
+      var log = $("try-log"), id = "try" + Date.now();
+      log.insertAdjacentHTML("beforeend", '<div><span class="text-muted">you&gt;</span> ' + esc(text) + '</div><div id="' + id + '" class="text-muted">…</div>');
       log.scrollTop = log.scrollHeight;
-    }).catch(function (e) { document.getElementById(id).textContent = "error: " + e.message; });
+      api("/api/console", { method: "POST", body: { text: text } }).then(function (d) {
+        var el = $(id);
+        el.className = "";
+        el.innerHTML = '<div style="margin:2px 0 8px 0"><span class="badge badge-muted">DM · ' + d.chars + ' ch</span> ' + esc(d.reply || "(no reply)") +
+          (d.has_more ? ' <span class="badge badge-warning">more pages: send "more"</span>' : "") + "</div>" +
+          '<span class="text-muted">[' + esc(d.command) + (d.location ? " · " + esc(d.location) : "") + " · " + d.ms + " ms]</span>";
+        log.scrollTop = log.scrollHeight;
+      }).catch(function (e) { $(id).textContent = "error: " + e.message; });
+    },
+  },
+
+  // -- Broadcasts: jobs, counters, broadcast log ---------------------------------
+
+  broadcasts: {
+    _meta: null, _timer: null, _sse: null, _n: 0,
+    _labels: { broadcast: "Broadcast", beacon: "Discovery beacon", app_request: "App request", app_response: "App reply",
+               refresh: "App refresh", throttled: "Throttled" },
+
+    onEnter: function () {
+      var self = this;
+      if (!this._meta) api("/api/schedule/meta").then(function (d) { self._meta = d; }).catch(function () {});
+      this.loadJobs(); this.loadStats();
+      this._timer = setInterval(function () { self.loadJobs(); self.loadStats(); }, 30000);
+      api("/api/activity?limit=150").then(function (d) {
+        var el = $("bclog-body");
+        var ev = d.events || [];
+        self._n = ev.length;
+        el.innerHTML = ev.slice().reverse().map(function (e) { return self.fmt(e); }).join("") || '<div class="text-muted">Nothing sent on the data channel yet.</div>';
+        el.scrollTop = el.scrollHeight;
+        self._status();
+        if (self._sse) self._sse.close();
+        self._sse = liveStream("/api/activity/stream", function (e) {
+          appendLine(el, self.fmt(e), 500); self._n++; self._status();
+        }, "bclog-dot");
+      }).catch(function (e) { $("bclog-body").textContent = "Broadcast log unavailable: " + e.message; });
+    },
+    onLeave: function () {
+      if (this._timer) { clearInterval(this._timer); this._timer = null; }
+      if (this._sse) { this._sse.close(); this._sse = null; }
+    },
+    _status: function () { $("bclog-status").textContent = this._n + " events"; },
+    fmt: function (e) {
+      var dir = e.direction === "in" ? '<span class="in">← in </span>' : '<span class="out">→ out</span>';
+      var label = this._labels[e.event_type] || e.event_type;
+      var cls = e.event_type === "throttled" ? "badge-warning" : e.direction === "out" ? "badge-success" : "badge-muted";
+      return '<div class="console-line"><span class="text-muted">' + hhmmss(e.ts) + "</span> " + dir + ' <span class="badge ' + cls + '">' + esc(label) + "</span> " + esc(e.summary) + "</div>";
+    },
+
+    loadStats: function () {
+      api("/api/stats").then(function (d) {
+        var by = {}; (d.stats || []).forEach(function (s) { by[s.window_minutes] = s; });
+        var h1 = by[60] || {}, d1 = by[1440] || {}, m15 = by[15] || {};
+        var kb = function (b) { return b >= 1024 ? (b / 1024).toFixed(1) + " KB" : (b || 0) + " B"; };
+        var ov = (Portal.poll.last || {}).broadcasts || {};
+        $("bc-tiles").innerHTML =
+          tile("Jobs", ov.running === false ? "off" : (ov.jobs_enabled != null ? ov.jobs_enabled + " of " + ov.jobs_total : "–"), ov.running === false ? "no data channel configured" : "enabled · " + nextRun(ov.next_run_in_s), ov.running === false ? "dim" : "", null) +
+          tile("Last 15 min", m15.messages || 0, kb(m15.bytes) + " on the data channel") +
+          tile("Last hour", h1.messages || 0, kb(h1.bytes)) +
+          tile("Last 24 h", d1.messages || 0, kb(d1.bytes));
+      }).catch(function () {});
+    },
+    _productLabel: function (k) { var i = ((this._meta || {}).product_info || {})[k]; return i ? i.label : k; },
+    _locationLabel: function (k) { var i = ((this._meta || {}).location_info || {})[k]; return i ? i.label : k; },
+
+    loadJobs: function () {
+      var self = this;
+      api("/api/schedule/jobs").then(function (data) {
+        var tbody = $("jobs-body");
+        if (!data.jobs || !data.jobs.length) { tbody.innerHTML = '<tr><td colspan="9" class="text-muted">No jobs configured.</td></tr>'; return; }
+        tbody.innerHTML = data.jobs.map(function (j) {
+          var id = esc(j.id);
+          return "<tr" + (j.enabled ? "" : ' class="text-muted"') + '><td><strong>' + esc(j.name) + '</strong><br><code class="text-muted text-small">' + id + "</code></td>" +
+            "<td>" + esc(self._productLabel(j.product)) + "</td>" +
+            "<td>" + esc(self._locationLabel(j.location_type)) + (j.location_id ? ": " + esc(j.location_id) : "") + "</td>" +
+            "<td>" + j.interval_minutes + " min</td>" +
+            "<td>" + (j.last_run_seconds_ago != null ? ago(j.last_run_seconds_ago) + " ago" : "never") + "</td>" +
+            "<td>" + (!j.enabled ? "–" : j.next_run_in_seconds != null && j.last_run_unix ? "in " + ago(j.next_run_in_seconds) : "next tick") + "</td>" +
+            "<td>" + j.last_bytes + ' B <span class="text-muted">(' + j.last_msg_count + " msg)</span></td>" +
+            '<td><button class="btn btn-mini" onclick="Portal.broadcasts.toggleJob(\'' + id + '\')">' + (j.enabled ? "on" : "off") + "</button></td>" +
+            '<td class="actions"><button class="btn btn-mini" onclick="Portal.broadcasts.runNow(\'' + id + '\')">Run now</button> ' +
+            '<button class="btn btn-mini" onclick="Portal.broadcasts.editJob(\'' + id + '\')">Edit</button> ' +
+            '<button class="btn btn-mini" onclick="Portal.broadcasts.deleteJob(\'' + id + '\')">Delete</button></td></tr>';
+        }).join("");
+      }).catch(function (e) {
+        $("jobs-body").innerHTML = '<tr><td colspan="9" class="text-muted">' + esc(e.message) + "</td></tr>";
+      });
+    },
+
+    runDue: function (btn) {
+      btn.disabled = true;
+      var self = this;
+      api("/api/actions/broadcast", { method: "POST" }).then(function (d) {
+        Portal.ui.toast(d.messages_sent ? "Sent " + d.messages_sent + " message(s)" : "Nothing was due; use Run now on a job to force it");
+        self.loadJobs();
+      }).catch(function (e) { Portal.ui.toast(e.message, false); }).finally(function () { btn.disabled = false; });
+    },
+
+    openJobModal: function (mode, job) {
+      var meta = this._meta || {}, pInfo = meta.product_info || {}, lInfo = meta.location_info || {};
+      var isEdit = mode === "edit" && job;
+      var selectedProduct = isEdit ? job.product : (meta.products || [])[0] || "";
+      var productOpts = (meta.products || []).map(function (p) {
+        return '<option value="' + p + '"' + (p === selectedProduct ? " selected" : "") + ">" + esc((pInfo[p] || {}).label || p) + "</option>";
+      }).join("");
+      var validLocs = (pInfo[selectedProduct] || {}).locations || meta.location_types || [];
+      var selectedLoc = isEdit ? job.location_type : validLocs[0] || "";
+      var locOpts = validLocs.map(function (t) {
+        return '<option value="' + t + '"' + (t === selectedLoc ? " selected" : "") + ">" + esc((lInfo[t] || {}).label || t) + "</option>";
+      }).join("");
+      var html =
+        "<h2>" + (isEdit ? "Edit job" : "New job") + "</h2>" +
+        '<form onsubmit="Portal.broadcasts.saveJob(event)">' +
+        '<input type="hidden" id="jf-mode" value="' + mode + '"><input type="hidden" id="jf-original-id" value="' + (isEdit ? esc(job.id) : "") + '">' +
+        '<label>ID (slug)<input type="text" id="jf-id" required pattern="[a-z0-9_-]+" maxlength="64" value="' + (isEdit ? esc(job.id) : "") + '"' + (isEdit ? " readonly" : "") + "></label>" +
+        '<label>Display name<input type="text" id="jf-name" required maxlength="120" value="' + (isEdit ? esc(job.name) : "") + '"></label>' +
+        '<label>Product<select id="jf-product" required onchange="Portal.broadcasts._onProductChange()">' + productOpts + "</select>" +
+        '<span class="form-hint" id="jf-product-desc">' + esc((pInfo[selectedProduct] || {}).desc || "") + "</span></label>" +
+        '<label>Location<select id="jf-loctype" required onchange="Portal.broadcasts._onLocTypeChange()">' + locOpts + "</select></label>" +
+        '<div id="jf-locid-group"' + (selectedLoc !== "coverage" ? "" : " hidden") + '><label>Location ID<input type="text" id="jf-locid" placeholder="' + esc((lInfo[selectedLoc] || {}).placeholder || "") + '" value="' + (isEdit ? esc(job.location_id || "") : "") + '"></label></div>' +
+        '<label>Interval (minutes)<input type="number" id="jf-interval" required min="1" max="10080" value="' + (isEdit ? job.interval_minutes : 60) + '"></label>' +
+        '<label class="checkbox"><input type="checkbox" id="jf-enabled"' + (isEdit ? (job.enabled ? " checked" : "") : " checked") + "> Enabled</label>" +
+        '<div class="flex gap-2 mt-4"><button type="submit" class="btn btn-primary">Save</button><button type="button" class="btn" onclick="Portal.ui.closeModal()">Cancel</button></div></form>';
+      Portal.ui.openModal(html);
+    },
+    _onProductChange: function () {
+      var meta = this._meta || {}, pInfo = meta.product_info || {}, lInfo = meta.location_info || {};
+      var info = pInfo[$("jf-product").value] || {};
+      $("jf-product-desc").textContent = info.desc || "";
+      var validLocs = info.locations || meta.location_types || [];
+      var sel = $("jf-loctype"), cur = sel.value;
+      sel.innerHTML = validLocs.map(function (t) { return '<option value="' + t + '">' + esc((lInfo[t] || {}).label || t) + "</option>"; }).join("");
+      if (validLocs.indexOf(cur) !== -1) sel.value = cur;
+      this._onLocTypeChange();
+    },
+    _onLocTypeChange: function () {
+      var lInfo = ((this._meta || {}).location_info) || {};
+      var lt = $("jf-loctype").value;
+      $("jf-locid-group").hidden = lt === "coverage";
+      $("jf-locid").placeholder = (lInfo[lt] || {}).placeholder || "";
+    },
+    saveJob: function (ev) {
+      ev.preventDefault();
+      var mode = $("jf-mode").value, origId = $("jf-original-id").value, self = this;
+      var body = {
+        id: $("jf-id").value.trim(), name: $("jf-name").value.trim(), product: $("jf-product").value,
+        location_type: $("jf-loctype").value, location_id: $("jf-locid").value.trim(),
+        interval_minutes: parseInt($("jf-interval").value, 10), enabled: $("jf-enabled").checked,
+      };
+      var url = mode === "edit" ? "/api/schedule/jobs/" + encodeURIComponent(origId) : "/api/schedule/jobs";
+      api(url, { method: mode === "edit" ? "PUT" : "POST", body: body }).then(function () {
+        Portal.ui.toast("Job saved"); Portal.ui.closeModal(); self.loadJobs();
+      }).catch(function (e) { Portal.ui.toast("Save failed: " + e.message, false); });
+    },
+    toggleJob: function (id) {
+      var self = this;
+      api("/api/schedule/jobs/" + encodeURIComponent(id) + "/toggle", { method: "POST" })
+        .then(function () { self.loadJobs(); Portal.poll.tick(); }).catch(function (e) { Portal.ui.toast(e.message, false); });
+    },
+    runNow: function (id) {
+      var self = this;
+      api("/api/schedule/jobs/" + encodeURIComponent(id) + "/run-now", { method: "POST" })
+        .then(function (d) { Portal.ui.toast(d.messages_sent ? "Sent " + d.messages_sent + " message(s)" : "Job ran: no data to send right now"); setTimeout(function () { self.loadJobs(); self.loadStats(); }, 500); })
+        .catch(function (e) { Portal.ui.toast(e.message, false); });
+    },
+    editJob: function (id) {
+      var self = this;
+      api("/api/schedule/jobs").then(function (d) {
+        var job = (d.jobs || []).find(function (j) { return j.id === id; });
+        if (!job) { Portal.ui.toast("Job not found", false); return; }
+        self.openJobModal("edit", job);
+      });
+    },
+    deleteJob: function (id) {
+      if (!confirm("Delete job " + id + "?")) return;
+      var self = this;
+      api("/api/schedule/jobs/" + encodeURIComponent(id), { method: "DELETE" })
+        .then(function () { Portal.ui.toast("Job deleted"); self.loadJobs(); }).catch(function (e) { Portal.ui.toast(e.message, false); });
+    },
+  },
+
+  // -- Radio -----------------------------------------------------------------------
+
+  radio: {
+    _state: null,
+    onEnter: function () { this.load(); this.loadContacts(); },
+
+    load: function () {
+      var self = this;
+      api("/api/radio").then(function (d) { self._state = d; self.render(d); })
+        .catch(function (e) { Portal.ui.toast("Radio: " + e.message, false); });
+    },
+
+    render: function (d) {
+      var info = d.info || {}, conn = d.connected, dev = d.device || {};
+      $("radio-offline-card").hidden = !!conn;
+      $("radio-offline-reason").textContent = conn ? "" : (d.error || "") + " (" + d.serial_port + " @ " + d.serial_baud + ")";
+      $("radio-stats").innerHTML =
+        tile("Link", conn ? "up" : "down", d.serial_port, conn ? "ok" : "bad") +
+        tile("Node", conn ? esc(info.name || "?") : "–", (dev.model ? dev.model + " · " : "") + (dev.ver || "")) +
+        tile("Frequency", info.radio_freq != null ? info.radio_freq + " MHz" : "–",
+          info.radio_bw != null ? "BW " + info.radio_bw + " kHz · SF" + info.radio_sf + " · CR" + info.radio_cr : "") +
+        tile("TX power", info.tx_power != null ? info.tx_power + " dBm" : "–", info.max_tx_power != null ? "max " + info.max_tx_power + " dBm" : "") +
+        tile("Battery", info.battery_mv ? (info.battery_mv / 1000).toFixed(2) + " V" : "–", d.tx_enabled ? "transmit on" : "receive only");
+
+      setVal("radio-name", info.name); setVal("radio-lat", info.adv_lat); setVal("radio-lon", info.adv_lon);
+      setVal("radio-freq", info.radio_freq); setVal("radio-bw", info.radio_bw); setVal("radio-sf", info.radio_sf); setVal("radio-cr", info.radio_cr);
+      setVal("radio-txpower", info.tx_power);
+      $("radio-pubkey").textContent = info.public_key ? "public key " + info.public_key : "";
+      var badge = $("radio-tx-badge");
+      badge.textContent = d.tx_enabled ? "ON" : "OFF";
+      badge.className = "badge " + (d.tx_enabled ? "badge-danger" : "badge-success");
+      $("radio-tx-toggle").textContent = d.tx_enabled ? "Disable transmit" : "Enable transmit";
+
+      var sel = $("radio-preset"), presets = d.presets || {}, match = "";
+      Object.keys(presets).forEach(function (k) {
+        var p = presets[k];
+        if (Math.abs((info.radio_freq || 0) - p.freq_mhz) < 0.001 && Math.abs((info.radio_bw || 0) - p.bw_khz) < 0.1 && info.radio_sf === p.sf && info.radio_cr === p.cr) match = k;
+      });
+      if (document.activeElement !== sel) {
+        sel.innerHTML = '<option value="">custom</option>' + Object.keys(presets).map(function (k) {
+          var p = presets[k];
+          return '<option value="' + k + '">' + esc(p.label) + " · " + p.freq_mhz + " MHz / " + p.bw_khz + " kHz / SF" + p.sf + " / CR" + p.cr + "</option>";
+        }).join("");
+        sel.value = match;
+      }
+
+      var cfg = d.configured_channels || {};
+      setVal("ch-text", cfg.text); setVal("ch-data", cfg.data); setVal("ch-discover", cfg.discover);
+      var slots = (info.channels) || {};
+      $("ch-status").textContent = conn ? ["text", "data", "discover"].map(function (r) {
+        return r + ": " + (slots[r] != null ? "slot " + slots[r] : (cfg[r] ? "not on the node" : "off"));
+      }).join(" · ") : "Radio not connected: names apply when it connects";
+
+      var tb = $("radio-channels");
+      if (!conn) { tb.innerHTML = '<tr><td colspan="5" class="text-muted">Radio not connected</td></tr>'; }
+      else {
+        var rows = [];
+        for (var i = 0; i < 8; i++) {
+          var ch = (d.channels || []).filter(function (c) { return c.idx === i; })[0] || { idx: i, name: "", role: null };
+          var roleBadge = ch.role ? '<span class="badge badge-success">' + ch.role + "</span>" : "";
+          if (!ch.role && ch.name && [cfg.text, cfg.data, cfg.discover].indexOf(ch.name) !== -1) roleBadge = '<span class="badge badge-warning">configured, not resolved</span>';
+          rows.push("<tr><td>" + i + (i === 0 ? ' <span class="text-muted">public</span>' : "") + "</td>" +
+            "<td>" + (i === 0 ? esc(ch.name || "Public") : '<input class="input" style="max-width:260px" id="radio-ch-' + i + '" value="' + esc(ch.name || "") + '" placeholder="(empty slot)">') + "</td>" +
+            "<td>" + roleBadge + "</td>" +
+            '<td class="text-mono text-small text-muted">' + (ch.secret ? ch.secret.slice(0, 8) + "…" : "") + "</td>" +
+            "<td>" + (i === 0 ? "" : '<button class="btn btn-mini" onclick="Portal.radio.saveSlot(' + i + ')">Save</button> ' +
+              (ch.name && !ch.role ? '<button class="btn btn-mini" onclick="Portal.radio.clearSlot(' + i + ')">Clear</button>' : "")) + "</td></tr>");
+        }
+        tb.innerHTML = rows.join("");
+      }
+      this.renderHousekeeping(d.housekeeping);
+    },
+
+    renderHousekeeping: function (h) {
+      if (!h) return;
+      var cb = $("env-MCW_CONTACT_HOUSEKEEPING");
+      if (document.activeElement !== cb) cb.checked = !!h.enabled;
+      setVal("env-MCW_CONTACT_KEEP_FREE", h.keep_free);
+      $("contacts-help").textContent = "The node holds " + h.slots + " contacts and can only DM someone it has stored. With housekeeping on, the node stores companions only; " +
+        "repeaters, rooms and sensors already stored are removed after every refresh, and when people alone come within " + h.keep_free + " of the limit the ones heard longest ago go. The admin and other WX- bots are never removed.";
+      $("contacts-sub").textContent = h.last && h.last.t ? "Housekeeping " + agoAt(h.last.t) + " ago: " + h.last.note :
+        (h.enabled ? "Housekeeping on, not run yet" : "Housekeeping off: the firmware keeps whatever it hears");
+    },
+
+    _act: function (promise, okMsg) {
+      var self = this, out = $("radio-action-result");
+      return promise.then(function (d) {
+        Portal.ui.toast(okMsg || "Done");
+        out.textContent = (d && d.note) || "";
+        self.load(); Portal.poll.tick();
+      }).catch(function (e) { Portal.ui.toast(e.message, false); out.textContent = e.message; });
+    },
+    saveName: function () { this._act(api("/api/radio/name", { method: "POST", body: { name: $("radio-name").value } }), "Name saved"); },
+    saveCoords: function () {
+      this._act(api("/api/radio/coords", { method: "POST", body: { lat: parseFloat($("radio-lat").value), lon: parseFloat($("radio-lon").value) } }), "Location saved");
+    },
+    pickPreset: function () {
+      var p = ((this._state || {}).presets || {})[$("radio-preset").value];
+      if (!p) return;
+      $("radio-freq").value = p.freq_mhz; $("radio-bw").value = p.bw_khz; $("radio-sf").value = p.sf; $("radio-cr").value = p.cr;
+    },
+    saveParams: function () {
+      var body = { freq_mhz: parseFloat($("radio-freq").value), bw_khz: parseFloat($("radio-bw").value), sf: parseInt($("radio-sf").value, 10), cr: parseInt($("radio-cr").value, 10) };
+      if (!confirm("Set the radio to " + body.freq_mhz + " MHz / " + body.bw_khz + " kHz / SF" + body.sf + " / CR" + body.cr + "? Every node on the mesh must use the same values.")) return;
+      this._act(api("/api/radio/params", { method: "POST", body: body }), "Radio parameters applied");
+    },
+    saveTxPower: function () { this._act(api("/api/radio/txpower", { method: "POST", body: { dbm: parseInt($("radio-txpower").value, 10) } }), "TX power set"); },
+    toggleTx: function () {
+      var on = !(this._state && this._state.tx_enabled);
+      if (on && !confirm("Enable transmit? The bot will send an advert now, then DM replies and scheduled broadcasts.")) return;
+      this._act(api("/api/radio/tx", { method: "POST", body: { enabled: on } }), on ? "Transmit enabled" : "Transmit disabled");
+    },
+    advert: function () { this._act(api("/api/radio/advert", { method: "POST", body: {} }), "Advert requested"); },
+    reboot: function () { if (confirm("Reboot the radio node? The bot reconnects on its own.")) this._act(api("/api/radio/reboot", { method: "POST", body: {} }), "Rebooting"); },
+    reconnect: function (btn) {
+      btn.disabled = true;
+      var self = this;
+      api("/api/radio/reconnect", { method: "POST", body: {} }).then(function (d) {
+        Portal.ui.toast(d.connected ? "Radio connected" : "Still not connected: " + (d.error || ""), d.connected); self.load(); Portal.poll.tick();
+      }).catch(function (e) { Portal.ui.toast(e.message, false); }).finally(function () { btn.disabled = false; });
+    },
+    saveRoles: function (btn) {
+      var st = $("ch-status"), self = this;
+      btn.disabled = true; st.textContent = "Saving…";
+      api("/api/settings/channels", { method: "POST", body: { text_channel: $("ch-text").value.trim(), data_channel: $("ch-data").value.trim(), discover_channel: $("ch-discover").value.trim() } })
+        .then(function (d) { Portal.ui.toast(d.note || "Saved"); self.load(); })
+        .catch(function (e) { st.textContent = e.message; Portal.ui.toast(e.message, false); })
+        .finally(function () { btn.disabled = false; });
+    },
+    saveSlot: function (i) {
+      var name = $("radio-ch-" + i).value.trim();
+      if (!name) return this.clearSlot(i);
+      this._act(api("/api/radio/channel", { method: "POST", body: { idx: i, name: name } }), "Slot " + i + " saved");
+    },
+    clearSlot: function (i) { if (confirm("Clear channel slot " + i + "?")) this._act(api("/api/radio/channel/" + i, { method: "DELETE" }), "Slot " + i + " cleared"); },
+    saveHousekeeping: function () {
+      var on = $("env-MCW_CONTACT_HOUSEKEEPING").checked, keep = $("env-MCW_CONTACT_KEEP_FREE").value.trim();
+      var body = { MCW_CONTACT_HOUSEKEEPING: on ? "true" : "false" };
+      if (keep !== "") body.MCW_CONTACT_KEEP_FREE = keep;
+      this._act(api("/api/settings/env", { method: "POST", body: body }), on ? "Housekeeping on" : "Housekeeping off");
+    },
+    housekeepNow: function () {
+      var self = this;
+      api("/api/radio/housekeep", { method: "POST", body: {} }).then(function (d) { Portal.ui.toast(d.note); self.load(); self.loadContacts(); })
+        .catch(function (e) { Portal.ui.toast(e.message, false); });
+    },
+    loadContacts: function () {
+      api("/api/radio/contacts").then(function (d) {
+        var tb = $("radio-contacts");
+        if (!d.contacts.length) { tb.innerHTML = '<tr><td colspan="5" class="text-muted">No contacts</td></tr>'; return; }
+        tb.innerHTML = d.contacts.map(function (c) {
+          return "<tr><td>" + esc(c.name || "?") + "</td><td>" + ({ 1: "companion", 2: "repeater", 3: "room", 4: "sensor" }[c.type] || c.type || "") + "</td>" +
+            "<td>" + (c.heard ? agoAt(c.heard) + " ago" : "–") + "</td>" +
+            "<td>" + (c.out_path_len != null && c.out_path_len >= 0 ? c.out_path_len + " hops" : "flood") + "</td>" +
+            '<td class="text-mono text-small text-muted">' + (c.public_key || "").slice(0, 12) + "</td></tr>";
+        }).join("");
+      }).catch(function (e) { $("radio-contacts").innerHTML = '<tr><td colspan="5" class="text-muted">' + esc(e.message) + "</td></tr>"; });
+    },
+  },
+
+  // -- Satellite and feed ------------------------------------------------------------
+
+  satellite: {
+    _timer: null,
+    onEnter: function () {
+      var s = this;
+      this.load(); this.loadHistory();
+      if (this._timer) clearInterval(this._timer);
+      this._timer = setInterval(function () { s.load(); s.loadHistory(); }, 10000);
+      Portal.products.onEnter();
+    },
+    onLeave: function () { if (this._timer) clearInterval(this._timer); this._timer = null; },
+
+    load: function () {
+      api("/api/sdr").then(function (d) {
+        var r = d.receiver || {}, st = r.stats || {}, feed = d.feed || {}, err = r._error;
+        $("sat-dashboard-link").href = d.dashboard_url;
+        $("sat-stats").innerHTML =
+          tile("Lock", err ? "?" : (st.locked ? "locked" : "no lock"), err ? "dashboard unreachable" : (st.lock_since ? "since " + agoAt(st.lock_since) + " ago" : ""), err ? "bad" : st.locked ? "ok" : "warn") +
+          tile("Viterbi", st.vit_avg != null ? st.vit_avg : "–", "errors per frame, lower is better") +
+          tile("Drops", st.drops != null ? st.drops : "–", "last interval", st.drops ? "warn" : "") +
+          tile("Feed", feed.products_last_hour != null ? feed.products_last_hour : "–", "products in the last hour") +
+          tile("Newest file", ago(feed.newest_age_s) + " old", feed.source === "sdr" ? "from the dish" : "internet feed");
+        $("sat-signal-sub").textContent = err ? err :
+          ("mode " + (r.mode || "?") + " · gain " + (st.gain != null ? st.gain.toFixed(1) : "?") + " · freq offset " + (st.freq != null ? Math.round(st.freq) + " Hz" : "?"));
+        $("sat-mode-point").className = "btn" + (r.mode === "point" ? " btn-primary" : "");
+        $("sat-mode-receive").className = "btn" + (r.mode === "receive" ? " btn-primary" : "");
+        var tot = st.totals || {};
+        $("sat-totals").innerHTML =
+          tile("Packets", tot.packets != null ? tot.packets.toLocaleString() : "–", "since goesrecv start") +
+          tile("Dropped", tot.drops != null ? tot.drops.toLocaleString() : "–", tot.packets ? (tot.drops * 100 / tot.packets).toFixed(2) + "%" : "") +
+          tile("RS corrected", tot.rs_errors != null ? tot.rs_errors.toLocaleString() : "–", "bytes");
+        $("sat-feed-sub").textContent = feed.products_total + " products in the store · " + feed.warnings_last_hour + " warning-class in the last hour" + (feed.directory ? " · " + feed.directory : "");
+        $("sat-feed-types").innerHTML = (feed.top_types_last_hour || []).map(function (t) {
+          return '<tr><td class="text-mono">' + esc(t[0]) + "</td><td>" + t[1] + "</td></tr>";
+        }).join("") || '<tr><td colspan="2" class="text-muted">nothing in the last hour</td></tr>';
+        var svc = (r.status || {}).services || {}, stt = r.status || {};
+        $("sat-services").innerHTML =
+          tile("goesrecv", svc.goesrecv || "?", stt.goesrecv_up_s ? "up " + ago(stt.goesrecv_up_s) : "", svc.goesrecv === "active" ? "ok" : "warn") +
+          tile("goesproc", svc.goesproc || "?", stt.counts ? (stt.counts.emwin_today || 0) + " EMWIN files today" : "", svc.goesproc === "active" ? "ok" : "warn");
+      }).catch(function (e) { Portal.ui.toast("Satellite: " + e.message, false); });
+    },
+
+    loadHistory: function () {
+      api("/api/sdr/history").then(function (d) {
+        var h = d.history; if (!Array.isArray(h) || !h.length) return;
+        var c = $("sat-chart"), ctx = c.getContext("2d");
+        var W = c.width = c.clientWidth || 600, H = c.height;
+        ctx.clearRect(0, 0, W, H);
+        var vit = h.map(function (r) { return r[1]; }), drops = h.map(function (r) { return r[3]; });
+        var vmax = Math.max(400, Math.max.apply(null, vit)), dmax = Math.max(5, Math.max.apply(null, drops));
+        var n = h.length, dx = W / n;
+        ctx.fillStyle = "rgba(225,29,72,0.6)";
+        drops.forEach(function (v, i) { if (v > 0) { var bh = v / dmax * (H - 20); ctx.fillRect(i * dx, H - bh, Math.max(1, dx), bh); } });
+        ctx.strokeStyle = "#06b6d4"; ctx.lineWidth = 1.5; ctx.beginPath();
+        vit.forEach(function (v, i) { var y = H - 10 - (v / vmax) * (H - 20); if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i * dx, y); });
+        ctx.stroke();
+        ctx.fillStyle = "#9ca3af"; ctx.font = "11px sans-serif";
+        ctx.fillText("vit " + vit[vit.length - 1] + " · drops " + drops[drops.length - 1], 6, 12);
+      }).catch(function () {});
+    },
+    setMode: function (mode) {
+      if (mode === "point" && !confirm("Switch the receiver to pointing mode? EMWIN reception stops until it is back in receive mode.")) return;
+      var self = this;
+      api("/api/sdr/mode", { method: "POST", body: { mode: mode } }).then(function () { Portal.ui.toast("Receiver in " + mode + " mode"); self.load(); Portal.poll.tick(); })
+        .catch(function (e) { Portal.ui.toast(e.message, false); });
+    },
+  },
+
+  // -- Products browser (Satellite) ----------------------------------------------------
+
+  products: {
+    _filtersLoaded: false, _loadTimer: null,
+    onEnter: function () { if (!this._filtersLoaded) this.loadFilters(); this.load(); },
+    loadFilters: function () {
+      var self = this;
+      api("/api/products/filters").then(function (d) {
+        self._fill("filter-type", d.types); self._fill("filter-office", d.offices); self._fill("filter-state", d.states);
+        self._filtersLoaded = true;
+      }).catch(function () {});
+    },
+    _fill: function (id, items) {
+      var sel = $(id), current = sel.value;
+      sel.innerHTML = '<option value="">' + sel.options[0].textContent + "</option>" + items.map(function (i) { return '<option value="' + esc(i) + '">' + esc(i) + "</option>"; }).join("");
+      sel.value = current;
+    },
+    debouncedLoad: function () { clearTimeout(this._loadTimer); var s = this; this._loadTimer = setTimeout(function () { s.load(); }, 300); },
+    load: function () {
+      var params = new URLSearchParams({ type: $("filter-type").value, office: $("filter-office").value, state: $("filter-state").value, q: $("filter-q").value });
+      var tbody = $("products-tbody");
+      api("/api/products?" + params).then(function (d) {
+        if (!d.products.length) { tbody.innerHTML = '<tr><td colspan="5" class="text-muted">No products match.</td></tr>'; $("products-summary").textContent = "No products match the filters"; return; }
+        tbody.innerHTML = d.products.map(function (p) {
+          return '<tr onclick="Portal.products.open(' + JSON.stringify(p.filename).replace(/"/g, "&quot;") + ')">' +
+            '<td class="text-mono"><strong>' + esc(p.product_type) + "</strong></td><td class=\"text-mono\">" + esc(p.office) + '</td><td class="text-mono">' + esc(p.state) + "</td>" +
+            '<td class="text-muted">' + esc(new Date(p.timestamp).toISOString().slice(0, 16).replace("T", " ")) + "</td><td>" + esc(p.preview) + "</td></tr>";
+        }).join("");
+        $("products-summary").textContent = "Newest " + d.products.length + (d.products.length >= d.limit ? " (limit " + d.limit + "; narrow the filters to see others)" : "");
+      }).catch(function (e) { tbody.innerHTML = '<tr><td colspan="5">' + esc(e.message) + "</td></tr>"; });
+    },
+    open: function (filename) {
+      api("/api/products/" + encodeURIComponent(filename)).then(function (d) {
+        Portal.ui.openModal('<div class="card-header"><div class="card-title">' + esc(d.emwin_id) + " · " + esc(d.product_type) + '</div><button class="btn" onclick="Portal.ui.closeModal()">Close</button></div>' +
+          '<pre class="text-mono pre" style="background:var(--color-bg);padding:12px;border-radius:6px;max-height:60vh;overflow:auto">' + esc(d.raw_text) + "</pre>", true);
+      }).catch(function (e) { Portal.ui.toast(e.message, false); });
+    },
+  },
+
+  // -- System: logs | settings ------------------------------------------------------------
+
+  system: {
+    _tab: null,
+    onEnter: function () {},
+    onLeave: function () { Portal.logs.stop(); this._tab = null; },
+    showTab: function (tab) {
+      if (tab !== "settings") tab = "logs";
+      if (tab === this._tab) return;
+      this._tab = tab;
+      document.querySelectorAll("#system-tabs .sub-tab").forEach(function (a) { a.classList.toggle("active", a.dataset.tab === tab); });
+      $("system-tab-logs").classList.toggle("active", tab === "logs");
+      $("system-tab-settings").classList.toggle("active", tab === "settings");
+      if (tab === "logs") Portal.logs.start(); else { Portal.logs.stop(); Portal.settings.load(); }
+    },
+  },
+
+  logs: {
+    _lines: [], _max: 3000, _cat: "all", _paused: false, _sse: null, _pending: 0, _lastId: 0,
+    start: function () {
+      var self = this;
+      api("/api/logs?n=800").then(function (d) {
+        self._lines = d.lines || [];
+        self._lastId = self._lines.length ? self._lines[self._lines.length - 1].id : 0;
+        self._counts(d.counts);
+        self.render(true);
+        self._connect();
+      }).catch(function (e) { Portal.ui.toast("Logs: " + e.message, false); });
+    },
+    stop: function () { if (this._sse) { this._sse.close(); this._sse = null; } },
+    _connect: function () {
+      var self = this;
+      if (this._sse) this._sse.close();
+      this._sse = liveStream("/api/logs/stream", function (l) {
+        if (l.id && l.id <= self._lastId) return;
+        self._lastId = l.id || self._lastId;
+        self._lines.push(l);
+        if (self._lines.length > self._max) self._lines.splice(0, self._lines.length - self._max);
+        if (self._paused) { self._pending++; self._status(); return; }
+        if (self._show(l)) appendLine($("logs-body"), self._fmt(l), self._max);
+      }, "logs-dot");
+    },
+    _counts: function (c) {
+      if (!c) return;
+      ["satellite", "radio", "bot"].forEach(function (k) { $("logs-n-" + k).textContent = c[k] || 0; });
+      var p = $("logs-n-problems");
+      p.hidden = !c.problems; p.textContent = c.problems || ""; p.className = "badge " + (c.problems ? "badge-warning" : "badge-muted");
+    },
+    _status: function () {
+      $("logs-status").textContent = this._paused ? "paused" + (this._pending ? " · " + this._pending + " new" : "") : this._lines.length + " lines";
+    },
+    setCat: function (cat) {
+      this._cat = cat;
+      document.querySelectorAll("#logs-cats .sub-tab").forEach(function (b) { b.classList.toggle("active", b.dataset.cat === cat); });
+      this.render(true);
+    },
+    togglePause: function () {
+      this._paused = !this._paused;
+      $("logs-pause").textContent = this._paused ? "Resume" : "Pause";
+      if (!this._paused) { this._pending = 0; this.render(true); }
+      this._status();
+    },
+    clear: function () { this._lines = []; this.render(true); },
+    _show: function (l) {
+      if (this._cat !== "all" && l.cat !== this._cat) return false;
+      var lv = $("logs-level").value, order = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+      if (lv && order.indexOf(l.level) < order.indexOf(lv)) return false;
+      var q = $("logs-q").value.trim().toLowerCase();
+      return !q || l.msg.toLowerCase().indexOf(q) !== -1;
+    },
+    _fmt: function (l) {
+      var lc = l.level === "ERROR" || l.level === "CRITICAL" ? "badge-danger" : l.level === "WARNING" ? "badge-warning" : "badge-muted";
+      var cc = { satellite: "#06b6d4", radio: "#a855f7", bot: "#9ca3af" }[l.cat] || "#9ca3af";
+      return '<div class="console-line"><span class="text-muted">' + hhmmss(l.t) + "</span> " +
+        '<span style="color:' + cc + ';display:inline-block;min-width:64px">' + esc(l.cat) + "</span>" +
+        '<span class="badge ' + lc + '">' + esc(l.level.slice(0, 4)) + "</span> " + esc(l.msg) + "</div>";
+    },
+    render: function (scroll) {
+      var self = this, el = $("logs-body"), html = [];
+      this._lines.forEach(function (l) { if (self._show(l)) html.push(self._fmt(l)); });
+      el.innerHTML = html.join("") || '<div class="text-muted">nothing matches</div>';
+      if (scroll !== false) el.scrollTop = el.scrollHeight;
+      this._status();
+    },
+  },
+
+  settings: {
+    _orig: {},
+    _groups: {
+      coverage: ["MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_HOME_STATES", "MCW_HOME_WFOS"],
+      host: ["MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR", "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_TIMEZONE", "MCW_LOG_LEVEL"],
+    },
+    load: function () {
+      var self = this;
+      api("/api/system").then(function (d) {
+        var b = d.bot || {}, h = d.host || {}, s = d.settings || {}, cov = d.coverage || {};
+        $("sys-tiles").innerHTML =
+          tile("Bot up", ago(b.uptime_s), (h.hostname || "") + (b.git ? " · commit " + b.git : "")) +
+          tile("Host up", ago(h.uptime_s), h.load ? "load " + h.load.join(" / ") : "") +
+          tile("Memory", h.mem_available_mb != null ? h.mem_available_mb + " MB" : "–", "free of " + h.mem_total_mb + " MB") +
+          tile("Disk", h.disk_free_gb != null ? h.disk_free_gb + " GB" : "–", "free · " + h.disk_used_pct + "% used", h.disk_used_pct > 85 ? "bad" : h.disk_used_pct > 70 ? "warn" : "") +
+          tile("CPU temp", h.temp_c != null ? h.temp_c + "°C" : "–", b.products + " products in store", h.temp_c > 75 ? "warn" : "");
+        self._groups.coverage.concat(self._groups.host).forEach(function (k) {
+          var v = s[k.slice(4).toLowerCase()];
+          self._orig[k] = v == null ? "" : String(v);
+          setVal("env-" + k, v);
+        });
+        $("coverage-summary").innerHTML = "<b>" + esc(cov.summary || "") + "</b>";
+      }).catch(function (e) { Portal.ui.toast(e.message, false); });
+    },
+    save: function (btn, group) {
+      var self = this, body = {}, st = $(group === "coverage" ? "coverage-status" : "host-status");
+      this._groups[group].forEach(function (k) { var v = $("env-" + k).value.trim(); if (v !== self._orig[k]) body[k] = v; });
+      if (!Object.keys(body).length) { st.textContent = "Nothing changed"; return; }
+      btn.disabled = true; st.textContent = "Saving…";
+      api("/api/settings/env", { method: "POST", body: body }).then(function (d) {
+        st.textContent = d.note;
+        Portal.ui.toast(d.restart_needed && d.restart_needed.length ? "Saved; restart the bot to apply " + d.restart_needed.join(", ") : "Applied");
+        self.load(); Portal.poll.tick();
+      }).catch(function (e) { st.textContent = e.message; Portal.ui.toast(e.message, false); })
+        .finally(function () { btn.disabled = false; });
+    },
+    restart: function () {
+      if (!confirm("Restart the bot now? It is back in about 90 seconds; the radio link drops briefly.")) return;
+      api("/api/system/restart", { method: "POST", body: {} }).then(function (d) { Portal.ui.toast(d.note); })
+        .catch(function (e) { Portal.ui.toast(e.message, false); });
+    },
+  },
+
+  init: function () {
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") Portal.ui.closeModal(); });
+    this.poll.start();
+    this.router.init();
   },
 };
 
-Portal.sdr = {
-  _timer: null,
-  onEnter: function () { this.load(); this.loadHistory(); var s = this; this._timer = setInterval(function () { s.load(); s.loadHistory(); }, 10000); },
-  onLeave: function () { if (this._timer) clearInterval(this._timer); this._timer = null; },
-
-  load: function () {
-    apiJson("/api/sdr").then(function (d) {
-      var r = d.receiver || {}, st = r.stats || {}, feed = d.feed || {};
-      var err = r._error;
-      document.getElementById("sdr-dashboard-link").href = d.dashboard_url;
-      document.getElementById("sdr-stats").innerHTML =
-        statCard("Lock", err ? "?" : (st.locked ? "locked" : "no lock"), err ? "dashboard unreachable" : (st.lock_since ? "since " + fmtAgeS(Math.round(Date.now() / 1000 - st.lock_since)) + " ago" : ""), st.locked ? "" : "text-muted") +
-        statCard("Viterbi", st.vit_avg != null ? st.vit_avg : "–", "errors/frame, lower is better") +
-        statCard("Drops", st.drops != null ? st.drops : "–", "last interval") +
-        statCard("Feed", feed.products_last_hour != null ? feed.products_last_hour : "–", "products in the last hour") +
-        statCard("Newest file", fmtAgeS(feed.newest_age_s), feed.source === "sdr" ? "from the dish" : "internet feed");
-      document.getElementById("sdr-signal-sub").textContent = err ? err :
-        ("mode " + (r.mode || "?") + " · gain " + (st.gain != null ? st.gain.toFixed(1) : "?") + " · freq offset " + (st.freq != null ? Math.round(st.freq) + " Hz" : "?"));
-      document.getElementById("sdr-mode-point").className = "btn" + (r.mode === "point" ? " btn-primary" : "");
-      document.getElementById("sdr-mode-receive").className = "btn" + (r.mode === "receive" ? " btn-primary" : "");
-      var tot = st.totals || {};
-      document.getElementById("sdr-totals").innerHTML =
-        statCard("Packets", tot.packets != null ? tot.packets.toLocaleString() : "–", "since goesrecv start") +
-        statCard("Dropped", tot.drops != null ? tot.drops.toLocaleString() : "–", tot.packets ? (tot.drops * 100 / tot.packets).toFixed(2) + "%" : "") +
-        statCard("RS corrected", tot.rs_errors != null ? tot.rs_errors.toLocaleString() : "–", "bytes");
-      document.getElementById("sdr-feed-sub").textContent = feed.products_total + " products in the store · " + feed.warnings_last_hour + " warning-class in the last hour" + (feed.directory ? " · " + feed.directory : "");
-      document.getElementById("sdr-feed-types").innerHTML = (feed.top_types_last_hour || []).map(function (t) {
-        return '<tr><td class="text-mono">' + escapeHtml(t[0]) + '</td><td>' + t[1] + '</td></tr>';
-      }).join("") || '<tr><td colspan="2" class="text-muted">nothing in the last hour</td></tr>';
-      var svc = (r.status || {}).services || {};
-      var stt = r.status || {};
-      document.getElementById("sdr-services").innerHTML =
-        statCard("goesrecv", svc.goesrecv || "?", stt.goesrecv_up_s ? "up " + fmtAgeS(stt.goesrecv_up_s) : "") +
-        statCard("goesproc", svc.goesproc || "?", stt.counts ? (stt.counts.emwin_today || 0) + " EMWIN files today" : "") +
-        statCard("Pi", stt.temp ? stt.temp.toFixed(0) + "°C" : "–", stt.disk_free_gb ? stt.disk_free_gb + " GB free · load " + stt.load : "");
-    }).catch(function (e) { Portal.ui.showToast("Satellite: " + e.message, false); });
-  },
-
-  loadHistory: function () {
-    apiJson("/api/sdr/history").then(function (d) {
-      var h = d.history; if (!Array.isArray(h) || !h.length) return;
-      var c = document.getElementById("sdr-chart"); var ctx = c.getContext("2d");
-      var W = c.width = c.clientWidth || 600, H = c.height;
-      ctx.clearRect(0, 0, W, H);
-      var vit = h.map(function (r) { return r[1]; }), drops = h.map(function (r) { return r[3]; });
-      var vmax = Math.max(400, Math.max.apply(null, vit)), dmax = Math.max(5, Math.max.apply(null, drops));
-      var n = h.length, dx = W / n;
-      ctx.fillStyle = "rgba(225,29,72,0.6)";
-      drops.forEach(function (v, i) { if (v > 0) { var bh = v / dmax * (H - 20); ctx.fillRect(i * dx, H - bh, Math.max(1, dx), bh); } });
-      ctx.strokeStyle = "#06b6d4"; ctx.lineWidth = 1.5; ctx.beginPath();
-      vit.forEach(function (v, i) { var y = H - 10 - (v / vmax) * (H - 20); if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i * dx, y); });
-      ctx.stroke();
-      ctx.fillStyle = "#9ca3af"; ctx.font = "11px sans-serif";
-      ctx.fillText("vit " + vit[vit.length - 1] + " · drops " + drops[drops.length - 1], 6, 12);
-    }).catch(function () {});
-  },
-  setMode: function (mode) {
-    var self = this;
-    apiJson("/api/sdr/mode", { method: "POST", body: { mode: mode } }).then(function () { Portal.ui.showToast("Receiver in " + mode + " mode", true); self.load(); })
-      .catch(function (e) { Portal.ui.showToast(e.message, false); });
-  },
-};
-
-Portal.sysinfo = {
-  onEnter: function () { this.load(); },
-  load: function () {
-    apiJson("/api/system").then(function (d) {
-      var b = d.bot || {}, h = d.host || {}, s = d.settings || {};
-      document.getElementById("sysinfo-sub").textContent = h.hostname + (b.git ? " · commit " + b.git : "");
-      document.getElementById("sysinfo-stats").innerHTML =
-        statCard("Bot up", fmtAgeS(b.uptime_s), b.radio_connected ? "radio connected" : "no radio") +
-        statCard("Host up", fmtAgeS(h.uptime_s), h.load ? "load " + h.load.join(" / ") : "") +
-        statCard("Memory", h.mem_available_mb != null ? h.mem_available_mb + " MB" : "–", "available of " + h.mem_total_mb) +
-        statCard("Disk", h.disk_free_gb != null ? h.disk_free_gb + " GB" : "–", "free · " + h.disk_used_pct + "% used") +
-        statCard("CPU temp", h.temp_c != null ? h.temp_c + "°C" : "–", b.products + " products");
-      var map = { MCW_SERIAL_PORT: "serial_port", MCW_HOME_CITIES: "home_cities", MCW_HOME_RADIUS_KM: "home_radius_km", MCW_TIMEZONE: "timezone",
-        MCW_EMWIN_SOURCE: "emwin_source", MCW_SDR_EMWIN_DIR: "sdr_emwin_dir", MCW_LOG_LEVEL: "log_level" };
-      Object.keys(map).forEach(function (k) { var el = document.getElementById("env-" + k); if (el && document.activeElement !== el && s[map[k]] != null) el.value = s[map[k]]; });
-    }).catch(function (e) { Portal.ui.showToast(e.message, false); });
-  },
-  saveEnv: function () {
-    var keys = ["MCW_SERIAL_PORT", "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_TIMEZONE", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR", "MCW_LOG_LEVEL"];
-    var body = {}; keys.forEach(function (k) { body[k] = document.getElementById("env-" + k).value; });
-    var st = document.getElementById("env-status"); st.textContent = "Saving…";
-    apiJson("/api/settings/env", { method: "POST", body: body }).then(function (d) { st.textContent = d.note; Portal.ui.showToast(d.restart_needed && d.restart_needed.length ? "Saved; some settings need a restart" : "Settings applied", true); })
-      .catch(function (e) { st.textContent = e.message; });
-  },
-  restartBot: function () {
-    if (!confirm("Restart the bot now? It is back in about 40 seconds; the radio link drops briefly.")) return;
-    apiJson("/api/system/restart", { method: "POST" }).then(function (d) { Portal.ui.showToast(d.note, true); })
-      .catch(function (e) { Portal.ui.showToast(e.message, false); });
-  },
-};
-
-// ---------------------------------------------------------------------------
-// Console: one live stream for satellite / radio / bot, filterable
-// ---------------------------------------------------------------------------
-
-Portal.console = {
-  _lines: [], _max: 3000, _cat: "all", _paused: false, _sse: null, _pending: 0, _lastId: 0,
-
-  onEnter: function () {
-    var self = this;
-    apiJson("/api/logs?n=800").then(function (d) {
-      self._lines = d.lines || [];
-      self._lastId = self._lines.length ? self._lines[self._lines.length - 1].id : 0;
-      self._counts(d.counts);
-      self.render(true);
-      self._connect();
-    }).catch(function (e) { Portal.ui.showToast("Console: " + e.message, false); });
-  },
-  onLeave: function () { if (this._sse) { this._sse.close(); this._sse = null; } },
-
-  _connect: function () {
-    var self = this;
-    if (this._sse) this._sse.close();
-    var es = new EventSource("/api/logs/stream");
-    this._sse = es;
-    es.onmessage = function (m) {
-      var l; try { l = JSON.parse(m.data); } catch (e) { return; }
-      if (!l || l.hello) return;
-      if (l.id && l.id <= self._lastId) return;
-      self._lastId = l.id || self._lastId;
-      self._lines.push(l);
-      if (self._lines.length > self._max) self._lines.splice(0, self._lines.length - self._max);
-      if (self._paused) { self._pending++; self._status(); return; }
-      if (self._show(l)) self._append(l, true);
-    };
-    es.onerror = function () { self._status("reconnecting…"); };
-    es.onopen = function () { self._status(); };
-  },
-
-  _counts: function (c) {
-    if (!c) return;
-    ["satellite", "radio", "bot"].forEach(function (k) {
-      var el = document.getElementById("console-n-" + k); if (el) el.textContent = c[k] || 0;
-    });
-  },
-  _status: function (extra) {
-    var el = document.getElementById("console-status");
-    el.textContent = (this._paused ? "paused" + (this._pending ? " · " + this._pending + " new" : "") : "live") + (extra ? " · " + extra : "");
-  },
-  setCat: function (cat) {
-    this._cat = cat;
-    document.querySelectorAll("#console-cats .sub-tab").forEach(function (b) { b.classList.toggle("active", b.dataset.cat === cat); });
-    this.render(true);
-  },
-  togglePause: function () {
-    this._paused = !this._paused;
-    document.getElementById("console-pause").textContent = this._paused ? "Resume" : "Pause";
-    if (!this._paused) { this._pending = 0; this.render(true); }
-    this._status();
-  },
-  clear: function () { this._lines = []; this.render(true); },
-
-  _show: function (l) {
-    if (this._cat !== "all" && l.cat !== this._cat) return false;
-    var lv = document.getElementById("console-level").value;
-    var order = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
-    if (lv && order.indexOf(l.level) < order.indexOf(lv)) return false;
-    var q = document.getElementById("console-q").value.trim().toLowerCase();
-    if (q && l.msg.toLowerCase().indexOf(q) === -1) return false;
-    return true;
-  },
-  _fmt: function (l) {
-    var d = new Date(l.t * 1000);
-    var ts = d.toTimeString().slice(0, 8);
-    var lc = l.level === "ERROR" || l.level === "CRITICAL" ? "badge-danger" : l.level === "WARNING" ? "badge-warning" : "badge-muted";
-    var cc = { satellite: "#06b6d4", radio: "#a855f7", bot: "#9ca3af" }[l.cat] || "#9ca3af";
-    return '<div class="console-line"><span class="text-muted">' + ts + '</span> ' +
-      '<span style="color:' + cc + ';display:inline-block;min-width:64px">' + l.cat + '</span>' +
-      '<span class="badge ' + lc + '">' + l.level.slice(0, 4) + '</span> ' + escapeHtml(l.msg) + '</div>';
-  },
-  _append: function (l, scroll) {
-    var el = document.getElementById("console-body");
-    var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    el.insertAdjacentHTML("beforeend", this._fmt(l));
-    if (el.childElementCount > this._max) el.removeChild(el.firstChild);
-    if (scroll && atBottom) el.scrollTop = el.scrollHeight;
-  },
-  render: function (scroll) {
-    var self = this;
-    var el = document.getElementById("console-body");
-    var html = [];
-    this._lines.forEach(function (l) { if (self._show(l)) html.push(self._fmt(l)); });
-    el.innerHTML = html.join("") || '<div class="text-muted">nothing matches</div>';
-    if (scroll !== false) el.scrollTop = el.scrollHeight;
-    this._status();
-  },
-};
-
-// -- Request/reply traffic: what the bot sees on its channel and by DM --------------
-
-Portal.traffic = {
-  _events: [], _max: 1500, _kind: "all", _sse: null, _lastId: 0, _timer: null,
-  _filters: {
-    all: null,
-    channel: ["channel_in", "reply_channel", "peer"],
-    dm: ["dm_in", "reply_dm", "dm_failed", "admin"],
-    dropped: ["dropped", "dm_failed"],
-    adverts: ["advert", "advert_out"],
-    apps: ["data_request"],
-  },
-
-  onEnter: function () {
-    var self = this;
-    document.getElementById("traffic-channel-name").textContent = (document.getElementById("sys-ch-text") || {}).value || "#meshwx";
-    apiJson("/api/traffic?n=400").then(function (d) {
-      self._events = d.events || [];
-      self._lastId = self._events.length ? self._events[self._events.length - 1].id : 0;
-      self.renderStats(d.stats);
-      self.render();
-      self._connect();
-    }).catch(function (e) { Portal.ui.showToast("Traffic: " + e.message, false); });
-    if (this._timer) clearInterval(this._timer);
-    this._timer = setInterval(function () {
-      apiJson("/api/traffic?n=1").then(function (d) { self.renderStats(d.stats); }).catch(function () {});
-    }, 30000);
-  },
-  onLeave: function () {
-    if (this._sse) { this._sse.close(); this._sse = null; }
-    if (this._timer) { clearInterval(this._timer); this._timer = null; }
-  },
-  _connect: function () {
-    var self = this;
-    if (this._sse) this._sse.close();
-    var es = new EventSource("/api/traffic/stream");
-    this._sse = es;
-    es.onmessage = function (m) {
-      var ev; try { ev = JSON.parse(m.data); } catch (e) { return; }
-      if (!ev || ev.hello) return;
-      if (ev.id && ev.id <= self._lastId) return;
-      self._lastId = ev.id || self._lastId;
-      self._events.push(ev);
-      if (self._events.length > self._max) self._events.splice(0, self._events.length - self._max);
-      if (self._show(ev)) self._append(ev);
-      self._status();
-    };
-    es.onerror = function () { self._status("reconnecting…"); };
-    es.onopen = function () { self._status(); };
-  },
-  _status: function (extra) {
-    var el = document.getElementById("traffic-status");
-    if (el) el.textContent = "live · " + this._events.length + " events" + (extra ? " · " + extra : "");
-  },
-  setKind: function (k) {
-    this._kind = k;
-    document.querySelectorAll("#traffic-kinds .sub-tab").forEach(function (b) { b.classList.toggle("active", b.dataset.k === k); });
-    this.render();
-  },
-  _show: function (ev) {
-    var f = this._filters[this._kind];
-    return !f || f.indexOf(ev.kind) !== -1;
-  },
-  renderStats: function (st) {
-    if (!st) return;
-    var w24 = st.windows["24h"], w1 = st.windows["1h"], lt = st.lifetime, lat = st.latency || {};
-    var top = Object.keys(w24.by_command || {}).sort(function (a, b) { return w24.by_command[b] - w24.by_command[a]; }).slice(0, 3)
-      .map(function (k) { return k + " " + w24.by_command[k]; }).join(", ");
-    var since = lt.since ? new Date(lt.since * 1000).toLocaleDateString() : "";
-    document.getElementById("traffic-stats").innerHTML =
-      statCard("Requests · 24h", w24.requests, w1.requests + " in the last hour" + (top ? " · " + top : "")) +
-      statCard("Replies · 24h", w24.replies, w24.dm_replies + " by DM · " + w24.channel_replies + " on the channel · " + w24.chars_sent + " chars") +
-      statCard("Not answered · 24h", w24.dropped, "rate limits, hop gate, budgets, nearer bot", w24.dropped ? "badge-warning" : "") +
-      statCard("Senders · 24h", w24.senders, w24.senders ? "distinct nodes" : "nobody yet") +
-      statCard("Reply time", lat.median_ms != null ? lat.median_ms + " ms" : "–", lat.p90_ms != null ? "median · p90 " + lat.p90_ms + " ms" : "receipt to send") +
-      statCard("Since " + since, lt.requests + " req", lt.replies + " replies · " + lt.dropped + " dropped · " + lt.by_transport.dm + " DM / " + lt.by_transport.channel + " channel requests");
-  },
-  _fmt: function (ev) {
-    var ts = new Date(ev.t * 1000).toTimeString().slice(0, 8);
-    var arrow = ev.dir === "in" ? '<span style="color:#06b6d4">&#8592; in </span>' : '<span style="color:#a855f7">&#8594; out</span>';
-    var tr = ev.transport === "channel" ? "CH" : ev.transport === "dm" ? "DM" : ev.transport === "console" ? "WEB" : ev.kind.indexOf("advert") === 0 ? "ADV" : "";
-    var who = ev.sender ? escapeHtml(ev.sender) : (ev.key ? '<span class="text-muted">' + escapeHtml(ev.key) + "</span>" : "");
-    var body = "", cls = "badge-muted";
-    switch (ev.kind) {
-      case "channel_in": case "dm_in":
-        body = escapeHtml(ev.text || "") + (ev.command ? ' <span class="text-muted">[' + escapeHtml(ev.command) + (ev.location ? " · " + escapeHtml(ev.location) : "") + "]</span>" : "");
-        if (ev.hops != null) body += ' <span class="text-muted">' + ev.hops + " hops</span>";
-        break;
-      case "reply_dm": case "reply_channel":
-        cls = "badge-success";
-        body = escapeHtml(ev.text || "") + ' <span class="text-muted">' + (ev.chars || 0) + " ch" + (ev.ms != null ? " · " + ev.ms + " ms" : "") + (ev.ok === false ? " · TX off" : "") + "</span>";
-        break;
-      case "dropped":
-        cls = "badge-warning";
-        body = '<span style="color:#d29922">not answered: ' + escapeHtml(ev.reason || "") + "</span>" + (ev.command ? ' <span class="text-muted">[' + escapeHtml(ev.command) + (ev.location ? " · " + escapeHtml(ev.location) : "") + "]</span>" : "");
-        break;
-      case "dm_failed":
-        cls = "badge-danger"; body = '<span style="color:#f85149">DM failed</span> ' + escapeHtml(ev.text || ""); break;
-      case "peer": body = '<span class="text-muted">peer bot, ignored:</span> ' + escapeHtml(ev.text || ""); break;
-      case "advert": body = '<span class="text-muted">advert heard</span>'; break;
-      case "advert_out": body = '<span class="text-muted">our advert (flood)</span>'; break;
-      case "data_request": body = '<span class="text-muted">app data request</span> ' + escapeHtml(ev.text || ""); break;
-      case "admin": body = '<span class="text-muted">admin command:</span> ' + escapeHtml(ev.command || ""); break;
-      case "console": body = escapeHtml(ev.text || "") + ' <span class="text-muted">[' + escapeHtml(ev.command || "") + (ev.location ? " · " + escapeHtml(ev.location) : "") + " · " + (ev.chars || 0) + " ch]</span>"; break;
-      default: body = escapeHtml(ev.text || ev.reason || "");
-    }
-    return '<div class="console-line"><span class="text-muted">' + ts + "</span> " + arrow + " " +
-      '<span class="badge ' + cls + '" style="min-width:34px;text-align:center">' + (tr || ev.kind) + "</span> " +
-      (who ? "<b>" + who + "</b> " : "") + body + "</div>";
-  },
-  _append: function (ev) {
-    var el = document.getElementById("traffic-body");
-    var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    el.insertAdjacentHTML("beforeend", this._fmt(ev));
-    if (el.childElementCount > this._max) el.removeChild(el.firstChild);
-    if (atBottom) el.scrollTop = el.scrollHeight;
-  },
-  render: function () {
-    var self = this, el = document.getElementById("traffic-body"), html = [];
-    this._events.forEach(function (ev) { if (self._show(ev)) html.push(self._fmt(ev)); });
-    el.innerHTML = html.join("") || '<div class="text-muted">Nothing yet. A request on the channel or a DM will show up here.</div>';
-    el.scrollTop = el.scrollHeight;
-    this._status();
-  },
-};
+document.addEventListener("DOMContentLoaded", function () { Portal.init(); });

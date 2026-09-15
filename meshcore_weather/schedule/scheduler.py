@@ -373,7 +373,7 @@ class Scheduler:
             f"Beacon: {len(beacon)}B, {warning_count} warnings, radius {radius_km}km",
             {"bytes": len(beacon), "warnings": warning_count})
 
-    # -- Stats (used by the portal /schedule page) ----------------------------
+    # -- Stats (the portal's Broadcasts section) ----------------------------
 
     def job_status(self, job_id: str) -> dict:
         """Return runtime status for one job: last run, bytes, next run."""
