@@ -7,6 +7,7 @@ Supported formats:
     warn FL
     metar KJFK
     taf KJFK
+    sat
     help
 """
 
@@ -19,6 +20,10 @@ COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Receiver status takes no argument, so only the bare word counts:
+# "satellite beach fl" and "signal mountain tn" stay places.
+SAT_RE = re.compile(r"^(sat|satellite|goes|signal)[\s?!.]*$", re.IGNORECASE)
+
 # Normalize typos/aliases to canonical command names
 _CMD_ALIASES = {"warnings": "warn", "warning": "warn", "wanr": "warn", "storms": "storm", "swx": "space", "solar": "space"}
 
@@ -27,6 +32,9 @@ async def parse_intent(text: str) -> dict:
     text = text.strip()
     if not text:
         return {"command": "help", "location": ""}
+
+    if SAT_RE.match(text):
+        return {"command": "sat", "location": ""}
 
     m = COMMAND_RE.match(text)
     if m:

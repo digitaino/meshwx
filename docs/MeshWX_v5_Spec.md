@@ -370,6 +370,7 @@ type and get a text DM back.
 | `>taf KAUS` | That station's own current TAF, Text subject 5, starting `TAF KAUS` (an amendment reads `TAF KAUS AMD ...`). Never another station's: without one, Not available reason 0, request `t` |
 | `>metar round rock tx`, `>taf round rock tx`, bare `>metar` / `>taf` | The nearest station with a report (the bot's home without an argument), Text subject 5, labelled with that station and its distance, e.g. `METAR (KGTU 15km) KGTU 151155Z ...` |
 | `>storm TX` `>rain TX` `>hwo` | Text, subjects 3, 4, 6 |
+| `>sat` | The bot's GOES receiver now, one line, Text subject 8: lock, signal good/fair/poor, packets dropped in the last minute, age of the newest EMWIN file. A receiver that is not reporting is answered as Text saying so. A Not available for it would carry `s`, the letter `>space` and `>storm` use |
 
 A request "names a station" when its argument is a 4-character ICAO code
 the bot knows; anything else is resolved as a place.
@@ -537,6 +538,7 @@ storm <ST>          storm reports, last 6 hours
 rain <ST>           rainfall totals
 metar <ICAO>        latest airport observation
 space               space weather
+sat                 satellite receiver: lock, signal, drops, newest EMWIN
 more                next page of the last long reply
 help                the command list
 ```
@@ -634,6 +636,7 @@ rules:
 | 7, 8.2 | `>f <index>` could come back under another index with the same coordinates | It carries the index asked for |
 | 8.2 | "At most 60 answered requests per hour", checked after the answer was built | 60 answer packets per hour, checked before building; a `>` DM also passes the people's text limiter (40 per sender, 400 per hour), a channel line does not |
 | 8.2, 8.3 | `>metar ICAO` and `>taf ICAO` could answer with a neighbouring station's report or a "no METAR" sentence | A named station gets its own report, starting `METAR <ICAO>` or `TAF <ICAO>`, or Not available reason 0 |
+| 8.2, 10.4 | (none) | `>sat` and the text command `sat` report the bot's GOES receiver as one line, Text subject 8 |
 
 The wire layout did not change, so a revision 2 decoder decodes every
 revision 3 packet. Update the bundle's `index.json` and `wfos.json`, apply

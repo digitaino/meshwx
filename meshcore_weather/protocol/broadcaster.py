@@ -184,9 +184,10 @@ class AppResponder:
             text = services.hwo_summary(ol.raw_text) if ol and getattr(ol, "raw_text", None) else None
             return b.text_messages(seq, bot, v5.SUBJECT_HWO, text) if text else []
 
-        if cmd in ("space", "storm", "rain"):
+        # `>sat` is always Text, "not reporting" included: that is the answer.
+        if cmd in ("space", "storm", "rain", "sat"):
             subject = {"space": v5.SUBJECT_SPACE, "storm": v5.SUBJECT_STORM_REPORTS,
-                       "rain": v5.SUBJECT_RAINFALL}[cmd]
+                       "rain": v5.SUBJECT_RAINFALL, "sat": v5.SUBJECT_GENERAL}[cmd]
             text = self._render_text(cmd, arg) if self._render_text else None
             return b.text_messages(seq, bot, subject, text) if text else []
 

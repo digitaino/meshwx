@@ -26,7 +26,7 @@ RADIO_RETRY_SECONDS = 60
 # One message, under the channel budget, no newlines (phones wrap it).
 HELP_TEXT = (
     "Weather bot: wx/forecast/warn <city ST> | warn/storm/rain <ST> | "
-    "metar <ICAO> | space | more. DM me for private replies"
+    "metar <ICAO> | space | sat | more. DM me for private replies"
 )
 
 
@@ -896,6 +896,11 @@ class WeatherBot:
     def _process_command(self, command: str, location: str) -> str | None:
         if command == "help":
             return HELP_TEXT
+
+        if command == "sat":
+            if self._sdr_monitor is None:
+                return "No satellite receiver on this bot: its EMWIN comes over the internet"
+            return self._sdr_monitor.report(emwin_mtime=getattr(self.emwin, "newest_mtime", None))
 
         from meshcore_weather.core import overview
 

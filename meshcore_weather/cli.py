@@ -9,6 +9,9 @@ Usage:
 
     # Interactive mode - type mesh commands (wx, warn, forecast) in your terminal
     meshcore-weather-cli interactive
+
+    # The `sat` reply: GOES receiver status from the dashboard, no EMWIN load
+    meshcore-weather-cli sat
 """
 
 import asyncio
@@ -88,6 +91,7 @@ def cmd_interactive():
         await source.start()
         products = await source.fetch_products()
         await source.stop()
+        bot.emwin = source          # its newest file, for `sat`
 
         if products:
             store.ingest(products)
@@ -103,6 +107,7 @@ def cmd_interactive():
         print("  any storms near miami florida")
         print("  forecast denver")
         print("  wx KAUS")
+        print("  sat (satellite receiver)")
         print("  more (next page)")
         print("  help")
         print("Type 'quit' to exit.")
@@ -120,12 +125,35 @@ def cmd_interactive():
 
             command, location = await bot._parse(text)
             print(f"  [NLP: cmd={command} loc='{location}']")
+            if command == "sat":
+                await _sample_receiver(bot)
             # Same paging as a DM: "more" continues the last long reply.
             chunk, has_more = bot.reply_chunk(command, location, "cli")
             if chunk:
                 print(f"\n{chunk}\n" + ("  (send 'more' for the next page)\n" if has_more else ""))
             else:
                 print("\n(no response)\n")
+
+    asyncio.run(_run())
+
+
+async def _sample_receiver(bot: WeatherBot) -> None:
+    """No monitor loop runs here: one dashboard read, so `sat` is current."""
+    if settings.emwin_source != "sdr":
+        return
+    import httpx
+    from meshcore_weather.sdr_monitor import SdrMonitor
+    bot._sdr_monitor = bot._sdr_monitor or SdrMonitor()
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        await bot._sdr_monitor.poll(client)
+
+
+def cmd_sat():
+    """Print the `sat` reply without loading EMWIN products."""
+    async def _run():
+        bot = WeatherBot()
+        await _sample_receiver(bot)
+        print(bot._process_command("sat", ""))
 
     asyncio.run(_run())
 
@@ -218,6 +246,7 @@ def main():
         print("  fetch                Fetch EMWIN products and show results")
         print("  query <location>     Fetch data and query for a location")
         print("  interactive          Simulate mesh commands from terminal")
+        print("  sat                  GOES receiver status, as the sat command replies")
         print()
         print("Radio admin:")
         print("  contacts             List contacts on the radio device")
@@ -236,6 +265,8 @@ def main():
         cmd_query(" ".join(sys.argv[2:]))
     elif cmd == "interactive":
         cmd_interactive()
+    elif cmd == "sat":
+        cmd_sat()
     elif cmd == "contacts":
         cmd_contacts()
     elif cmd == "remove":

@@ -181,6 +181,7 @@ meshcore-weather-cli interactive        # Simulate mesh commands in a local REPL
 meshcore-weather-cli contacts           # List known contacts on the radio device
 meshcore-weather-cli remove <name>      # Remove a contact by name
 meshcore-weather-cli clear-contacts     # Remove all contacts (fresh start)
+meshcore-weather-cli sat                # GOES receiver status, as the sat command replies
 ```
 
 ## Running on the receiver Pi (no Docker)
@@ -206,6 +207,7 @@ plugged in later. To try text commands from the Pi's shell:
 
 ```bash
 .venv/bin/meshcore-weather-cli interactive
+.venv/bin/meshcore-weather-cli sat      # GOES receiver status, as the sat command replies
 ```
 
 ### Updating the Pi

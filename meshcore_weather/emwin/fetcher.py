@@ -274,6 +274,7 @@ class SDRSource(EMWINSource):
         self._poll_task: asyncio.Task | None = None
         self._running = False
         self._seen_initial = False
+        self.newest_mtime: float | None = None    # newest file taken in, for `sat`
 
     async def start(self) -> None:
         if not self.root.is_dir():
@@ -359,6 +360,7 @@ class SDRSource(EMWINSource):
                     if prod:
                         self._products[name] = prod
                         added += 1
+                        self.newest_mtime = max(self.newest_mtime or 0.0, st.st_mtime)
                         if (prod.get("awips_id") or "")[:3] in _NOTABLE:
                             notable.append(prod["awips_id"])
         if notable and self._seen_initial:
