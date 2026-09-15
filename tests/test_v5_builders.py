@@ -238,6 +238,20 @@ def test_forecast_first_counts_from_the_issue_date_at_the_point(monkeypatch):
     assert v5.decode(b.forecast_message(1, 1, WeatherStore(), pt.lat, pt.lon))["first_period"] == 0
 
 
+def test_a_cold_dry_day_is_not_wintry_but_freezing_rain_is(monkeypatch):
+    from meshcore_weather.parser.weather import WeatherStore
+    pt = _austin_point()
+    for s in pt.slots:
+        s.temp_f, s.obvis = 30, None          # frost territory, nothing falling
+    _serve(monkeypatch, pt)
+    days = v5.decode(b.forecast_message(1, 1, WeatherStore(), pt.lat, pt.lon))["periods"]
+    assert days and not any(d["wintry"] for d in days)
+    for s in pt.slots:
+        s.obvis = "ZR"
+    days = v5.decode(b.forecast_message(1, 1, WeatherStore(), pt.lat, pt.lon))["periods"]
+    assert all(d["wintry"] for d in days)
+
+
 def test_forecast_at_shared_coordinates_answers_under_the_index_asked_for(monkeypatch):
     from meshcore_weather.parser.weather import WeatherStore
     b.tables.load()

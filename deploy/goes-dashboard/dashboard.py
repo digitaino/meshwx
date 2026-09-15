@@ -9,6 +9,7 @@ Runs as goes-dashboard.service on http://0.0.0.0:8080
 import collections
 import glob
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -325,7 +326,16 @@ def thumb_for(rel):
 HTML = open("/home/digitaino/goes/dashboard.html", "rb").read() if os.path.exists("/home/digitaino/goes/dashboard.html") else b"dashboard.html missing"
 
 
-LAN_PREFIXES = ("10.", "127.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.30.", "172.31.")
+def is_lan_address(ip: str) -> bool:
+    """Loopback or a private range (RFC 1918, link-local, IPv6 ULA), IPv4-mapped included.
+    A string prefix test here once let public 172.2.x.x and 172.200+.x.x in as LAN."""
+    try:
+        addr = ipaddress.ip_address(ip.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback or addr.is_private
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -339,8 +349,7 @@ class Handler(BaseHTTPRequestHandler):
         such viewers get a read-only dashboard and every control endpoint is refused."""
         if "Cf-Ray" in self.headers or "Cf-Connecting-Ip" in self.headers or "CF-Connecting-IP" in self.headers:
             return True
-        ip = self.client_address[0]
-        return not (ip == "::1" or ip.startswith(LAN_PREFIXES))
+        return not is_lan_address(self.client_address[0])
 
     def _send(self, code, body, ctype, extra=None):
         self.send_response(code)

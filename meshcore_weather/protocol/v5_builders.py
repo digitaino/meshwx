@@ -395,7 +395,8 @@ def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: f
             "low_f": None if e["low_f"] == 127 else e["low_f"],
             "pop_pct": e.get("precip_pct"), "sky": int(e.get("sky_code") or 0),
             "thunder": bool(flags & _COND_THUNDER),
-            "wintry": bool(flags & (_COND_FROST | _COND_FREEZING_RAIN | _COND_HEAVY_SNOW)),
+            # Wintry precipitation only: a frosty but dry night is not a snow icon.
+            "wintry": bool(flags & (_COND_FREEZING_RAIN | _COND_HEAVY_SNOW)),
             "windy": bool(flags & _COND_HIGH_WIND), "fog": bool(flags & _COND_FOG),
             "wind_dir_deg": (int(e.get("wind_dir_nibble") or 0) * 22.5), "wind_mph": int(e.get("wind_speed_5mph") or 0) * 5,
         })
