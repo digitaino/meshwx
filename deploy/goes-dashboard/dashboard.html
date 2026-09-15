@@ -194,14 +194,16 @@ fetch('/api/state').then(r=>r.json()).then(render).finally(connect);
 // ---- mesh weather bot (read-only bundle proxied from the bot's portal) ----
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let botLastId=0,botFeedInit=false,botStarted=null;
+function dvKey(ev){const d=ev.delivery;return d?`${d.result||''}${d.resent||0}${d.observed_by||0}`:''}
+function dlv(d){if(!d)return '';let t=d.acked?`ack${d.rtt_ms!=null?' '+(d.rtt_ms/1000).toFixed(1)+' s':''}`:d.echo?`repeated${d.echo_ms!=null?' '+(d.echo_ms/1000).toFixed(1)+' s':''}${d.via?' via '+esc(d.via):''}`:d.result==='skipped'?'no repeat heard':'no repeat heard';if(d.resent)t+=` · resent ×${d.resent}`;if(d.observed_by)t+=` · heard by ${d.observed_by} observer${d.observed_by===1?'':'s'}`;return ` <span class="t">[${t}]</span>`}
 function botLine(ev){const ts=new Date(ev.t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
  const tr=ev.transport==='channel'?'CH':ev.transport==='dm'?'DM':ev.kind.startsWith('advert')?'ADV':'';const who=ev.sender?`<span class="who">${esc(ev.sender)}</span> `:'';
  const cmd=ev.command?` <span class="t">[${esc(ev.command)}${ev.location?' · '+esc(ev.location):''}]</span>`:'';let cls='in',body='';
  switch(ev.kind){
   case 'channel_in':body=esc(ev.text)+cmd+(ev.hops!=null?` <span class="t">${ev.hops} hops</span>`:'');break;
   case 'dm_in':body=`<span class="t">DM request</span>${cmd}`;break;
-  case 'reply_channel':cls='out';body=esc(ev.text)+` <span class="t">${ev.chars||0} ch${ev.ms!=null?' · '+ev.ms+' ms':''}</span>`;break;
-  case 'reply_dm':cls='out';body=`<span class="t">DM reply</span>${cmd} <span class="t">${ev.chars||0} ch${ev.ms!=null?' · '+ev.ms+' ms':''}</span>`;break;
+  case 'reply_channel':cls='out';body=esc(ev.text)+` <span class="t">${ev.chars||0} ch${ev.ms!=null?' · '+ev.ms+' ms':''}</span>`+dlv(ev.delivery);break;
+  case 'reply_dm':cls='out';body=`<span class="t">DM reply</span>${cmd} <span class="t">${ev.chars||0} ch${ev.ms!=null?' · '+ev.ms+' ms':''}</span>`+dlv(ev.delivery);break;
   case 'dropped':cls='drop';body=`not answered: ${esc(ev.reason)}${cmd}`;break;
   case 'dm_failed':cls='drop';body='DM could not be delivered';break;
   case 'peer':body=`<span class="t">another weather bot:</span> ${esc(ev.text)}`;break;
@@ -209,7 +211,7 @@ function botLine(ev){const ts=new Date(ev.t*1000).toLocaleTimeString([],{hour:'2
   case 'advert_out':cls='out';body='<span class="t">bot advert (flood)</span>';break;
   case 'data_request':body='<span class="t">app data request</span>';break;
   default:body=esc(ev.text||ev.reason||ev.kind)}
- return `<div><span class="t">${ts}</span> <span class="${cls}">${ev.dir==='in'?'←':'→'}</span> <span class="tag">${tr||ev.kind}</span> ${who}${body}</div>`}
+ return `<div data-id="${ev.id}" data-dv="${dvKey(ev)}"><span class="t">${ts}</span> <span class="${cls}">${ev.dir==='in'?'←':'→'}</span> <span class="tag">${tr||ev.kind}</span> ${who}${body}</div>`}
 function renderBot(d){const b=$('botBadge');
  if(!d.online){b.textContent='BOT OFFLINE';b.className='badge bad';$('botSub').textContent=d.error||'';return}
  const bot=d.bot||{},r=d.radio,st=d.stats||{},w=(st.windows||{})['24h']||{},lt=st.lifetime||{},lat=st.latency||{};
@@ -230,7 +232,8 @@ function renderBot(d){const b=$('botBadge');
  if(botStarted!==null&&st.started!==botStarted)botFeedInit=false;   // the bot restarted: ids start over, redraw
  botStarted=st.started||null;
  if(!botFeedInit){feed.innerHTML=recent.length?recent.map(botLine).join(''):'<div class="hint">Nothing asked yet.</div>';botFeedInit=true;botLastId=recent.length?recent[recent.length-1].id:0;feed.scrollTop=feed.scrollHeight}
- else{const fresh=recent.filter(e=>e.id>botLastId);if(fresh.length){if(botLastId===0)feed.innerHTML='';const atBottom=feed.scrollHeight-feed.scrollTop-feed.clientHeight<40;feed.insertAdjacentHTML('beforeend',fresh.map(botLine).join(''));while(feed.childElementCount>300)feed.removeChild(feed.firstChild);botLastId=fresh[fresh.length-1].id;if(atBottom)feed.scrollTop=feed.scrollHeight}}
+ else{recent.forEach(e=>{if(e.id<=botLastId&&e.delivery){const el=feed.querySelector(`[data-id="${e.id}"]`);if(el&&el.dataset.dv!==dvKey(e))el.outerHTML=botLine(e)}});
+  const fresh=recent.filter(e=>e.id>botLastId);if(fresh.length){if(botLastId===0)feed.innerHTML='';const atBottom=feed.scrollHeight-feed.scrollTop-feed.clientHeight<40;feed.insertAdjacentHTML('beforeend',fresh.map(botLine).join(''));while(feed.childElementCount>300)feed.removeChild(feed.firstChild);botLastId=fresh[fresh.length-1].id;if(atBottom)feed.scrollTop=feed.scrollHeight}}
  $('botFeedHint').textContent=st.last_request_at?`· last request ${fmtAge(Math.max(0,Math.round(d.t-st.last_request_at)))} ago`:''}
 function pollBot(){fetch('/api/bot').then(r=>r.json()).then(renderBot).catch(()=>renderBot({online:false,error:'dashboard cannot reach the bot'})).finally(()=>setTimeout(pollBot,5000))}
 pollBot();

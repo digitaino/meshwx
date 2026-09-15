@@ -73,10 +73,10 @@ class ChannelFakeRadio:
     def find_contact_by_key(self, prefix):
         return None
 
-    async def send_channel_message(self, ch, text):
+    async def send_channel_message(self, ch, text, ev=None):
         self.channel_sent.append((ch, text))
 
-    async def send_dm(self, prefix, text):
+    async def send_dm(self, prefix, text, ev=None):
         self.dms.append((prefix, text))
         return True
 

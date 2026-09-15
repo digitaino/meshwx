@@ -48,6 +48,18 @@ class Settings(BaseSettings):
     contact_housekeeping: bool = True
     contact_slots: int = 100              # fallback when DEVICE_INFO has no max_contacts
     contact_keep_free: int = 10           # room left for newcomers after a housekeeping run
+    # Delivery: the node reports every packet it hears, including a repeater's
+    # copy of our own, so a reply with no echo inside the window is sent
+    # again (byte-identical: nodes that got it drop it, nodes that missed it
+    # take it). DMs use the recipient's ACK instead. 0 = measure only.
+    retransmit_max: int = 1
+    echo_window_s: float = 5.0
+    retransmit_per_hour: int = 30
+    mesh_quiet_s: int = 600               # no repeat heard from anyone for this long: don't bother
+    # Optional CoreScope instance (internet): "stats" annotates each reply with
+    # who heard it; "decide" also skips a retransmit the mesh observed. Empty = off.
+    scope_url: str = ""
+    scope_mode: str = "stats"
     # Initial load uses 1-hour bundle for coverage, then polls 2-minute bundle
     emwin_base_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip"
     emwin_poll_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txtmin02.zip"

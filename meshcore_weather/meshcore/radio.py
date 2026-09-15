@@ -13,6 +13,7 @@ from typing import Any
 from meshcore import MeshCore, EventType
 
 from meshcore_weather.config import settings
+from meshcore_weather.meshcore.delivery import Outbound, build_channel_payload, delivery_tracker, packet_hash
 from meshcore_weather.mqtt import MqttPublisher
 
 logger = logging.getLogger(__name__)
@@ -230,6 +231,11 @@ class MeshcoreRadio:
         self._mc.subscribe(EventType.CONTACT_MSG_RECV, self._on_dm)
         self._mc.subscribe(EventType.ADVERTISEMENT, self._on_advert)       # a node we know adverted again
         self._mc.subscribe(EventType.NEW_CONTACT, self._on_new_contact)     # a node we did not know
+        # Every raw packet the node hears (echoes of our own included) and
+        # every DM ack: the delivery tracker decides whether to send again.
+        self._mc.subscribe(EventType.RX_LOG_DATA, self._on_rx_log)
+        self._mc.subscribe(EventType.ACK, self._on_ack)
+        self._channel_secrets = {}
 
         # Start auto-fetching messages from the device
         await self._mc.start_auto_message_fetching()
@@ -305,7 +311,6 @@ class MeshcoreRadio:
                         password=settings.mqtt_password,
                         origin=settings.mqtt_origin,
                     )
-                    self._mc.subscribe(EventType.RX_LOG_DATA, self._on_rx_log)
                     logger.info("MQTT publishing enabled for pubkey %s", pubkey[:12])
                 else:
                     logger.warning("MQTT enabled but no pubkey from radio — skipping")
@@ -383,8 +388,10 @@ class MeshcoreRadio:
 
     # -- Sending --
 
-    async def send_channel_message(self, channel: int, text: str) -> None:
-        """Send a message on our dedicated channel. Never sends on ch 0."""
+    async def send_channel_message(self, channel: int, text: str, ev: dict | None = None) -> None:
+        """Send a message on our dedicated channel (never on ch 0) and watch
+        for a repeater's echo; without one it goes out once more, byte for
+        byte the same, so nobody sees it twice (see delivery.py)."""
         if not settings.tx_enabled:
             logger.info("TX disabled — suppressed channel message on ch %s", channel)
             return
@@ -398,11 +405,27 @@ class MeshcoreRadio:
         if len(text) > budget:
             logger.warning("Channel text of %d chars exceeds the %d-char budget; clipping", len(text), budget)
             text = text[:budget]
+        ts = int(time.time())
+        ts_bytes = ts.to_bytes(4, "little")
+        secret = await self._channel_secret(channel)
+        name = self._mc.self_info.get("name") or ""
+        h = packet_hash(5, build_channel_payload(secret, name, text, ts)) if secret and name else None
         try:
-            await self._mc.commands.send_chan_msg(channel, text)
+            await self._mc.commands.send_chan_msg(channel, text, timestamp=ts_bytes)
             logger.info("Sent on ch %d (flood): %s", channel, text[:80])
         except Exception:
             logger.exception("Failed to send channel message")
+            return
+
+        async def resend(attempt: int) -> bool:
+            if not settings.tx_enabled or not self._mc:
+                return False
+            await self._mc.commands.send_chan_msg(channel, text, timestamp=ts_bytes)
+            logger.info("No echo heard: sent again on ch %d (attempt %d): %s", channel, attempt + 1, text[:60])
+            return True
+
+        delivery_tracker.track(Outbound(kind="channel_text", hash=h, resend=resend, ev=ev,
+                                        window_s=settings.echo_window_s))
 
     async def send_binary_channel(self, payload: bytes) -> None:
         """Send raw binary data on the MeshWX data channel.
@@ -466,24 +489,55 @@ class MeshcoreRadio:
             except Exception:
                 logger.exception("Failed to send beacon")
 
-    async def send_dm(self, pubkey_prefix: str, text: str) -> bool:
-        """Send a direct message to a contact by their public key prefix."""
+    async def send_dm(self, pubkey_prefix: str, text: str, ev: dict | None = None) -> bool:
+        """Send a direct message to a contact by their public key prefix and
+        wait for the recipient's ACK; without one it is sent again once, and
+        a direct path that fails twice is reset to flood for next time."""
         if not settings.tx_enabled:
             logger.info("TX disabled — suppressed DM to %s", pubkey_prefix[:8])
             return False
         if not self._mc:
             logger.error("Cannot send DM - not connected")
             return False
+        ts = int(time.time())
         try:
-            result = await self._mc.commands.send_msg(pubkey_prefix, text)
+            result = await self._mc.commands.send_msg(pubkey_prefix, text, timestamp=ts)
             if result.type == EventType.ERROR:
                 logger.warning("DM to %s failed: %s", pubkey_prefix[:8], result.payload)
                 return False
             logger.info("DM sent to %s: %s", pubkey_prefix[:8], text[:80])
-            return True
         except Exception:
             logger.exception("Failed to send DM to %s", pubkey_prefix[:8])
             return False
+        self._track_dm(pubkey_prefix, text, ts, result.payload or {}, ev)
+        return True
+
+    def _track_dm(self, pubkey_prefix: str, text: str, ts: int, sent: dict, ev: dict | None) -> None:
+        ack = sent.get("expected_ack")
+        ack = ack.hex() if isinstance(ack, (bytes, bytearray)) else (ack or None)
+        if not ack:
+            return
+        window = min(30.0, max(3.0, sent.get("suggested_timeout", 4000) / 1000 * 1.2))
+
+        async def resend(attempt: int):
+            if not settings.tx_enabled or not self._mc:
+                return False
+            res = await self._mc.commands.send_msg(pubkey_prefix, text, timestamp=ts, attempt=attempt)
+            if res.type == EventType.ERROR:
+                return False
+            logger.info("No ACK from %s: DM sent again (attempt %d)", pubkey_prefix[:8], attempt + 1)
+            code = (res.payload or {}).get("expected_ack")
+            return code.hex() if isinstance(code, (bytes, bytearray)) else (code or True)
+
+        async def give_up():
+            contact = self.find_contact_by_key(pubkey_prefix)
+            if contact and contact.get("out_path_len", -1) >= 0 and self._mc:
+                logger.info("DM to %s never acked on its %d-hop path: resetting to flood",
+                            pubkey_prefix[:8], contact["out_path_len"])
+                await self._mc.commands.reset_path(contact.get("public_key") or pubkey_prefix)
+
+        delivery_tracker.track(Outbound(kind="dm", hash=None, ack=str(ack), resend=resend, ev=ev,
+                                        window_s=window, give_up=give_up))
 
     # -- Contact lookup --
 
@@ -562,13 +616,44 @@ class MeshcoreRadio:
                 logger.exception("Error in DM handler")
 
     async def _on_rx_log(self, event) -> None:
-        """Forward a raw RX_LOG_DATA event to MQTT. Never raises."""
+        """A raw packet the node heard: feed the delivery tracker (echoes of
+        our own sends) and, when enabled, MQTT. Never raises."""
+        payload = event.payload or {}
+        try:
+            raw = payload.get("payload")
+            if raw:
+                delivery_tracker.on_rx_log(bytes.fromhex(raw) if isinstance(raw, str) else bytes(raw),
+                                           payload.get("snr"))
+        except Exception:
+            logger.debug("Unparseable RX log frame", exc_info=True)
         if self._mqtt is None:
             return
         try:
-            self._mqtt.publish_packet(event.payload)
+            self._mqtt.publish_packet(payload)
         except Exception:
             logger.exception("MQTT publish failed (non-fatal)")
+
+    async def _on_ack(self, event) -> None:
+        code = (event.payload or {}).get("code")
+        if code:
+            delivery_tracker.on_ack(code)
+
+    async def _channel_secret(self, idx: int) -> bytes | None:
+        """The slot's secret, cached; needed to know the bytes of what we send."""
+        cached = self._channel_secrets.get(idx)
+        if cached:
+            return cached
+        try:
+            ch = await self._mc.commands.get_channel(idx)
+            secret = ch.payload.get("channel_secret", b"") if ch.type == EventType.CHANNEL_INFO else b""
+            if isinstance(secret, str):
+                secret = bytes.fromhex(secret)
+            if len(secret) == 16 and any(secret):
+                self._channel_secrets[idx] = bytes(secret)
+                return self._channel_secrets[idx]
+        except Exception:
+            logger.debug("Could not read channel %d secret", idx, exc_info=True)
+        return None
 
     async def _on_new_contact(self, event) -> None:
         """PUSH_CODE_NEW_ADVERT: the node discovered a contact it did not have.
@@ -802,6 +887,7 @@ class MeshcoreRadio:
         res = await mc.commands.set_channel(idx, name, secret)
         if res.type != EventType.OK:
             raise RuntimeError(f"radio refused set_channel: {res.payload}")
+        getattr(self, "_channel_secrets", {}).pop(idx, None)
         role = self._role_for(idx)
         if role and name:
             setattr(settings, self._ROLES[role][1], name)

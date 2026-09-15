@@ -63,6 +63,18 @@ function ago(s) {
 
 function agoAt(t) { return t ? ago(Date.now() / 1000 - t) : "–"; }
 
+function deliveryBadge(d) {
+  if (!d) return "";
+  var b = "";
+  if (d.acked) b += ' <span class="badge badge-success" title="the recipient acknowledged it">ack ' + (d.rtt_ms != null ? (d.rtt_ms / 1000).toFixed(1) + " s" : "") + "</span>";
+  else if (d.echo) b += ' <span class="badge badge-success" title="a repeater repeated it">echo ' + (d.echo_ms != null ? (d.echo_ms / 1000).toFixed(1) + " s" : "") + (d.via ? " via " + esc(d.via) : "") + "</span>";
+  else if (d.result === "skipped") b += ' <span class="badge badge-muted" title="' + esc(d.skipped) + '">no echo · not resent</span>';
+  else b += ' <span class="badge badge-danger">' + (d.result === "no_ack" ? "no ack" : "no echo") + "</span>";
+  if (d.resent) b += ' <span class="badge badge-warning">resent ×' + d.resent + "</span>";
+  if (d.observed_by) b += ' <span class="badge badge-muted" title="CoreScope">heard by ' + d.observed_by + " observer" + (d.observed_by === 1 ? "" : "s") + "</span>";
+  return b;
+}
+
 function nextRun(s) { return s == null ? "nothing due" : s === 0 ? "due at the next tick" : "next in " + ago(s); }
 
 function hhmmss(t) { return new Date(t * 1000).toTimeString().slice(0, 8); }
@@ -300,7 +312,12 @@ var Portal = {
       var self = this;
       if (this._sse) this._sse.close();
       this._sse = liveStream("/api/traffic/stream", function (ev) {
-        if (ev.id && ev.id <= self._lastId) return;
+        if (ev.id && ev.id <= self._lastId) {          // an update to a line we have (delivery outcome)
+          for (var i = self._events.length - 1; i >= 0; i--) if (self._events[i].id === ev.id) { self._events[i] = ev; break; }
+          var line = $("traffic-body").querySelector('[data-id="' + ev.id + '"]');
+          if (line) line.outerHTML = self.fmt(ev);
+          return;
+        }
         self._lastId = ev.id || self._lastId;
         self._events.push(ev);
         if (self._events.length > self._max) self._events.splice(0, self._events.length - self._max);
@@ -321,13 +338,16 @@ var Portal = {
       var top = Object.keys(w24.by_command || {}).sort(function (a, b) { return w24.by_command[b] - w24.by_command[a]; }).slice(0, 3)
         .map(function (k) { return k + " " + w24.by_command[k]; }).join(", ");
       var since = lt.since ? new Date(lt.since * 1000).toLocaleDateString() : "";
+      var dv = ((st.delivery || {}).windows || {})["24h"] || {};
+      var dvVal = dv.sent ? dv.heard_pct + "%" : "–";
+      var dvHint = dv.sent ? dv.heard + " of " + dv.sent + " replies heard back" + (dv.echo_median_ms != null ? " · echo " + (dv.echo_median_ms / 1000).toFixed(1) + " s" : "") + (dv.resent ? " · " + dv.resent + " resent" : "") : "no replies yet";
       $("traffic-stats").innerHTML =
-        tile("Requests · 24 h", w24.requests, w1.requests + " in the last hour" + (top ? " · " + top : "")) +
+        tile("Requests · 24 h", w24.requests, w1.requests + " in the last hour" + (top ? " · " + top : "") + " · since " + since + ": " + lt.requests) +
+        tile("Heard back · 24 h", dvVal, dvHint, dv.sent ? (dv.heard_pct >= 80 ? "ok" : dv.heard_pct >= 50 ? "warn" : "bad") : "dim") +
         tile("Replies · 24 h", w24.replies, w24.dm_replies + " by DM · " + w24.channel_replies + " on the channel · " + w24.chars_sent + " chars") +
         tile("Not answered · 24 h", w24.dropped, "rate limits, hop gate, budgets, nearer bot", w24.dropped ? "warn" : "") +
         tile("Senders · 24 h", w24.senders, w24.senders ? "distinct nodes" : "nobody yet") +
-        tile("Reply time", lat.median_ms != null ? lat.median_ms + " ms" : "–", lat.p90_ms != null ? "median · p90 " + lat.p90_ms + " ms" : "receipt to send") +
-        tile("Since " + since, lt.requests + " req", lt.replies + " replies · " + lt.dropped + " dropped · " + lt.by_transport.dm + " DM / " + lt.by_transport.channel + " channel");
+        tile("Reply time", lat.median_ms != null ? lat.median_ms + " ms" : "–", lat.p90_ms != null ? "median · p90 " + lat.p90_ms + " ms" : "receipt to send");
     },
     fmt: function (ev) {
       var ts = hhmmss(ev.t);
@@ -342,7 +362,7 @@ var Portal = {
           break;
         case "reply_dm": case "reply_channel":
           cls = "badge-success";
-          body = esc(ev.text) + ' <span class="text-muted">' + (ev.chars || 0) + " ch" + (ev.ms != null ? " · " + ev.ms + " ms" : "") + (ev.ok === false ? " · TX off" : "") + "</span>";
+          body = esc(ev.text) + ' <span class="text-muted">' + (ev.chars || 0) + " ch" + (ev.ms != null ? " · " + ev.ms + " ms" : "") + (ev.ok === false ? " · TX off" : "") + "</span>" + deliveryBadge(ev.delivery);
           break;
         case "dropped":
           cls = "badge-warning";
@@ -357,7 +377,7 @@ var Portal = {
         case "console": body = esc(ev.text) + ' <span class="text-muted">[' + esc(ev.command) + (ev.location ? " · " + esc(ev.location) : "") + " · " + (ev.chars || 0) + " ch]</span>"; break;
         default: body = esc(ev.text || ev.reason || "");
       }
-      return '<div class="console-line"><span class="text-muted">' + ts + "</span> " + arrow + " " +
+      return '<div class="console-line" data-id="' + (ev.id || "") + '"><span class="text-muted">' + ts + "</span> " + arrow + " " +
         '<span class="badge ' + cls + '" style="min-width:34px;text-align:center">' + (tr || esc(ev.kind)) + "</span> " +
         (who ? "<b>" + who + "</b> " : "") + body + "</div>";
     },
@@ -374,7 +394,8 @@ var Portal = {
 
   textbot: {
     _loaded: false, _orig: {},
-    _keys: ["MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX"],
+    _keys: ["MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
+            "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR"],
 
     onEnter: function () {
       if (!this._loaded) {
@@ -412,6 +433,9 @@ var Portal = {
         var s = sy.settings || {};
         self._orig.MCW_ADVERT_INTERVAL_HOURS = String(s.advert_interval_hours); setVal("env-MCW_ADVERT_INTERVAL_HOURS", s.advert_interval_hours);
         self._orig.MCW_PEER_BOT_PREFIX = s.peer_bot_prefix || ""; setVal("env-MCW_PEER_BOT_PREFIX", s.peer_bot_prefix);
+        ["MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR"].forEach(function (k) {
+          var v = s[k.slice(4).toLowerCase()]; self._orig[k] = v == null ? "" : String(v); setVal("env-" + k, v);
+        });
       }).catch(function () {});
     },
     saveBehaviour: function (btn) {
@@ -974,7 +998,8 @@ var Portal = {
     _orig: {},
     _groups: {
       coverage: ["MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_HOME_STATES", "MCW_HOME_WFOS"],
-      host: ["MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR", "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_TIMEZONE", "MCW_LOG_LEVEL"],
+      host: ["MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR", "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_TIMEZONE", "MCW_LOG_LEVEL",
+             "MCW_SCOPE_URL", "MCW_SCOPE_MODE"],
     },
     load: function () {
       var self = this;

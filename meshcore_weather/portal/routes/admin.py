@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 
 from meshcore_weather.activity import activity_log
 from meshcore_weather.config import settings
+from meshcore_weather.meshcore.delivery import delivery_tracker
 from meshcore_weather.portal import logbuf
 from meshcore_weather.portal.sse import sse_response
 from meshcore_weather.traffic import KINDS as TRAFFIC_KINDS, traffic_log
@@ -35,6 +36,7 @@ ENV_WRITABLE = {
     "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_LOG_LEVEL",
     "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
     "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE",
+    "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
 }
 
 # Radio presets an operator can apply with one click.
@@ -366,7 +368,13 @@ async def traffic(n: int = Query(200, ge=1, le=1000), kinds: str | None = None,
                   since_id: int = Query(0, ge=0)) -> JSONResponse:
     """Recent conversation events (full detail: this is the admin side) and the counters."""
     return JSONResponse({"events": traffic_log.recent(n, kinds=_kinds_arg(kinds), since_id=since_id),
-                         "stats": traffic_log.stats(), "kinds": list(TRAFFIC_KINDS)})
+                         "stats": _traffic_stats(), "kinds": list(TRAFFIC_KINDS)})
+
+
+def _traffic_stats() -> dict:
+    st = traffic_log.stats()
+    st["delivery"] = delivery_tracker.stats()
+    return st
 
 
 @router.get("/traffic/stream")
@@ -454,7 +462,7 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
         "commands": PUBLIC_COMMANDS,
         "help": HELP_TEXT,
         "peers": [{"name": p["name"], "lat": p["lat"], "lon": p["lon"]} for p in peers],
-        "stats": traffic_log.stats(),
+        "stats": _traffic_stats(),
         "broadcasts": {"24h": activity_log.stats(1440), "1h": activity_log.stats(60)},
         "recent": traffic_log.recent(n, public=True),
     })
@@ -587,7 +595,7 @@ async def overview(request: Request) -> JSONResponse:
     feed = await _feed_stats(bot)
     st = receiver.get("stats") or {}
     info = await _radio_info_cached(radio) or {}
-    tstats = traffic_log.stats()
+    tstats = _traffic_stats()
     w1, w24 = tstats["windows"]["1h"], tstats["windows"]["24h"]
     broadcaster = getattr(bot, "_broadcaster", None)
     jobs_total = jobs_enabled = 0
@@ -630,6 +638,7 @@ async def overview(request: Request) -> JSONResponse:
             "requests_24h": w24["requests"], "replies_24h": w24["replies"], "dropped_24h": w24["dropped"],
             "senders_24h": w24["senders"],
             "last_request_at": tstats.get("last_request_at"), "last_reply_at": tstats.get("last_reply_at"),
+            "delivery": tstats["delivery"],
         },
         "broadcasts": {
             "running": broadcaster is not None,
@@ -648,15 +657,17 @@ async def overview(request: Request) -> JSONResponse:
 _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM",
               "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_TX_ENABLED",
               "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
-              "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE", "MCW_SDR_DASHBOARD_URL"}
+              "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE", "MCW_SDR_DASHBOARD_URL",
+              "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE"}
 
 # Value checks, run before anything touches .env: a bad value must never be
 # persisted, because the next start would refuse the file.
 _INT_KEYS = {"MCW_SERIAL_BAUD", "MCW_HOME_RADIUS_KM", "MCW_SDR_POLL_INTERVAL", "MCW_CHANNEL_REPLY_MAX_HOPS",
-             "MCW_ADVERT_INTERVAL_HOURS", "MCW_CONTACT_KEEP_FREE"}
+             "MCW_ADVERT_INTERVAL_HOURS", "MCW_CONTACT_KEEP_FREE", "MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR"}
+_FLOAT_KEYS = {"MCW_ECHO_WINDOW_S"}
 _BOOL_KEYS = {"MCW_TX_ENABLED", "MCW_CONTACT_HOUSEKEEPING"}
 _CHOICES = {"MCW_REPLY_MODE": ("dm", "channel", "dm_only"), "MCW_EMWIN_SOURCE": ("sdr", "internet"),
-            "MCW_LOG_LEVEL": ("DEBUG", "INFO", "WARNING", "ERROR")}
+            "MCW_LOG_LEVEL": ("DEBUG", "INFO", "WARNING", "ERROR"), "MCW_SCOPE_MODE": ("stats", "decide")}
 _TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
 
@@ -669,6 +680,14 @@ def _validate_updates(updates: dict[str, str]) -> None:
             raise HTTPException(400, f"{key}: must be a whole number")
         if key in _INT_KEYS and int(val) < 0:
             raise HTTPException(400, f"{key}: must not be negative")
+        if key in _FLOAT_KEYS:
+            try:
+                if float(val) <= 0:
+                    raise ValueError
+            except ValueError:
+                raise HTTPException(400, f"{key}: must be a number above 0")
+        if key == "MCW_SCOPE_URL" and not val.startswith(("http://", "https://")):
+            raise HTTPException(400, f"{key}: must start with http:// or https://")
         if key in _BOOL_KEYS and val.lower() not in _TRUE + _FALSE:
             raise HTTPException(400, f"{key}: must be true or false")
         if key in _CHOICES and val not in _CHOICES[key]:
@@ -705,6 +724,14 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
             settings.contact_housekeeping = val.strip().lower() in _TRUE
         elif key == "MCW_CONTACT_KEEP_FREE":
             settings.contact_keep_free = max(0, int(val))
+        elif key in ("MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR"):
+            setattr(settings, key[4:].lower(), int(val))
+        elif key == "MCW_ECHO_WINDOW_S":
+            settings.echo_window_s = float(val)
+        elif key == "MCW_SCOPE_URL":
+            settings.scope_url = val
+        elif key == "MCW_SCOPE_MODE":
+            settings.scope_mode = val
         elif key in ("MCW_HOME_CITIES", "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_HOME_RADIUS_KM"):
             attr = key[4:].lower()
             setattr(settings, attr, int(val) if key.endswith("_KM") else val)

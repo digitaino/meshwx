@@ -131,7 +131,7 @@ class TrafficLog:
               "sender": sender, "key": (key or None) and str(key)[:12], "text": text,
               "command": command, "location": location, "hops": hops, "chars": chars,
               "ms": ms, "reason": reason, "ok": ok, "req_id": req["id"] if req else None,
-              "_t0": time.monotonic(), "_public": public}
+              "delivery": None, "_t0": time.monotonic(), "_public": public}
         with self._lock:
             self._seq += 1
             ev["id"] = self._seq
@@ -165,11 +165,12 @@ class TrafficLog:
             lt["dropped"] += 1
             self._dirty = True
 
-    def update(self, ev: dict | None, **fields) -> None:
+    def update(self, ev: dict | None, push: bool = False, **fields) -> None:
         """Fill in what was learned after the event was recorded (the parsed
-        command of a request, or that a DM turned out to be an admin
-        command). Not re-pushed: the live consoles show the text; the
-        counters and the public view read the final values."""
+        command of a request, a DM that turned out to be an admin command,
+        a reply whose DM failed, the delivery outcome). With push=True the
+        event is sent to live subscribers again (same id) so a feed can
+        redraw its line."""
         if ev is None:
             return
         with self._lock:
@@ -177,17 +178,34 @@ class TrafficLog:
             if new_kind and new_kind != ev["kind"]:
                 if new_kind not in KINDS:
                     raise ValueError(f"unknown traffic kind {new_kind!r}")
-                if ev["kind"] in REQUEST_KINDS and new_kind not in REQUEST_KINDS:
+                old_kind = ev["kind"]
+                if old_kind in REQUEST_KINDS and new_kind not in REQUEST_KINDS:
                     self.lifetime["requests"] -= 1
                     tr = ev.get("transport")
                     if tr in self.lifetime["by_transport"]:
                         self.lifetime["by_transport"][tr] -= 1
-                    self._tally = deque((row for row in self._tally if row[1] != ev["kind"] or row[0] != ev["t"]),
+                elif old_kind in REPLY_KINDS and new_kind not in REPLY_KINDS:
+                    self.lifetime["replies"] -= 1
+                    self.lifetime["chars_sent"] -= ev.get("chars") or 0
+                    cmd = ev.get("command")
+                    if cmd and self.lifetime["by_command"].get(cmd):
+                        self.lifetime["by_command"][cmd] -= 1
+                if (old_kind in REQUEST_KINDS) != (new_kind in REQUEST_KINDS) or \
+                        (old_kind in REPLY_KINDS) != (new_kind in REPLY_KINDS):
+                    self._tally = deque((row for row in self._tally if row[1] != old_kind or row[0] != ev["t"]),
                                         maxlen=self._tally.maxlen)
+                    self._dirty = True
                 ev["dir"], ev["_public"] = KINDS[new_kind]
             for k, v in fields.items():
                 if k in ev:
                     ev[k] = v
+            subs, loop = list(self._subs), self._loop
+        if push and subs and loop is not None:
+            for q in subs:
+                try:
+                    loop.call_soon_threadsafe(self._offer, q, ev)
+                except RuntimeError:
+                    pass
 
     @staticmethod
     def _offer(q: asyncio.Queue, ev: dict) -> None:

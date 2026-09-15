@@ -413,9 +413,9 @@ class WeatherBot:
             logger.info("Channel command from %s: no DM path, replying on our channel (flood)", sender)
         else:
             logger.info("Channel command from %s: reply_mode=channel, replying on our channel (flood)", sender)
-        await self.radio.send_channel_message(self.radio.channel_idx, chunk[:160])
-        traffic_log.record("reply_channel", text=chunk, chars=len(chunk), req=req, sender=sender,
-                           command=command, location=location, ok=settings.tx_enabled)
+        ev = traffic_log.record("reply_channel", text=chunk, chars=len(chunk), req=req, sender=sender,
+                                command=command, location=location, ok=settings.tx_enabled)
+        await self.radio.send_channel_message(self.radio.channel_idx, chunk[:160], ev=ev)
         if not forced and await self.radio.advert_if_stale():
             logger.info("Adverted so %s can DM us next time", sender)
 
@@ -765,9 +765,11 @@ class WeatherBot:
             traffic_log.record("dropped", reason="nothing to say", req=req, sender=sender_name, key=pubkey_prefix)
             return
 
-        success = await self.radio.send_dm(pubkey_prefix, chunk)
-        traffic_log.record("reply_dm" if success else "dm_failed", text=chunk, chars=len(chunk), req=req,
-                           sender=sender_name, key=pubkey_prefix, command=command, location=location, ok=success)
+        ev = traffic_log.record("reply_dm", text=chunk, chars=len(chunk), req=req, sender=sender_name,
+                                key=pubkey_prefix, command=command, location=location, ok=settings.tx_enabled)
+        success = await self.radio.send_dm(pubkey_prefix, chunk, ev=ev)
+        if not success:
+            traffic_log.update(ev, kind="dm_failed", ok=False)
         if success:
             logger.info("Response to %s (DM): %s", sender_name, chunk.replace("\n", " | "))
         else:

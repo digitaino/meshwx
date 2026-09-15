@@ -114,7 +114,17 @@
               <div><label class="form-label" for="env-MCW_PEER_BOT_PREFIX">Peer bot name prefix</label>
                 <input class="input" id="env-MCW_PEER_BOT_PREFIX" placeholder="WX-"></div>
             </div>
-            <div class="flex gap-2 mb-2" style="align-items:center">
+            <label class="form-label">Delivery</label>
+            <div class="grid grid-3 mb-2">
+              <div><label class="form-label" for="env-MCW_RETRANSMIT_MAX">Resend if not heard, max</label>
+                <select class="input" id="env-MCW_RETRANSMIT_MAX"><option value="0">0 (measure only)</option><option value="1">1</option><option value="2">2</option></select></div>
+              <div><label class="form-label" for="env-MCW_ECHO_WINDOW_S">Echo window (s)</label>
+                <input class="input" type="number" min="1" max="60" step="0.5" id="env-MCW_ECHO_WINDOW_S"></div>
+              <div><label class="form-label" for="env-MCW_RETRANSMIT_PER_HOUR">Resends per hour, max</label>
+                <input class="input" type="number" min="0" max="500" id="env-MCW_RETRANSMIT_PER_HOUR"></div>
+            </div>
+            <span class="form-hint mb-4">The node hears a repeater's copy of each reply. A reply with no echo inside the window is sent once more, byte for byte the same, so nobody sees it twice. DMs wait for the recipient's ACK instead. Skipped when no repeater has been heard from anyone lately.</span>
+            <div class="flex gap-2 mb-2 mt-4" style="align-items:center">
               <button class="btn btn-primary" onclick="Portal.textbot.saveBehaviour(this)">Save</button>
               <span id="behaviour-status" class="text-small text-muted"></span>
             </div>
@@ -390,6 +400,11 @@
               <div><label class="form-label" for="env-MCW_TIMEZONE">Timezone <span class="badge badge-muted">live</span></label><input class="input" id="env-MCW_TIMEZONE"></div>
               <div><label class="form-label" for="env-MCW_LOG_LEVEL">Log level <span class="badge badge-muted">live</span></label>
                 <select class="input" id="env-MCW_LOG_LEVEL"><option>INFO</option><option>DEBUG</option><option>WARNING</option><option>ERROR</option></select></div>
+              <div><label class="form-label" for="env-MCW_SCOPE_URL">CoreScope URL <span class="badge badge-muted">live</span></label>
+                <input class="input" id="env-MCW_SCOPE_URL" placeholder="https://scope.digitaino.com">
+                <span class="form-hint">Optional, internet. Empty = off.</span></div>
+              <div><label class="form-label" for="env-MCW_SCOPE_MODE">CoreScope use <span class="badge badge-muted">live</span></label>
+                <select class="input" id="env-MCW_SCOPE_MODE"><option value="stats">stats: note who heard each reply</option><option value="decide">decide: also skip a resend the mesh observed</option></select></div>
             </div>
             <div class="flex gap-2" style="align-items:center;flex-wrap:wrap">
               <button class="btn btn-primary" onclick="Portal.settings.save(this, 'host')">Save</button>
