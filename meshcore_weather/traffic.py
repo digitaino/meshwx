@@ -37,6 +37,7 @@ KINDS = {
     "advert_out": ("out", True),     # our own advert
     "dropped": ("out", True),        # a request we did not answer, with reason
     "dm_failed": ("out", True),      # DM send failed
+    "link_test": ("out", False),     # portal link test datagram (never public)
     "admin": ("in", False),          # admin DM command (never public)
     "console": ("in", False),        # portal console (never public)
 }

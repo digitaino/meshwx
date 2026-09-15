@@ -68,7 +68,8 @@ layer): `[channel hash 1][MAC 2][AES-128-ECB(channel key) of
 [data_type u16 LE][data_len u8][data]]`. What the companion delivers to
 the app (`RESP_CODE_CHANNEL_DATA_RECV`, 0x1B): SNR, channel index, path
 length, `data_type`, `data_len`, `data`. Ignore any `data_type` other
-than `0xFF10`.
+than `0xFF10` (the bot's operator link test uses `0xFF1E`, a 6-byte
+datagram; it carries nothing for the app).
 
 `data` is at most **165 bytes**. Every message in this spec fits in one
 packet; there is no fragmentation except the text message, which carries

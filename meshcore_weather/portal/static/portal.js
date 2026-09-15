@@ -206,8 +206,11 @@ var Portal = {
       s.className = "strip-item" + (sat.locked ? "" : sat.reachable ? " warn" : " bad");
       s.innerHTML = '<span class="dot ' + (sat.locked ? "dot-green" : sat.reachable ? "dot-yellow" : "dot-red") + '"></span>' +
         (sat.locked ? "dish locked" : sat.reachable ? "no lock" : "dish ?");
-      ra.className = "strip-item" + (r.connected ? "" : " bad");
-      ra.innerHTML = '<span class="dot ' + (r.connected ? "dot-green" : "dot-red") + '"></span>' + (r.connected ? esc(r.name || "radio up") : "radio down");
+      var h = r.health || {}, hv = h.verdict, unwell = r.connected && (hv === "tx_suspect" || hv === "rx_silent" || r.pending_adoption);
+      ra.className = "strip-item" + (r.connected ? (unwell ? " warn" : "") : " bad");
+      ra.innerHTML = '<span class="dot ' + (r.connected ? (unwell ? "dot-yellow" : "dot-green") : "dot-red") + '"></span>' +
+        (r.connected ? esc(r.name || "radio up") + (r.pending_adoption ? " · different radio" : hv === "tx_suspect" ? " · TX suspect" : hv === "rx_silent" ? " · hearing nothing" : "") : "radio down");
+      ra.title = h.reason || "";
       var mode = r.reply_mode;
       var txCls = !r.tx_enabled ? "" : mode === "channel" ? " bad" : "";
       tx.className = "strip-item" + txCls;
@@ -290,7 +293,7 @@ var Portal = {
       channel: ["channel_in", "reply_channel", "peer"],
       dm: ["dm_in", "reply_dm", "dm_failed", "admin"],
       dropped: ["dropped", "dm_failed"],
-      adverts: ["advert", "advert_out"],
+      adverts: ["advert", "advert_out", "link_test"],
       apps: ["data_request"],
     },
 
@@ -376,6 +379,7 @@ var Portal = {
         case "peer": body = '<span class="text-muted">peer bot, ignored:</span> ' + esc(ev.text); break;
         case "advert": body = '<span class="text-muted">advert heard</span>'; break;
         case "advert_out": body = '<span class="text-muted">our advert (flood)</span>'; break;
+        case "link_test": body = '<span class="text-muted">link test datagram (6 B)</span>' + deliveryBadge(ev.delivery); break;
         case "data_request": body = '<span class="text-muted">app data request</span> ' + esc(ev.text); break;
         case "admin": body = '<span class="text-muted">admin command:</span> ' + esc(ev.command); break;
         case "console": body = esc(ev.text) + ' <span class="text-muted">[' + esc(ev.command) + (ev.location ? " · " + esc(ev.location) : "") + " · " + (ev.chars || 0) + " ch]</span>"; break;
@@ -648,7 +652,85 @@ var Portal = {
 
   radio: {
     _state: null,
-    onEnter: function () { this.load(); this.loadContacts(); },
+    onEnter: function () { this.load(); this.loadContacts(); this.loadHealth(); },
+
+    // -- health and hardware --
+    loadHealth: function () {
+      var self = this;
+      api("/api/radio/health").then(function (d) { self.renderHealth(d); })
+        .catch(function (e) { $("health-reason").textContent = e.message; });
+    },
+    renderHealth: function (d) {
+      var h = d.health || {}, fw = d.firmware || {}, dev = d.device || {}, rs = (d.radio_stats || {}).radio || null;
+      var w1 = ((d.delivery || {})["1h"]) || {}, w24 = ((d.delivery || {})["24h"]) || {};
+      var labels = { ok: ["OK", "badge-success"], idle: ["idle", "badge-muted"], tx_off: ["TX off", "badge-muted"],
+                     tx_suspect: ["TX suspect", "badge-danger"], rx_silent: ["hearing nothing", "badge-danger"], unknown: ["unclear", "badge-warning"] };
+      var lb = labels[h.verdict] || ["?", "badge-muted"];
+      var badge = $("health-badge"); badge.textContent = lb[0]; badge.className = "badge " + lb[1];
+      $("health-reason").textContent = h.reason || "";
+      var pct = function (w) { return w.heard_pct == null ? "–" : w.heard_pct + "%"; };
+      $("health-tiles").innerHTML =
+        tile("Heard", pct(w1), (w1.sent || 0) + " sent · " + (w1.resent || 0) + " resent, 1 h", w1.heard_pct == null ? "" : w1.heard_pct >= 70 ? "ok" : w1.heard_pct >= 40 ? "warn" : "bad") +
+        tile("Echo", w1.echo_median_ms != null ? w1.echo_median_ms + " ms" : "–", "median · 24 h: " + pct(w24) + " of " + (w24.sent || 0)) +
+        tile("Last heard", h.rx_age_s != null ? ago(h.rx_age_s) : "never", "any packet from anyone", h.verdict === "rx_silent" ? "bad" : "") +
+        tile("Unheard streak", String(h.unheard_streak || 0), "sends in a row with no echo", (h.unheard_streak || 0) >= 3 ? "bad" : "") +
+        tile("Noise floor", rs && rs.noise_floor != null ? rs.noise_floor + " dBm" : "–", rs ? "last RSSI " + rs.last_rssi + " · SNR " + rs.last_snr : "node counters unavailable",
+          rs && rs.noise_floor != null && rs.noise_floor > -95 ? "warn" : "") +
+        tile("Airtime", rs ? Math.round((rs.tx_air_secs || 0) / 60) + " min TX" : "–", rs ? Math.round((rs.rx_air_secs || 0) / 60) + " min RX since boot" : "");
+      $("health-node").innerHTML = "Firmware " + esc(fw.ver || "?") + (fw.ok ? ' <span class="badge badge-success">GRP_DATA ok</span>' :
+        ' <span class="badge badge-danger">needs ' + esc(fw.min || "1.15") + "+ for the app datagrams</span>") +
+        (dev.model ? " · " + esc(dev.model) : "") + (dev.max_contacts ? " · " + dev.max_contacts + " contact slots" : "");
+      this.renderHardware(d);
+    },
+    renderHardware: function (d) {
+      var p = d.profile || {}, prof = p.profile, pend = p.pending, dev = d.device || {}, port = p.port || {};
+      $("hw-board").innerHTML = "<strong>" + esc(dev.model || "unknown board") + "</strong>" + (dev.ver ? " · " + esc(dev.ver) : "") +
+        (port.actual ? " · on " + esc(port.actual) : "") +
+        (port.actual && port.configured && port.actual !== port.configured ? ' <span class="badge badge-warning">configured ' + esc(port.configured) + "</span>" : "");
+      $("hw-pending").hidden = !pend;
+      if (pend) {
+        var r = pend.radio || {}, pr = pend.profile || {};
+        $("hw-pending-text").innerHTML = "This radio is <strong>" + esc(r.name || "?") + "</strong> (" + esc((r.public_key || "").slice(0, 8)) + "…" +
+          (r.model ? ", " + esc(r.model) : "") + "), not the saved node <strong>" + esc(pr.name || "?") + "</strong> (" + esc((pr.public_key || "").slice(0, 8)) + "…). " +
+          (pend.why_not ? "It cannot be adopted: " + esc(pend.why_not) + "." : pend.mode === "auto" ? "Automatic adoption did not take (" + (pend.attempts || 0) + " attempts)." : "Adoption is set to " + esc(pend.mode) + ".") +
+          " Until it is adopted, phones and the app see a different bot.";
+      }
+      var la = p.last_adoption;
+      $("hw-profile").innerHTML = !prof ? "No profile saved yet" + (p.note ? " (" + esc(p.note) + ")" : "") + "." :
+        "Profile: <strong>" + esc(prof.name || "?") + "</strong> " + esc((prof.public_key || "").slice(0, 8)) + "… · " +
+        (prof.has_key ? "identity key saved" : '<span class="badge badge-danger">no identity key</span>') + " · " + (prof.contacts || 0) + " contacts · saved " + agoAt(prof.saved_at) +
+        (prof.radio ? " · " + prof.radio.freq_mhz + " MHz / " + prof.radio.bw_khz + " kHz / SF" + prof.radio.sf + " / CR" + prof.radio.cr + " / " + prof.tx_power + " dBm" : "") +
+        (p.matches === false ? "" : "") + (p.note ? "<br><span class='text-muted'>" + esc(p.note) + "</span>" : "") +
+        (la ? "<br>Last adoption " + agoAt(la.t) + ": " + (la.ok ? "ok" : "failed") + (la.note ? " (" + esc(la.note) + ")" : "") + (la.steps && la.steps.length ? " · " + esc(la.steps.join("; ")) : "") : "") +
+        " · mode <strong>" + esc(p.mode || "auto") + "</strong>";
+    },
+    testTx: function (btn) {
+      var out = $("health-test-result"), self = this;
+      btn.disabled = true; out.textContent = "Sent; waiting for an echo…";
+      api("/api/radio/testtx", { method: "POST", body: {} }).then(function (d) {
+        out.textContent = d.heard ? "Echo heard after " + d.echo_ms + " ms via " + (d.via || "?") + (d.snr != null ? " (SNR " + d.snr + ")" : "") + (d.attempts > 1 ? ", on attempt " + d.attempts : "")
+          : "No echo" + (d.attempts > 1 ? " after " + d.attempts + " attempts" : "") + (d.skipped ? " (" + d.skipped + ")" : "") + ": nothing repeated this packet.";
+        Portal.ui.toast(d.heard ? "Link test: echo heard" : "Link test: no echo", !!d.heard); self.loadHealth();
+      }).catch(function (e) { out.textContent = e.message; Portal.ui.toast(e.message, false); }).finally(function () { btn.disabled = false; });
+    },
+    saveProfile: function (force) {
+      if (force && !confirm("Start a new profile from this radio? The saved identity of the old node is discarded; phones will see a new bot.")) return;
+      var out = $("hw-action-result"), self = this;
+      api("/api/radio/profile/save", { method: "POST", body: { force: !!force } }).then(function (d) {
+        out.textContent = "Profile saved: " + (d.profile.name || "?") + ", " + d.profile.contacts + " contacts" + (d.profile.has_key ? "" : " (no identity key: the firmware refused the export)");
+        Portal.ui.toast("Profile saved"); self.loadHealth(); self.load();
+      }).catch(function (e) { out.textContent = e.message; Portal.ui.toast(e.message, false); });
+    },
+    adopt: function (btn) {
+      if (!confirm("Write the saved identity onto this radio and reboot it? Make sure the old radio is powered off: two nodes with one key confuse the mesh.")) return;
+      var out = $("hw-action-result"), self = this;
+      btn.disabled = true; out.textContent = "Writing the profile, rebooting the node, reconnecting… about 20 seconds.";
+      api("/api/radio/profile/adopt", { method: "POST", body: {} }).then(function (d) {
+        var la = (d.profile || {}).last_adoption || {};
+        out.textContent = (la.ok ? "Adopted: " : "Adoption did not take: ") + (la.note || (d.steps || []).join("; ")) + (d.connected ? "" : " · radio not reconnected: " + (d.error || ""));
+        Portal.ui.toast(la.ok ? "Radio adopted" : "Adoption failed", !!la.ok); self.load(); self.loadHealth(); self.loadContacts(); Portal.poll.tick();
+      }).catch(function (e) { out.textContent = e.message; Portal.ui.toast(e.message, false); }).finally(function () { btn.disabled = false; });
+    },
 
     load: function () {
       var self = this;
@@ -1004,7 +1086,7 @@ var Portal = {
     _groups: {
       coverage: ["MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_HOME_STATES", "MCW_HOME_WFOS"],
       host: ["MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR", "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_TIMEZONE", "MCW_LOG_LEVEL",
-             "MCW_SCOPE_URL", "MCW_SCOPE_MODE", "MCW_SCOPE_MIN_OBSERVERS"],
+             "MCW_SCOPE_URL", "MCW_SCOPE_MODE", "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN"],
     },
     load: function () {
       var self = this;

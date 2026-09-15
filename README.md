@@ -392,6 +392,7 @@ meshcore_weather/
 - `docs/meshwx_v5_vectors.json` — test vectors every client must pass
 - `docs/MeshWX_Airtime_Review.md` — the review that led to v5, with the airtime numbers
 - `docs/Delivery_Confirmation_Design.md` — echo tracking and resend
+- `docs/Radio_Swap.md` — replacing the radio (same or different board): the node profile, adoption, the udev rule, the Health card
 - `docs/Admin_Portal_Review_2026-09-14.md` — the portal revamp record
 - `docs/Future_EInk_Dashboard.md` — parked project idea for a standalone e-ink hardware display
 

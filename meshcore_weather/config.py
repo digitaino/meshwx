@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     scope_url: str = ""
     scope_mode: str = "stats"
     scope_min_observers: int = 2          # observers that heard a REPEATED copy before it counts
+    # Radio hardware swaps. The bot keeps a profile of its node (identity key,
+    # name, position, LoRa parameters, TX power, contacts) in
+    # data/node_profile.json. When a different radio answers on the port:
+    #   auto    write the profile onto it (import the key, apply the settings,
+    #           restore the contacts, reboot): phones and the app see the same bot
+    #   manual  run with the new radio's own identity until "Adopt" is clicked
+    #   off     never adopt (the profile is still kept up to date)
+    radio_adopt: str = "auto"
+    # Health: nothing heard from anyone for this long means the receiver is deaf
+    radio_rx_silent_min: int = 30
     # Initial load uses 1-hour bundle for coverage, then polls 2-minute bundle
     emwin_base_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip"
     emwin_poll_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txtmin02.zip"

@@ -1,0 +1,27 @@
+# MeshCore companion radio on USB: one stable name, /dev/meshcore, whatever
+# the board. Install on the Pi with:
+#
+#   sudo cp deploy/99-meshcore-radio.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   ls -l /dev/meshcore
+#
+# then set MCW_SERIAL_PORT=/dev/meshcore in .env (System > Settings in the
+# portal). The bot also scans every USB serial port when the configured one
+# is missing or silent, so this rule is a convenience, not a requirement.
+#
+# One rule per USB-to-serial chip family. Vendor:product ids:
+#   10c4:ea60  Silicon Labs CP210x   Heltec V3 / V3.2, LilyGo T3 v1.6, RAK11310 variants
+#   1a86:55d4  WCH CH9102            LilyGo T3S3, T-Beam v1.2, Heltec Wireless Stick Lite V3
+#   1a86:7523  WCH CH340             cheaper ESP32 boards, XIAO ESP32-S3 carriers
+#   303a:1001  Espressif native USB  ESP32-S3 boards on their own USB (T-Deck, T3S3 native port)
+#   239a:*     Adafruit nRF52 USB    RAK4631 / WisBlock, LilyGo T-Echo, Heltec T114
+#   2886:*     Seeed                 XIAO nRF52840 (Wio-SX1262 kit)
+#   0403:6001  FTDI FT232            adapters and some dev boards
+# The SDR (Airspy 1d50:60a1, RTL-SDR 0bda:2838) is not a tty and never matches.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="meshcore", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", SYMLINK+="meshcore", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="meshcore", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", SYMLINK+="meshcore", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="239a", SYMLINK+="meshcore", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2886", SYMLINK+="meshcore", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="meshcore", GROUP="dialout", MODE="0660"

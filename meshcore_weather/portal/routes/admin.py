@@ -37,7 +37,7 @@ ENV_WRITABLE = {
     "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
     "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE",
     "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
-    "MCW_SCOPE_MIN_OBSERVERS",
+    "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN",
 }
 
 # Radio presets an operator can apply with one click.
@@ -632,6 +632,8 @@ async def overview(request: Request) -> JSONResponse:
             "battery_mv": info.get("battery_mv"),
             "tx_enabled": settings.tx_enabled,
             "reply_mode": settings.reply_mode,
+            "health": {k: v for k, v in _health_verdict().items() if k in ("verdict", "reason", "unheard_streak")},
+            "pending_adoption": bool(getattr(radio, "pending_adoption", None)),
         },
         "textbot": {
             "requests_1h": w1["requests"], "replies_1h": w1["replies"], "dropped_1h": w1["dropped"],
@@ -659,17 +661,18 @@ _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADI
               "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
               "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE", "MCW_SDR_DASHBOARD_URL",
               "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
-              "MCW_SCOPE_MIN_OBSERVERS"}
+              "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN"}
 
 # Value checks, run before anything touches .env: a bad value must never be
 # persisted, because the next start would refuse the file.
 _INT_KEYS = {"MCW_SERIAL_BAUD", "MCW_HOME_RADIUS_KM", "MCW_SDR_POLL_INTERVAL", "MCW_CHANNEL_REPLY_MAX_HOPS",
              "MCW_ADVERT_INTERVAL_HOURS", "MCW_CONTACT_KEEP_FREE", "MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR",
-             "MCW_SCOPE_MIN_OBSERVERS"}
+             "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_RX_SILENT_MIN"}
 _FLOAT_KEYS = {"MCW_ECHO_WINDOW_S"}
 _BOOL_KEYS = {"MCW_TX_ENABLED", "MCW_CONTACT_HOUSEKEEPING"}
 _CHOICES = {"MCW_REPLY_MODE": ("dm", "channel", "dm_only"), "MCW_EMWIN_SOURCE": ("sdr", "internet"),
-            "MCW_LOG_LEVEL": ("DEBUG", "INFO", "WARNING", "ERROR"), "MCW_SCOPE_MODE": ("stats", "decide")}
+            "MCW_LOG_LEVEL": ("DEBUG", "INFO", "WARNING", "ERROR"), "MCW_SCOPE_MODE": ("stats", "decide"),
+            "MCW_RADIO_ADOPT": ("auto", "manual", "off")}
 _TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
 
@@ -734,6 +737,10 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
             settings.scope_url = val
         elif key == "MCW_SCOPE_MODE":
             settings.scope_mode = val
+        elif key == "MCW_RADIO_ADOPT":
+            settings.radio_adopt = val
+        elif key == "MCW_RADIO_RX_SILENT_MIN":
+            settings.radio_rx_silent_min = max(1, int(val))
         elif key in ("MCW_HOME_CITIES", "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_HOME_RADIUS_KM"):
             attr = key[4:].lower()
             setattr(settings, attr, int(val) if key.endswith("_KM") else val)
@@ -790,6 +797,87 @@ async def radio_reconnect(request: Request) -> JSONResponse:
     await _bot(request).reconnect_radio()
     bot = _bot(request)
     return JSONResponse({"ok": True, "connected": bot.radio.connected, "error": bot._radio_last_error})
+
+
+# -- Radio health and hardware swaps ----------------------------------------------------
+#
+# The verdict (meshcore/health.py) needs no serial round trip; the node's
+# own counters do, so they are cached like the public radio info.
+
+_RADIO_STATS_CACHE: dict = {"t": 0.0, "stats": None}
+
+
+def _health_verdict() -> dict:
+    from meshcore_weather.meshcore.health import assess
+    t = delivery_tracker
+    return assess(outcomes=t.recent_outcomes(200), last_rx_at=t.last_rx_at,
+                  last_repeat_heard_at=t.last_repeat_heard_at, rx_frames=t.rx_frames, started_at=t.started_at,
+                  tx_enabled=settings.tx_enabled, rx_silent_s=settings.radio_rx_silent_min * 60)
+
+
+async def _radio_stats_cached(radio) -> dict | None:
+    now = time.time()
+    if now - _RADIO_STATS_CACHE["t"] < 30:
+        return _RADIO_STATS_CACHE["stats"]
+    stats = None
+    if radio.connected:
+        try:
+            stats = await radio.stats()
+        except Exception:
+            stats = None
+    _RADIO_STATS_CACHE.update(t=now, stats=stats)
+    return stats
+
+
+@router.get("/radio/health")
+async def radio_health(request: Request) -> JSONResponse:
+    from meshcore_weather.meshcore.health import firmware_check
+    radio = _radio(request)
+    device = getattr(radio, "device", {}) or {}
+    out = {
+        "connected": radio.connected,
+        "health": _health_verdict(),
+        "firmware": firmware_check(device.get("ver")),
+        "device": device,
+        "delivery": delivery_tracker.stats()["windows"],
+        "radio_stats": await _radio_stats_cached(radio),
+        "profile": radio.profile_status() if hasattr(radio, "profile_status") else None,
+    }
+    return JSONResponse(out)
+
+
+@router.post("/radio/testtx")
+async def radio_test_tx(request: Request) -> JSONResponse:
+    radio = _radio_call(request)
+    if not hasattr(radio, "test_transmit"):
+        raise HTTPException(501, "link test not available")
+    return JSONResponse(await _run(radio.test_transmit()))
+
+
+@router.post("/radio/profile/save")
+async def radio_profile_save(request: Request) -> JSONResponse:
+    body = await _body(request)
+    radio = _radio_call(request)
+    if not hasattr(radio, "save_profile_now"):
+        raise HTTPException(501, "profiles not available")
+    summary = await _run(radio.save_profile_now(force=bool(body.get("force"))))
+    return JSONResponse({"ok": True, "profile": summary})
+
+
+@router.post("/radio/profile/adopt")
+async def radio_profile_adopt(request: Request) -> JSONResponse:
+    """Write the saved profile onto the connected radio, reboot it and
+    reconnect; the reconnect's identity check records the outcome."""
+    bot = _bot(request)
+    radio = _radio_call(request)
+    if not hasattr(radio, "adopt_profile"):
+        raise HTTPException(501, "profiles not available")
+    steps = await _run(radio.adopt_profile())
+    await bot.reconnect_radio()
+    new = bot.radio
+    status = new.profile_status() if hasattr(new, "profile_status") else None
+    return JSONResponse({"ok": True, "steps": steps, "connected": new.connected, "error": bot._radio_last_error,
+                         "profile": status})
 
 
 # -- Audit: structured answers for scripts/audit.py -----------------------------------

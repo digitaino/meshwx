@@ -193,6 +193,35 @@
       </div>
 
       <div class="grid grid-2">
+        <div class="card" id="radio-health-card">
+          <div class="card-header"><div><div class="card-title">Health <span class="badge badge-muted" id="health-badge">?</span></div>
+            <div class="card-subtitle" id="health-reason">Is this radio getting out and hearing the mesh?</div></div>
+            <button class="btn btn-mini" onclick="Portal.radio.loadHealth()">Refresh</button></div>
+          <div class="tiles tiles-3 mb-4" id="health-tiles"></div>
+          <div class="text-small text-muted mb-4" id="health-node"></div>
+          <div class="flex gap-2" style="align-items:center;flex-wrap:wrap">
+            <button class="btn" id="health-testtx" onclick="Portal.radio.testTx(this)">Test transmit</button>
+            <span class="text-small text-muted" id="health-test-result">Sends one 6-byte datagram no app decodes and waits for a repeater's echo.</span></div>
+        </div>
+
+        <div class="card" id="radio-hw-card">
+          <div class="card-header"><div><div class="card-title">Hardware</div>
+            <div class="card-subtitle">This board, and the profile that lets a replacement take over its identity</div></div></div>
+          <div class="text-small mb-4" id="hw-board"></div>
+          <div id="hw-pending" class="mb-4" hidden>
+            <div class="badge badge-warning mb-2">Different radio</div>
+            <div class="text-small" id="hw-pending-text"></div>
+            <div class="flex gap-2 mt-4" style="flex-wrap:wrap">
+              <button class="btn btn-primary" onclick="Portal.radio.adopt(this)">Adopt: make this radio the bot</button>
+              <button class="btn btn-danger" onclick="Portal.radio.saveProfile(true)">Forget the old node, start a new profile</button></div>
+          </div>
+          <div class="text-small mb-4" id="hw-profile"></div>
+          <div class="flex gap-2" style="align-items:center;flex-wrap:wrap">
+            <button class="btn btn-mini" onclick="Portal.radio.saveProfile(false)">Save profile now</button>
+            <span class="text-small text-muted">Swap steps: <a href="https://github.com/digitaino/meshwx/blob/main/docs/Radio_Swap.md" target="_blank" rel="noopener">docs/Radio_Swap.md</a></span></div>
+          <div id="hw-action-result" class="text-small text-muted mt-4"></div>
+        </div>
+
         <div class="card">
           <div class="card-header"><div><div class="card-title">Identity</div>
             <div class="card-subtitle">Advertised name and location, stored on the node</div></div></div>
@@ -405,6 +434,12 @@
               <div><label class="form-label" for="env-MCW_SCOPE_MIN_OBSERVERS">Observers of a repeat needed <span class="badge badge-muted">live</span></label>
                 <input class="input" type="number" min="1" max="20" id="env-MCW_SCOPE_MIN_OBSERVERS">
                 <span class="form-hint">Only observers whose copy went through a repeater count. One neighbour hearing us direct proves nothing.</span></div>
+              <div><label class="form-label" for="env-MCW_RADIO_ADOPT">Replacement radio <span class="badge badge-muted">live</span></label>
+                <select class="input" id="env-MCW_RADIO_ADOPT"><option value="auto">auto: a new radio takes over the saved identity</option><option value="manual">manual: wait for Adopt in Radio &rsaquo; Hardware</option><option value="off">off: never adopt</option></select>
+                <span class="form-hint">The profile (key, name, position, LoRa settings, contacts) is saved on every connect either way.</span></div>
+              <div><label class="form-label" for="env-MCW_RADIO_RX_SILENT_MIN">Receiver silent after (min) <span class="badge badge-muted">live</span></label>
+                <input class="input" type="number" min="1" max="1440" id="env-MCW_RADIO_RX_SILENT_MIN">
+                <span class="form-hint">Nothing heard from anyone for this long is flagged as a deaf radio.</span></div>
             </div>
             <div class="flex gap-2" style="align-items:center;flex-wrap:wrap">
               <button class="btn btn-primary" onclick="Portal.settings.save(this, 'host')">Save</button>

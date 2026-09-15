@@ -5,7 +5,9 @@ Listens for incoming channel messages and DMs, sends responses.
 """
 
 import asyncio
+import glob
 import logging
+import os
 import time
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -13,6 +15,7 @@ from typing import Any
 from meshcore import MeshCore, EventType
 
 from meshcore_weather.config import settings
+from meshcore_weather.meshcore import profile
 from meshcore_weather.meshcore.delivery import (
     PAYLOAD_GRP_DATA,
     Outbound,
@@ -41,6 +44,41 @@ MAX_CHANNEL_DATA = 165
 # APP_START sent right after open, so meshcore_py's create_serial() gives up
 # after one try. Wait for the boot, then ask; ask again if it was still busy.
 SERIAL_BOOT_DELAYS = (3.0, 3.0, 5.0)
+# A node takes this long to come back after CMD_REBOOT before the port answers.
+REBOOT_WAIT_S = 6.0
+# Link test datagram: a data_type no app decodes (apps ignore anything but
+# 0xFF10), so a test packet on #meshwx bothers nobody.
+TEST_DATA_TYPE = 0xFF1E
+
+# Adoption bookkeeping across reconnects: the radio object is rebuilt on a
+# reconnect, so what was written onto a node and awaits verification, and
+# how many times a node was tried, live at module level.
+_ADOPT_ATTEMPTS: dict[str, int] = {}
+_PENDING_VERIFY: dict | None = None
+MAX_ADOPT_ATTEMPTS = 2
+
+
+def candidate_ports(configured: str) -> list[str]:
+    """Serial ports worth trying, the configured one first: the udev alias
+    (deploy/99-meshcore-radio.rules), then every USB serial bridge on the
+    host. A replacement board with a different USB chip shows up under a
+    new name; the bot finds it instead of waiting for someone to edit .env.
+    Paths that are the same device (a by-id symlink and its target) are
+    tried once."""
+    names = [configured, "/dev/meshcore"]
+    for pattern in ("/dev/serial/by-id/*", "/dev/ttyACM*", "/dev/ttyUSB*", "/dev/cu.usb*"):
+        names.extend(sorted(glob.glob(pattern)))
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if not name or name.startswith("tcp://") or not os.path.exists(name):
+            continue
+        real = os.path.realpath(name)
+        if real in seen:
+            continue
+        seen.add(real)
+        out.append(name)
+    return out
 
 
 async def _open_serial(port: str, baud: int) -> MeshCore | None:
@@ -136,6 +174,10 @@ class MeshcoreRadio:
         self.last_advert_at: float = 0.0
         self.device: dict = {}                 # DEVICE_INFO: firmware build, model, capacity
         self.max_contacts: int = settings.contact_slots
+        self.port: str | None = None           # the port the node actually answered on
+        self.pending_adoption: dict | None = None   # a radio that is not the node in the profile
+        self.adoption: dict | None = None      # the last adoption attempt (ok, steps, note)
+        self.profile_note: str | None = None   # why the profile could not be refreshed, if so
         # Shared send lock — prevents the scheduler and on-demand
         # request handler from interleaving messages on the data channel.
         # Without this, a client DM triggering respond_to_data_request
@@ -163,25 +205,16 @@ class MeshcoreRadio:
 
     async def start(self) -> None:
         """Connect to Meshcore radio via serial or TCP."""
-        port = settings.serial_port
-        baud = settings.serial_baud
-
-        if port.startswith("tcp://"):
-            host_port = port[6:]
-            host, tcp_port = host_port.rsplit(":", 1)
-            logger.info("Connecting to Meshcore radio via TCP %s:%s", host, tcp_port)
-            self._mc = await MeshCore.create_tcp(host, int(tcp_port))
-        else:
-            logger.info("Connecting to Meshcore radio on %s @ %d baud", port, baud)
-            self._mc = await _open_serial(port, baud)
-        if self._mc is None:
-            # meshcore_py returns None when the node never answers APP_START:
-            # wrong firmware (BLE-only companion, repeater), wrong baud, or
-            # the ESP32 is held in reset by the port's DTR/RTS lines.
-            raise ConnectionError(
-                f"no companion response on {port} (is the firmware 'Companion Radio USB'?)")
         try:
+            while True:
+                self._mc = await self._open_any()
+                await self._query_device()
+                if not await self._identity_check():
+                    break
+                # The node was adopted and rebooted: open it again, and the
+                # next check records whether it now reports the profile's key.
             await self._configure_node()
+            await self._snapshot_profile()
         except Exception:
             # Leave nothing half-open: the retry loop opens the port again.
             try:
@@ -192,6 +225,214 @@ class MeshcoreRadio:
             self._running = False
             raise
         self._running = True
+
+    async def _open_any(self) -> MeshCore:
+        """Open the configured port, or the first port on which a companion
+        answers when that one is missing or silent."""
+        port = settings.serial_port
+        baud = settings.serial_baud
+        if port.startswith("tcp://"):
+            host, tcp_port = port[6:].rsplit(":", 1)
+            logger.info("Connecting to Meshcore radio via TCP %s:%s", host, tcp_port)
+            mc = await MeshCore.create_tcp(host, int(tcp_port))
+            if mc is None:
+                raise ConnectionError(f"no companion response on {port}")
+            self.port = port
+            return mc
+        tried: list[str] = []
+        for p in candidate_ports(port) or [port]:
+            logger.info("Connecting to Meshcore radio on %s @ %d baud", p, baud)
+            try:
+                mc = await _open_serial(p, baud)
+            except Exception as e:
+                tried.append(f"{p}: {e}")
+                continue
+            if mc is None:
+                # meshcore_py returns None when the node never answers APP_START:
+                # wrong firmware (BLE-only companion, repeater), wrong baud, or
+                # the ESP32 is held in reset by the port's DTR/RTS lines.
+                tried.append(f"{p}: no companion response")
+                continue
+            self.port = p
+            if p != port:
+                logger.warning("Radio answered on %s, not on the configured %s; update MCW_SERIAL_PORT "
+                               "under System > Settings (or install the udev rule for /dev/meshcore)", p, port)
+            return mc
+        raise ConnectionError(
+            f"no companion response on {port} (is the firmware 'Companion Radio USB'?)"
+            + (f"; also tried {', '.join(t for t in tried if not t.startswith(port + ':'))}"
+               if len(tried) > 1 else ""))
+
+    async def _query_device(self) -> None:
+        """What the node knows about itself: firmware build, model, contact capacity."""
+        try:
+            dq = await self._mc.commands.send_device_query()
+            if dq.type == EventType.DEVICE_INFO:
+                self.device = dict(dq.payload)
+                if self.device.get("max_contacts"):
+                    self.max_contacts = int(self.device["max_contacts"])
+                logger.info("Node firmware %s (%s), %s contact slots", self.device.get("ver"),
+                            self.device.get("fw_build"), self.max_contacts)
+        except Exception:
+            logger.debug("Device query failed")
+
+    # -- Identity: the node profile ---------------------------------------------
+    #
+    # A replacement radio has a new key pair, and the key is the bot to every
+    # phone and to the app. The profile (meshcore/profile.py) holds the key
+    # and the settings; a radio that reports another key is written over
+    # with them ("adopted"), rebooted and checked.
+
+    async def _identity_check(self) -> bool:
+        """Compare the node with the profile. Returns True when the node was
+        just adopted and rebooted (the link is closed; open it again)."""
+        global _PENDING_VERIFY
+        prof = profile.load()
+        si = dict(self._mc.self_info or {})
+        key = si.get("public_key") or ""
+        if _PENDING_VERIFY is not None:
+            # A node was written over before this connect: did it take?
+            pend, _PENDING_VERIFY = _PENDING_VERIFY, None
+            ok = bool(prof) and key == prof.get("public_key")
+            note = "" if ok else f"after the import the node reports {key[:8]}…, not the profile's key"
+            if prof:
+                profile.record_adoption(prof, from_key=pend.get("from_key"), model=self.device.get("model"),
+                                        fw=self.device.get("ver"), steps=pend.get("steps", []), ok=ok, note=note)
+                profile.save(prof)
+            self.adoption = {"t": time.time(), "ok": ok, "steps": pend.get("steps", []), "note": note,
+                             "from_key": pend.get("from_key")}
+            if ok:
+                logger.warning("Radio adopted: %s (%s) now runs as %s (%s…)", self.device.get("model"),
+                               self.device.get("ver"), prof.get("name"), key[:8])
+            else:
+                logger.error("Radio adoption failed: %s", note)
+        if not profile.differs(prof, si):
+            self.pending_adoption = None
+            return False
+        why = profile.can_adopt(prof)
+        self.pending_adoption = {
+            "profile": profile.public_summary(prof),
+            "radio": {"name": si.get("name"), "public_key": key, "model": self.device.get("model"),
+                      "fw": self.device.get("ver")},
+            "mode": settings.radio_adopt, "why_not": why,
+            "attempts": _ADOPT_ATTEMPTS.get(key, 0),
+        }
+        if settings.radio_adopt != "auto" or why or _ADOPT_ATTEMPTS.get(key, 0) >= MAX_ADOPT_ATTEMPTS:
+            logger.warning("Radio %s (%s…) is not the node in the profile (%s, %s…): running with its own "
+                           "identity. %s", si.get("name"), key[:8], prof.get("name"), prof["public_key"][:8],
+                           why or ("adopt it from Radio > Hardware" if settings.radio_adopt != "auto"
+                                   else "adoption already failed; see Radio > Hardware"))
+            return False
+        _ADOPT_ATTEMPTS[key] = _ADOPT_ATTEMPTS.get(key, 0) + 1
+        await self.adopt_profile(prof)
+        return True
+
+    async def adopt_profile(self, prof: dict | None = None) -> list[str]:
+        """Write the profile onto the connected node and reboot it. The link
+        is closed afterwards; the caller opens it again (start() does, the
+        portal reconnects) and the next identity check records the result."""
+        global _PENDING_VERIFY
+        prof = prof or profile.load()
+        why = profile.can_adopt(prof)
+        if why:
+            raise ValueError(why)
+        si = dict(self._mc.self_info or {}) if self._mc else {}
+        if not profile.differs(prof, si):
+            raise ValueError("this radio already is the node in the profile")
+        from_key = si.get("public_key")
+        logger.warning("Adopting radio %s (%s…, %s) as %s (%s…)", si.get("name"), (from_key or "")[:8],
+                       self.device.get("model") or "?", prof.get("name"), prof["public_key"][:8])
+        try:
+            steps = await profile.adopt(self._mc, prof)
+        except Exception as e:
+            profile.record_adoption(prof, from_key=from_key, model=self.device.get("model"),
+                                    fw=self.device.get("ver"), steps=[], ok=False, note=str(e))
+            profile.save(prof)
+            self.adoption = {"t": time.time(), "ok": False, "steps": [], "note": str(e), "from_key": from_key}
+            raise
+        logger.info("Adoption written: %s; rebooting the node", "; ".join(steps))
+        _PENDING_VERIFY = {"from_key": from_key, "steps": steps}
+        try:
+            await self._mc.commands.reboot()
+        except Exception:
+            pass
+        try:
+            await self._mc.disconnect()
+        except Exception:
+            pass
+        self._mc = None
+        await asyncio.sleep(REBOOT_WAIT_S)
+        return steps
+
+    async def _snapshot_profile(self) -> None:
+        """Refresh the profile from the node we are running (never from a
+        radio that is not the profile's node: that would lose the identity)."""
+        if not self._mc:
+            return
+        prof = profile.load()
+        si = dict(self._mc.self_info or {})
+        if profile.differs(prof, si):
+            self.profile_note = "not refreshed: this radio is not the node in the profile"
+            return
+        try:
+            new = await profile.snapshot(self._mc, self.device, previous=prof)
+            profile.save(new)
+            self.profile_note = None if new.get("private_key") else f"saved without the key: {new.get('key_export')}"
+            logger.info("Node profile saved: %s, %d contacts%s", new.get("name"), len(new.get("contacts") or []),
+                        "" if new.get("private_key") else f" (no key: {new.get('key_export')})")
+        except Exception as e:
+            self.profile_note = f"could not save: {e}"
+            logger.warning("Node profile not saved: %s", e)
+
+    async def save_profile_now(self, force: bool = False) -> dict:
+        """Portal: snapshot now. `force` makes the connected radio the
+        profile's node even when the profile names another one."""
+        mc = self._require()
+        prof = profile.load()
+        if profile.differs(prof, mc.self_info or {}) and not force:
+            raise ValueError("this radio is not the node in the profile; adopt it, or force a new profile")
+        if force:
+            prof = None
+        new = await profile.snapshot(mc, self.device, previous=prof)
+        profile.save(new)
+        self.pending_adoption = None
+        self.profile_note = None if new.get("private_key") else f"saved without the key: {new.get('key_export')}"
+        return profile.public_summary(new) or {}
+
+    def profile_status(self) -> dict:
+        prof = profile.load()
+        si = dict((self._mc.self_info if self._mc else None) or {})
+        return {
+            "path": str(profile.PROFILE_PATH),
+            "profile": profile.public_summary(prof),
+            "matches": bool(prof) and not profile.differs(prof, si) if si else None,
+            "mode": settings.radio_adopt,
+            "pending": self.pending_adoption,
+            "last_adoption": self.adoption,
+            "note": self.profile_note,
+            "port": {"configured": settings.serial_port, "actual": self.port},
+        }
+
+    async def test_transmit(self) -> dict:
+        """Send one small datagram nobody decodes and report whether a
+        repeater echoed it: the quickest answer to "is this radio getting
+        out?"."""
+        from meshcore_weather.traffic import traffic_log
+        if not settings.tx_enabled:
+            raise ValueError("transmit is off")
+        if self._data_channel_idx is None:
+            raise ValueError("no data channel on the node")
+        payload = b"WXT" + os.urandom(3)
+        ev = traffic_log.record("link_test", text=f"link test {payload[3:].hex()}")
+        if not await self.send_channel_data(payload, data_type=TEST_DATA_TYPE, ev=ev):
+            raise RuntimeError("the node did not accept the packet")
+        deadline = time.time() + settings.echo_window_s * (settings.retransmit_max + 1) + 8
+        while time.time() < deadline and not ev.get("delivery"):
+            await asyncio.sleep(0.2)
+        d = ev.get("delivery") or {}
+        return {"sent": True, "bytes": len(payload), "heard": bool(d.get("echo")),
+                "result": d.get("result") or "pending", "echo_ms": d.get("echo_ms"), "via": d.get("via"),
+                "snr": d.get("snr"), "attempts": d.get("attempts"), "skipped": d.get("skipped")}
 
     async def _configure_node(self) -> None:
         """Resolve (or create) the bot's channels, subscribe, advertise."""
@@ -249,18 +490,6 @@ class MeshcoreRadio:
             await self._mc.commands.set_time(int(time.time()))
         except Exception:
             logger.debug("Could not set node time")
-
-        # What the node knows about itself: firmware build and contact capacity.
-        try:
-            dq = await self._mc.commands.send_device_query()
-            if dq.type == EventType.DEVICE_INFO:
-                self.device = dict(dq.payload)
-                if self.device.get("max_contacts"):
-                    self.max_contacts = int(self.device["max_contacts"])
-                logger.info("Node firmware %s (%s), %s contact slots", self.device.get("ver"),
-                            self.device.get("fw_build"), self.max_contacts)
-        except Exception:
-            logger.debug("Device query failed")
 
         # Contact policy on the node itself. The firmware only consults the
         # per-type auto-add bits when manual-add mode is on, so:

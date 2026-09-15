@@ -29,12 +29,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import random
 import statistics
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Awaitable, Callable
 
 from Crypto.Cipher import AES        # pycryptodome, a meshcore-py dependency
@@ -133,8 +135,11 @@ class Outbound:
         return self.echoed_at is not None or self.acked_at is not None
 
 
+OUTCOMES_KEEP_S = 86400
+
+
 class DeliveryTracker:
-    def __init__(self):
+    def __init__(self, persist_path: Path | None = None):
         self._by_hash: dict[str, Outbound] = {}
         self._by_ack: dict[str, Outbound] = {}
         self._tasks: set[asyncio.Task] = set()
@@ -142,14 +147,48 @@ class DeliveryTracker:
         self._outcomes: deque[tuple] = deque(maxlen=5000)   # (t, kind, echoed, acked, resent, echo_ms)
         self.started_at = time.time()
         self.last_repeat_heard_at = 0.0
+        self.last_rx_at = 0.0
         self.rx_frames = 0
         self.rx_repeats = 0
+        # The outcome rows outlive a restart (the 24 h window would otherwise
+        # start empty after every deploy); the singleton persists, tests don't.
+        self._persist_path = persist_path
+        self._load_outcomes()
+
+    def _load_outcomes(self) -> None:
+        if not self._persist_path:
+            return
+        try:
+            if self._persist_path.exists():
+                cut = time.time() - OUTCOMES_KEEP_S
+                rows = json.loads(self._persist_path.read_text()).get("outcomes", [])
+                self._outcomes.extend(tuple(r) for r in rows if isinstance(r, list) and len(r) == 6 and r[0] >= cut)
+        except Exception as e:
+            logger.warning("Ignoring delivery outcome file: %s", e)
+
+    def _save_outcomes(self) -> None:
+        if not self._persist_path:
+            return
+        try:
+            cut = time.time() - OUTCOMES_KEEP_S
+            self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._persist_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"outcomes": [list(r) for r in self._outcomes if r[0] >= cut]}))
+            tmp.replace(self._persist_path)
+        except Exception as e:
+            logger.debug("Could not write delivery outcomes: %s", e)
+
+    def recent_outcomes(self, n: int = 50) -> list[tuple]:
+        """The newest n outcome rows, newest last."""
+        rows = list(self._outcomes)
+        return rows[-n:]
 
     # -- what the radio tells us --
 
     def on_rx_log(self, raw: bytes, snr: float | None = None) -> None:
         pkt = parse_packet(raw)
         self.rx_frames += 1
+        self.last_rx_at = time.time()
         if pkt is None or pkt["path_len"] == 0:
             return
         now = time.time()
@@ -251,6 +290,7 @@ class DeliveryTracker:
         d = self.outcome(ob)
         self._outcomes.append((now, ob.kind, ob.echoed_at is not None, ob.acked_at is not None,
                                ob.attempts - 1, d.get("echo_ms")))
+        self._save_outcomes()
         if ob.ev is not None:
             from meshcore_weather.traffic import traffic_log
             traffic_log.update(ob.ev, delivery=d, push=True)
@@ -301,6 +341,7 @@ class DeliveryTracker:
         now = time.time()
         out: dict = {"rx_frames": self.rx_frames, "rx_repeats": self.rx_repeats,
                      "last_repeat_heard_at": self.last_repeat_heard_at or None,
+                     "last_rx_at": self.last_rx_at or None,
                      "pending": len(self._by_hash) + len(self._by_ack), "windows": {}}
         rows = list(self._outcomes)
         for label, secs in (("1h", 3600), ("24h", 86400)):
@@ -361,4 +402,4 @@ def summarize_observations(observations: list[dict]) -> dict:
             "paths": sorted(paths)[:4]}
 
 
-delivery_tracker = DeliveryTracker()
+delivery_tracker = DeliveryTracker(persist_path=Path(settings.data_dir) / "delivery_outcomes.json")
