@@ -16,27 +16,37 @@ class FakeRadio:
 
     def __init__(self, connected=True):
         self.connected = connected
-        self.channel_idx, self.data_channel_idx, self.discover_channel_idx = 1, 2, 3
+        self.channel_idx, self.data_channel_idx = 1, 2
         self.name = "mesh-wx"
         self.params = {"radio_freq": 910.525, "radio_bw": 62.5, "radio_sf": 7, "radio_cr": 5, "tx_power": 22}
-        self.channels = {0: "public", 1: "#digitaino-wx-bot", 2: "#aus-meshwx-v4", 3: "#meshwx-discover"}
+        self.channels = {0: "public", 1: "#digitaino-wx-bot", 2: "#aus-meshwx-v4"}
         self.adverts = 0
+        self.data_sent = []
 
     async def info(self):
         return {"name": self.name, "public_key": "ab" * 32, **self.params, "max_tx_power": 22,
                 "adv_lat": 30.27, "adv_lon": -97.74, "battery_mv": 4100,
-                "channels": {"text": 1, "data": 2, "discover": 3}}
+                "channels": {"text": self.channel_idx, "data": self.data_channel_idx}}
 
     async def list_channels(self):
-        return [{"idx": i, "name": self.channels.get(i, ""), "secret": "", "role": {1: "text", 2: "data", 3: "discover"}.get(i)} for i in range(8)]
+        return [{"idx": i, "name": self.channels.get(i, ""), "secret": "", "role": self._role_for(i),
+                 "roles": [r for r, a in self._ROLES.items() if getattr(self, a) == i]}
+                for i in range(8)]
 
-    _ROLES = {"text": "channel_idx", "data": "data_channel_idx", "discover": "discover_channel_idx"}
+    _ROLES = {"text": "channel_idx", "data": "data_channel_idx"}
 
     def _role_for(self, idx):
+        """Text wins when one slot carries both roles, as on the real radio."""
         for r, a in self._ROLES.items():
             if getattr(self, a) == idx:
                 return r
         return None
+
+    async def send_channel_data(self, data, data_type=0xFF10, ev=None):
+        if not settings.tx_enabled or self.data_channel_idx is None:
+            return False
+        self.data_sent.append((self.data_channel_idx, data_type, bytes(data)))
+        return True
 
     async def set_channel_name(self, idx, name, secret=None):
         if not 0 <= idx <= 7:
@@ -46,7 +56,7 @@ class FakeRadio:
         self.channels[idx] = name
         role = self._role_for(idx)
         if role and name:
-            setattr(settings, {"text": "meshcore_channel", "data": "meshwx_channel", "discover": "meshwx_discover_channel"}[role], name)
+            setattr(settings, {"text": "meshcore_channel", "data": "meshwx_channel"}[role], name)
         return role
 
     async def clear_channel(self, idx):
@@ -58,18 +68,26 @@ class FakeRadio:
 
     async def assign_role(self, role, name):
         attr = self._ROLES[role]
+        setting = {"text": "meshcore_channel", "data": "meshwx_channel"}[role]
         if not name:
             if role == "text":
                 raise ValueError("the text channel is required")
-            setattr(self, attr, None)
+            setattr(self, attr, None)          # never touches the text slot
+            setattr(settings, setting, "")
             return None
+        # Text and data may share one slot: point data at it, create nothing.
+        if role == "data" and self.channel_idx is not None and name == settings.meshcore_channel:
+            self.data_channel_idx = self.channel_idx
+            settings.meshwx_channel = name
+            return self.channel_idx
         target = next((i for i, n in self.channels.items() if n == name and i != 0), None)
         if target is None:
             cur = getattr(self, attr)
-            target = cur if cur is not None else next(i for i in range(1, 8) if i not in self.channels)
+            other = {getattr(self, a) for r, a in self._ROLES.items() if r != role}
+            target = cur if cur is not None and cur not in other else next(i for i in range(1, 8) if i not in self.channels)
             self.channels[target] = name
         setattr(self, attr, target)
-        setattr(settings, {"text": "meshcore_channel", "data": "meshwx_channel", "discover": "meshwx_discover_channel"}[role], name)
+        setattr(settings, setting, name)
         return target
 
     async def set_name(self, name):
@@ -190,28 +208,58 @@ def test_channel_roles_follow_edits_from_either_page(client, tmp_path, monkeypat
     c, bot = client
     monkeypatch.setattr(settings, "meshcore_channel", "#digitaino-wx-bot")
     monkeypatch.setattr(settings, "meshwx_channel", "#aus-meshwx-v4")
-    monkeypatch.setattr(settings, "meshwx_discover_channel", "#meshwx-discover")
 
     async def _no_broadcaster():          # the real one needs a real radio
         pass
     monkeypatch.setattr(bot, "_after_radio_connected", _no_broadcaster)
-    # Text Bot page: rename data + discover -> applied on the node, same slots, env persisted
+    # Text Bot page: rename data -> applied on the node, same slot, env persisted.
+    # A stale discover_channel key from an old client is accepted and ignored.
     r = c.post("/api/settings/channels", json={"text_channel": "#digitaino-wx-bot", "data_channel": "#mesh-wx-aus",
                                                "discover_channel": "#mesh-wx-discover"}).json()
-    assert r["applied"] and r["slots"] == {"text": 1, "data": 2, "discover": 3}
+    assert r["applied"] and r["slots"] == {"text": 1, "data": 2}
     assert bot.radio.channels[2] == "#mesh-wx-aus" and settings.meshwx_channel == "#mesh-wx-aus"
     env = (tmp_path / ".env").read_text()
-    assert "MCW_MESHWX_CHANNEL=#mesh-wx-aus" in env and "MCW_MESHWX_DISCOVER_CHANNEL=#mesh-wx-discover" in env
+    assert "MCW_MESHWX_CHANNEL=#mesh-wx-aus" in env
+    assert "DISCOVER" not in env
     d = c.get("/api/radio").json()
     assert d["configured_channels"]["data"] == "#mesh-wx-aus"
-    assert [ch["role"] for ch in d["channels"][:4]] == [None, "text", "data", "discover"]
+    assert "discover" not in d["configured_channels"]
+    assert [ch["role"] for ch in d["channels"][:4]] == [None, "text", "data", None]
     # Radio page: renaming the tagged text slot moves the role with it
     r = c.post("/api/radio/channel", json={"idx": 1, "name": "#wx-bot"}).json()
     assert r["role"] == "text" and settings.meshcore_channel == "#wx-bot"
     assert "MCW_MESHCORE_CHANNEL=#wx-bot" in (tmp_path / ".env").read_text()
-    # Validation
-    assert c.post("/api/settings/channels", json={"text_channel": "", "data_channel": "#x", "discover_channel": ""}).status_code == 400
-    assert c.post("/api/settings/channels", json={"text_channel": "#a", "data_channel": "#a", "discover_channel": ""}).status_code == 400
+    # Validation: text is required, names start with '#' or are numeric
+    assert c.post("/api/settings/channels", json={"text_channel": "", "data_channel": "#x"}).status_code == 400
+    assert c.post("/api/settings/channels", json={"text_channel": "meshwx", "data_channel": ""}).status_code == 400
+
+
+def test_text_and_data_can_share_one_slot(client, tmp_path, monkeypatch):
+    c, bot = client
+    monkeypatch.setattr(settings, "meshcore_channel", "#digitaino-wx-bot")
+    monkeypatch.setattr(settings, "meshwx_channel", "#aus-meshwx-v4")
+
+    async def _no_broadcaster():
+        pass
+    monkeypatch.setattr(bot, "_after_radio_connected", _no_broadcaster)
+    # v5: one #meshwx carries text and data. Both roles land on slot 1 and the
+    # old data slot is left alone rather than a second one being taken.
+    r = c.post("/api/settings/channels", json={"text_channel": "#meshwx", "data_channel": "#meshwx"}).json()
+    assert r["slots"] == {"text": 1, "data": 1}
+    assert bot.radio.channel_idx == 1 and bot.radio.data_channel_idx == 1
+    assert bot.radio.channels[1] == "#meshwx"
+    assert settings.meshcore_channel == "#meshwx" and settings.meshwx_channel == "#meshwx"
+    env = (tmp_path / ".env").read_text()
+    assert "MCW_MESHCORE_CHANNEL=#meshwx" in env and "MCW_MESHWX_CHANNEL=#meshwx" in env
+    # The shared slot reports as "text"; nothing claims slot 2 any more.
+    d = c.get("/api/radio").json()
+    assert [ch["role"] for ch in d["channels"][:3]] == [None, "text", None]
+    assert d["channels"][1]["roles"] == ["text", "data"]     # one slot, both roles
+    # Clearing the data role leaves the text slot alone
+    r = c.post("/api/settings/channels", json={"text_channel": "#meshwx", "data_channel": ""}).json()
+    assert r["slots"] == {"text": 1, "data": None}
+    assert bot.radio.channel_idx == 1 and bot.radio.data_channel_idx is None
+    assert bot.radio.channels[1] == "#meshwx"
 
 
 def test_env_settings_apply_live_where_possible(client, tmp_path, monkeypatch):

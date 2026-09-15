@@ -1,6 +1,6 @@
 """Forward Error Correction — XOR parity for v4 multi-unit products.
 
-Design principles (from MeshWX_Protocol_v4_Design.md):
+Design principles (v4 era; superseded by MeshWX v5, kept for the AFD parser):
   1. Every unit is independently useful
   2. XOR parity recovers any single missing unit in a group
   3. Base layer always arrives first (single-message preview)

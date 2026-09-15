@@ -426,7 +426,7 @@ var Portal = {
           var where = !d.connected ? "applied when the radio connects" : slots[role] != null ? "slot " + slots[role] : "not resolved on the node";
           return "<div><b>" + label + ":</b> " + esc(name) + ' <span class="text-muted">(' + where + ")</span></div>";
         };
-        $("listening").innerHTML = line("text", "Text commands") + line("data", "Data") + line("discover", "Discovery");
+        $("listening").innerHTML = line("text", "Text commands") + line("data", "Data");
         var peers = d.peer_bots || [];
         $("peer-bots").textContent = "Peer bots heard: " + (peers.length ? peers.map(function (p) { return p.name + " (" + p.lat.toFixed(2) + "," + p.lon.toFixed(2) + ")"; }).join(", ") : "none") +
           ". A request that names a place is answered only by the nearest bot.";
@@ -691,9 +691,9 @@ var Portal = {
       }
 
       var cfg = d.configured_channels || {};
-      setVal("ch-text", cfg.text); setVal("ch-data", cfg.data); setVal("ch-discover", cfg.discover);
+      setVal("ch-text", cfg.text); setVal("ch-data", cfg.data);
       var slots = (info.channels) || {};
-      $("ch-status").textContent = conn ? ["text", "data", "discover"].map(function (r) {
+      $("ch-status").textContent = conn ? ["text", "data"].map(function (r) {
         return r + ": " + (slots[r] != null ? "slot " + slots[r] : (cfg[r] ? "not on the node" : "off"));
       }).join(" · ") : "Radio not connected: names apply when it connects";
 
@@ -703,8 +703,9 @@ var Portal = {
         var rows = [];
         for (var i = 0; i < 8; i++) {
           var ch = (d.channels || []).filter(function (c) { return c.idx === i; })[0] || { idx: i, name: "", role: null };
-          var roleBadge = ch.role ? '<span class="badge badge-success">' + ch.role + "</span>" : "";
-          if (!ch.role && ch.name && [cfg.text, cfg.data, cfg.discover].indexOf(ch.name) !== -1) roleBadge = '<span class="badge badge-warning">configured, not resolved</span>';
+          var roles = ch.roles || (ch.role ? [ch.role] : []);
+          var roleBadge = roles.map(function (r) { return '<span class="badge badge-success">' + esc(r) + "</span>"; }).join(" ");
+          if (!ch.role && ch.name && [cfg.text, cfg.data].indexOf(ch.name) !== -1) roleBadge = '<span class="badge badge-warning">configured, not resolved</span>';
           rows.push("<tr><td>" + i + (i === 0 ? ' <span class="text-muted">public</span>' : "") + "</td>" +
             "<td>" + (i === 0 ? esc(ch.name || "Public") : '<input class="input" style="max-width:260px" id="radio-ch-' + i + '" value="' + esc(ch.name || "") + '" placeholder="(empty slot)">') + "</td>" +
             "<td>" + roleBadge + "</td>" +
@@ -768,7 +769,7 @@ var Portal = {
     saveRoles: function (btn) {
       var st = $("ch-status"), self = this;
       btn.disabled = true; st.textContent = "Saving…";
-      api("/api/settings/channels", { method: "POST", body: { text_channel: $("ch-text").value.trim(), data_channel: $("ch-data").value.trim(), discover_channel: $("ch-discover").value.trim() } })
+      api("/api/settings/channels", { method: "POST", body: { text_channel: $("ch-text").value.trim(), data_channel: $("ch-data").value.trim() } })
         .then(function (d) { Portal.ui.toast(d.note || "Saved"); self.load(); })
         .catch(function (e) { st.textContent = e.message; Portal.ui.toast(e.message, false); })
         .finally(function () { btn.disabled = false; });

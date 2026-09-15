@@ -144,7 +144,7 @@
     <section id="section-broadcasts" class="section">
       <div class="page-head">
         <div><h1 class="page-title">Broadcasts</h1>
-          <p class="page-subtitle">Binary datagrams for the app on the data channel: scheduled jobs, app requests, discovery beacons.</p></div>
+          <p class="page-subtitle">Binary datagrams for the app on the data channel: scheduled jobs and app requests.</p></div>
       </div>
 
       <div class="tiles tiles-4 mb-4" id="bc-tiles"></div>
@@ -237,17 +237,14 @@
 
       <div class="card">
         <div class="card-header"><div><div class="card-title">Channels</div>
-          <div class="card-subtitle">The three channels the bot uses. Saved to .env and applied on the node: a slot is renamed in place, a slot that already has the name is reused, or a free one is taken. Slot 0 (public) is never touched.</div></div></div>
-        <div class="grid grid-3 mb-4">
+          <div class="card-subtitle">The channels the bot uses. Saved to .env and applied on the node: a slot is renamed in place, a slot that already has the name is reused, or a free one is taken. Slot 0 (public) is never touched.</div></div></div>
+        <div class="grid grid-2 mb-4">
           <div><label class="form-label" for="ch-text">Text commands</label>
             <input class="input" id="ch-text" placeholder="#meshwx">
             <span class="form-hint">People send "wx austin tx" here</span></div>
-          <div><label class="form-label" for="ch-data">Data (app broadcasts)</label>
-            <input class="input" id="ch-data" placeholder="#meshwx-data">
-            <span class="form-hint">Empty = broadcasts off</span></div>
-          <div><label class="form-label" for="ch-discover">Discovery</label>
-            <input class="input" id="ch-discover" placeholder="#meshwx-discover">
-            <span class="form-hint">Apps ping here to find bots</span></div>
+          <div><label class="form-label" for="ch-data">Data (app datagrams)</label>
+            <input class="input" id="ch-data" placeholder="#meshwx">
+            <span class="form-hint">The same name as the text channel shares one slot. Empty = broadcasts off</span></div>
         </div>
         <div class="flex gap-2 mb-4" style="align-items:center">
           <button class="btn btn-primary" onclick="Portal.radio.saveRoles(this)">Save channels</button>

@@ -457,6 +457,9 @@ def _segment_to_entry(
     onset_unix_min = int(onset_at.timestamp() / 60) if onset_at else 0
 
     entry = {
+        # Storm-based warning tags (pyIEM reads them from the product text):
+        # the actionable numbers of a severe or flash flood warning.
+        **_segment_tags(seg),
         # Wire-format fields (consumed by warnings_to_binary)
         "warning_type": wtype,
         "severity": severity,
@@ -573,6 +576,41 @@ def _extract_warnings_fallback(store: WeatherStore) -> list[dict]:
 
 
 # -- Public API ---------------------------------------------------------------
+
+
+def _segment_tags(seg) -> dict:
+    """hail (quarter inches), wind (mph), tornado / flood tags as v5 codes."""
+    out = {"hail_qin": 0, "wind_mph": 0, "tornado_tag": 0, "flood_source": 0, "flood_damage": 0}
+    try:
+        hail = getattr(seg, "hailtag", None)
+        if hail:
+            out["hail_qin"] = max(0, min(255, int(round(float(hail) * 4))))
+        wind = getattr(seg, "windtag", None)
+        if wind:
+            mph = float(wind)
+            if str(getattr(seg, "windtagunits", "") or "").upper().startswith("KT"):
+                mph *= 1.15078
+            out["wind_mph"] = max(0, min(255, int(round(mph))))
+        tor = str(getattr(seg, "tornadotag", "") or "").upper()
+        if "OBSERVED" in tor or "EMERGENCY" in tor:
+            out["tornado_tag"] = 3
+        elif "RADAR" in tor:
+            out["tornado_tag"] = 2
+        elif "POSSIBLE" in tor:
+            out["tornado_tag"] = 1
+        tags = getattr(seg, "flood_tags", None) or {}
+        for key, val in dict(tags).items():
+            k, v = str(key).upper(), str(val).upper()
+            if "DAMAGE" in k:
+                out["flood_damage"] = 2 if "CATASTROPHIC" in v else 1 if "CONSIDERABLE" in v else 0
+            elif "FLOOD" in k and "DAMAGE" not in k:
+                out["flood_source"] = 3 if "OBSERVED" in v else 2 if "GAUGE" in v else 1 if "RADAR" in v else 0
+        dmg = str(getattr(seg, "damagetag", "") or "").upper()
+        if dmg and not out["flood_damage"] and ("CONSIDERABLE" in dmg or "CATASTROPHIC" in dmg or "DESTRUCTIVE" in dmg):
+            out["flood_damage"] = 2 if ("CATASTROPHIC" in dmg or "DESTRUCTIVE" in dmg) else 1
+    except Exception:          # tags are a bonus, never a reason to drop a warning
+        pass
+    return out
 
 
 def extract_active_warnings(

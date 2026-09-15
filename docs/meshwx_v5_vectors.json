@@ -1,0 +1,365 @@
+[
+  {
+    "name": "severe_thunderstorm_warning_polygon",
+    "hex": "117a4c1003232a00c913c70183043c0630a804a80cf15a0068011affd2001affa6ffc4ffa2febe0042ff02aad10001aac50101",
+    "decoded": {
+      "seq": 17,
+      "bot": 19578,
+      "type": 1,
+      "name": "warning",
+      "flags": 0,
+      "event": 3,
+      "office": 35,
+      "etn": 42,
+      "expires_min": 29823945,
+      "tornado": 2,
+      "flood_source": 0,
+      "flood_damage": 0,
+      "hail_qin": 4,
+      "wind_mph": 60,
+      "update": false,
+      "polygon": [
+        [
+          30.52,
+          -97.98
+        ],
+        [
+          30.61,
+          -97.62
+        ],
+        [
+          30.38,
+          -97.41
+        ],
+        [
+          30.15,
+          -97.5
+        ],
+        [
+          30.09,
+          -97.85
+        ],
+        [
+          30.28,
+          -98.04
+        ]
+      ],
+      "areas": [
+        {
+          "state": 42,
+          "county": true,
+          "start": 209,
+          "run": 1
+        },
+        {
+          "state": 42,
+          "county": true,
+          "start": 453,
+          "run": 1
+        }
+      ]
+    },
+    "note": "SV.W.EWX.42 over Travis and Hays counties; expires 01:45 UTC"
+  },
+  {
+    "name": "winter_storm_warning_zones",
+    "hex": "127a4c1018230700d417c701010000022abf00042ac80001",
+    "decoded": {
+      "seq": 18,
+      "bot": 19578,
+      "type": 1,
+      "name": "warning",
+      "flags": 0,
+      "event": 24,
+      "office": 35,
+      "etn": 7,
+      "expires_min": 29824980,
+      "tornado": 0,
+      "flood_source": 0,
+      "flood_damage": 0,
+      "hail_qin": 0,
+      "wind_mph": 0,
+      "update": false,
+      "polygon": null,
+      "areas": [
+        {
+          "state": 42,
+          "county": false,
+          "start": 191,
+          "run": 4
+        },
+        {
+          "state": 42,
+          "county": false,
+          "start": 200,
+          "run": 1
+        }
+      ]
+    },
+    "note": "WS.W.EWX.7, two runs: zones 191-194 and zone 200"
+  },
+  {
+    "name": "cancel_expired_early",
+    "hex": "137a4c2103232a00",
+    "decoded": {
+      "seq": 19,
+      "bot": 19578,
+      "type": 2,
+      "name": "cancel",
+      "flags": 1,
+      "event": 3,
+      "office": 35,
+      "etn": 42,
+      "reason": 1
+    }
+  },
+  {
+    "name": "digest_three_entries",
+    "hex": "147a4c309c13c701070303232a002d0018230700380403232b001400",
+    "decoded": {
+      "seq": 20,
+      "bot": 19578,
+      "type": 3,
+      "name": "digest",
+      "flags": 0,
+      "now_min": 29823900,
+      "feed_health": 7,
+      "entries": [
+        {
+          "event": 3,
+          "office": 35,
+          "etn": 42,
+          "expires_rel": 45,
+          "expires_min": 29823945
+        },
+        {
+          "event": 24,
+          "office": 35,
+          "etn": 7,
+          "expires_rel": 1080,
+          "expires_min": 29824980
+        },
+        {
+          "event": 3,
+          "office": 35,
+          "etn": 43,
+          "expires_rel": 20,
+          "expires_min": 29823920
+        }
+      ]
+    }
+  },
+  {
+    "name": "observations_three_stations",
+    "hex": "157a4c409513c70103ca005848730c150a5c3b075c0354460100000a5fff00d0038080daff00ffffff00",
+    "decoded": {
+      "seq": 21,
+      "bot": 19578,
+      "type": 4,
+      "name": "observations",
+      "flags": 0,
+      "ts_min": 29823893,
+      "stations": [
+        {
+          "station": 202,
+          "temp_f": 88,
+          "dewpoint_f": 72,
+          "wind_dir_deg": 157.5,
+          "wind_dir": "SSE",
+          "sky": 3,
+          "wind_mph": 12,
+          "gust_mph": 21,
+          "visibility_mi": 10,
+          "pressure_inhg": 29.92,
+          "humidity_pct": 59,
+          "feels_delta_f": 7
+        },
+        {
+          "station": 860,
+          "temp_f": 84,
+          "dewpoint_f": 70,
+          "wind_dir_deg": 0.0,
+          "wind_dir": "N",
+          "sky": 1,
+          "wind_mph": 0,
+          "gust_mph": 0,
+          "visibility_mi": 10,
+          "pressure_inhg": 29.95,
+          "humidity_pct": null,
+          "feels_delta_f": 0
+        },
+        {
+          "station": 976,
+          "temp_f": null,
+          "dewpoint_f": null,
+          "wind_dir_deg": 292.5,
+          "wind_dir": "WNW",
+          "sky": 10,
+          "wind_mph": null,
+          "gust_mph": 0,
+          "visibility_mi": null,
+          "pressure_inhg": null,
+          "humidity_pct": null,
+          "feels_delta_f": 0
+        }
+      ]
+    },
+    "note": "KGTU is calm, KHYI has only wind direction and sky"
+  },
+  {
+    "name": "forecast_seven_periods",
+    "hex": "167a4c5066002413c70101077f491482715d7f2813827f481e13815a7f3c58947f451402e2567f0a01027f41ff0000",
+    "decoded": {
+      "seq": 22,
+      "bot": 19578,
+      "type": 5,
+      "name": "forecast",
+      "flags": 0,
+      "point": 102,
+      "issued_min": 29823780,
+      "first_period": 1,
+      "periods": [
+        {
+          "high_f": null,
+          "low_f": 73,
+          "pop_pct": 20,
+          "sky": 2,
+          "thunder": false,
+          "wintry": false,
+          "windy": false,
+          "fog": true,
+          "wind_dir_deg": 157.5,
+          "wind_dir": "SSE",
+          "wind_mph": 5
+        },
+        {
+          "high_f": 93,
+          "low_f": null,
+          "pop_pct": 40,
+          "sky": 3,
+          "thunder": true,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 180.0,
+          "wind_dir": "S",
+          "wind_mph": 10
+        },
+        {
+          "high_f": null,
+          "low_f": 72,
+          "pop_pct": 30,
+          "sky": 3,
+          "thunder": true,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 180.0,
+          "wind_dir": "S",
+          "wind_mph": 5
+        },
+        {
+          "high_f": 90,
+          "low_f": null,
+          "pop_pct": 60,
+          "sky": 8,
+          "thunder": true,
+          "wintry": false,
+          "windy": true,
+          "fog": false,
+          "wind_dir_deg": 202.5,
+          "wind_dir": "SSW",
+          "wind_mph": 20
+        },
+        {
+          "high_f": null,
+          "low_f": 69,
+          "pop_pct": 20,
+          "sky": 2,
+          "thunder": false,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 315.0,
+          "wind_dir": "NW",
+          "wind_mph": 10
+        },
+        {
+          "high_f": 86,
+          "low_f": null,
+          "pop_pct": 10,
+          "sky": 1,
+          "thunder": false,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 0.0,
+          "wind_dir": "N",
+          "wind_mph": 10
+        },
+        {
+          "high_f": null,
+          "low_f": 65,
+          "pop_pct": null,
+          "sky": 0,
+          "thunder": false,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 0.0,
+          "wind_dir": "N",
+          "wind_mph": 0
+        }
+      ]
+    },
+    "note": "point 102 = Austin Bergstrom-Travis TX"
+  },
+  {
+    "name": "text_warning_narrative_chunk0",
+    "hex": "177a4c6000170002534556455245205448554e44455253544f524d205741524e494e4720464f52204e4f5254484541535445524e204841595320414e4420534f5554485745535445524e2054524156495320434f554e5449455320554e54494c2031343520414d204344542e204174203132353720414d206120736576657265207468756e64657273746f726d20776173206e656172204472697070696e6720537072696e",
+    "decoded": {
+      "seq": 23,
+      "bot": 19578,
+      "type": 6,
+      "name": "text",
+      "flags": 0,
+      "subject": 0,
+      "group": 23,
+      "idx": 0,
+      "total": 2,
+      "text": "SEVERE THUNDERSTORM WARNING FOR NORTHEASTERN HAYS AND SOUTHWESTERN TRAVIS COUNTIES UNTIL 145 AM CDT. At 1257 AM a severe thunderstorm was near Dripping Sprin"
+    },
+    "note": "group 23, reassemble by (bot, group) in idx order"
+  },
+  {
+    "name": "text_warning_narrative_chunk1",
+    "hex": "187a4c600017010267732c206d6f76696e672065617374206174203430206d70682e2048415a4152443a203630206d706820677573747320616e6420717561727465722073697a65206861696c2e20534f555243453a20526164617220696e646963617465642e",
+    "decoded": {
+      "seq": 24,
+      "bot": 19578,
+      "type": 6,
+      "name": "text",
+      "flags": 0,
+      "subject": 0,
+      "group": 23,
+      "idx": 1,
+      "total": 2,
+      "text": "gs, moving east at 40 mph. HAZARD: 60 mph gusts and quarter size hail. SOURCE: Radar indicated."
+    },
+    "note": "group 23, reassemble by (bot, group) in idx order"
+  },
+  {
+    "name": "not_available_unknown_location",
+    "hex": "197a4c706601",
+    "decoded": {
+      "seq": 25,
+      "bot": 19578,
+      "type": 7,
+      "name": "not_available",
+      "flags": 0,
+      "request": "f",
+      "request_code": 102,
+      "reason": 1
+    }
+  }
+]

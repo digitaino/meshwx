@@ -11,35 +11,22 @@ import re
 from pydantic import BaseModel, Field, field_validator
 
 
-# Supported product names. Adding a new product requires adding one
-# entry here AND one entry in executor.PRODUCT_BUILDERS.
+# v5 products. Each is one message type on the data channel; everything
+# else (storm reports, METAR/TAF, outlooks, discussions, space weather) is
+# request-only text and never scheduled.
 PRODUCT_TYPES = {
-    "warnings",        # 0x20/0x21 full re-broadcast of ALL active warnings (safety net, slow cycle)
-    "warnings_delta",  # 0x20/0x21 only NEW or CHANGED warnings since last cycle (fast cycle)
-    "observation",     # 0x30 current conditions for a point
-    "forecast",        # 0x31 multi-day forecast for a point (PFM → ZFP → SFT)
-    "outlook",         # 0x32 hazardous weather outlook
-    "storm_reports",   # 0x33 local storm reports
-    "rain_obs",        # 0x34 rain-reporting cities
-    "metar",           # 0x30 METAR for a station (alias for observation)
-    "taf",             # 0x36 TAF for a station
-    "warnings_near",   # 0x37 warnings near a specific zone
-    "fire_weather",    # 0x38 fire weather forecast (FWF)
-    "daily_climate",   # 0x3A regional temp/precip (RTP)
-    "nowcast",         # 0x3C short-term forecast (NOW)
-    "afd",             # 0x40 Area Forecast Discussion (text chunks)
-    "space_weather",   # 0x40 SWPC space weather indices (text chunks)
+    "warnings",       # every active warning in coverage, sent on change, with cancels and repeats
+    "digest",         # the list of active warning identities (loss recovery)
+    "observations",   # one batched packet of the coverage stations' current conditions
+    "forecast",       # 7-day point forecast for a place or PFM point
 }
 
-# Supported location types. Each tells the executor how to interpret the
-# job's `location_id` string.
+# Location types: how the job's `location_id` is read.
 LOCATION_TYPES = {
-    "station",     # 4-letter ICAO, e.g. "KAUS"
-    "zone",        # 6-char UGC zone, e.g. "TXZ192"
-    "wfo",         # 3-letter WFO code, e.g. "EWX"
-    "pfm_point",   # numeric index into pfm_points.json, e.g. "103"
-    "coverage",    # expands at execution time to the operator's configured coverage area
-    "city",        # human city name resolved via resolver, e.g. "Austin TX"
+    "coverage",    # the operator's coverage area (warnings, digest, observations, forecast at the home point)
+    "city",        # a place name resolved by the bot, e.g. "Austin TX" (forecast)
+    "pfm_point",   # index into client_data/pfm_points.json (forecast)
+    "station",     # 4-letter ICAO (observations, one station)
 }
 
 

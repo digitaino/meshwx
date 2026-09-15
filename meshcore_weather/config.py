@@ -69,10 +69,10 @@ class Settings(BaseSettings):
     # Data storage
     data_dir: Path = Path("data")
 
-    # Data channel: the binary broadcasts for the app (v4 frames). Empty = off.
+    # Data channel: the binary datagrams for the app (GRP_DATA). Empty = off.
+    # It may name the same channel as meshcore_channel, and in v5 it does:
+    # one #meshwx slot carries both the text conversation and the datagrams.
     meshwx_channel: str = "#meshwx-data"
-    # Discovery channel: apps ping here, the bot answers with a beacon
-    meshwx_discover_channel: str = "#meshwx-discover"
     meshwx_refresh_cooldown: int = 300    # min seconds between app refreshes per region
 
     # Coverage targeting — bot broadcasts only data affecting these areas.
@@ -94,9 +94,9 @@ class Settings(BaseSettings):
     admin_key: str = ""
 
     # Radio transmit master switch. False = receive-only passive observer:
-    # every outbound RF path (adverts, channel messages, binary broadcasts,
-    # discovery beacons, DMs) becomes a logged no-op. Receiving, MQTT
-    # publishing and the web portal are unaffected.
+    # every outbound RF path (adverts, channel messages, binary datagrams,
+    # DMs) becomes a logged no-op. Receiving, MQTT publishing and the web
+    # portal are unaffected.
     tx_enabled: bool = True
 
     # MQTT: optional fire-and-forget publishing of received RF packets to a

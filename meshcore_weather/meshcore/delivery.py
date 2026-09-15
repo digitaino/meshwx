@@ -71,6 +71,17 @@ def build_channel_payload(secret: bytes, name: str, text: str, ts: int, flags: i
     return bytes([channel_hash_byte(secret)]) + mac + ct
 
 
+def build_channel_data_payload(secret: bytes, data_type: int, data: bytes) -> bytes:
+    """What the firmware puts on air for a channel GRP_DATA datagram: channel
+    hash byte, 2-byte HMAC-SHA256 of the ciphertext, AES-128-ECB of
+    data_type(2, LE) || len(1) || data zero-padded to 16 bytes."""
+    plain = data_type.to_bytes(2, "little") + bytes([len(data)]) + bytes(data)
+    plain += b"\0" * ((-len(plain)) % 16)
+    ct = AES.new(secret, AES.MODE_ECB).encrypt(plain)
+    mac = hmac.new(secret, ct, hashlib.sha256).digest()[:2]
+    return bytes([channel_hash_byte(secret)]) + mac + ct
+
+
 def parse_packet(raw: bytes) -> dict | None:
     """Split a raw packet into route, payload type, path and payload."""
     if len(raw) < 2:

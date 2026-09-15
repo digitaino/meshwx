@@ -30,7 +30,7 @@ router = APIRouter()
 # .env keys the portal may write. Anything else is refused.
 ENV_WRITABLE = {
     "MCW_SERIAL_PORT", "MCW_SERIAL_BAUD",
-    "MCW_MESHCORE_CHANNEL", "MCW_MESHWX_CHANNEL", "MCW_MESHWX_DISCOVER_CHANNEL",
+    "MCW_MESHCORE_CHANNEL", "MCW_MESHWX_CHANNEL",
     "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_HOME_STATES", "MCW_HOME_WFOS",
     "MCW_TIMEZONE", "MCW_TX_ENABLED", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR",
     "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_LOG_LEVEL",
@@ -100,7 +100,6 @@ async def radio_state(request: Request) -> JSONResponse:
         "configured_channels": {
             "text": settings.meshcore_channel,
             "data": settings.meshwx_channel,
-            "discover": settings.meshwx_discover_channel,
         },
         "presets": RADIO_PRESETS,
         "reply_mode": settings.reply_mode,
@@ -205,7 +204,7 @@ async def radio_set_channel(request: Request) -> JSONResponse:
     role = await _run(_radio_call(request).set_channel_name(idx, name, secret))
     note = None
     if role:
-        key = {"text": "MCW_MESHCORE_CHANNEL", "data": "MCW_MESHWX_CHANNEL", "discover": "MCW_MESHWX_DISCOVER_CHANNEL"}[role]
+        key = {"text": "MCW_MESHCORE_CHANNEL", "data": "MCW_MESHWX_CHANNEL"}[role]
         _write_env({key: name})
         note = f"slot {idx} is the bot's {role} channel; the bot now uses {name}"
     return JSONResponse({"ok": True, "role": role, "note": note,

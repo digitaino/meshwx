@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "messages": {
     "refresh_request": 1,
     "data_request": 2,
@@ -520,5 +520,135 @@
   "space_weather": {
     "layout": "0:type 1-4:issued_unix_min u32 5:kp24h*3 6-8:kp_day1..3*3 9:G1<<4|G2 10:G3<<4 11-13:S1+% 14-16:R1-R2% 17-19:R3+% 20-21:sfi u16 22-23:ssn u16(0xFFFF=unknown) 24:xray class*10+mag(255=unknown) 25:kp_now<<4|kp_expected (observed K from ALTKnn, expected K from WARKnn or watch G+4; 0=none) 26:xray_alert<<4|proton_alert (xray 1=R2 M5+, 2=R3 X1+ within 3h; proton 1=S1 expected, 2=S1 observed, 3=S2+ observed)",
     "size": 27
+  },
+  "index_file": "index.json",
+  "v5": {
+    "spec": "docs/MeshWX_v5_Spec.md",
+    "data_type": 65296,
+    "max_data": 165,
+    "header": {
+      "size": 4,
+      "seq": {
+        "offset": 0,
+        "size": 1,
+        "type": "u8",
+        "note": "per-bot sequence, wraps 255->0"
+      },
+      "bot": {
+        "offset": 1,
+        "size": 2,
+        "type": "u16le",
+        "note": "first two bytes of the bot public key"
+      },
+      "type": {
+        "offset": 3,
+        "size": 1,
+        "type": "u8",
+        "note": "high nibble = message type, low nibble = flags"
+      }
+    },
+    "types": {
+      "warning": 1,
+      "cancel": 2,
+      "digest": 3,
+      "observations": 4,
+      "forecast": 5,
+      "text": 6,
+      "not_available": 7
+    },
+    "flags": {
+      "warning": {
+        "update": 1
+      },
+      "cancel": {
+        "cancelled": 0,
+        "expired_early": 1,
+        "upgraded": 2
+      }
+    },
+    "text_subjects": {
+      "warning_narrative": 0,
+      "forecast_discussion": 1,
+      "space_weather": 2,
+      "storm_reports": 3,
+      "rainfall": 4,
+      "metar_taf": 5,
+      "hazardous_outlook": 6,
+      "nowcast": 7,
+      "general": 8
+    },
+    "not_available_reasons": {
+      "no_data": 0,
+      "unknown_location": 1,
+      "unsupported": 2,
+      "bot_error": 3,
+      "rate_limited": 4
+    },
+    "tornado_tags": {
+      "none": 0,
+      "possible": 1,
+      "radar_indicated": 2,
+      "observed": 3
+    },
+    "flood_source": {
+      "none": 0,
+      "radar": 1,
+      "radar_and_gauge": 2,
+      "observed": 3
+    },
+    "flood_damage": {
+      "none": 0,
+      "considerable": 1,
+      "catastrophic": 2
+    },
+    "limits": {
+      "polygon_vertices": [
+        3,
+        30
+      ],
+      "area_runs": [
+        1,
+        30
+      ],
+      "digest_entries": [
+        0,
+        25
+      ],
+      "stations": [
+        1,
+        14
+      ],
+      "forecast_periods": [
+        1,
+        14
+      ],
+      "text_bytes_per_chunk": 157,
+      "text_chunks": [
+        1,
+        8
+      ]
+    },
+    "record_sizes": {
+      "warning_fixed": 15,
+      "cancel": 8,
+      "digest_fixed": 10,
+      "digest_entry": 6,
+      "observations_fixed": 9,
+      "observation_station": 11,
+      "forecast_fixed": 12,
+      "forecast_period": 5,
+      "text_fixed": 8,
+      "not_available": 6
+    },
+    "sentinels": {
+      "temp_unknown": -128,
+      "u8_unknown": 255,
+      "forecast_temp_not_given": 127,
+      "gust_none": 0,
+      "feels_same": 0,
+      "sky_other": 15,
+      "point_unbundled": 65535
+    },
+    "notes": "MeshWX v5 (spec 5.0). Every message is the data field of one MeshCore GRP_DATA packet on #meshwx with data_type 0xFF10, at most 165 bytes. All multi-byte integers are little-endian; times are Unix minutes as u32. The type byte is (type << 4) | flags. Warnings are keyed by (event, office, etn), not by seq. Indices into offices/stations/states come from index.json; event codes from 'events' and sky codes from 'sky_codes' in this file. The v3/v4 keys above are retained for legacy clients and are unrelated to v5."
   }
 }

@@ -208,7 +208,7 @@ For users who want weather information at a remote cabin, on a boat, in a rural 
 - **Waveshare e-paper modules**: waveshare.com/product/displays/e-paper.htm
 - **GxEPD2 library**: github.com/ZinggJM/GxEPD2 (Arduino e-paper driver, supports most Waveshare displays)
 - **Existing protocol reference**: `meshcore_weather/protocol/meshwx.py` in this repo (the source of truth that the C decoder library would mirror)
-- **Wire format spec**: `docs/MeshWX_Protocol_v4_Design.md` and `docs/v4_client_guide.md` in this repo (v3 doc is legacy reference)
+- **Wire format spec**: `docs/MeshWX_v5_Spec.md` in this repo
 - **Bot side already-shipped commits relevant to this**:
   - `50b660f` — home city obs + forecast broadcast (the data source the device consumes)
   - `9d08fde` — PFM forecast quality upgrade

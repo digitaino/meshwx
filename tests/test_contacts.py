@@ -6,6 +6,12 @@ import time
 from meshcore import EventType
 
 from meshcore_weather.config import settings
+from meshcore_weather.meshcore.delivery import (
+    PAYLOAD_GRP_DATA,
+    build_channel_data_payload,
+    delivery_tracker,
+    packet_hash,
+)
 from meshcore_weather.meshcore.radio import MeshcoreRadio, plan_contact_removals
 
 NOW = time.time()
@@ -142,3 +148,87 @@ def test_new_contacts_and_readverts_reach_the_bot_only_for_companions():
     asyncio.run(r._on_advert(_Ev({"public_key": "bb" * 32})))
     assert seen == [("Newcomer", "cc" * 6), ("Digitaino", "aa" * 6)]
     assert r._mc._pending_contacts == {}
+
+
+# -- GRP_DATA send path -------------------------------------------------------
+#
+# meshcore-py has no helper for CMD_SEND_CHANNEL_DATA, so the frame is built by
+# hand: [62][channel idx][path_len 0xFF = flood][data_type u16 LE][data].
+
+
+class DataCommands:
+    """Captures the raw frames the radio hands to the companion."""
+
+    def __init__(self, secret):
+        self.secret = secret
+        self.frames = []
+
+    async def get_channel(self, idx):
+        ev = _Res()
+        ev.type = EventType.CHANNEL_INFO
+        ev.payload = {"channel_name": "#meshwx", "channel_secret": self.secret}
+        return ev
+
+    async def send(self, frame, expect):
+        self.frames.append(bytes(frame))
+        return _Res()
+
+
+class DataMC:
+    def __init__(self, secret):
+        self.commands = DataCommands(secret)
+        self.self_info = {"name": "WX-AUS", "public_key": "99" * 32}
+
+
+SECRET = bytes(range(16))
+
+
+def _data_radio(monkeypatch, secret=SECRET):
+    """A radio whose text and data roles share slot 1, with the tracker stubbed
+    out so the Outbound can be inspected without a live retransmit task."""
+    r = MeshcoreRadio()
+    r._mc = DataMC(secret)
+    r._channel_idx = r._data_channel_idx = 1
+    r._channel_secrets = {}
+    tracked = []
+    monkeypatch.setattr(delivery_tracker, "track", tracked.append)
+    return r, tracked
+
+
+def test_send_channel_data_builds_the_firmware_frame_and_tracks_the_hash(monkeypatch):
+    monkeypatch.setattr(settings, "tx_enabled", True)
+    r, tracked = _data_radio(monkeypatch)
+
+    async def go():
+        assert await r.send_channel_data(b"\x01\x02") is True
+        # the retransmit must be the identical frame: every node that already
+        # has it drops it, so nobody sees the datagram twice
+        assert await tracked[0].resend(1) is True
+
+    asyncio.run(go())
+    frame = bytes([62, 1, 0xFF, 0x10, 0xFF]) + b"\x01\x02"
+    assert r._mc.commands.frames == [frame, frame]
+    ob = tracked[0]
+    assert ob.kind == "channel_data" and ob.ptype == PAYLOAD_GRP_DATA
+    assert ob.hash == packet_hash(PAYLOAD_GRP_DATA,
+                                  build_channel_data_payload(SECRET, 0xFF10, b"\x01\x02"))
+
+
+def test_send_channel_data_refuses_more_than_165_bytes(monkeypatch):
+    monkeypatch.setattr(settings, "tx_enabled", True)
+    r, tracked = _data_radio(monkeypatch)
+    assert asyncio.run(r.send_channel_data(b"x" * 166)) is False
+    assert r._mc.commands.frames == [] and tracked == []
+    assert asyncio.run(r.send_channel_data(b"x" * 165)) is True
+
+
+def test_send_channel_data_is_silent_with_tx_off_and_on_slot_0(monkeypatch):
+    monkeypatch.setattr(settings, "tx_enabled", False)
+    r, tracked = _data_radio(monkeypatch)
+    assert asyncio.run(r.send_channel_data(b"\x01")) is False
+    monkeypatch.setattr(settings, "tx_enabled", True)
+    r._data_channel_idx = 0                       # the public channel, never ours
+    assert asyncio.run(r.send_channel_data(b"\x01")) is False
+    r._data_channel_idx = None                    # broadcasts off
+    assert asyncio.run(r.send_channel_data(b"\x01")) is False
+    assert r._mc.commands.frames == [] and tracked == []

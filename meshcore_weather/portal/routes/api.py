@@ -127,60 +127,58 @@ async def get_stats() -> JSONResponse:
 
 @router.post("/settings/channels")
 async def set_channels(request: Request) -> JSONResponse:
-    """Change the bot's text / data / discovery channel names.
+    """Change the bot's text and data channel names.
 
     Applied live when the radio is up (the slot is renamed in place, or an
     existing slot with that name is reused, or a free slot is created),
     kept in memory otherwise so the next radio connect uses them, and
     persisted to .env either way.
+
+    The two roles may name the same channel — in v5 they do: one #meshwx
+    slot carries the text conversation and the binary datagrams.
     """
     from meshcore_weather.config import settings
     from meshcore_weather.portal.routes.admin import _write_env
 
     body = await request.json()
+    body.pop("discover_channel", None)   # accepted and ignored: the discovery channel is gone
     wanted = {
         "text": body.get("text_channel", "").strip(),
         "data": body.get("data_channel", "").strip(),
-        "discover": body.get("discover_channel", "").strip(),
     }
     if not wanted["text"]:
         raise HTTPException(400, "text_channel is required")
     for role, val in wanted.items():
         if val and not val.startswith("#") and not val.isdigit():
             raise HTTPException(400, f"{role} channel must start with '#' or be a numeric index")
-    if len({v for v in wanted.values() if v}) != len([v for v in wanted.values() if v]):
-        raise HTTPException(400, "each role needs a different channel")
 
     bot = request.app.state.bot
     radio = bot.radio
     applied: dict[str, int | None] = {}
     if radio.connected:
-        for role in ("text", "data", "discover"):
+        for role in ("text", "data"):
             try:
                 applied[role] = await radio.assign_role(role, wanted[role])
             except ValueError as e:
                 raise HTTPException(400, str(e))
             except Exception as e:
                 raise HTTPException(500, f"radio error on {role} channel: {e}")
-        # Discovery pings are only wired when a broadcaster exists; a data
-        # channel that appeared just now needs the broadcaster started.
+        # A data channel that appeared just now needs the broadcaster started.
         if applied.get("data") is not None and bot._broadcaster is None:
             await bot._after_radio_connected()
     else:
         settings.meshcore_channel = wanted["text"]
         settings.meshwx_channel = wanted["data"]
-        settings.meshwx_discover_channel = wanted["discover"]
 
     _write_env({
         "MCW_MESHCORE_CHANNEL": wanted["text"],
         "MCW_MESHWX_CHANNEL": wanted["data"],
-        "MCW_MESHWX_DISCOVER_CHANNEL": wanted["discover"],
     })
     return JSONResponse({
         "ok": True,
         "applied": radio.connected,
         "slots": applied if radio.connected else None,
-        "text_channel": wanted["text"], "data_channel": wanted["data"], "discover_channel": wanted["discover"],
+        "text_channel": wanted["text"], "data_channel": wanted["data"],
         "note": "Applied on the node now" if radio.connected else "Saved; applied when the radio connects",
     })
 
@@ -199,30 +197,17 @@ async def run_due_jobs(request: Request) -> JSONResponse:
 # What each product is and which location types its builder understands
 # (schedule/executor.py). Every PRODUCT_TYPES entry must appear here.
 PRODUCT_INFO = {
-    "warnings":       {"label": "Warnings (full)",        "desc": "Re-broadcast ALL active warnings (safety net)", "locations": ["coverage"]},
-    "warnings_delta": {"label": "Warnings (delta)",       "desc": "Only new/changed warnings since last cycle", "locations": ["coverage"]},
-    "warnings_near":  {"label": "Warnings near zone",     "desc": "Warnings affecting a specific zone", "locations": ["zone"]},
-    "observation":    {"label": "Observation",            "desc": "Current conditions for a point", "locations": ["city", "station", "zone"]},
-    "forecast":       {"label": "Forecast",               "desc": "Multi-day forecast for a point", "locations": ["city", "zone", "pfm_point"]},
-    "outlook":        {"label": "Hazardous Outlook",      "desc": "Hazardous weather outlook", "locations": ["coverage", "wfo"]},
-    "metar":          {"label": "METAR",                  "desc": "Raw METAR observation for a station", "locations": ["station"]},
-    "taf":            {"label": "TAF",                    "desc": "Terminal aerodrome forecast for a station", "locations": ["station"]},
-    "storm_reports":  {"label": "Storm Reports",          "desc": "Local storm reports (LSR)", "locations": ["coverage", "wfo"]},
-    "rain_obs":       {"label": "Rain Observations",      "desc": "Rain-reporting cities", "locations": ["coverage"]},
-    "fire_weather":   {"label": "Fire Weather",           "desc": "Fire weather forecast (FWF) for the zone a place is in", "locations": ["city", "zone"]},
-    "daily_climate":  {"label": "Daily Climate",          "desc": "Regional temperature and precipitation summary (RTP)", "locations": ["coverage", "wfo"]},
-    "nowcast":        {"label": "Nowcast",                "desc": "Short-term forecast (NOW) for a place or an office", "locations": ["city", "zone", "wfo"]},
-    "afd":            {"label": "Area Forecast Discussion", "desc": "AFD text from a forecast office", "locations": ["wfo"]},
-    "space_weather":  {"label": "Space Weather",          "desc": "SWPC space weather indices", "locations": ["coverage"]},
+    "warnings":     {"label": "Warnings",      "desc": "Every active warning in coverage, sent when it appears or materially changes, with cancels; life-safety warnings once more after 90 s", "locations": ["coverage"]},
+    "digest":       {"label": "Digest",        "desc": "The list of active warning identities and their expiry, so apps can recover what they missed", "locations": ["coverage"]},
+    "observations": {"label": "Observations",  "desc": "Current conditions for the coverage stations in one packet, or one station", "locations": ["coverage", "station"]},
+    "forecast":     {"label": "Forecast",      "desc": "7-day point forecast (PFM) for a place, a PFM point, or the coverage centre", "locations": ["city", "pfm_point", "coverage"]},
 }
 
 LOCATION_INFO = {
-    "coverage":  {"label": "Coverage area",    "desc": "All zones in the operator's configured coverage", "placeholder": "(leave empty)"},
-    "city":      {"label": "City",             "desc": "Resolved to nearest NWS zone", "placeholder": "e.g. Austin TX"},
+    "coverage":  {"label": "Coverage area",    "desc": "The operator's coverage centre and radius", "placeholder": "(leave empty)"},
+    "city":      {"label": "City",             "desc": "Resolved by the bot to the nearest forecast point", "placeholder": "e.g. Austin TX"},
     "station":   {"label": "Station (ICAO)",   "desc": "4-letter ICAO code", "placeholder": "e.g. KAUS"},
-    "zone":      {"label": "NWS Zone",         "desc": "6-character UGC zone code", "placeholder": "e.g. TXZ192"},
-    "wfo":       {"label": "Forecast Office",  "desc": "3-letter WFO code", "placeholder": "e.g. EWX"},
-    "pfm_point": {"label": "PFM Point",        "desc": "Numeric index into pfm_points.json", "placeholder": "e.g. 103"},
+    "pfm_point": {"label": "PFM point",        "desc": "Index into client_data/pfm_points.json", "placeholder": "e.g. 103"},
 }
 
 

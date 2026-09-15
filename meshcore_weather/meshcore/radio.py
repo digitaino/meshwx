@@ -13,13 +13,27 @@ from typing import Any
 from meshcore import MeshCore, EventType
 
 from meshcore_weather.config import settings
-from meshcore_weather.meshcore.delivery import Outbound, build_channel_payload, delivery_tracker, packet_hash
+from meshcore_weather.meshcore.delivery import (
+    PAYLOAD_GRP_DATA,
+    Outbound,
+    build_channel_data_payload,
+    build_channel_payload,
+    delivery_tracker,
+    packet_hash,
+)
 from meshcore_weather.mqtt import MqttPublisher
 
 logger = logging.getLogger(__name__)
 
 # How often to re-advertise and refresh contacts (seconds)
 CONTACTS_REFRESH = 120  # 2 minutes
+
+# Companion protocol: CMD_SEND_CHANNEL_DATA and the "flood, no path" marker
+# (firmware v1.17.1, examples/companion_radio/MyMesh.cpp).
+CMD_SEND_CHANNEL_DATA = 62
+PATH_FLOOD = 0xFF
+# The firmware clips a channel datagram's data at this many bytes.
+MAX_CHANNEL_DATA = 165
 
 
 # Opening the USB serial port toggles DTR/RTS, which resets the ESP32 on
@@ -113,9 +127,7 @@ class MeshcoreRadio:
         self._running = False
         self._channel_idx: int | None = None
         self._data_channel_idx: int | None = None
-        self._discover_channel_idx: int | None = None
         self._channel_handler: Callable | None = None
-        self._discover_handler: Callable | None = None
         self._dm_handler: Callable | None = None
         self._advert_handler: Callable | None = None
         self._advert_task: asyncio.Task | None = None
@@ -143,9 +155,7 @@ class MeshcoreRadio:
         """Register handler: async def handler(contact_name, pubkey_prefix)"""
         self._advert_handler = handler
 
-    def on_discover_ping(self, handler: Callable) -> None:
-        """Register handler: async def handler() — called when a ping arrives on discovery channel"""
-        self._discover_handler = handler
+    _discover_deprecation_logged = False
 
     def on_dm(self, handler: Callable) -> None:
         """Register handler: async def handler(pubkey_prefix, sender_name, text)"""
@@ -197,34 +207,27 @@ class MeshcoreRadio:
             logger.info("Created text channel %d (%s)", created, settings.meshcore_channel)
         logger.info("Listening on channel %d (%s)", self._channel_idx, settings.meshcore_channel)
 
-        # Resolve data channel for MeshWX binary protocol (if configured)
+        # Data channel for the MeshWX binary datagrams. In v5 this is the
+        # same channel as the text one (#meshwx carries both), so when the
+        # names match, reuse the slot instead of burning a second one.
         if settings.meshwx_channel:
-            try:
-                self._data_channel_idx = await self._resolve_channel(settings.meshwx_channel)
-                logger.info("Data channel %d (%s)", self._data_channel_idx, settings.meshwx_channel)
-            except ValueError:
-                # Channel doesn't exist — create it on a free slot
-                created = await self._create_channel(settings.meshwx_channel)
-                if created is not None:
-                    self._data_channel_idx = created
-                    logger.info("Created data channel %d (%s)", created, settings.meshwx_channel)
-                else:
-                    logger.warning("Could not create data channel '%s' — no free slots",
-                                   settings.meshwx_channel)
-
-        # Resolve discovery channel for beacon broadcasts
-        if settings.meshwx_discover_channel:
-            try:
-                self._discover_channel_idx = await self._resolve_channel(settings.meshwx_discover_channel)
-                logger.info("Discovery channel %d (%s)", self._discover_channel_idx, settings.meshwx_discover_channel)
-            except ValueError:
-                created = await self._create_channel(settings.meshwx_discover_channel)
-                if created is not None:
-                    self._discover_channel_idx = created
-                    logger.info("Created discovery channel %d (%s)", created, settings.meshwx_discover_channel)
-                else:
-                    logger.warning("Could not create discovery channel '%s' — no free slots",
-                                   settings.meshwx_discover_channel)
+            if settings.meshwx_channel == settings.meshcore_channel:
+                self._data_channel_idx = self._channel_idx
+                logger.info("Data channel %d (%s, shared with text)",
+                            self._data_channel_idx, settings.meshwx_channel)
+            else:
+                try:
+                    self._data_channel_idx = await self._resolve_channel(settings.meshwx_channel)
+                    logger.info("Data channel %d (%s)", self._data_channel_idx, settings.meshwx_channel)
+                except ValueError:
+                    # Channel doesn't exist — create it on a free slot
+                    created = await self._create_channel(settings.meshwx_channel)
+                    if created is not None:
+                        self._data_channel_idx = created
+                        logger.info("Created data channel %d (%s)", created, settings.meshwx_channel)
+                    else:
+                        logger.warning("Could not create data channel '%s' — no free slots",
+                                       settings.meshwx_channel)
 
         # Subscribe to channel messages, DMs, and new adverts
         self._mc.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_msg)
@@ -427,67 +430,64 @@ class MeshcoreRadio:
         delivery_tracker.track(Outbound(kind="channel_text", hash=h, resend=resend, ev=ev,
                                         window_s=settings.echo_window_s))
 
-    async def send_binary_channel(self, payload: bytes) -> None:
-        """Send raw binary data on the MeshWX data channel.
+    async def send_channel_data(self, data: bytes, data_type: int = 0xFF10,
+                                ev: dict | None = None) -> bool:
+        """Flood one MeshCore GRP_DATA datagram on the data channel.
 
-        Acquires the shared send_lock so that scheduled broadcasts and
-        on-demand request responses never interleave their messages.
-        Without this, a client DM arriving mid-broadcast-tick would
-        cause mixed message sequences on the wire (e.g., radar chunk 3
-        followed by a forecast response followed by radar chunk 4).
+        meshcore-py has no helper for CMD_SEND_CHANNEL_DATA, so the frame is
+        built by hand exactly as the companion firmware expects it
+        (v1.17.1, examples/companion_radio/MyMesh.cpp):
 
-        Bypasses send_chan_msg (which UTF-8 encodes) by constructing
-        the channel message packet directly with raw bytes.
+            [62][channel idx u8][path_len u8 = 0xFF for flood][data_type u16 LE][data]
+
+        Like a channel text message, it is tracked for a repeater's echo and
+        sent once more byte-for-byte when none is heard (see delivery.py).
         """
+        data = bytes(data)
+        if len(data) > MAX_CHANNEL_DATA:
+            logger.error("Channel data of %d bytes exceeds the %d-byte limit; not sent",
+                         len(data), MAX_CHANNEL_DATA)
+            return False
         if not settings.tx_enabled:
-            logger.info("TX disabled — suppressed %dB binary broadcast", len(payload))
-            return
-        if not self._mc or self._data_channel_idx is None:
-            return
+            logger.info("TX disabled — suppressed %dB data datagram (type 0x%04X)", len(data), data_type)
+            return False
+        idx = self._data_channel_idx
+        if not self._mc or idx is None:
+            logger.warning("Cannot send channel data: no data channel")
+            return False
+        if idx == 0:
+            logger.warning("Blocked data send on ch 0 (the public channel)")
+            return False
+        frame = bytes([CMD_SEND_CHANNEL_DATA, idx, PATH_FLOOD]) + data_type.to_bytes(2, "little") + data
+        secret = await self._channel_secret(idx)
+        h = packet_hash(PAYLOAD_GRP_DATA, build_channel_data_payload(secret, data_type, data)) if secret else None
         async with self.send_lock:
-            import time as _time
-            ts_bytes = int(_time.time()).to_bytes(4, "little")
-            data = (
-                b"\x03\x00"
-                + self._data_channel_idx.to_bytes(1, "little")
-                + ts_bytes
-                + payload
-            )
             try:
-                result = await self._mc.commands.send(data, [EventType.OK, EventType.ERROR])
-                if result.type == EventType.ERROR:
-                    logger.warning("Binary send failed on data ch %d: %s", self._data_channel_idx, result.payload)
-                else:
-                    logger.info("Sent ch%d: %dB",
-                                self._data_channel_idx, len(payload))
+                result = await self._mc.commands.send(frame, [EventType.OK, EventType.ERROR])
             except Exception:
-                logger.exception("Failed to send binary on data channel")
+                logger.exception("Failed to send data on ch %d", idx)
+                return False
+            if result.type == EventType.ERROR:
+                logger.warning("Data send failed on ch %d: %s", idx, result.payload)
+                return False
+        logger.info("Sent data on ch %d: %d bytes (type 0x%04X)", idx, len(data), data_type)
 
-    async def send_beacon(self, payload: bytes) -> None:
-        """Send a beacon on the discovery channel."""
-        if not settings.tx_enabled:
-            logger.info("TX disabled — suppressed discovery beacon")
-            return
-        if not self._mc or self._discover_channel_idx is None:
-            return
-        async with self.send_lock:
-            import time as _time
-            ts_bytes = int(_time.time()).to_bytes(4, "little")
-            data = (
-                b"\x03\x00"
-                + self._discover_channel_idx.to_bytes(1, "little")
-                + ts_bytes
-                + payload
-            )
-            try:
-                result = await self._mc.commands.send(data, [EventType.OK, EventType.ERROR])
-                if result.type == EventType.ERROR:
-                    logger.warning("Beacon send failed on ch %d", self._discover_channel_idx)
-                else:
-                    logger.debug("Beacon sent on discovery ch %d (%d bytes)",
-                                 self._discover_channel_idx, len(payload))
-            except Exception:
-                logger.exception("Failed to send beacon")
+        async def resend(attempt: int) -> bool:
+            if not settings.tx_enabled or not self._mc:
+                return False
+            async with self.send_lock:
+                res = await self._mc.commands.send(frame, [EventType.OK, EventType.ERROR])
+            if res.type == EventType.ERROR:
+                return False
+            logger.info("No echo heard: sent data again on ch %d (attempt %d, %d bytes)",
+                        idx, attempt + 1, len(data))
+            return True
+
+        delivery_tracker.track(Outbound(kind="channel_data", hash=h, resend=resend, ev=ev,
+                                        window_s=settings.echo_window_s, ptype=PAYLOAD_GRP_DATA))
+        return True
+
+    _beacon_deprecation_logged = False
 
     async def send_dm(self, pubkey_prefix: str, text: str, ev: dict | None = None) -> bool:
         """Send a direct message to a contact by their public key prefix and
@@ -563,18 +563,14 @@ class MeshcoreRadio:
         if channel_idx == 0:
             return
 
-        # Discovery channel — check for ping
-        if channel_idx == self._discover_channel_idx and self._discover_handler:
-            # Any message on the discovery channel triggers a beacon response
-            logger.info("Discovery ping received on ch %d", channel_idx)
-            try:
-                await self._discover_handler()
-            except Exception:
-                logger.exception("Error in discovery handler")
-            return
-
-        # Text command channel or data channel (v4 clients send requests on data ch)
-        if channel_idx != self._channel_idx and channel_idx != self._data_channel_idx:
+        # The text and data roles may share one slot (v5: #meshwx carries
+        # both), so decide the role once — the text handler must not run
+        # twice for the same message.
+        if channel_idx == self._channel_idx:
+            on_text_channel = True
+        elif channel_idx == self._data_channel_idx:
+            on_text_channel = False        # data-only slot (a legacy deployment)
+        else:
             return
 
         sender = "unknown"
@@ -582,6 +578,11 @@ class MeshcoreRadio:
             sender, text = text.split(": ", 1)
         sender = clean_text(sender, 40) or "unknown"
         text = clean_text(text, 200)
+
+        # A data-only channel carries no conversation; only the legacy app
+        # request prefixes still reach the text handler.
+        if not on_text_channel and not text.upper().startswith(("WXQ", "MWX")):
+            return
 
         hops = payload.get("path_len")
         hops = int(hops) if isinstance(hops, int) and hops >= 0 else None
@@ -815,8 +816,7 @@ class MeshcoreRadio:
             "adv_type": si.get("adv_type"),
             "manual_add_contacts": si.get("manual_add_contacts"),
             "battery_mv": None,
-            "channels": {"text": self._channel_idx, "data": self._data_channel_idx,
-                         "discover": self._discover_channel_idx},
+            "channels": {"text": self._channel_idx, "data": self._data_channel_idx},
         }
         try:
             bat = await mc.commands.get_bat()
@@ -841,16 +841,19 @@ class MeshcoreRadio:
             if isinstance(secret, (bytes, bytearray)):
                 secret = secret.hex()
             chans.append({"idx": i, "name": name, "secret": secret or "",
-                          "role": self._role_for(i)})
+                          "role": self._role_for(i), "roles": self._roles_for(i)})
         return chans
 
+    def _roles_for(self, idx: int) -> list[str]:
+        """Every role on a slot: one slot can carry both text and data."""
+        return [r for r, (attr, _) in self._ROLES.items() if getattr(self, attr) == idx]
+
     def _role_for(self, idx: int) -> str | None:
+        """The bot's role for a slot. Text wins when one slot carries both."""
         if idx == self._channel_idx:
             return "text"
         if idx == self._data_channel_idx:
             return "data"
-        if idx == self._discover_channel_idx:
-            return "discover"
         return None
 
     # Role -> (index attribute, settings attribute). The bot listens/sends on
@@ -858,7 +861,6 @@ class MeshcoreRadio:
     _ROLES = {
         "text": ("_channel_idx", "meshcore_channel"),
         "data": ("_data_channel_idx", "meshwx_channel"),
-        "discover": ("_discover_channel_idx", "meshwx_discover_channel"),
     }
 
     async def _slots(self) -> dict[int, str]:
@@ -904,8 +906,9 @@ class MeshcoreRadio:
     async def assign_role(self, role: str, name: str) -> int | None:
         """Point a bot role at a channel name, live: reuse a slot that already
         has that name, else rename the role's current slot in place, else
-        create it on a free slot. Empty name detaches the role (data/discover
-        only). Returns the slot index."""
+        create it on a free slot. Empty name detaches the role (data only).
+        Text and data may name the same channel, in which case data simply
+        points at the text slot. Returns the slot index."""
         if role not in self._ROLES:
             raise ValueError(f"unknown role {role!r}")
         idx_attr, set_attr = self._ROLES[role]
@@ -918,6 +921,12 @@ class MeshcoreRadio:
             return None
         if not name.startswith("#") and not name.isdigit():
             raise ValueError("channel names start with '#'")
+        # v5: one channel carries text and data. Nothing to create or rename.
+        if role == "data" and self._channel_idx is not None and name == settings.meshcore_channel:
+            self._data_channel_idx = self._channel_idx
+            settings.meshwx_channel = name
+            logger.info("Channel role data -> slot %d (%s, shared with text)", self._channel_idx, name)
+            return self._channel_idx
         slots = await self._slots()
         current = getattr(self, idx_attr)
         target = next((i for i, n in slots.items() if n == name and i != 0), None)
@@ -1071,6 +1080,3 @@ class MeshcoreRadio:
     def data_channel_idx(self) -> int | None:
         return self._data_channel_idx
 
-    @property
-    def discover_channel_idx(self) -> int | None:
-        return self._discover_channel_idx

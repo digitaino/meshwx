@@ -27,7 +27,7 @@ class TestBroadcastJobValidation:
         job = BroadcastJob(
             id="test-1",
             name="Test job",
-            product="observation",
+            product="observations",
             location_type="coverage",
             interval_minutes=15,
         )
@@ -39,7 +39,7 @@ class TestBroadcastJobValidation:
         job = BroadcastJob(
             id="UPPER-CASE",
             name="x",
-            product="observation",
+            product="observations",
             location_type="coverage",
             interval_minutes=5,
         )
@@ -50,7 +50,7 @@ class TestBroadcastJobValidation:
             BroadcastJob(
                 id="has space",
                 name="x",
-                product="observation",
+                product="observations",
                 location_type="coverage",
                 interval_minutes=5,
             )
@@ -60,7 +60,7 @@ class TestBroadcastJobValidation:
             BroadcastJob(
                 id="has/slash",
                 name="x",
-                product="observation",
+                product="observations",
                 location_type="coverage",
                 interval_minutes=5,
             )
@@ -80,7 +80,7 @@ class TestBroadcastJobValidation:
             BroadcastJob(
                 id="ok",
                 name="x",
-                product="observation",
+                product="observations",
                 location_type="not_a_real_type",
                 interval_minutes=5,
             )
@@ -90,7 +90,7 @@ class TestBroadcastJobValidation:
             BroadcastJob(
                 id="ok",
                 name="x",
-                product="observation",
+                product="observations",
                 location_type="coverage",
                 interval_minutes=0,
             )
@@ -100,7 +100,7 @@ class TestBroadcastJobValidation:
             BroadcastJob(
                 id="ok",
                 name="x",
-                product="observation",
+                product="observations",
                 location_type="coverage",
                 interval_minutes=-5,
             )
@@ -122,7 +122,7 @@ class TestBroadcastJobValidation:
             job = BroadcastJob(
                 id=f"test-{lt}",
                 name=lt,
-                product="observation",
+                product="observations",
                 location_type=lt,
                 interval_minutes=60,
             )
@@ -135,7 +135,7 @@ class TestBroadcastConfigMutations:
         job = BroadcastJob(
             id="a",
             name="A",
-            product="observation",
+            product="observations",
             location_type="coverage",
             interval_minutes=5,
         )
@@ -149,7 +149,7 @@ class TestBroadcastConfigMutations:
             BroadcastJob(
                 id="a",
                 name="A",
-                product="observation",
+                product="observations",
                 location_type="coverage",
                 interval_minutes=5,
             )
@@ -158,7 +158,7 @@ class TestBroadcastConfigMutations:
             BroadcastJob(
                 id="a",
                 name="A prime",
-                product="observation",
+                product="observations",
                 location_type="coverage",
                 interval_minutes=15,
             )
@@ -173,7 +173,7 @@ class TestBroadcastConfigMutations:
             BroadcastJob(
                 id="a",
                 name="A",
-                product="observation",
+                product="observations",
                 location_type="coverage",
                 interval_minutes=5,
             )
@@ -189,7 +189,7 @@ class TestBroadcastConfigMutations:
                 BroadcastJob(
                     id=f"job-{i}",
                     name=f"Job {i}",
-                    product="observation",
+                    product="observations",
                     location_type="coverage",
                     interval_minutes=15 + i,
                 )
@@ -229,7 +229,7 @@ class TestStorePersistence:
         store_module.save_config(cfg)
         assert tmp_cfg.exists()
         loaded = store_module.load_config()
-        assert len(loaded.jobs) == 1
+        assert len(loaded.jobs) == 4          # the saved job plus the three missing core jobs
         assert loaded.jobs[0].id == "round-trip"
         assert loaded.jobs[0].location_id == "Austin TX"
 
@@ -242,8 +242,7 @@ class TestStorePersistence:
         # Corrupt file → falls back to default_config_for_bootstrap, which
         # always emits at least warnings-delta + warnings-full.
         ids = {j.id for j in cfg.jobs}
-        assert "warnings-delta" in ids
-        assert "warnings-full" in ids
+        assert {"warnings", "digest", "observations", "forecast"} <= ids
 
     def test_missing_file_bootstraps_and_saves(self, tmp_path, monkeypatch):
         tmp_cfg = tmp_path / "broadcast_config.json"
@@ -270,30 +269,51 @@ class TestStorePersistence:
 
 
 class TestBootstrap:
-    def test_bootstrap_includes_core_jobs(self):
-        cfg = store_module.default_config_for_bootstrap()
-        ids = {j.id for j in cfg.jobs}
-        # Radar + warnings-delta + warnings-full always present
-        assert "warnings-delta" in ids
-        assert "warnings-full" in ids
-
-    def test_bootstrap_adds_home_city_pairs(self, monkeypatch):
-        """Each configured home city gets an obs + forecast pair."""
+    def test_bootstrap_has_the_four_v5_jobs(self, monkeypatch):
         from meshcore_weather.config import settings
         monkeypatch.setattr(settings, "home_cities", "Austin TX,Dallas TX")
         cfg = store_module.default_config_for_bootstrap()
-        ids = {j.id for j in cfg.jobs}
-        # Two cities × 2 jobs each = 4 city-specific jobs
-        assert "obs-austin-tx" in ids
-        assert "forecast-austin-tx" in ids
-        assert "obs-dallas-tx" in ids
-        assert "forecast-dallas-tx" in ids
+        by_id = {j.id: j for j in cfg.jobs}
+        assert set(by_id) == {"warnings", "digest", "observations", "forecast"}
+        assert by_id["warnings"].interval_minutes == 2 and by_id["digest"].interval_minutes == 180
+        assert by_id["observations"].location_type == "coverage"
+        assert by_id["forecast"].location_type == "city" and by_id["forecast"].location_id == "Austin TX"
 
-    def test_bootstrap_with_no_home_cities_still_has_warnings(self, monkeypatch):
+    def test_bootstrap_with_no_home_cities_forecasts_the_coverage_centre(self, monkeypatch):
         from meshcore_weather.config import settings
         monkeypatch.setattr(settings, "home_cities", "")
         cfg = store_module.default_config_for_bootstrap()
-        assert len(cfg.jobs) == 2  # warnings-delta + warnings-full
+        assert len(cfg.jobs) == 4 and cfg.get_job("forecast").location_type == "coverage"
+
+    def test_v4_config_migrates_to_v5_jobs(self, tmp_path, monkeypatch):
+        """The Pi's old file: delta -> warnings, full -> digest, per-city obs -> one batch."""
+        import json
+        from meshcore_weather.config import settings
+        monkeypatch.setattr(settings, "home_cities", "Austin TX")
+        old = {"version": 1, "jobs": [
+            {"id": "warnings-delta", "name": "d", "product": "warnings_delta", "location_type": "coverage",
+             "location_id": "", "interval_minutes": 2, "enabled": False},
+            {"id": "warnings-full", "name": "f", "product": "warnings", "location_type": "coverage",
+             "location_id": "", "interval_minutes": 120, "enabled": True},
+            {"id": "obs-austin-tx", "name": "o", "product": "observation", "location_type": "city",
+             "location_id": "Austin TX", "interval_minutes": 60, "enabled": True},
+            {"id": "obs-dallas-tx", "name": "o2", "product": "observation", "location_type": "city",
+             "location_id": "Dallas TX", "interval_minutes": 60, "enabled": True},
+            {"id": "forecast-austin-tx", "name": "fc", "product": "forecast", "location_type": "city",
+             "location_id": "Austin TX", "interval_minutes": 60, "enabled": True},
+            {"id": "afd", "name": "afd", "product": "afd", "location_type": "wfo",
+             "location_id": "EWX", "interval_minutes": 720, "enabled": True},
+        ]}
+        cfg_path = tmp_path / "broadcast_config.json"
+        cfg_path.write_text(json.dumps(old))
+        monkeypatch.setattr(store_module, "CONFIG_PATH", cfg_path)
+        cfg = store_module.load_config()
+        by_id = {j.id: j for j in cfg.jobs}
+        assert set(by_id) == {"warnings", "digest", "observations", "forecast-austin-tx"}
+        assert by_id["warnings"].product == "warnings" and by_id["warnings"].enabled is False
+        assert by_id["digest"].product == "digest" and by_id["digest"].interval_minutes == 180
+        assert by_id["observations"].location_type == "coverage"
+        assert by_id["forecast-austin-tx"].interval_minutes == 180
 
 
 # -- Scheduler semantics -----------------------------------------------------
@@ -326,20 +346,21 @@ class TestSchedulerTick:
         store = WeatherStore()
         radio = MagicMock()
         radio.send_lock = asyncio.Lock()
-        radio.send_binary_channel = AsyncMock()
+        radio.send_channel_data = AsyncMock(return_value=True)
         sched = Scheduler(store, radio)
 
         # Skip start() to avoid opening an HTTP client; just initialize state manually
         sched._coverage = sched._coverage  # no-op; Coverage.empty() by default
         await sched._reload_config()
-        # Fake "already ran this tick"
-        sched._last_run["far-future"] = time.time()
+        # Fake "already ran this tick" (for the core jobs load_config adds too)
+        for j in sched._config.jobs:
+            sched._last_run[j.id] = time.time()
         sched._http_client = None
 
         sent_count = await sched.tick()
         assert sent_count == 0
         # send_binary_channel should not have been called
-        radio.send_binary_channel.assert_not_awaited()
+        radio.send_channel_data.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_disabled_job_is_skipped(self, tmp_path, monkeypatch):
@@ -367,15 +388,17 @@ class TestSchedulerTick:
         store = WeatherStore()
         radio = MagicMock()
         radio.send_lock = asyncio.Lock()
-        radio.send_binary_channel = AsyncMock()
+        radio.send_channel_data = AsyncMock(return_value=True)
         sched = Scheduler(store, radio)
 
         await sched._reload_config()
-        sched._http_client = None
+        for j in sched._config.jobs:                    # only the disabled job is due
+            if j.id != "disabled-job":
+                sched._last_run[j.id] = time.time()
 
         sent_count = await sched.tick()
         assert sent_count == 0
-        radio.send_binary_channel.assert_not_awaited()
+        radio.send_channel_data.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_one_bad_builder_does_not_break_other_jobs(self, tmp_path, monkeypatch):
@@ -424,7 +447,7 @@ class TestSchedulerTick:
         store = WeatherStore()
         radio = MagicMock()
         radio.send_lock = asyncio.Lock()
-        radio.send_binary_channel = AsyncMock()
+        radio.send_channel_data = AsyncMock(return_value=True)
         sched = Scheduler(store, radio)
         await sched._reload_config()
         sched._http_client = None
@@ -434,135 +457,44 @@ class TestSchedulerTick:
         assert call_count["n"] == 2
 
 
-# -- Broadcaster MSG_NOT_AVAILABLE emission --------------------------------
+# -- App requests (v5) ----------------------------------------------------------
 
 
-class TestBroadcasterNotAvailable:
-    """Verify respond_to_data_request emits MSG_NOT_AVAILABLE instead of
-    silently dropping requests it can't fulfill."""
-
-    def _make_broadcaster(self):
+class TestAppResponder:
+    def _responder(self):
         from meshcore_weather.parser.weather import WeatherStore
-        from meshcore_weather.protocol.broadcaster import MeshWXBroadcaster
-
-        store = WeatherStore()  # empty — no data to find
+        from meshcore_weather.protocol.broadcaster import AppResponder
+        import meshcore_weather.schedule.scheduler as sched_mod
+        sched_mod.TX_SPACING = 0
         radio = MagicMock()
-        radio.send_lock = asyncio.Lock()
-        radio.send_lock = asyncio.Lock()
+        radio._mc = MagicMock()
+        radio._mc.self_info = {"public_key": "1d04" + "00" * 30}
         sent = []
 
-        async def cap(p):
-            sent.append(p)
-
-        radio.send_binary_channel = cap
-        bc = MeshWXBroadcaster(store, radio)
-        return bc, sent
-
-    @staticmethod
-    def _unwrap_v4(raw: bytes) -> bytes:
-        """Strip v4 frame header if present."""
-        if raw and raw[0] == 0x04:
-            from meshcore_weather.protocol.meshwx import v4_unwrap
-            raw, _, _ = v4_unwrap(raw)
-        return raw
+        async def cap(data, data_type=0xFF10, ev=None):
+            sent.append(data)
+            return True
+        radio.send_channel_data = cap
+        return AppResponder(WeatherStore(), radio, render_text=lambda c, a: None), sent
 
     @pytest.mark.asyncio
-    async def test_no_data_emits_not_available(self):
-        """Empty store + valid request → NOT_AVAILABLE with REASON_NO_DATA."""
-        from meshcore_weather.protocol.meshwx import (
-            cobs_decode, unpack_not_available, MSG_NOT_AVAILABLE,
-            LOC_STATION, DATA_METAR, REASON_NO_DATA,
-        )
-
-        bc, sent = self._make_broadcaster()
-        # Monkey-patch TX_SPACING to 0 for test speed
-        import meshcore_weather.protocol.broadcaster as bc_mod
-        original_gap = bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS
-        bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = 0
-        try:
-            req = {
-                "data_type": DATA_METAR,
-                "location": {"type": LOC_STATION, "station": "KAUS"},
-            }
-            await bc.respond_to_data_request(req)
-        finally:
-            bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = original_gap
-
-        assert len(sent) == 2  # double-transmit
-        raw = self._unwrap_v4(cobs_decode(sent[0]))
-        assert raw[0] == MSG_NOT_AVAILABLE
-        d = unpack_not_available(raw)
-        assert d["data_type"] == DATA_METAR
-        assert d["reason"] == REASON_NO_DATA
-        assert d["location"]["type"] == LOC_STATION
-        assert d["location"]["station"] == "KAUS"
+    async def test_unknown_station_and_unsupported_command(self):
+        from meshcore_weather.protocol import v5
+        r, sent = self._responder()
+        await r.handle_request(">o ZZZZ", "a")
+        d = v5.decode(sent[-1])
+        assert d["name"] == "not_available" and d["reason"] == v5.REASON_UNKNOWN_LOCATION and d["bot"] == 0x041D
+        await r.handle_request(">nope", "b")
+        assert v5.decode(sent[-1])["reason"] == v5.REASON_UNSUPPORTED
 
     @pytest.mark.asyncio
-    async def test_unresolvable_location_emits_not_available(self):
-        """Out-of-range PFM point index → NOT_AVAILABLE with REASON_LOCATION_UNRESOLVABLE.
-
-        LOC_PFM_POINT requests go through _location_to_query_string which
-        looks up the index in the bundled pfm_points.json. An index way
-        beyond the end of the list makes that helper return None, which
-        triggers REASON_LOCATION_UNRESOLVABLE at the top of
-        respond_to_data_request — distinct from the "deeper failure" path
-        where a valid location string resolves to a store that has no
-        data.
-        """
-        from meshcore_weather.protocol.meshwx import (
-            cobs_decode, unpack_not_available,
-            LOC_PFM_POINT, DATA_FORECAST, REASON_LOCATION_UNRESOLVABLE,
-        )
-
-        bc, sent = self._make_broadcaster()
-        import meshcore_weather.protocol.broadcaster as bc_mod
-        original_gap = bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS
-        bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = 0
-        try:
-            req = {
-                "data_type": DATA_FORECAST,
-                # Out-of-range PFM index — there are only ~1873 valid entries
-                "location": {"type": LOC_PFM_POINT, "pfm_point_id": 99999},
-            }
-            await bc.respond_to_data_request(req)
-        finally:
-            bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = original_gap
-
-        assert len(sent) == 2
-        raw = self._unwrap_v4(cobs_decode(sent[0]))
-        d = unpack_not_available(raw)
-        assert d["reason"] == REASON_LOCATION_UNRESOLVABLE
-        assert d["location"]["type"] == LOC_PFM_POINT
-        assert d["location"]["pfm_point_id"] == 99999
-
-    @pytest.mark.asyncio
-    async def test_retry_rebroadcasts_cached_not_available(self):
-        """A second request for the same failing thing should cache-rebroadcast
-        the NOT_AVAILABLE without re-running the builder."""
-        from meshcore_weather.protocol.meshwx import (
-            cobs_decode, unpack_not_available,
-            LOC_STATION, DATA_METAR, REASON_NO_DATA,
-        )
-
-        bc, sent = self._make_broadcaster()
-        import meshcore_weather.protocol.broadcaster as bc_mod
-        original_gap = bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS
-        bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = 0
-        try:
-            req = {
-                "data_type": DATA_METAR,
-                "location": {"type": LOC_STATION, "station": "KAUS"},
-            }
-            # First request — fresh build, returns NOT_AVAILABLE
-            await bc.respond_to_data_request(req)
-            assert len(sent) == 2
-
-            # Retry — should hit cache, rebroadcast same NOT_AVAILABLE
-            sent.clear()
-            await bc.respond_to_data_request(req)
-            assert len(sent) == 2
-            raw = self._unwrap_v4(cobs_decode(sent[0]))
-            d = unpack_not_available(raw)
-            assert d["reason"] == REASON_NO_DATA
-        finally:
-            bc_mod.MeshWXBroadcaster._V2_RESEND_GAP_SECONDS = original_gap
+    async def test_empty_store_answers_no_data_and_rate_limits(self):
+        from meshcore_weather.protocol import v5
+        r, sent = self._responder()
+        await r.handle_request(">o KAUS", "a")
+        assert v5.decode(sent[-1])["reason"] == v5.REASON_NO_DATA
+        n = len(sent)
+        assert await r.handle_request(">o KAUS", "a") == "rate limited" and len(sent) == n
+        await r.handle_request(">d", "b")
+        d = v5.decode(sent[-1])
+        assert d["name"] == "digest" and d["entries"] == [] and d["feed_health"] == 255

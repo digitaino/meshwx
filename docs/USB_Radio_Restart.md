@@ -63,7 +63,6 @@ You should see:
 Connecting to Meshcore radio via TCP host.docker.internal:4403
 Listening on channel 3 (#digitaino-wx-bot)
 Data channel 6 (#aus-meshwx-v4)
-Discovery channel 5 (#meshwx-discover)
 Sent advertisement (flood)
 Meshcore radio connected.
 ```

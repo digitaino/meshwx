@@ -16,3 +16,13 @@ from meshcore_weather.traffic import traffic_log
 def _no_traffic_persistence():
     traffic_log._path = None
     yield
+
+
+@pytest.fixture(autouse=True)
+def _warning_state_in_tmp(tmp_path, monkeypatch):
+    """The scheduler persists warning state; never into the real data dir from a test."""
+    try:
+        import meshcore_weather.schedule.scheduler as sched_mod
+    except ImportError:          # a dev venv without pyIEM: those tests skip themselves
+        return
+    monkeypatch.setattr(sched_mod, "_STATE_PATH", tmp_path / "warning_state.json")

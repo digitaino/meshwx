@@ -155,13 +155,9 @@ class WeatherBot:
     async def _after_radio_connected(self) -> None:
         """Start the data-channel broadcaster once a radio with a data channel is up."""
         if self.radio.data_channel_idx is not None:
-            from meshcore_weather.protocol.broadcaster import MeshWXBroadcaster
-            self._broadcaster = MeshWXBroadcaster(self.store, self.radio)
+            from meshcore_weather.protocol.broadcaster import AppResponder
+            self._broadcaster = AppResponder(self.store, self.radio, render_text=self._process_command)
             await self._broadcaster.start()
-
-            # Register discovery ping handler — bots respond to pings on #meshwx-discover
-            if self.radio.discover_channel_idx is not None:
-                self.radio.on_discover_ping(self._broadcaster.scheduler.respond_to_discovery_ping)
 
     async def reconnect_radio(self) -> None:
         """Drop the radio link and connect again (serial port changed, node
@@ -290,18 +286,9 @@ class WeatherBot:
         if not text:
             return
 
-        # WXQ/MWX data requests accepted on both text and data channels.
-        # v4 clients send requests on the data channel; legacy clients
-        # use the text channel.
-        if text.startswith("WXQ") and self._broadcaster:
-            logger.info("Channel WXQ request from %s (ch %d)", sender, ch)
-            traffic_log.record("data_request", sender=sender, text=text[:24], transport="channel", hops=hops)
-            await self._handle_meshwx_data_request(text, "", sender)
-            return
-        if text.startswith("MWX") and len(text) >= 7 and self._broadcaster:
-            logger.info("Channel MWX request from %s (ch %d)", sender, ch)
-            traffic_log.record("data_request", sender=sender, text=text[:24], transport="channel", hops=hops)
-            await self._handle_meshwx_refresh(text, "", sender)
+        # An app request (">w", ">f 102"): answered on the data channel.
+        if text.startswith(">"):
+            await self._handle_app_request(text, sender, self.person_key(sender), "channel", hops)
             return
 
         # Text commands only on the text channel — don't parse data channel noise
@@ -478,14 +465,9 @@ class WeatherBot:
             if ch_key in self._paging and prefix not in self._paging:
                 self._paging[prefix] = self._paging.pop(ch_key)
 
-        # App refresh request (e.g. "MWX310000")
-        if text.startswith("MWX") and len(text) >= 7 and self._broadcaster:
-            await self._handle_meshwx_refresh(text, prefix, sender_name)
-            return
-
-        # App data request ("WXQ" + hex-encoded 0x02 message)
-        if text.startswith("WXQ") and self._broadcaster:
-            await self._handle_meshwx_data_request(text, prefix, sender_name)
+        if text.startswith(">"):
+            traffic_log.update(req, kind="data_request")
+            await self._handle_app_request(text, sender_name, prefix, "dm", None, req=req)
             return
 
         # Admin commands (DM-only, verified by pubkey)
@@ -517,45 +499,19 @@ class WeatherBot:
         # both are unsolicited airtime. They will DM us when they want data.
         self._dm_blocked.discard(contact_name)
 
-    async def _handle_meshwx_refresh(self, text: str, prefix: str, sender_name: str) -> None:
-        """Handle an app refresh request DM (e.g. 'MWX310000')."""
-        try:
-            region_byte = int(text[3:5], 16)
-            region_id = (region_byte >> 4) & 0x0F
-            request_type = region_byte & 0x0F
-            client_newest = int(text[5:9], 16) if len(text) >= 9 else 0
-        except (ValueError, IndexError):
+    async def _handle_app_request(self, text: str, sender_name: str, sender_key: str, transport: str,
+                                  hops: int | None, req: dict | None = None) -> None:
+        """A `>` request from an app (docs/MeshWX_v5_Spec.md 8.2)."""
+        if req is None:
+            req = traffic_log.record("data_request", sender=sender_name, key=sender_key if transport == "dm" else None,
+                                     text=text[:40], transport=transport, hops=hops)
+        if not self._broadcaster:
+            traffic_log.record("dropped", reason="broadcasts off: no data channel", req=req, sender=sender_name)
             return
-        logger.info("App refresh from %s: region=0x%X type=%d newest=%d",
-                     sender_name, region_id, request_type, client_newest)
-        await self._broadcaster.broadcast_region(region_id, request_type)
-
-    async def _handle_meshwx_data_request(
-        self, text: str, prefix: str, sender_name: str
-    ) -> None:
-        """Handle an app data request DM (WXQ + hex).
-
-        Format: 'WXQ' + hex-encoded 0x02 data request message.
-        The bot parses the request, builds the response, and broadcasts
-        it on the data channel so all listeners benefit.
-        """
-        from meshcore_weather.protocol.meshwx import unpack_data_request
-        try:
-            payload = bytes.fromhex(text[3:].strip())
-            req = unpack_data_request(payload)
-        except Exception as e:      # struct.error, UnicodeDecodeError, anything malformed
-            logger.warning("Bad WXQ request from %s: %s", sender_name, e)
-            return
-
-        logger.info(
-            "App data request from %s: type=%d loc=%s",
-            sender_name, req["data_type"], req["location"],
-        )
-
-        try:
-            await self._broadcaster.respond_to_data_request(req)
-        except Exception:
-            logger.exception("Data request handler failed")
+        outcome = await self._broadcaster.handle_request(text, sender_key)
+        logger.info("App request from %s: %s -> %s", sender_name, text[:40], outcome)
+        if outcome in ("rate limited", "hourly budget spent"):
+            traffic_log.record("dropped", reason=outcome, req=req, sender=sender_name)
 
     def _is_admin(self, pubkey_prefix: str) -> bool:
         admin = settings.admin_key.lower().strip()
@@ -652,7 +608,7 @@ class WeatherBot:
                 await self.radio.send_dm(prefix, "Broadcasts are off: no data channel configured.")
                 return "disabled"
             try:
-                sent = await self._broadcaster.scheduler.run_job_now("warnings-coverage")
+                sent = await self._broadcaster.scheduler.run_job_now("warnings")
                 await self.radio.send_dm(prefix, f"Sent {sent} warning message(s).")
             except Exception as e:
                 await self.radio.send_dm(prefix, f"Warning broadcast error: {e}")

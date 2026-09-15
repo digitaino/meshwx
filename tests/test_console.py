@@ -53,7 +53,7 @@ def test_sdr_monitor_logs_only_changes(caplog):
 class ChannelFakeRadio:
     def __init__(self):
         self.connected = True
-        self.channel_idx, self.data_channel_idx, self.discover_channel_idx = 1, 2, 3
+        self.channel_idx, self.data_channel_idx = 1, 1
         self.channel_sent: list[tuple[int, str]] = []
         self.dms: list[tuple[str, str]] = []
         self.adverts = 0

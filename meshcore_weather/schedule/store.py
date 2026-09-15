@@ -47,16 +47,16 @@ def load_config() -> BroadcastConfig:
     try:
         raw = CONFIG_PATH.read_text()
         data = json.loads(raw)
-        # Jobs for retired products (radar) are dropped, not fatal: the
-        # operator keeps every other job they configured.
         if isinstance(data, dict) and isinstance(data.get("jobs"), list):
-            kept = [j for j in data["jobs"] if j.get("product") in PRODUCT_TYPES]
-            if len(kept) != len(data["jobs"]):
-                logger.warning("Dropping %d broadcast job(s) for retired products",
-                               len(data["jobs"]) - len(kept))
-            data["jobs"] = kept
+            data["jobs"] = _migrate_jobs(data["jobs"])
         data.pop("radar_grid_size", None)
-        return BroadcastConfig(**data)
+        cfg = BroadcastConfig(**data)
+        if _ensure_core_jobs(cfg):
+            try:
+                save_config(cfg)
+            except Exception as exc:
+                logger.warning("Could not persist migrated broadcast config: %s", exc)
+        return cfg
     except Exception as exc:
         logger.warning(
             "broadcast_config.json at %s is invalid (%s) — falling back to defaults",
@@ -84,80 +84,76 @@ def save_config(cfg: BroadcastConfig) -> None:
 
 
 def default_config_for_bootstrap() -> BroadcastConfig:
-    """Synthesize a default BroadcastConfig from the operator's env vars.
+    """The v5 schedule a fresh deployment gets: warnings on change (checked
+    every 2 min), the digest every 3 h, one observations packet an hour,
+    and the home forecast every 6 h. Everything else is request-only."""
+    cfg = BroadcastConfig(version=2, jobs=[])
+    _ensure_core_jobs(cfg)
+    logger.info("Bootstrap schedule: %d default jobs", len(cfg.jobs))
+    return cfg
 
-    This is what fresh deployments get on first run — and what preserves
-    backward compatibility with the pre-schedule-system behavior. The
-    default jobs exactly mirror what the old hardcoded
-    `_broadcast_all()` used to do:
 
-    1. Warning delta — only NEW or CHANGED warnings, every 2 minutes
-    2. Warning full — all active warnings as a safety net, every 2 hours
-    3. Observation + forecast for each configured home city, every
-       60 minutes
+_V4_TO_V5 = {"warnings_delta": "warnings", "observation": "observations"}
+_RETIRED = {"outlook", "storm_reports", "rain_obs", "metar", "taf", "warnings_near", "afd",
+            "space_weather", "fire_weather", "daily_climate", "nowcast", "radar"}
 
-    Operators can edit / delete / add to this via the /schedule portal
-    page. The synthesis only runs ONCE — when the JSON file doesn't
-    exist. After that, the file is the source of truth.
-    """
-    jobs: list[BroadcastJob] = []
 
-    # Coverage-wide jobs
-    jobs.append(
-        BroadcastJob(
-            id="warnings-delta",
-            name="Warnings — new/changed only",
-            product="warnings_delta",
-            location_type="coverage",
-            location_id="",
-            interval_minutes=2,
-            enabled=True,
-        )
-    )
-    jobs.append(
-        BroadcastJob(
-            id="warnings-full",
-            name="Warnings — full re-broadcast (safety net)",
-            product="warnings",
-            location_type="coverage",
-            location_id="",
-            interval_minutes=120,
-            enabled=True,
-        )
-    )
+def _migrate_jobs(jobs: list[dict]) -> list[dict]:
+    """v4 job files keep working: delta -> warnings, the full re-broadcast
+    -> digest, per-city observations -> one coverage batch, forecast kept
+    at 6 h. Retired products are dropped."""
+    out: list[dict] = []
+    seen_obs = False
+    for j in jobs:
+        prod = j.get("product")
+        if prod == "warnings" and j.get("id") in ("warnings-full", "warnings-coverage"):
+            j = {**j, "id": "digest", "name": "Active warnings digest", "product": "digest",
+                 "location_type": "coverage", "location_id": "", "interval_minutes": 180}
+        elif prod in _V4_TO_V5:
+            j = {**j, "product": _V4_TO_V5[prod]}
+            if j["product"] == "warnings":
+                j.update(id="warnings", name="Warnings on change", interval_minutes=2)
+            elif j["product"] == "observations":
+                if seen_obs or j.get("location_type") != "station":
+                    if seen_obs:
+                        continue
+                    j.update(id="observations", name="Observations, coverage stations",
+                             location_type="coverage", location_id="", interval_minutes=60)
+                seen_obs = True
+        elif prod == "forecast":
+            if j.get("location_type") not in ("city", "pfm_point", "coverage"):
+                continue
+            j = {**j, "interval_minutes": max(int(j.get("interval_minutes") or 360), 180)}
+        elif prod in _RETIRED or prod not in PRODUCT_TYPES:
+            logger.warning("Dropping broadcast job %r: product %r is request-only in v5", j.get("id"), prod)
+            continue
+        if any(o.get("id") == j.get("id") for o in out):
+            continue
+        out.append(j)
+    return out
 
-    # Per-home-city observation and forecast jobs
+
+def _ensure_core_jobs(cfg: BroadcastConfig) -> bool:
+    """Add any of the four v5 jobs that are missing. Returns True if it did."""
+    have = {j.product for j in cfg.jobs}
+    added = False
     home_cities = _split_csv(settings.home_cities)
-    for city in home_cities:
-        slug = _slugify(city)
-        jobs.append(
-            BroadcastJob(
-                id=f"obs-{slug}",
-                name=f"Observation: {city}",
-                product="observation",
-                location_type="city",
-                location_id=city,
-                interval_minutes=60,
-                enabled=True,
-            )
-        )
-        jobs.append(
-            BroadcastJob(
-                id=f"forecast-{slug}",
-                name=f"Forecast: {city}",
-                product="forecast",
-                location_type="city",
-                location_id=city,
-                interval_minutes=60,
-                enabled=True,
-            )
-        )
-
-    logger.info(
-        "Bootstrap schedule: %d default jobs (%d home cities → obs+forecast pairs)",
-        len(jobs), len(home_cities),
-    )
-    return BroadcastConfig(version=1, jobs=jobs)
+    defaults = [
+        BroadcastJob(id="warnings", name="Warnings on change", product="warnings",
+                     location_type="coverage", interval_minutes=2),
+        BroadcastJob(id="digest", name="Active warnings digest", product="digest",
+                     location_type="coverage", interval_minutes=180),
+        BroadcastJob(id="observations", name="Observations, coverage stations", product="observations",
+                     location_type="coverage", interval_minutes=60),
+        BroadcastJob(id="forecast", name=f"Forecast: {home_cities[0]}" if home_cities else "Forecast: home",
+                     product="forecast", location_type="city" if home_cities else "coverage",
+                     location_id=home_cities[0] if home_cities else "", interval_minutes=360),
+    ]
+    for job in defaults:
+        if job.product not in have and cfg.get_job(job.id) is None:
+            cfg.jobs.append(job)
+            added = True
+    return added
 
 
 # -- Helpers --

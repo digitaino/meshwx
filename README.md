@@ -24,13 +24,13 @@
 ## What this gives you
 
 - **A working operator node** that can run on a Raspberry Pi or any Linux/macOS box with a LoRa serial radio attached. Docker-compose one-liner.
-- **A structured binary protocol** (MeshWX v4) designed for one-way broadcast to passive receivers. Small messages ship as single frames; large text products are split into FEC-protected chunks with XOR parity recovery. Every message is COBS-encoded so the firmware's companion protocol doesn't truncate at null bytes.
-- **Discovery protocol** — bots announce themselves on `#meshwx-discover` with 0xF0 beacons containing their data channel name, coverage radius, and capability flags. Clients auto-discover and join without manual channel configuration.
+- **MeshWX v5**, a compact binary protocol for apps: warnings with storm tags, polygons and county/zone runs, an active-warning digest for loss recovery, batched observations and point forecasts, as MeshCore `GRP_DATA` packets on `#meshwx`. The mesh carries identifiers and numbers; the phone carries the tables. Spec: `docs/MeshWX_v5_Spec.md`.
+- **Discovery by advert** — a bot adverts as a chat node named `WX-<IATA>` (e.g. `WX-AUS`) with its lat/lon, so every MeshCore app already collects what it needs to list nearby weather bots. No discovery channel, no beacon, no extra airtime.
 - **A per-job broadcast schedule system** with a web admin UI. Operators define arbitrary `(product, location, interval)` jobs via the portal — e.g. "Austin METAR every 30 min", "TX storm reports every 10 min", "EWX outlook every 12 hr". Jobs persist across restarts.
 - **Preload bundle** (`client_data/`, ~9.9 MB) that ships with every client app — NWS zones, census places, METAR stations, WFO metadata, PFM forecast points, zone polygons. With this preloaded, broadcasts only carry compact IDs instead of full names, slashing airtime.
 - **pyIEM-powered parsing** — the reference Python library for NWS text products (VTEC, UGC, CAP standards). Runs fully offline with a `legacy_dict` UGC provider built from bundled zones data.
 - **Canonical NWS data quality**: forecasts from PFM (Point Forecast Matrix) tables, warnings with correct VTEC extraction and polygon winding, absolute expiry timestamps so clients always know exactly when data becomes invalid.
-- **Optional DM-based request path** for clients that want to ask for specific data on demand (e.g. iOS city search). Responses go out on the broadcast channel so every client benefits from one request.
+- **One request grammar for apps and people.** An app DMs `>f 102` and gets a binary answer on the channel for everyone; a person DMs `forecast austin tx` and gets text back. Same words, one bot.
 - **Legacy text-command interface** that lets a human user on the mesh DM the bot in plain English (`wx austin`, `forecast dallas tx`, `warn OK`) and get text replies. Secondary to the binary protocol but still works.
 
 ## Status
@@ -40,54 +40,40 @@
 | EMWIN data ingestion (internet) | ✅ production |
 | EMWIN data ingestion (GOES SDR) | ⏳ stubbed, pending SDR hookup |
 | pyIEM canonical product parsing | ✅ shipped |
-| MeshWX v4 binary wire format (all products) | ✅ shipped |
-| v4 FEC with XOR parity recovery | ✅ shipped |
-| Discovery beacons (#meshwx-discover) | ✅ shipped |
+| MeshWX v5 wire format (warning, cancel, digest, observations, forecast, text) | ✅ shipped |
+| Echo tracking and byte-identical resend when the mesh did not repeat us | ✅ shipped |
+| Discovery by advert (`WX-<IATA>` chat node) | ✅ shipped |
 | Broadcast schedule system + web portal UI | ✅ shipped |
-| iOS client (DigitainoMesh) | ✅ shipped |
-| Web client (meshwx-client) | ✅ shipped |
+| iOS client | 🔨 building against v5 |
 | Text-command interface | ✅ shipped (legacy) |
 | Standalone e-ink dashboard (consumer) | 💡 idea parked in `docs/Future_EInk_Dashboard.md` |
 
 ## Wire format at a glance
 
-All broadcasts go on the configured data channel (e.g. `#aus-meshwx-v4`). All messages are COBS-encoded. V4 frames wrap inner message types in a 6-byte header with FEC support. Multi-byte integers are big-endian unless noted.
+Every message is one MeshCore `GRP_DATA` packet (`data_type 0xFF10`) on the
+`#meshwx` channel, at most 165 bytes, with a 4-byte header: sequence number,
+two bytes of the bot's public key, message type. Little-endian throughout.
 
-| Byte 0 | Name | Contents |
-|---|---|---|
-| `0x01` | Refresh Request | client → bot DM (legacy v1 path) |
-| `0x02` | Data Request | client → bot DM, product + location |
-| `0x03` | Not Available | bot → client, "data not available" response |
-| `0x04` | v4 Frame | v4 wrapper with FEC flags, group total, sequence number |
-| `0x12` | QPF Grid | Quantitative precipitation forecast (same encoding as 0x11) |
-| `0x20` | Warning Polygon | Storm-specific polygon + VTEC metadata + headline |
-| `0x21` | Warning Zones | Multi-zone advisory, compact zone-coded |
-| `0x30` | Observation | Current conditions (temp, dewpoint, wind, sky, vis, pressure) |
-| `0x31` | Forecast | 7 daily periods with high/low/sky/PoP/wind/flags |
-| `0x32` | Outlook | HWO hazards day-1 and days-2-7 |
-| `0x33` | Storm Reports | Up to 16 confirmed LSRs with magnitude |
-| `0x34` | Rain Obs | Cities currently reporting precipitation |
-| `0x35` | METAR | Station observation (same format as 0x30) |
-| `0x36` | TAF | Terminal aerodrome forecast snapshot |
-| `0x37` | Warnings Near | List of active warnings affecting a location |
-| `0x38` | Fire Weather | FWF forecast — wind, humidity, temp, Haines index, lightning risk |
-| `0x3A` | Daily Climate | Daily high/low/precip/snowfall by city (RTP) |
-| `0x3C` | Nowcast | Short-term forecast with urgency flags (NOW) |
-| `0x40` | Text Chunk | Reserved for dictionary-compressed text fallback |
-| `0xF0` | Beacon | Discovery response — data channel name, coverage, capabilities |
-| `0xF1` | Discovery Ping | Client → all bots on #meshwx-discover |
+| Type | Message | Size | When |
+|---|---|---|---|
+| 1 | Warning: VTEC event, office, ETN, absolute expiry, storm tags, polygon and/or zone or county runs | 15 to ~110 B | on change; life-safety warnings once more after 90 s |
+| 2 | Cancel | 8 B | when a warning ends before its expiry |
+| 3 | Digest: every active identity with its expiry, plus feed health | 10 + 6 per warning | every 3 h, after a cancel, on request |
+| 4 | Observations: up to 14 stations in one packet | 9 + 10 per station | hourly, on request |
+| 5 | Forecast: 7 daily periods for a PFM point | 12 + 5 per period | every 6 h for the home point, on request |
+| 6 | Text: warning narrative, forecast discussion, storm reports, METAR/TAF, outlook, space weather | chunked | on request only |
+| 7 | Not available | 6 B | answer to a request the bot cannot serve |
 
-Full byte-level specs: **`docs/MeshWX_Protocol_v3.md`** (v3 base format) and **`docs/MeshWX_Protocol_v4_Design.md`** (v4 frame wrapper + FEC).
+Requests are DMs prefixed with `>` (`>d`, `>w`, `>w SV.W.EWX.42`, `>o KAUS`,
+`>f 102`, `>afd EWX`). The full byte layouts, the preload bundle, rendering
+guidance and test vectors: **`docs/MeshWX_v5_Spec.md`** and
+`docs/meshwx_v5_vectors.json`. Reference codec: `meshcore_weather/protocol/v5.py`.
 
 ## For client developers (iOS, web, embedded)
 
-Start here: **`docs/v4_client_guide.md`**. It covers the v4 frame format, FEC recovery, and how to decode all message types.
-
-Also see:
-- **`docs/iOS_Developer_Brief.md`** — integration guide covering wire format, COBS decoding, data request flow, preload bundle layout, and debugging
-- **`docs/MeshWX_Protocol_v3.md`** — canonical byte-level wire format spec for inner message types
-- **`docs/MeshWX_Protocol_v4_Design.md`** — v4 frame header, FEC group assembly, quadrant recovery
-- **`docs/Future_EInk_Dashboard.md`** — parked project idea for a standalone e-ink hardware display
+Start and finish with **`docs/MeshWX_v5_Spec.md`**. Decode the test vectors, ship
+the `client_data/` bundle, follow the request rules. The v3/v4 documents are gone;
+nothing from them decodes as v5.
 
 ## For operators
 
@@ -248,10 +234,9 @@ All settings are environment variables prefixed with `MCW_`. See `.env.example` 
 |----------|---------|-------------|
 | `MCW_SERIAL_PORT` | `/dev/cu.usbserial-0001` | Serial port or `tcp://host:port` for a networked radio |
 | `MCW_SERIAL_BAUD` | `115200` | Serial baud rate |
-| `MCW_TX_ENABLED` | `true` | `false` = receive-only passive observer: suppresses all RF transmission (adverts, channel messages, binary broadcasts, beacons, DMs). RX and MQTT continue |
+| `MCW_TX_ENABLED` | `true` | `false` = receive-only passive observer: suppresses all RF transmission (adverts, channel messages, binary datagrams, DMs). RX and MQTT continue |
 | `MCW_MESHCORE_CHANNEL` | `#digitaino-wx-bot` | Channel for text commands (never `0`/public) |
-| `MCW_MESHWX_CHANNEL` | *(empty)* | Channel for v4 binary data broadcasts (e.g. `#aus-meshwx-v4`) |
-| `MCW_MESHWX_DISCOVER_CHANNEL` | `#meshwx-discover` | Discovery beacon channel |
+| `MCW_MESHWX_CHANNEL` | *(empty)* | Channel for the binary data datagrams. The same name as `MCW_MESHCORE_CHANNEL` shares one slot |
 | `MCW_HOME_CITIES` | *(empty)* | Comma-separated cities to seed the default schedule |
 | `MCW_HOME_STATES` | *(empty)* | Comma-separated states for warning filtering |
 | `MCW_HOME_WFOS` | *(empty)* | Comma-separated WFOs for coverage filtering |
@@ -325,7 +310,7 @@ The bot uses a channel-with-DM-fallback routing system to keep channel spam low:
 3. After that, responses go DM-first automatically
 4. If DMs break (user deleted the bot contact), the bot detects the failure and falls back to channel with a nudge to re-advert
 
-Text commands have a 5-second per-user rate limit. Binary data requests (`WXQ` / `MWX` prefixed DMs) bypass this because they have their own per-`(data_type, location)` 5-minute rate limit at the broadcaster level.
+Text commands have a 5-second per-user rate limit. App requests (`>` prefixed DMs) have their own 5-second per-sender limit and an hourly budget on the responder.
 
 ### Admin commands
 
@@ -357,13 +342,13 @@ meshcore_weather/
 │   ├── weather.py         # NWS text product parsing + text-command queries
 │   └── pfm.py             # PFM column-position parser + daily downsampler
 │
-├── protocol/              # MeshWX v4 binary wire format
-│   ├── meshwx.py          # Pack/unpack for every message type, COBS, v4 frame wrapper
-│   ├── fec.py             # Forward error correction — XOR parity for multi-unit products
-│   ├── encoders.py        # Product text → binary (encode_* helpers)
-│   ├── coverage.py        # Operator coverage (cities/states/WFOs → zone set)
-│   ├── warnings.py        # pyIEM-backed warning extraction
-│   └── broadcaster.py     # Reactive: responds to 0x02 DM data requests
+├── protocol/
+│   ├── v5.py              # MeshWX v5 codec (stdlib only; the reference decoder)
+│   ├── v5_builders.py     # store data -> v5 messages (one implementation for jobs and requests)
+│   ├── broadcaster.py     # AppResponder: `>` requests, owns the Scheduler
+│   ├── coverage.py        # Operator coverage (centre + radius, states, WFOs -> zone set)
+│   ├── warnings.py        # pyIEM-backed warning extraction with storm tags
+│   ├── meshwx.py, encoders.py, fec.py   # v3/v4 era: kept for the EMWIN parsers the text bot uses
 │
 ├── schedule/              # Unified broadcast schedule system
 │   ├── models.py          # BroadcastJob, BroadcastConfig (pydantic)
@@ -403,10 +388,11 @@ meshcore_weather/
 
 ## Docs
 
-- `docs/MeshWX_Protocol_v3.md` — canonical byte-level wire format spec for inner message types
-- `docs/MeshWX_Protocol_v4_Design.md` — v4 frame header, FEC group assembly, quadrant recovery design
-- `docs/v4_client_guide.md` — practical v4 client integration guide
-- `docs/iOS_Developer_Brief.md` — integration guide for iOS / web / embedded client developers
+- `docs/MeshWX_v5_Spec.md` — the protocol and the app developer's guide (wire, bundle, rendering, requests)
+- `docs/meshwx_v5_vectors.json` — test vectors every client must pass
+- `docs/MeshWX_Airtime_Review.md` — the review that led to v5, with the airtime numbers
+- `docs/Delivery_Confirmation_Design.md` — echo tracking and resend
+- `docs/Admin_Portal_Review_2026-09-14.md` — the portal revamp record
 - `docs/Future_EInk_Dashboard.md` — parked project idea for a standalone e-ink hardware display
 
 ## Safety
@@ -425,10 +411,9 @@ Shipped:
 
 - [x] Internet-based EMWIN data fetching with disk cache
 - [x] pyIEM canonical NWS product parsing (VTEC, UGC, polygons)
-- [x] MeshWX v4 binary protocol (all message types wired)
-- [x] v4 FEC with XOR parity recovery for multi-unit products
-- [x] Discovery beacons on #meshwx-discover
-- [x] COBS-encoded wire format (survives firmware null-byte truncation)
+- [x] MeshWX v5: GRP_DATA transport, warning/cancel/digest/observations/forecast/text, `>` request grammar
+- [x] Discovery by advert (`WX-<IATA>` chat node with lat/lon)
+- [x] Echo tracking: byte-identical resend when no repeater repeated us
 - [x] Absolute Unix-minute expiry timestamps (no client-side countdown drift)
 - [x] PFM forecast source (structured numeric data, displacing ZFP narrative regex)
 - [x] Fire weather forecasts (FWF → 0x38)
@@ -438,17 +423,16 @@ Shipped:
 - [x] Unified per-job broadcast schedule system (any product, any location, any interval)
 - [x] Admin portal: overview, text bot feed and console, broadcasts, radio, satellite, logs and settings
 - [x] Preload bundle (`client_data/`) with PFM points, zone polygons, places, stations
-- [x] Data request reactive path (`WXQ` DM + broadcast response)
+- [x] App requests answered on the channel so one request serves every listener
 - [x] Legacy text-command interface with typo-tolerant parser
 - [x] Hybrid DM/channel routing with admin commands
 - [x] Docker container with serial passthrough
-- [x] iOS client (DigitainoMesh)
-- [x] Web/desktop client (meshwx-client)
+- [ ] iOS client against v5
 
 Planned:
 
 - [ ] GOES-E SDR satellite downlink via goesrecv/goestools
-- [ ] Proactive warning push (immediate broadcast when NEW warnings land, not waiting for next scheduled tick)
+- [ ] County polygons in the preload bundle
 - [ ] H-VTEC hydrologic metadata (flood severity, river ID, stage forecast)
 - [ ] Dictionary text compression for warning headlines
 - [ ] 3-hourly hour-by-hour PFM forecast format
