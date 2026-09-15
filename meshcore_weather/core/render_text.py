@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from meshcore_weather.config import settings
 from meshcore_weather.core.services import Forecast, Observation
 from meshcore_weather.core.vtec_names import short_name
+from meshcore_weather.geodata.names import place_name
 
 # One MeshCore text message. The firmware clips a channel message at 160
 # bytes of "name: text" (plus 5 bytes of header), so with a name like
@@ -252,7 +253,7 @@ def storm_reports(label: str, sr, state: str | None = None) -> str:
         ev = e["event"]
         for k, v in _LSR_SHORT.items():
             ev = ev.replace(k, v)
-        town = _LSR_DIST_RE.sub("", " ".join(e["location"].split())).strip().title()
+        town = place_name(_LSR_DIST_RE.sub("", " ".join(e["location"].split())).strip())
         st = (e.get("state") or "").strip().upper()
         where = f"{town} {st}" if st and state and st != state.upper() else town
         mag = f" {' '.join(str(e['mag']).split())}" if str(e.get("mag") or "").strip() else ""
@@ -283,5 +284,5 @@ def taf(loc: dict, tf) -> str:
 def rain(label: str, ro) -> str:
     if ro is None or not ro.cities:
         return _cap(f"No rain reported {label}")
-    items = [f"{c['name'].title()} {c['rain_text'].lower()} {c['temp_f']}F" for c in ro.cities]
+    items = [f"{place_name(c['name'])} {c['rain_text'].lower()} {c['temp_f']}F" for c in ro.cities]
     return fit_list(f"Rain {label} ({len(ro.cities)}): ", items)

@@ -15,6 +15,8 @@ import re
 import unicodedata
 from pathlib import Path
 
+from meshcore_weather.geodata.names import place_label, title_case
+
 logger = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).parent
@@ -331,18 +333,6 @@ class LocationResolver:
                 return ordered, []
         return ordered, others
 
-    _PLACE_SUFFIXES = (" ZONA URBANA", " COMUNIDAD", " MUNICIPIO", " CDP", " CITY AND", " URBAN")
-
-    @classmethod
-    def _clean_place_name(cls, name: str) -> str:
-        """'SAN JUAN ZONA URBANA' -> 'San Juan'. Census place names carry
-        legal-form suffixes nobody types or wants back on a LoRa reply."""
-        n = name.upper()
-        for suf in cls._PLACE_SUFFIXES:
-            if n.endswith(suf):
-                n = n[: -len(suf)].rstrip()
-        return n.title()
-
     def _result_for_place(self, place, ambiguous: list[str] | None = None) -> dict:
         lat, lon = place[2], place[3]
         zones, method = self._zones_for_point(lat, lon, n=2)
@@ -355,7 +345,7 @@ class LocationResolver:
             "station": stations[0][0] if stations else None,
             "station_km": stations[0][1] if stations else None,
             "stations": stations,
-            "name": f"{self._clean_place_name(place[0])}, {place[1]}",
+            "name": place_label(place[0], place[1]),
             "lat": lat,
             "lon": lon,
             "ambiguous": ambiguous or [],
@@ -404,7 +394,7 @@ class LocationResolver:
     @staticmethod
     def _short_station_name(name: str, state: str) -> str:
         """Shorten station names for compact display."""
-        n = name.title()
+        n = title_case(name)
         # Strip common airport suffixes
         for suffix in [" International Airport", " Intl Airport", " Intl Ap",
                        " Regional Airport", " Municipal Airport", " Airport",
@@ -458,7 +448,7 @@ class LocationResolver:
         if not row or not 0 <= row[2] < len(self._places):
             return None
         p = self._places[row[2]]
-        return self.resolve_by_coords(row[0], row[1], name=f"{self._clean_place_name(p[0])}, {p[1]} {zip5}")
+        return self.resolve_by_coords(row[0], row[1], name=place_label(p[0], p[1], zip5))
 
     def resolve_by_place_index(self, idx: int) -> dict | None:
         """Resolve a place index to zone info (for LOC_PLACE requests)."""
@@ -486,7 +476,7 @@ class LocationResolver:
                 if d < best_d:
                     best_d = d
                     best_place = p
-            name = f"{best_place[0].title()}, {best_place[1]}" if best_place else f"{lat:.2f}, {lon:.2f}"
+            name = place_label(best_place[0], best_place[1]) if best_place else f"{lat:.2f}, {lon:.2f}"
         return {
             "zones": zones,
             "zone_method": method,

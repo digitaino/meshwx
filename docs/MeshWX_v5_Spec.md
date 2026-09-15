@@ -465,8 +465,8 @@ here; the bot never sends names.
 | `index.json` | 17 KB | `offices`: ordered list of office codes (the `office` byte): the 125 WFOs in alphabetical order, then the national centres `NHC` (125, National Hurricane Center) and `WNS` (126, Storm Prediction Center). `stations`: ordered ICAO list (the `station` u16). `states`: ordered state/territory codes (the `state` byte, bits 6-0). Append-only: new entries go at the end, so an index never changes meaning | Warning, digest, observations |
 | `stations.json` | 185 KB | ICAO → name, state, lat, lon | Station search, labels, map pins |
 | `pfm_points.json` | 104 KB | `points`: ordered list `[name, office, lat, lon, zone]`; the list position is the `point` u16 | Forecast labels, "forecast for my location" (nearest point by distance) |
-| `places.json` | 1.4 MB | `places`: list `[NAME, ST, lat, lon, population]` | Place search and autocomplete |
-| `zips.json` | 1.1 MB | `version` (1), `source`, and `zips`: list `["78701", 30.2706, -97.7426, 29645]` sorted by ZIP: the ZIP as a 5-character string (leading zeros kept, `00901`), the ZCTA's internal point (lat, lon, 4 decimals), and the index into `places.json` `places` of the nearest place by great circle. US Census Bureau 2020 ZCTA Gazetteer (public domain), 33,144 ZIPs including Puerto Rico. ZCTAs approximate delivery ZIPs: PO-box-only and some business ZIPs have no entry and are unknown ZIPs | ZIP search. Take the first 5 digits (ZIP+4 `78701-1234` too) and look them up exactly, never by prefix. Label from the place index plus the ZIP (the bot drops Census suffixes such as `zona urbana` and title-cases: `San Juan, PR 00901`). Then the point is a coordinate like any other: nearest `pfm_points` entry, nearest station, zone and county from the polygons. The bot resolves `wx 78701` and `>f 78701` from this same table |
+| `places.json` | 1.4 MB | `places`: list `[NAME, ST, lat, lon, population]` | Place search and autocomplete. Show a place by the label rule in 9.1 |
+| `zips.json` | 1.1 MB | `version` (1), `source`, and `zips`: list `["78701", 30.2706, -97.7426, 29645]` sorted by ZIP: the ZIP as a 5-character string (leading zeros kept, `00901`), the ZCTA's internal point (lat, lon, 4 decimals), and the index into `places.json` `places` of the nearest place by great circle. US Census Bureau 2020 ZCTA Gazetteer (public domain), 33,144 ZIPs including Puerto Rico. ZCTAs approximate delivery ZIPs: PO-box-only and some business ZIPs have no entry and are unknown ZIPs | ZIP search. Take the first 5 digits (ZIP+4 `78701-1234` too) and look them up exactly, never by prefix. Label: the place's label (9.1), a space and the ZIP: `San Juan, PR 00901`, `Hell's Kitchen, NY 10019`. Then the point is a coordinate like any other: nearest `pfm_points` entry, nearest station, zone and county from the polygons. The bot resolves `wx 78701` and `>f 78701` from this same table |
 | `zones.json` | 355 KB | Zone id (`TXZ192`) → name, office, state, lat, lon | Naming the areas of a warning; zone lookup for a place |
 | `zones.geojson` | 10 MB | Zone polygons (`code` property, e.g. `TXZ192`) | Filling a zone-based warning on the map. Optional download; the app can fall back to the zone centroid pin |
 | `counties.json` | 227 KB | County UGC (`TXC453`) → name, state, representative lat/lon | Naming the counties of a storm-based warning; centroid pin |
@@ -485,6 +485,54 @@ Bundle versioning: `protocol.json` `version` (8 for v5.0) and `index.json`
 `index.json` (`NHC` and `WNS` appended to `offices`, `version` 1 to 2) and
 `wfos.json` (the two matching entries). The bot's advert does not carry a
 version; a bump is announced in the repository.
+
+### 9.1 Place labels
+
+A `places.json` entry is shown as `Name, ST`; a ZIP as its place's label,
+a space and the ZIP. The bot builds every place and town name in its text
+replies this way (`meshcore_weather/geodata/names.py`), so an app that
+follows these steps shows the same characters for the same place.
+
+1. **Suffixes.** Upper-case the name. Then, in this order, if the name
+   ends with the suffix, remove it and any spaces and commas left at the
+   end; each suffix at most once: ` CITY (BALANCE)`, ` (BALANCE)`,
+   ` (HISTORICAL)`, ` (VILLAGE)`, ` CONSOLIDATED GOVERNMENT`,
+   ` METROPOLITAN GOVERNMENT`, ` METRO GOVERNMENT`, ` UNIFIED GOVERNMENT`,
+   ` URBAN COUNTY`, ` METRO TOWNSHIP`, ` ZONA URBANA`, ` COMUNIDAD`,
+   ` COLONIA`, ` MUNICIPIO`, ` CDP`, ` CITY AND`, ` URBAN`. They are
+   Census legal and statistical forms nobody says.
+2. **Words.** A word is a run of letters (Unicode category L), decimal
+   digits (Nd) and the marks `'` `’` `‘` `ʻ` `` ` `` (apostrophes, the
+   Hawaiian ʻokina and its stand-ins). Any other character (space, `-`,
+   `/`, `.`, `,`, parentheses) is kept as it is between words.
+3. **Case**, word by word:
+   - an initialism stays in capitals: `AFB AAF ARB ANGB NAS NAF NOLF MCAS
+     USCG MCBH WMATA DC NE NW SE SW VA UC KC II III`;
+   - a joining word that is not the name's first word is lower case:
+     `OF THE IN ON AT BY AND OR DE DEL DU`;
+   - any other word is lower case except its first character, the letter
+     after a leading `MC`, and a letter right after a mark that begins the
+     word or follows its one-letter start.
+
+   Case changes are each code point's full Unicode mapping.
+
+State codes are not kept in capitals: in place names `LA`, `DE`, `IN`,
+`HI` and `OR` are words (La Grange, De Queen, Valley Hi); `DC` is listed
+as an initialism. Spanish and French articles keep their capital (Bayou
+La Batre, East Los Angeles); joining words do not (Lake of the Woods,
+Estancias de Florida, Fond du Lac), except as the first word (De Queen,
+Del Rio).
+
+| Bundle entry | Label |
+|---|---|
+| `HELL'S KITCHEN`, NY, ZIP 10019 | Hell's Kitchen, NY 10019 |
+| `CENTRAL 14TH STREET / SPRING ROAD`, DC | Central 14th Street / Spring Road, DC |
+| `MCGUIRE AFB`, NJ, ZIP 08562 | McGuire AFB, NJ 08562 |
+| `ADJUNTAS ZONA URBANA`, PR, ZIP 00601 | Adjuntas, PR 00601 |
+| `ESTANCIAS DE FLORIDA COMUNIDAD`, PR | Estancias de Florida, PR |
+| `‘EWA GENTRY`, HI | ‘Ewa Gentry, HI |
+| `O'FALLON`, IL | O'Fallon, IL |
+| `NASHVILLE-DAVIDSON METROPOLITAN GOVERNMENT (BALANCE)`, TN | Nashville-Davidson, TN |
 
 ## 10. Rendering
 
@@ -576,7 +624,8 @@ binary path does not cover.
 - **Places**: `places.json` entries are `[NAME, ST, lat, lon, population]`.
   Match by prefix on the name, then rank by distance to the user (or the
   bot), then by population. Always show the state; 207 names appear in
-  more than one state. Round Rock exists in TX and AZ.
+  more than one state. Round Rock exists in TX and AZ. Label a result as in
+  section 9.1.
 - **ZIPs**: 5 digits (or ZIP+4) is an exact `zips.json` lookup, then a
   coordinate like any other (section 9). Not in the table: unknown ZIP.
 - **Stations**: `stations.json` by ICAO prefix or by name substring; show
@@ -669,7 +718,7 @@ rules:
 | 8.2, 10.4 | (none) | `>sat` and the text command `sat` report the bot's GOES receiver as one line, Text subject 8 |
 | 8.2 | Said coverage filtered only the bare `>w` and `>o` | The bare `>d` is filtered too |
 | 9 | Pointed at the top-level `text_subjects` and `not_available_reasons` in `protocol.json` | Use the tables under `v5`; the top-level ones are v4 |
-| 8.2, 9, 10.4 | (none) | A US ZIP (`78701`, or ZIP+4 `78701-1234`) works wherever a place does: people's commands, `>f`, `>metar`, `>taf`, `>hwo`. For `>f`, 5 digits is a ZIP and 1-4 digits a point index. New bundle file `zips.json` (Census 2020 ZCTAs): the bot and the app resolve a ZIP from the same table |
+| 8.2, 9, 10.4 | (none) | A US ZIP (`78701`, or ZIP+4 `78701-1234`) works wherever a place does: people's commands, `>f`, `>metar`, `>taf`, `>hwo`. For `>f`, 5 digits is a ZIP and 1-4 digits a point index. New bundle file `zips.json` (Census 2020 ZCTAs): the bot and the app resolve a ZIP from the same table. Section 9.1 states the label rule for a place and a ZIP (`Hell's Kitchen, NY 10019`), which the bot's replies follow; it used to send `Hell'S Kitchen` |
 
 The wire layout did not change, so a revision 2 decoder decodes every
 revision 3 packet. Add the bundle's `zips.json`, update `index.json` and `wfos.json`, apply

@@ -17,6 +17,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from meshcore_weather.geodata.names import place_name
 from meshcore_weather.parser.pfm import PFMPoint, downsample_to_daily, parse_pfm
 from meshcore_weather.parser.weather import EMWINProduct, WeatherStore
 from meshcore_weather.protocol.encoders import parse_metar
@@ -663,7 +664,7 @@ def rain_for(store: WeatherStore, loc: dict | None = None, state: str | None = N
                     if tp.lstrip("-").isdigit():
                         temp = int(tp)
                         break
-            name = " ".join(city_parts).title().strip()
+            name = place_name(" ".join(city_parts)).strip()
             if not name or name in seen:
                 continue
             seen.add(name)
