@@ -157,8 +157,9 @@ Then, if `tags` bit 0 is set, an area list:
 
 Storm-based warnings (tornado, severe thunderstorm, flash flood) carry the
 polygon and usually a county list. Zone-based products (winter, heat,
-wind, fire) carry the zone list only. Draw the polygon when present;
-otherwise fill the listed zones or counties from the bundle.
+wind, fire) carry the zone list only. Draw the polygon when present and
+name the counties under it; otherwise fill the listed zones or counties
+from `zones.geojson` / `counties.geojson`.
 
 Typical size: a severe thunderstorm warning with 6 vertices and 2
 counties is 15 + 27 + 9 = 51 bytes.
@@ -316,13 +317,17 @@ here; the bot never sends names.
 | `pfm_points.json` | 104 KB | `points`: ordered list `[name, office, lat, lon, zone]`; the list position is the `point` u16 | Forecast labels, "forecast for my location" (nearest point by distance) |
 | `places.json` | 1.4 MB | `places`: list `[NAME, ST, lat, lon, population]` | Place search and autocomplete |
 | `zones.json` | 355 KB | Zone id (`TXZ192`) → name, office, state, lat, lon | Naming the areas of a warning; zone lookup for a place |
-| `zones.geojson` | 10 MB | Zone polygons | Filling a zone-based warning on the map. Optional download; the app can fall back to the zone centroid pin |
+| `zones.geojson` | 10 MB | Zone polygons (`code` property, e.g. `TXZ192`) | Filling a zone-based warning on the map. Optional download; the app can fall back to the zone centroid pin |
+| `counties.json` | 227 KB | County UGC (`TXC453`) → name, state, representative lat/lon | Naming the counties of a storm-based warning; centroid pin |
+| `counties.geojson` | 4.8 MB | County polygons (Census cartographic boundaries, 1:5M, `code`/`name`/`state` properties), Polygon or MultiPolygon | Filling counties on the map when a warning has no polygon, and as the outline under one. Optional download like `zones.geojson` |
 | `wfos.json` | 9 KB | Office code → states, lat, lon | Office names, `>afd` picker |
 | `weather_dict.json`, `regions.json`, `state_index.json` | | Legacy (v3/v4). Not used by v5; `state_index.json` is the same list as `index.json` `states` | |
 
-County polygons are not bundled yet. A county-only warning (rare; most
-carry a polygon) is shown by name from a county table the next bundle
-will add; until then label it "<state> county <number>".
+Area runs decode to UGC codes: state code from `index.json` `states`,
+then `C` or `Z`, then the 3-digit number. `TXC453` is in `counties.json`,
+`TXZ192` in `zones.json`; both have polygons in the matching GeoJSON.
+Louisiana parishes, Alaska boroughs and Virginia's independent cities are
+all "counties" here, as in the NWS products.
 
 Bundle versioning: `protocol.json` `version` (8 for v5.0). The bot's
 advert does not carry a version; a bump is announced in the repository.

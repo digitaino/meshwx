@@ -27,7 +27,7 @@
 - **MeshWX v5**, a compact binary protocol for apps: warnings with storm tags, polygons and county/zone runs, an active-warning digest for loss recovery, batched observations and point forecasts, as MeshCore `GRP_DATA` packets on `#meshwx`. The mesh carries identifiers and numbers; the phone carries the tables. Spec: `docs/MeshWX_v5_Spec.md`.
 - **Discovery by advert** — a bot adverts as a chat node named `WX-<IATA>` (e.g. `WX-AUS`) with its lat/lon, so every MeshCore app already collects what it needs to list nearby weather bots. No discovery channel, no beacon, no extra airtime.
 - **A per-job broadcast schedule system** with a web admin UI. Operators define arbitrary `(product, location, interval)` jobs via the portal — e.g. "Austin METAR every 30 min", "TX storm reports every 10 min", "EWX outlook every 12 hr". Jobs persist across restarts.
-- **Preload bundle** (`client_data/`, ~9.9 MB) that ships with every client app — NWS zones, census places, METAR stations, WFO metadata, PFM forecast points, zone polygons. With this preloaded, broadcasts only carry compact IDs instead of full names, slashing airtime.
+- **Preload bundle** (`client_data/`, ~18 MB with the polygons) that ships with every client app — NWS zones and counties with polygons, census places, METAR stations, WFO metadata, PFM forecast points, and the wire index tables. With this preloaded, broadcasts only carry compact IDs instead of full names, slashing airtime.
 - **pyIEM-powered parsing** — the reference Python library for NWS text products (VTEC, UGC, CAP standards). Runs fully offline with a `legacy_dict` UGC provider built from bundled zones data.
 - **Canonical NWS data quality**: forecasts from PFM (Point Forecast Matrix) tables, warnings with correct VTEC extraction and polygon winding, absolute expiry timestamps so clients always know exactly when data becomes invalid.
 - **One request grammar for apps and people.** An app DMs `>f 102` and gets a binary answer on the channel for everyone; a person DMs `forecast austin tx` and gets text back. Same words, one bot.
@@ -422,7 +422,7 @@ Shipped:
 - [x] QPF precipitation grids (0x12)
 - [x] Unified per-job broadcast schedule system (any product, any location, any interval)
 - [x] Admin portal: overview, text bot feed and console, broadcasts, radio, satellite, logs and settings
-- [x] Preload bundle (`client_data/`) with PFM points, zone polygons, places, stations
+- [x] Preload bundle (`client_data/`) with PFM points, zone and county polygons, places, stations
 - [x] App requests answered on the channel so one request serves every listener
 - [x] Legacy text-command interface with typo-tolerant parser
 - [x] Hybrid DM/channel routing with admin commands
@@ -432,7 +432,6 @@ Shipped:
 Planned:
 
 - [ ] GOES-E SDR satellite downlink via goesrecv/goestools
-- [ ] County polygons in the preload bundle
 - [ ] H-VTEC hydrologic metadata (flood severity, river ID, stage forecast)
 - [ ] Dictionary text compression for warning headlines
 - [ ] 3-hourly hour-by-hour PFM forecast format
