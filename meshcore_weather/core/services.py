@@ -57,13 +57,13 @@ class Observation:
     observed_at: datetime          # UTC, product receive time (METAR line has only hh:mm)
     obs_utc_min: int               # minutes since midnight UTC from the METAR itself
     temp_f: int
-    dewpoint_f: int
-    wind_dir_deg: int
-    wind_speed_mph: int
+    dewpoint_f: int | None         # None: the METAR did not carry the group (parse_metar)
+    wind_dir_deg: int | None       # None also for a variable (VRB) wind
+    wind_speed_mph: int | None
     wind_gust_mph: int
-    visibility_mi: int
-    pressure_inhg: float
-    sky_code: int
+    visibility_mi: float | None
+    pressure_inhg: float | None
+    sky_code: int | None
     raw: str
 
     @property
@@ -547,6 +547,31 @@ def taf_for(store: WeatherStore, loc: dict) -> Taf | None:
             block = _taf_block(prod.raw_text, icao)
             if block:
                 return Taf(station=icao, distance_km=float(km), product=prod, text=block)
+    return None
+
+
+def station_taf(store: WeatherStore, icao: str, max_age_h: int = 30) -> str | None:
+    """That station's own newest TAF as 'TAF <ICAO> ...', never a neighbour's.
+    A TAF covers at most 30 hours, so an older one is not current."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_h)
+    for prod in sorted(store._products.values(), key=lambda p: p.timestamp, reverse=True):
+        if prod.timestamp < cutoff:
+            break
+        if prod.product_type != "TAF":
+            continue
+        block = _taf_block(prod.raw_text, icao)
+        if block:
+            # Bulletins put "TAF" (and AMD/COR) on the station line or on a
+            # line of its own; apps look for "TAF <ICAO>" at the start.
+            words = block.split()
+            if words and words[0] == "TAF":
+                words = words[1:]
+            mods = []
+            while words and words[0] in ("AMD", "COR"):
+                mods.append(words.pop(0))
+            if words and words[0] == icao:
+                words = words[1:]
+            return " ".join(["TAF", icao, *mods, *words])
     return None
 
 

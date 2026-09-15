@@ -28,7 +28,7 @@ REPEAT_AFTER_S = 90          # life-safety warnings go out once more after this
 class ExecutorContext:
     store: WeatherStore
     coverage: Coverage
-    seq: b.SeqCounter
+    seq: b.SeqCounter              # provisional numbers: Scheduler.transmit stamps the seq on air
     bot: int
     # identity string -> {"fp": [...], "expires": min, "event": code, "sent_at": t, "repeat_at": t|None}
     warning_state: dict[str, dict] = field(default_factory=dict)
@@ -106,10 +106,12 @@ def _build_observations(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
 
 
 def _build_forecast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
-    lat = lon = None
+    lat = lon = point = None
     if job.location_type == "pfm_point":
+        b.tables.load()
         try:
-            p = b.tables.points[int(job.location_id)]
+            point = int(job.location_id)
+            p = b.tables.points[point]
             lat, lon = p[2], p[3]
         except (ValueError, IndexError):
             return []
@@ -122,7 +124,7 @@ def _build_forecast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
         lat, lon = ctx.home
     if lat is None or lon is None:
         return []
-    msg = b.forecast_message(ctx.seq.next(), ctx.bot, ctx.store, float(lat), float(lon))
+    msg = b.forecast_message(ctx.seq.next(), ctx.bot, ctx.store, float(lat), float(lon), point=point)
     return [msg] if msg else []
 
 

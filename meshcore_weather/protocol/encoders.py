@@ -94,6 +94,13 @@ def parse_metar(metar_text: str) -> dict | None:
     (minutes since midnight UTC from the ddhhmmZ group), or None when the
     line has no temperature group. This is the ONE METAR decoder; the text
     renderer and the binary encoder both consume its output.
+
+    A group the line does not carry is None, never a made-up value: no
+    wind group, no visibility, no altimeter, a missing dewpoint ("22/"), no
+    cloud or weather group (sky_code). A variable wind (VRB) has a speed and
+    no direction. wind_gust_mph is 0 without a gust. Visibility is statute
+    miles with fractions: 1/2SM is 0.5, 1 1/2SM is 1.5, and M1/4SM (less
+    than a quarter) keeps its bound, 0.25.
     """
     try:
         parts = metar_text.split()
@@ -103,11 +110,12 @@ def parse_metar(metar_text: str) -> dict | None:
     temp_f = None
     dewpoint_f = None
     wind_dir_deg = None
-    wind_speed_mph = 0
+    wind_speed_mph = None
     wind_gust_mph = 0
-    visibility_mi = 10
+    visibility_mi = None
     sky_code = SKY_CLEAR
-    pressure_inhg = 29.92
+    sky_seen = False
+    pressure_inhg = None
     obs_utc_min = 0
 
     # Stop at RMK — everything after is remarks, not weather data.
@@ -118,7 +126,7 @@ def parse_metar(metar_text: str) -> dict | None:
     except ValueError:
         pass
 
-    for p in parts:
+    for i, p in enumerate(parts):
         m_time = re.match(r"^\d{2}(\d{2})(\d{2})Z$", p)
         if m_time:
             obs_utc_min = int(m_time.group(1)) * 60 + int(m_time.group(2))
@@ -131,26 +139,31 @@ def parse_metar(metar_text: str) -> dict | None:
             if m_wind.group(3):
                 wind_gust_mph = round(int(m_wind.group(3)) * 1.15078)
             continue
-        # Variable wind: VRBxxKT or VRBxxGyyKT
+        # Variable wind: VRBxxKT or VRBxxGyyKT. The direction stays None.
         m_vrb = re.match(r"^VRB(\d{2,3})(?:G(\d{2,3}))?KT$", p)
         if m_vrb:
-            wind_dir_deg = 0
             wind_speed_mph = round(int(m_vrb.group(1)) * 1.15078)
             if m_vrb.group(2):
                 wind_gust_mph = round(int(m_vrb.group(2)) * 1.15078)
             continue
-        # Visibility: NNSM or N/NSM
-        m_vis = re.match(r"^(\d{1,2})(?:/(\d))?SM$", p)
+        # Visibility: 10SM, 1/2SM, M1/4SM, or "1 1/2SM" (whole miles in the
+        # token before). M (less than) keeps the bound.
+        m_vis = re.match(r"^M?(\d{1,2})(?:/(\d{1,2}))?SM$", p)
         if m_vis:
-            visibility_mi = int(m_vis.group(1))
+            num, den = int(m_vis.group(1)), int(m_vis.group(2) or 1)
+            if den:
+                vis = num / den
+                if m_vis.group(2) and i and re.match(r"^\d$", parts[i - 1]):
+                    vis += int(parts[i - 1])
+                visibility_mi = int(vis) if vis == int(vis) else vis
             continue
-        # Temp/dewpoint: TT/DD or MTT/DD (M = negative)
-        m_td = re.match(r"^(M?\d{2})/(M?\d{2})$", p)
+        # Temp/dewpoint: TT/DD, MTT/DD (M = negative), TT/ (dewpoint missing)
+        m_td = re.match(r"^(M?\d{2})/(M?\d{2})?$", p)
         if m_td:
             t_c = int(m_td.group(1).replace("M", "-"))
-            d_c = int(m_td.group(2).replace("M", "-"))
             temp_f = round(t_c * 9 / 5 + 32)
-            dewpoint_f = round(d_c * 9 / 5 + 32)
+            if m_td.group(2):
+                dewpoint_f = round(int(m_td.group(2).replace("M", "-")) * 9 / 5 + 32)
             continue
         # Altimeter: AXXXX (inches of Hg * 100)
         m_alt = re.match(r"^A(\d{4})$", p)
@@ -162,6 +175,7 @@ def parse_metar(metar_text: str) -> dict | None:
                           ("FEW", SKY_FEW), ("SCT", SKY_SCATTERED),
                           ("BKN", SKY_BROKEN), ("OVC", SKY_OVERCAST)]:
             if p.startswith(code):
+                sky_seen = True
                 if sky > sky_code:  # pick worst conditions for summary
                     sky_code = sky
                 break
@@ -169,6 +183,7 @@ def parse_metar(metar_text: str) -> dict | None:
         # -RA, +SN, TSRA, RASN).  Match as regex to avoid substring false
         # positives (e.g. DSNT matching "SN").
         if re.match(r"^[+-]?(?:VC)?(?:TS|SH|FZ|MI|PR|BC|DR|BL)*(?:RA|SN|DZ|GR|GS|PL|IC|SG|UP)+(?:RA|SN|DZ|GR|GS|PL|IC|SG|UP)*$", p):
+            sky_seen = True
             if "TS" in p:
                 sky_code = SKY_THUNDERSTORM
             elif "SN" in p and sky_code < SKY_SNOW:
@@ -178,8 +193,10 @@ def parse_metar(metar_text: str) -> dict | None:
             elif "DZ" in p and sky_code < SKY_DRIZZLE:
                 sky_code = SKY_DRIZZLE
         elif p in ("TS", "+TS", "-TS", "VCTS"):
+            sky_seen = True
             sky_code = SKY_THUNDERSTORM
         elif re.match(r"^[+-]?(?:VC)?(?:FG|BR|HZ|FU|SA|DU)$", p):
+            sky_seen = True
             if "FG" in p and sky_code < SKY_FOG:
                 sky_code = SKY_FOG
             elif "HZ" in p and sky_code < SKY_HAZE:
@@ -191,12 +208,12 @@ def parse_metar(metar_text: str) -> dict | None:
         return None
     return {
         "temp_f": temp_f,
-        "dewpoint_f": dewpoint_f if dewpoint_f is not None else temp_f,
-        "wind_dir_deg": wind_dir_deg if wind_dir_deg is not None else 0,
+        "dewpoint_f": dewpoint_f,
+        "wind_dir_deg": wind_dir_deg,
         "wind_speed_mph": wind_speed_mph,
         "wind_gust_mph": wind_gust_mph,
         "visibility_mi": visibility_mi,
-        "sky_code": sky_code,
+        "sky_code": sky_code if sky_seen else None,
         "pressure_inhg": pressure_inhg,
         "obs_utc_min": obs_utc_min,
     }

@@ -4,8 +4,9 @@ so the sequence counter and the spacing are shared).
 
 Each tick: reload the config if the portal changed it, run the jobs that
 are due, send what they built with a gap between packets, keep per-job
-stats. Warning state (what was sent, with which fingerprint) is persisted
-so a restart does not re-send every active warning as new.
+stats. Warning state (what was sent, with which fingerprint) and the next
+header seq are persisted so a restart neither re-sends every active warning
+as new nor jumps the sequence apps track.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from meshcore_weather.config import settings
 from meshcore_weather.geodata import resolver
 from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.parser.weather import WeatherStore
+from meshcore_weather.protocol import v5
 from meshcore_weather.protocol import v5_builders as b
 from meshcore_weather.protocol.coverage import Coverage
 from meshcore_weather.schedule.executor import BroadcastExecutor, ExecutorContext
@@ -50,7 +52,11 @@ class Scheduler:
         self._total_bytes: dict[str, int] = {}
         self._total_runs: dict[str, int] = {}
         self._last_msg_count: dict[str, int] = {}
-        self.seq = b.SeqCounter(int(time.time()) & 0xFF)
+        # The seq the next packet on air gets. Restored from the state file;
+        # the clock only seeds a bot that has never saved one.
+        self._next_seq = int(time.time()) & 0xFF
+        self._tx_lock = asyncio.Lock()
+        self._last_tx = 0.0
         self._warning_state: dict[str, dict] = {}
         self._digest_due_at: float | None = None
         self._task: asyncio.Task | None = None
@@ -89,6 +95,10 @@ class Scheduler:
     def coverage(self) -> Coverage:
         return self._coverage
 
+    @property
+    def next_seq(self) -> int:
+        return self._next_seq
+
     def bot_id(self) -> int:
         mc = getattr(self.radio, "_mc", None)
         key = (getattr(mc, "self_info", None) or {}).get("public_key") if mc else None
@@ -107,28 +117,33 @@ class Scheduler:
                 offices = set(loc.get("wfos") or [])
             except Exception:
                 pass
-        return ExecutorContext(store=self.store, coverage=self._coverage, seq=self.seq, bot=self.bot_id(),
+        # A scratch counter: builders number their messages, transmit restamps them.
+        return ExecutorContext(store=self.store, coverage=self._coverage, seq=b.SeqCounter(), bot=self.bot_id(),
                                warning_state=self._warning_state, home=home,
                                radius_km=float(settings.home_radius_km or 0), home_offices=offices)
 
-    # -- warning state persistence --
+    # -- warning state and seq persistence --
 
     def _load_state(self) -> None:
         try:
             if _STATE_PATH.exists():
                 d = json.loads(_STATE_PATH.read_text())
+                if isinstance(d.get("next_seq"), int):          # absent in files written before revision 3
+                    self._next_seq = d["next_seq"] & 0xFF
                 self._warning_state = {k: v for k, v in d.get("warnings", {}).items()
                                        if v.get("expires", 0) > b.now_min()}
-                logger.info("Warning state: %d active identities restored", len(self._warning_state))
+                logger.info("Warning state: %d active identities restored, next seq %d",
+                            len(self._warning_state), self._next_seq)
         except Exception as e:
             logger.warning("Ignoring warning state file: %s", e)
             self._warning_state = {}
 
-    def _save_state(self) -> None:
+    def _save_state(self, next_seq: int | None = None) -> None:
         try:
             _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
             tmp = _STATE_PATH.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"warnings": self._warning_state}))
+            seq = self._next_seq if next_seq is None else next_seq
+            tmp.write_text(json.dumps({"warnings": self._warning_state, "next_seq": seq}))
             tmp.replace(_STATE_PATH)
         except Exception as e:
             logger.warning("Could not write warning state: %s", e)
@@ -220,23 +235,53 @@ class Scheduler:
 
     async def transmit(self, msgs: list[bytes], label: str) -> tuple[int, int]:
         """Send v5 messages on the data channel with spacing. Returns
-        (packets sent, bytes)."""
-        sent = nbytes = 0
-        for i, msg in enumerate(msgs):
-            try:
-                ok = await self.radio.send_channel_data(msg)
-            except Exception:
-                logger.exception("%s: send failed", label)
-                ok = False
-            if ok:
-                sent += 1
-                nbytes += len(msg)
-            if i + 1 < len(msgs):
-                await asyncio.sleep(TX_SPACING)
-        if sent:
-            activity_log.record_send(sent, nbytes)
-            logger.info("%s: %d packet(s), %d bytes", label, sent, nbytes)
-        return sent, nbytes
+        (packets sent, bytes).
+
+        One batch at a time, so a request answer and a scheduled tick never
+        interleave and packets leave in seq order. The seq is stamped here,
+        not by the builders, and a number is used only when the radio took
+        the packet: a failed send leaves no gap. The radio's echo resend
+        repeats these stamped bytes, same seq."""
+        async with self._tx_lock:
+            # Saved past the batch before it starts: killed part-way, the bot comes back ahead of
+            # every number it may have put on air (apps see a gap), never behind them (apps would
+            # take the next packets for late copies). The save after the batch keeps the real value.
+            if msgs:
+                self._save_state(next_seq=(self._next_seq + len(msgs)) & 0xFF)
+            sent = nbytes = 0
+            groups: dict[int, int] = {}
+            for msg in msgs:
+                wait = self._last_tx + TX_SPACING - time.monotonic()
+                if wait > 0:                        # spacing holds across batches too
+                    await asyncio.sleep(wait)
+                msg = self._stamp(msg, groups)
+                try:
+                    ok = await self.radio.send_channel_data(msg)
+                except Exception:
+                    logger.exception("%s: send failed", label)
+                    ok = False
+                self._last_tx = time.monotonic()
+                if ok:
+                    self._next_seq = (self._next_seq + 1) & 0xFF
+                    sent += 1
+                    nbytes += len(msg)
+            if msgs:
+                self._save_state()
+            if sent:
+                activity_log.record_send(sent, nbytes)
+                logger.info("%s: %d packet(s), %d bytes", label, sent, nbytes)
+            return sent, nbytes
+
+    def _stamp(self, msg: bytes, groups: dict[int, int]) -> bytes:
+        """Byte 0 = the next seq. A text reply's group is the seq its first
+        chunk goes out with (spec 8.1), so it follows the restamp."""
+        out = bytearray(msg)
+        out[0] = self._next_seq
+        if len(out) >= 8 and out[3] >> 4 == v5.TYPE_TEXT:
+            if out[6] == 0:
+                groups[msg[5]] = self._next_seq
+            out[5] = groups.get(msg[5], msg[5])
+        return bytes(out)
 
     # -- portal --
 

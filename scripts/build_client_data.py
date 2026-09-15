@@ -42,6 +42,16 @@ EMWIN_BUNDLE_URL = (
     "https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip"
 )
 
+# National centres that put their own office in VTEC (KNHC tropical, KWNS
+# = SPC watch outlines). No zones, so they are not in zones.json; they
+# follow the WFOs in wfos.json and index.json at fixed indices 125, 126.
+NATIONAL_CENTRES = OrderedDict([
+    ("NHC", {"states": [], "lat": 25.7543, "lon": -80.3838, "zone_count": 0,
+             "name": "National Hurricane Center"}),
+    ("WNS", {"states": [], "lat": 35.1812, "lon": -97.4401, "zone_count": 0,
+             "name": "Storm Prediction Center"}),
+])
+
 
 def build_zones(out_dir: Path) -> None:
     """Compact NWS zones file indexed by zone code.
@@ -113,7 +123,7 @@ def build_wfos(out_dir: Path) -> None:
         wfos[w]["count"] += 1
 
     out = OrderedDict()
-    for code in sorted(wfos):
+    for code in sorted(c for c in wfos if c not in NATIONAL_CENTRES):
         data = wfos[code]
         out[code] = {
             "states": sorted(data["states"]),
@@ -121,6 +131,9 @@ def build_wfos(out_dir: Path) -> None:
             "lon": round(data["lon_sum"] / data["count"], 4),
             "zone_count": data["count"],
         }
+    # Appended after the sorted WFOs, in this fixed order: the file order is
+    # the wire's office byte (index.json), so they are never sorted in.
+    out.update(NATIONAL_CENTRES)
     path = out_dir / "wfos.json"
     path.write_text(json.dumps(out, separators=(",", ":")))
     size = path.stat().st_size / 1024

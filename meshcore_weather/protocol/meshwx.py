@@ -718,6 +718,15 @@ def pack_observation(
     def _clamp_u8(v: int) -> int:
         return max(0, min(255, int(v)))
 
+    # parse_metar reports absent groups as None; v4 has no "unknown", so
+    # it keeps the values it always sent.
+    dewpoint_f = temp_f if dewpoint_f is None else dewpoint_f
+    wind_speed_mph = wind_speed_mph or 0
+    wind_gust_mph = wind_gust_mph or 0
+    visibility_mi = 10 if visibility_mi is None else visibility_mi
+    pressure_inhg = 29.92 if pressure_inhg is None else pressure_inhg
+    sky_code = sky_code or 0
+
     loc_bytes = pack_location(loc_type, loc_id)
     pressure_byte = max(0, min(255, int(round((pressure_inhg - 29.00) * 100))))
     wind_dir_nib = wind_dir_to_nibble(wind_dir_deg) if wind_dir_deg is not None else 0

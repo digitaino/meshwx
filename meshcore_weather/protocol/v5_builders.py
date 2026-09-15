@@ -31,6 +31,7 @@ LIFE_SAFETY = {"TO.W", "SV.W", "FF.W", "EW.W"}
 OBS_MAX_AGE_MIN = 120
 MAX_OBS_STATIONS = 14
 MAX_DIGEST = 25
+POINT_MATCH_KM = 1.5
 
 
 # -- Wire tables (index.json) --------------------------------------------------------
@@ -55,8 +56,9 @@ class _Tables:
             self.offices, self.stations, self.states = idx["offices"], idx["stations"], idx["states"]
         except Exception:
             # index.json is generated from these; the same ordering rule
-            # keeps a fresh checkout working.
-            self.offices = sorted(json.loads((_CLIENT_DATA / "wfos.json").read_text()))
+            # keeps a fresh checkout working. wfos.json is already in wire
+            # order (sorted WFOs, then the national centres), never re-sort it.
+            self.offices = list(json.loads((_CLIENT_DATA / "wfos.json").read_text()))
             self.stations = sorted(json.loads((_CLIENT_DATA / "stations.json").read_text()))
             self.states = json.loads((_CLIENT_DATA / "state_index.json").read_text())["states"]
         self.points = json.loads((_CLIENT_DATA / "pfm_points.json").read_text())["points"]
@@ -65,9 +67,10 @@ class _Tables:
         self._station_idx = {c: i for i, c in enumerate(self.stations)}
         self._loaded = True
 
-    def office(self, code: str | None) -> int:
+    def office(self, code: str | None) -> int | None:
+        """The office byte, or None for a code index.json does not list."""
         self.load()
-        return self._office_idx.get((code or "").upper(), 0)
+        return self._office_idx.get((code or "").upper())
 
     def office_code(self, idx: int) -> str:
         self.load()
@@ -81,12 +84,19 @@ class _Tables:
         self.load()
         return int(self.events.get(key, 0))
 
-    def point_index(self, lat: float, lon: float, max_km: float = 1.5) -> int:
-        """The bundled PFM point at these coordinates, or 0xFFFF."""
+    def point_index(self, lat: float, lon: float, max_km: float = POINT_MATCH_KM, name: str | None = None) -> int:
+        """The bundled PFM point at these coordinates, or 0xFFFF. Some points
+        share coordinates (402/454, 1000/1177, 1617/1840), so a point whose
+        name matches wins over the nearest; without one the lowest index does."""
         self.load()
+        want = " ".join((name or "").split()).upper()
         best, best_km = 0xFFFF, max_km
         for i, p in enumerate(self.points):
             km = _haversine_km(lat, lon, p[2], p[3])
+            if km >= max_km:
+                continue
+            if want and " ".join(str(p[0]).split()).upper() == want:
+                return i
             if km < best_km:
                 best, best_km = i, km
         return best
@@ -104,7 +114,9 @@ def _haversine_km(lat1, lon1, lat2, lon2) -> float:
 
 
 class SeqCounter:
-    """Per-bot u8 message counter (wraps)."""
+    """Per-bot u8 message counter (wraps). What builders number with it is
+    provisional: Scheduler.transmit restamps the seq (and a text reply's
+    group) when the packet actually goes on air."""
 
     def __init__(self, start: int = 0):
         self._n = start & 0xFF
@@ -128,16 +140,26 @@ def now_min() -> int:
 
 # -- Warnings ---------------------------------------------------------------------------
 
+_unknown_offices: set[str] = set()
+
 
 def warning_identity(w: dict) -> tuple[int, int, int] | None:
-    """(event, office index, etn), or None for products without an ETN (SPS)."""
+    """(event, office index, etn), or None for products without an ETN (SPS)
+    and for an office index.json does not list: sent as 0 it would be ABQ."""
     etn = w.get("vtec_etn")
     if etn is None:
         return None
     event = int(w.get("event_code") or 0)
     if not event:
         return None
-    return event, tables.office(w.get("vtec_office")), int(etn) & 0xFFFF
+    office = tables.office(w.get("vtec_office"))
+    if office is None:
+        code = str(w.get("vtec_office"))
+        if code not in _unknown_offices:
+            _unknown_offices.add(code)
+            logger.warning("Office %s is not in index.json; its warnings are not sent", code)
+        return None
+    return event, office, int(etn) & 0xFFFF
 
 
 def identity_str(identity: tuple[int, int, int]) -> str:
@@ -166,9 +188,14 @@ def expires_min(w: dict) -> int:
 
 
 def warning_fingerprint(w: dict) -> tuple:
-    """What counts as a material change: expiry moved by 30 min or more,
-    tags changed, area changed. Wording changes do not."""
-    return (expires_min(w) // 30, int(w.get("hail_qin") or 0), int(w.get("wind_mph") or 0),
+    """What counts as a material change: expiry changed, tags changed, area
+    changed. Wording changes do not. A real expiry counts to the minute (a
+    21:00 warning extended to 21:25 must reach the app); an invented one
+    (no expiry, or until further notice) moves with the clock, so it only
+    counts in 30-minute steps."""
+    exact = isinstance(w.get("expires_at"), datetime) and not w.get("expires_estimated")
+    return (expires_min(w) if exact else expires_min(w) // 30, int(w.get("hail_qin") or 0),
+            int(w.get("wind_mph") or 0),
             int(w.get("tornado_tag") or 0), int(w.get("flood_source") or 0), int(w.get("flood_damage") or 0),
             tuple(sorted(w.get("ugcs") or [])), len(w.get("vertices") or []))
 
@@ -305,17 +332,31 @@ def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str]) ->
         text, ts = raw
         if (now - ts) > timedelta(minutes=OBS_MAX_AGE_MIN):
             continue
-        f = parse_metar(text) or {}
+        f = parse_metar(text)
         if not f:
             continue
-        rh = _humidity(f.get("temp_f"), f.get("dewpoint_f"))
-        rows.append({
-            "station": idx, "temp_f": f.get("temp_f"), "dewpoint_f": f.get("dewpoint_f"),
-            "wind_dir_deg": f.get("wind_dir_deg"), "sky": f.get("sky_code", 0),
-            "wind_mph": f.get("wind_speed_mph"), "gust_mph": f.get("wind_gust_mph") or 0,
-            "visibility_mi": f.get("visibility_mi"), "pressure_inhg": f.get("pressure_inhg"),
-            "humidity_pct": rh, "feels_delta_f": _feels_delta(f.get("temp_f"), rh, f.get("wind_speed_mph")),
-        })
+        # A group the METAR lacks is None and goes out as the wire's unknown.
+        # The pressure byte holds 29.00-31.54 inHg: a deep low or an Alaskan
+        # high is unknown rather than an error that loses every station.
+        pressure = f["pressure_inhg"]
+        if pressure is not None and not 0 <= round((pressure - 29.00) * 100) <= 254:
+            pressure = None
+        vis = f["visibility_mi"]
+        rh = _humidity(f["temp_f"], f["dewpoint_f"])
+        row = {
+            "station": idx, "temp_f": f["temp_f"], "dewpoint_f": f["dewpoint_f"],
+            "wind_dir_deg": f["wind_dir_deg"], "sky": f["sky_code"],
+            "wind_mph": f["wind_speed_mph"], "gust_mph": f["wind_gust_mph"] or 0,
+            "visibility_mi": None if vis is None else int(vis),      # whole miles, rounded down: 1/2SM is 0
+            "pressure_inhg": pressure,
+            "humidity_pct": rh, "feels_delta_f": _feels_delta(f["temp_f"], rh, f["wind_speed_mph"]),
+        }
+        try:
+            v5.encode_obs(0, 0, ts_min=0, stations=[row])     # anything else unencodable costs one station
+        except ValueError as e:
+            logger.warning("Observation %s left out: %s", icao, e)
+            continue
+        rows.append(row)
         if newest is None or ts > newest:
             newest = ts
     if not rows:
@@ -329,7 +370,11 @@ _COND_THUNDER, _COND_FROST, _COND_FOG, _COND_HIGH_WIND = 0x01, 0x02, 0x04, 0x08
 _COND_FREEZING_RAIN, _COND_HEAVY_SNOW = 0x10, 0x40
 
 
-def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: float) -> bytes | None:
+def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: float,
+                     point: int | None = None) -> bytes | None:
+    """`point` is the bundle index a request or job named. The answer carries
+    it when the forecast found is at that point's coordinates; a substitute
+    point carries its own index, or 0xFFFF."""
     from meshcore_weather.core import services
     from meshcore_weather.parser.pfm import downsample_to_daily
     found = services.nearest_pfm_point(store, lat, lon)
@@ -337,6 +382,8 @@ def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: f
         return None
     pt, prod, _km = found
     daily = downsample_to_daily(pt, max_days=7)
+    # Entries are consecutive days: anything after a missing date is dropped.
+    daily = [d for i, d in enumerate(daily) if (d.local_date - daily[0].local_date).days == i]
     if not daily:
         return None
     periods = []
@@ -353,8 +400,16 @@ def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: f
             "wind_dir_deg": (int(e.get("wind_dir_nibble") or 0) * 22.5), "wind_mph": int(e.get("wind_speed_5mph") or 0) * 5,
         })
     issued = pt.issue_time or prod.timestamp
-    first = int(daily[0].to_encoder_dict().get("period_id") or 0) * 2      # daily periods: day ids
-    return v5.encode_forecast(seq, bot, point=tables.point_index(pt.lat, pt.lon),
+    # Day ids count from the issue time's local date at the point (spec 7).
+    # An evening issuance often has no usable "today", so its first entry is
+    # tomorrow: first = 2, or the app labels tomorrow as today.
+    first = 2 * max(0, (daily[0].local_date - pt.local_date(issued)).days)
+    idx = tables.point_index(pt.lat, pt.lon, name=pt.name)
+    if point is not None and 0 <= point < len(tables.points):
+        p = tables.points[point]
+        if _haversine_km(pt.lat, pt.lon, p[2], p[3]) < POINT_MATCH_KM:
+            idx = point               # shared coordinates: answer under the index asked for
+    return v5.encode_forecast(seq, bot, point=idx,
                               issued_min=int(issued.timestamp() // 60), first_period=first, periods=periods[:14])
 
 
@@ -363,15 +418,15 @@ def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: f
 
 def text_messages(seq: SeqCounter, bot: int, subject: int, text: str) -> list[bytes]:
     text = " ".join(text.split())
+    start = seq.next()
     for cut in (len(text), 1200, 1000, 800, 600, 400, 150):
         try:
-            start = seq.next()
             msgs = v5.text_chunks(start, bot, subject=subject, text=text[:cut])
-            for _ in msgs[1:]:
-                seq.next()
-            return msgs
         except ValueError:
             continue
+        for _ in msgs[1:]:
+            seq.next()
+        return msgs
     return []
 
 

@@ -376,6 +376,7 @@ def _segment_to_entry(
         return None
 
     # -- VTEC path (most warnings: TOR, SVR, SVS, FFW, WSW, etc.) --
+    expires_estimated = False
     if seg.vtec:
         if vtec is None:
             vtec = seg.vtec[0]
@@ -384,6 +385,7 @@ def _segment_to_entry(
             if expires_at is None:
                 # Until further notice: give the client something finite.
                 expires_at = now + timedelta(hours=12)
+                expires_estimated = True
             onset_at = tracker_state.onset_at(now)
         else:
             if vtec.action in _CANCEL_ACTIONS:
@@ -467,6 +469,7 @@ def _segment_to_entry(
         "onset_at": onset_at,          # when the warning becomes active (None = immediate)
         "onset_unix_min": onset_unix_min,
         "expires_at": expires_at,      # canonical absolute expiry (NWS-authoritative)
+        "expires_estimated": expires_estimated,  # invented (until further notice): moves with the clock
         "expiry_minutes": expiry_minutes,  # convenience — minutes from "now"
         "vertices": vertices,
         "headline": headline,
@@ -538,6 +541,7 @@ def _extract_warnings_fallback(store: WeatherStore) -> list[dict]:
         else:
             severity = SEV_WARNING
 
+        expires_estimated = expires_at is None
         if expires_at is None:
             # Last-resort default: 2 hours from now. Only applied in the
             # fallback path for products with no VTEC.
@@ -558,6 +562,7 @@ def _extract_warnings_fallback(store: WeatherStore) -> list[dict]:
             "onset_at": onset_at,
             "onset_unix_min": int(onset_at.timestamp() / 60),
             "expires_at": expires_at,
+            "expires_estimated": expires_estimated,
             "expiry_minutes": expiry_minutes,
             "vertices": vertices,
             "headline": _shorten_headline(store._short_headline(prod.raw_text)),

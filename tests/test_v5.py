@@ -663,8 +663,11 @@ def test_index_json_matches_the_source_tables():
         stations = json.load(fh)
     with open(os.path.join(base, "state_index.json"), encoding="utf-8") as fh:
         state_index = json.load(fh)
-    assert index["version"] == 1
-    assert index["offices"] == sorted(wfos)
+    assert index["version"] == 2
+    # Sorted WFOs, then the national centres appended: no office index moves.
+    assert index["offices"] == sorted(set(wfos) - {"NHC", "WNS"}) + ["NHC", "WNS"]
+    assert list(wfos) == index["offices"]
+    assert (index["offices"].index("NHC"), index["offices"].index("WNS")) == (125, 126)
     assert index["stations"] == sorted(stations)
     assert index["states"] == state_index["states"]  # same list, same order
     assert index["offices"].index("EWX") == 35

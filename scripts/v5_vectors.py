@@ -51,8 +51,10 @@ def _load(name: str):
 def build_index() -> dict:
     """Offices, stations and states, in the exact order the wire indexes."""
     return {
-        "version": 1,
-        "offices": sorted(_load("wfos.json").keys()),
+        "version": 2,
+        # wfos.json is in wire order: the sorted WFOs, then the national
+        # centres NHC and WNS appended (build_client_data.py). Never re-sort.
+        "offices": list(_load("wfos.json").keys()),
         "stations": sorted(_load("stations.json").keys()),
         # state_index.json is append-only and its order IS the wire order.
         "states": list(_load("state_index.json")["states"]),

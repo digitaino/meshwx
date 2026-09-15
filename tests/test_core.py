@@ -181,3 +181,14 @@ class TestWarnings:
         assert text.startswith("2 active, Round Rock, TX: Heat Adv til ")
         assert len(text) <= render_text.MAX_DM
         assert services.warnings_for(store, resolver.resolve("Paris TX")) == []
+
+
+def test_observation_text_leaves_out_groups_the_metar_did_not_carry():
+    resolver.load()
+    loc = resolver.resolve("Round Rock, TX")
+    st, _km = loc["stations"][0]
+    store = _store_with(_metar_product(st, f"{st} 131855Z VRB04KT 31/ FEW250"))
+    ob = services.observation_for(store, loc)
+    conditions = render_text.observation(loc, ob).split("): ", 1)[1]
+    assert conditions == "88F VRB5 few"
+    assert ob.to_bytes()                                    # the v4 packer still fills its old defaults

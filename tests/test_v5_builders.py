@@ -124,3 +124,146 @@ def test_humidity_and_feels_like():
     assert b._feels_delta(95, 52, 5) >= 8            # heat index above 100
     assert b._feels_delta(30, None, 20) <= -10       # wind chill
     assert b._feels_delta(70, 50, 5) == 0
+
+
+# -- Revision 3 ---------------------------------------------------------------------
+
+
+def _half_hour_ahead(hours=2):
+    """A future :00 or :30, so +25 minutes stays inside one 30-minute bucket."""
+    return datetime.fromtimestamp((int(time.time() // 1800) + hours * 2) * 1800, timezone.utc)
+
+
+def test_expiry_extension_inside_one_half_hour_is_sent(monkeypatch):
+    w = _warning()
+    w["expires_at"] = _half_hour_ahead()
+    before = b.warning_fingerprint(w)
+    w["expires_at"] += timedelta(minutes=25)                        # 21:00 -> 21:25
+    assert b.warning_fingerprint(w) != before
+    ctx = _ctx(monkeypatch, [w])
+    job = BroadcastJob(id="warnings", name="w", product="warnings", location_type="coverage", interval_minutes=2)
+    ex._build_warnings(job, ctx)
+    w["expires_at"] += timedelta(minutes=25)
+    upd = ex._build_warnings(job, ctx)
+    assert len(upd) == 1 and v5.decode(upd[0])["update"] is True
+
+
+def test_invented_expiry_only_counts_in_half_hours(monkeypatch):
+    w = _warning()
+    del w["expires_at"]                                             # fallback: now + expiry_minutes
+    monkeypatch.setattr(b, "now_min", lambda: 29823900)
+    fp = b.warning_fingerprint(w)
+    monkeypatch.setattr(b, "now_min", lambda: 29823901)
+    assert b.warning_fingerprint(w) == fp
+    ufn = {**_warning(), "expires_estimated": True, "expires_at": datetime.fromtimestamp(29823900 * 60, timezone.utc)}
+    fp = b.warning_fingerprint(ufn)                                 # until further notice: now + 12 h
+    ufn["expires_at"] += timedelta(minutes=1)
+    assert b.warning_fingerprint(ufn) == fp
+
+
+def test_national_centres_are_appended_and_unknown_offices_are_not_sent(caplog):
+    assert (b.tables.office("NHC"), b.tables.office("WNS"), b.tables.office("EWX")) == (125, 126, 35)
+    watch = {**_warning(phen="TO", sig="A", vertices=False, ugcs=("TXC453",)), "vtec_office": "WNS"}
+    assert b.identity_str(b.warning_identity(watch)) == "TO.A.WNS.42"
+    assert v5.decode(b.warning_message(1, 1, watch))["office"] == 126
+    stray = {**_warning(etn=5), "vtec_office": "XYZ"}
+    assert b.warning_identity(stray) is None and b.warning_message(1, 1, stray) is None
+    assert [e["etn"] for e in v5.decode(b.digest_message(1, 1, [stray, _warning(etn=7)], 0))["entries"]] == [7]
+    assert "XYZ" in caplog.text
+
+
+def _metar_store(*lines):
+    from meshcore_weather.parser.weather import WeatherStore
+    ts = datetime.now(timezone.utc) - timedelta(minutes=10)
+    store = WeatherStore()
+    store.ingest([{"filename": f"A_SAUS70KWBC{ts:%d%H%M}_C_KWIN_{ts:%Y%m%d%H%M%S}_{i:06d}-2-SAHOURLY.TXT",
+                   "raw_text": "SAUS70 KWBC\nMETAR\n" + line} for i, line in enumerate(lines, 1)])
+    return store
+
+
+def test_absent_metar_groups_go_out_as_unknown():
+    store = _metar_store("KAUS 151153Z VRB04KT 31/ FEW250 RMK AO2 SLP123",
+                         "KGTU 151156Z AUTO 12/08 A3001",
+                         "KHYI 151155Z 00000KT 1 1/2SM BR OVC003 20/19 A2990")
+    aus, gtu, hyi = v5.decode(b.obs_message(1, 1, store, ["KAUS", "KGTU", "KHYI"]))["stations"]
+    assert aus["temp_f"] == 88 and aus["dewpoint_f"] is None and aus["humidity_pct"] is None
+    assert aus["wind_mph"] == 5 and aus["wind_dir_deg"] == 0      # VRB: the nibble has no unknown, 0 is sent
+    assert aus["visibility_mi"] is None and aus["pressure_inhg"] is None and aus["sky"] == 1
+    assert gtu["wind_mph"] is None and gtu["sky"] == 15 and gtu["pressure_inhg"] == 30.01
+    assert hyi["wind_mph"] == 0 and hyi["visibility_mi"] == 1        # 1 1/2 statute miles, rounded down
+
+
+def test_parse_metar_fractional_and_less_than_visibility():
+    from meshcore_weather.protocol.encoders import parse_metar
+    vis = lambda group: parse_metar(f"KAUS 151153Z 18005KT {group} OVC002 20/19 A2990")["visibility_mi"]
+    assert (vis("1/2SM"), vis("1 1/2SM"), vis("M1/4SM"), vis("3/4SM"), vis("10SM")) == (0.5, 1.5, 0.25, 0.75, 10)
+    assert parse_metar("KAUS 151153Z 18005KT OVC002 20/19")["visibility_mi"] is None
+
+
+def test_out_of_range_pressure_is_unknown_not_a_lost_batch():
+    store = _metar_store("PADK 151153Z 18005KT 10SM CLR 08/05 A2870",
+                         "KGTU 151156Z 18005KT 10SM CLR 20/10 A3001",
+                         "PAFA 151153Z 00000KT 10SM CLR M40/M44 A3160")
+    stations = [s["pressure_inhg"] for s in v5.decode(b.obs_message(1, 1, store, ["PADK", "KGTU", "PAFA"]))["stations"]]
+    assert stations == [None, 30.01, None]
+
+
+def _austin_point(**changes):
+    from meshcore_weather.parser.pfm import parse_pfm
+    from tests.test_pfm import SAMPLE_PFM
+    pt = parse_pfm(SAMPLE_PFM)[0]
+    for k, v in changes.items():
+        setattr(pt, k, v)
+    return pt
+
+
+def _serve(monkeypatch, pt):
+    from types import SimpleNamespace
+    from meshcore_weather.core import services
+    monkeypatch.setattr(services, "nearest_pfm_point",
+                        lambda store, lat, lon: (pt, SimpleNamespace(timestamp=pt.issue_time), 0.0))
+
+
+def test_forecast_first_counts_from_the_issue_date_at_the_point(monkeypatch):
+    from datetime import date
+    from meshcore_weather.parser.pfm import downsample_to_daily
+    from meshcore_weather.parser.weather import WeatherStore
+    # 03:30Z Saturday is 10:30 PM CDT Friday: an evening issuance, first full day Saturday.
+    pt = _austin_point(issue_time=datetime(2026, 4, 11, 3, 30, tzinfo=timezone.utc))
+    assert downsample_to_daily(pt)[0].local_date == date(2026, 4, 11)
+    _serve(monkeypatch, pt)
+    d = v5.decode(b.forecast_message(1, 1, WeatherStore(), pt.lat, pt.lon))
+    assert d["first_period"] == 2 and len(d["periods"]) >= 2
+    pt.issue_time = datetime(2026, 4, 11, 11, 0, tzinfo=timezone.utc)   # 6 AM CDT Saturday
+    assert v5.decode(b.forecast_message(1, 1, WeatherStore(), pt.lat, pt.lon))["first_period"] == 0
+
+
+def test_forecast_at_shared_coordinates_answers_under_the_index_asked_for(monkeypatch):
+    from meshcore_weather.parser.weather import WeatherStore
+    b.tables.load()
+    lat, lon = b.tables.points[1840][2], b.tables.points[1840][3]
+    assert [lat, lon] == b.tables.points[1617][2:4]
+    pt = _austin_point(lat=lat, lon=lon, name="Stafford Springs-Tolland CT")
+    _serve(monkeypatch, pt)
+    fc = lambda *a, **k: v5.decode(b.forecast_message(1, 1, WeatherStore(), *a, **k))["point"]
+    assert fc(lat, lon, point=1840) == 1840 and fc(lat, lon, point=1617) == 1617
+    assert fc(lat, lon) == 1617                                     # no index asked: the point's own name decides
+    pt.name = "Windsor Locks-Hartford CT"
+    assert fc(lat, lon) == 1840
+    assert fc(30.19, -97.67, point=102) == 1840                     # a substitute keeps its own index
+
+
+def test_f_request_by_index_carries_that_index(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+    from meshcore_weather.parser.weather import WeatherStore
+    from meshcore_weather.protocol.broadcaster import AppResponder
+    b.tables.load()
+    p = b.tables.points[454]
+    _serve(monkeypatch, _austin_point(lat=p[2], lon=p[3], name="Conway Lake-Tyler WV"))   # 402's name, 454's place
+    radio = MagicMock()
+    radio._mc.self_info = {"public_key": "1d04" + "00" * 30}
+    radio.send_channel_data = AsyncMock(return_value=True)
+    asyncio.run(AppResponder(WeatherStore(), radio).handle_request(">f 454", "a"))
+    d = v5.decode(radio.send_channel_data.await_args.args[0])
+    assert d["name"] == "forecast" and d["point"] == 454

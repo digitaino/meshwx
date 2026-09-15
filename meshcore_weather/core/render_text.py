@@ -138,18 +138,32 @@ def place_label(loc: dict) -> str:
     return name
 
 
+def _conditions(ob: Observation, full: bool = True) -> str:
+    """'95F dp70 S12g17 bkn 10mi 30.01'. A group the METAR did not carry is
+    left out rather than shown as a made-up value; a variable wind is VRB."""
+    wind = ""
+    if ob.wind_speed_mph == 0:
+        wind = "calm"
+    elif ob.wind_speed_mph is not None:
+        wind = f"{'VRB' if ob.wind_dir_deg is None else _dir(ob.wind_dir_deg)}{ob.wind_speed_mph}"
+    if wind and ob.wind_gust_mph:
+        wind += f"g{ob.wind_gust_mph}"
+    bits = [f"{ob.temp_f}F", None if ob.dewpoint_f is None else f"dp{ob.dewpoint_f}", wind,
+            None if ob.sky_code is None else _SKY.get(ob.sky_code, "wx")]
+    if full:
+        bits += [None if ob.visibility_mi is None else f"{ob.visibility_mi}mi",
+                 None if ob.pressure_inhg is None else f"{ob.pressure_inhg:.2f}"]
+    return " ".join(x for x in bits if x)
+
+
 def observation(loc: dict, ob: Observation | None) -> str:
     if ob is None:
         return _cap(f"{place_label(loc)}: no current obs within 2h of nearby stations")
-    wind = "calm" if ob.wind_speed_mph == 0 else f"{_dir(ob.wind_dir_deg)}{ob.wind_speed_mph}"
-    if ob.wind_gust_mph:
-        wind += f"g{ob.wind_gust_mph}"
     hh, mm = divmod(ob.obs_utc_min, 60)
     obs_dt = datetime.now(timezone.utc).replace(hour=hh, minute=mm, second=0, microsecond=0)
     return _cap(
         f"{place_label(loc)} {_clock(obs_dt, tz_for_loc(loc))} ({ob.station} {ob.distance_km:.0f}km): "
-        f"{ob.temp_f}F dp{ob.dewpoint_f} {wind} {_SKY.get(ob.sky_code, 'wx')} "
-        f"{ob.visibility_mi}mi {ob.pressure_inhg:.2f}"
+        + _conditions(ob)
     )
 
 
@@ -198,10 +212,7 @@ def summary(loc: dict, ob: Observation | None, ws: list[dict], fc: Forecast | No
         w = ws[0]
         bits.append(f"!{_title(short_name(w.get('vtec_phenomenon'), w.get('vtec_significance')))} til {_when(w['expires_at'], tz_for_loc(loc))}")
     if ob:
-        wind = "calm" if ob.wind_speed_mph == 0 else f"{_dir(ob.wind_dir_deg)}{ob.wind_speed_mph}"
-        if ob.wind_gust_mph:
-            wind += f"g{ob.wind_gust_mph}"
-        bits.append(f"{ob.temp_f}F dp{ob.dewpoint_f} {wind} {_SKY.get(ob.sky_code, 'wx')} ({ob.station} {ob.distance_km:.0f}km)")
+        bits.append(f"{_conditions(ob, full=False)} ({ob.station} {ob.distance_km:.0f}km)")
     if fc and fc.periods:
         p = fc.periods[0]
         seg = f"{p['high_f']}/{p['low_f']}"

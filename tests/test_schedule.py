@@ -498,3 +498,158 @@ class TestAppResponder:
         await r.handle_request(">d", "b")
         d = v5.decode(sent[-1])
         assert d["name"] == "digest" and d["entries"] == [] and d["feed_health"] == 255
+
+
+# -- Revision 3: seq stamped on air, one transmit at a time, budget, named stations --
+
+
+def _sched(monkeypatch, results=None):
+    """A Scheduler whose radio keeps what it was handed and answers from
+    `results` (True once they run out)."""
+    import meshcore_weather.schedule.scheduler as sched_mod
+    from meshcore_weather.parser.weather import WeatherStore
+    monkeypatch.setattr(sched_mod, "TX_SPACING", 0)
+    radio = MagicMock()
+    radio._mc = MagicMock()
+    radio._mc.self_info = {"public_key": "1d04" + "00" * 30}
+    handed, answers = [], list(results or [])
+
+    async def send(data, data_type=0xFF10, ev=None):
+        handed.append(bytes(data))
+        await asyncio.sleep(0)                      # give a concurrent transmit the chance to cut in
+        return answers.pop(0) if answers else True
+    radio.send_channel_data = send
+    return sched_mod.Scheduler(WeatherStore(), radio), handed
+
+
+def _cancels(*etns):
+    from meshcore_weather.protocol import v5
+    return [v5.encode_cancel(7, 1, event=3, office=35, etn=n) for n in etns]   # the builder's seq 7 is ignored
+
+
+@pytest.mark.asyncio
+async def test_seq_is_stamped_at_send_and_a_failed_send_reuses_it(monkeypatch):
+    from meshcore_weather.protocol import v5
+    s, handed = _sched(monkeypatch, results=[True, False, True])
+    s._next_seq = 254
+    assert await s.transmit(_cancels(1, 2, 3), "t") == (2, 16)
+    assert [m[0] for m in handed] == [254, 255, 255]          # 255 was not taken by the radio: used again
+    assert [v5.decode(m)["etn"] for m in handed] == [1, 2, 3]
+    assert s.next_seq == 0                                     # wraps
+
+
+@pytest.mark.asyncio
+async def test_text_group_follows_the_seq_of_its_first_chunk(monkeypatch):
+    from meshcore_weather.protocol import v5
+    from meshcore_weather.protocol import v5_builders as b
+    s, handed = _sched(monkeypatch)
+    s._next_seq = 40
+    await s.transmit(b.text_messages(b.SeqCounter(3), 1, v5.SUBJECT_AFD, "word " * 80), "t")
+    ds = [v5.decode(m) for m in handed]
+    assert [d["seq"] for d in ds] == [40, 41, 42] and {d["group"] for d in ds} == {40}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_transmits_leave_in_seq_order_without_interleaving(monkeypatch):
+    from meshcore_weather.protocol import v5
+    s, handed = _sched(monkeypatch)
+    s._next_seq = 10
+    await asyncio.gather(s.transmit(_cancels(1, 2, 3), "tick"), s.transmit(_cancels(101, 102), "request"))
+    ds = [v5.decode(m) for m in handed]
+    assert [d["etn"] for d in ds] == [1, 2, 3, 101, 102]
+    assert [d["seq"] for d in ds] == [10, 11, 12, 13, 14]
+
+
+@pytest.mark.asyncio
+async def test_next_seq_is_persisted_after_a_send_and_restored(monkeypatch):
+    import meshcore_weather.schedule.scheduler as sched_mod
+    s, _ = _sched(monkeypatch)
+    s._next_seq = 200
+    await s.transmit(_cancels(9), "t")
+    saved = json.loads(sched_mod._STATE_PATH.read_text())
+    assert saved["next_seq"] == 201 and saved["warnings"] == {}
+    again, _ = _sched(monkeypatch)
+    again._load_state()
+    assert again.next_seq == 201
+
+
+@pytest.mark.asyncio
+async def test_seq_is_saved_past_the_batch_before_it_goes_out(monkeypatch):
+    import meshcore_weather.schedule.scheduler as sched_mod
+    s, _ = _sched(monkeypatch, results=[True, True, False])
+    s._next_seq = 253
+    saved_during = []
+    send = s.radio.send_channel_data
+
+    async def spy(data, data_type=0xFF10, ev=None):
+        saved_during.append(json.loads(sched_mod._STATE_PATH.read_text())["next_seq"])
+        return await send(data, data_type, ev)
+    s.radio.send_channel_data = spy
+    await s.transmit(_cancels(1, 2, 3, 4), "t")
+    assert saved_during == [1, 1, 1, 1]        # 253 + 4 wraps: a restart mid-batch lands past it
+    assert s.next_seq == 0                     # 253, 254 and 255 went out; the failed one's number is reused
+    assert json.loads(sched_mod._STATE_PATH.read_text())["next_seq"] == 0
+
+
+def test_state_file_without_a_seq_keeps_the_clock_start(monkeypatch):
+    import meshcore_weather.schedule.scheduler as sched_mod
+    sched_mod._STATE_PATH.write_text(json.dumps({"warnings": {"SV.W.EWX.1": {"expires": int(time.time() // 60) + 30}}}))
+    s, _ = _sched(monkeypatch)
+    start = s.next_seq
+    s._load_state()
+    assert s.next_seq == start and "SV.W.EWX.1" in s._warning_state
+
+
+@pytest.mark.asyncio
+async def test_spent_hourly_budget_builds_nothing_and_uses_no_seq(monkeypatch):
+    import meshcore_weather.schedule.scheduler as sched_mod
+    from meshcore_weather.parser.weather import WeatherStore
+    from meshcore_weather.protocol.broadcaster import PER_HOUR, AppResponder
+    monkeypatch.setattr(sched_mod, "TX_SPACING", 0)
+    radio = MagicMock()
+    radio.send_channel_data = AsyncMock(return_value=True)
+    r = AppResponder(WeatherStore(), radio)
+    built = []
+    monkeypatch.setattr(r, "_answer", lambda *a: built.append(a) or [])
+    r._sent.extend([time.time()] * PER_HOUR)
+    start = r.scheduler.next_seq
+    assert await r.handle_request(">d", "a") == "hourly budget spent"
+    assert built == [] and r.scheduler.next_seq == start
+    radio.send_channel_data.assert_not_awaited()
+
+
+def _product(awips: str, text: str, age_min: int = 10, seq: int = 1) -> dict:
+    from datetime import datetime, timedelta, timezone
+    ts = datetime.now(timezone.utc) - timedelta(minutes=age_min)
+    return {"filename": f"A_XXUS70KWBC{ts:%d%H%M}_C_KWIN_{ts:%Y%m%d%H%M%S}_{seq:06d}-2-{awips}.TXT", "raw_text": text}
+
+
+@pytest.mark.asyncio
+async def test_named_station_metar_and_taf_never_answer_with_a_neighbour():
+    from meshcore_weather.core import services
+    from meshcore_weather.protocol import v5
+    r, sent = TestAppResponder()._responder()
+    r.store.ingest([_product("SAHOURLY", "SAUS70 KWBC 151200\nMETAR\nKGTU 151155Z 18005KT 10SM CLR 30/20 A3001", seq=1)])
+    await r.handle_request(">metar KAUS", "a")
+    d = v5.decode(sent[-1])
+    assert (d["name"], d["request"], d["reason"]) == ("not_available", "m", v5.REASON_NO_DATA)
+
+    r.store.ingest([_product("SAHOURLY", "SAUS70 KWBC 151205\nMETAR\nKAUS 151153Z 17006KT 10SM FEW250 31/19 A3000", seq=2)])
+    await r.handle_request(">metar KAUS", "b")
+    assert v5.decode(sent[-1])["text"].startswith("METAR KAUS 151153Z")
+
+    r.store.ingest([_product("TAFGTUTX", "FTUS44 KEWX 151120\nTAFGTU\nTAF\nKGTU 151120Z 1512/1612 18008KT P6SM SKC",
+                             age_min=12, seq=3)])
+    await r.handle_request(">taf KAUS", "c")
+    d = v5.decode(sent[-1])
+    assert (d["name"], d["request"], d["reason"]) == ("not_available", "t", v5.REASON_NO_DATA)
+
+    r.store.ingest([_product("TAFAUSTX", "FTUS44 KEWX 151121\nTAFAUS\nTAF AMD\nKAUS 151120Z 1512/1612 19010KT P6SM SCT040\n"
+                             "     FM151800 19012G20KT P6SM BKN040", seq=4)])
+    await r.handle_request(">taf KAUS", "d")
+    d = v5.decode(sent[-1])
+    assert d["name"] == "text" and d["text"].startswith("TAF KAUS 151120Z 1512/1612") and "FM151800" in d["text"]
+
+    r.store.ingest([_product("TAFAUSTX", "FTUS44 KEWX 151140 AAA\nTAFAUS\nTAF AMD KAUS 151140Z 1512/1612 20012KT P6SM",
+                             age_min=5, seq=5)])
+    assert services.station_taf(r.store, "KAUS") == "TAF KAUS AMD 151140Z 1512/1612 20012KT P6SM"

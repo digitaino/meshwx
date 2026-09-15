@@ -1,12 +1,19 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, revision 2, 2026-09-15. This is the document an app developer
+Version 5.0, revision 3, 2026-09-15. This is the document an app developer
 builds against. It replaces the v3/v4 protocol documents, the April 2026
 iOS brief and the v4 client guide, all of which are now superseded.
 
-Revision 2 corrects statements in sections 1, 6, 7, 8.2, 8.3, 12 and 13
-that described behaviour this bot does not have. Nothing on the wire
-changed. If you hold revision 1, read section 16 first.
+Revision 3 fixes bot behaviour that disagreed with revision 2 and states
+rules revision 2 left out: when `seq` is assigned, how a full digest may be
+cut, unknown observation fields, what `first` counts from, the request
+limits, named-station METAR and TAF replies, `>f <index>`, and two offices
+appended to the bundle. The wire layout did not change. If you hold
+revision 2, read section 16 first.
+
+Revision 2 corrected statements in sections 1, 6, 7, 8.2, 8.3, 12 and 13
+that described behaviour this bot does not have. If you hold revision 1,
+read section 17 as well.
 
 The reference encoder and decoder is `meshcore_weather/protocol/v5.py`
 (pure Python, standard library only). Test vectors are in
@@ -91,7 +98,7 @@ its own chunk numbers.
 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
-| 0 | 1 | `seq` | Per-bot sequence number, increments by 1 for every new message, wraps 255 to 0 |
+| 0 | 1 | `seq` | Per-bot sequence number, one more for every packet the bot transmits, wraps 255 to 0 (section 2.3) |
 | 1 | 2 | `bot` | First two bytes of the bot's public key, little-endian u16 (from its advert) |
 | 3 | 1 | `type` | High nibble: message type. Low nibble: type-specific flags |
 
@@ -111,13 +118,25 @@ Message types:
 
 Receivers ignore unknown types.
 
-### 2.3 Duplicates and ordering
+### 2.3 Sequence numbers, duplicates and ordering
 
+- `seq` is assigned when a packet is transmitted, not when it is built.
+  Scheduled broadcasts and request answers share one counter, and a
+  number is used only by a packet the bot's radio accepted, so the bot
+  itself never leaves a gap.
+- The bot transmits one batch at a time: a request answer never
+  interleaves with a scheduled broadcast, and packets leave the bot in
+  `seq` order. The mesh can still deliver them in a different order, since
+  two floods may take different paths.
+- The counter is saved to disk and continues after a restart. It is saved
+  past each batch before the batch starts, so a bot killed part-way comes
+  back ahead of every number it may have used: the app sees a gap, never
+  a repeated `seq`.
 - The bot may transmit the **same bytes twice**: it listens for a
   repeater's echo of every packet and sends it once more, byte for byte
-  identical, when it hears none. MeshCore nodes dedupe by packet hash, so
-  the phone's radio normally never delivers the copy; if it does, `(bot,
-  seq)` is the same and the app drops it.
+  identical and with the same `seq`, when it hears none. MeshCore nodes
+  dedupe by packet hash, so the phone's radio normally never delivers the
+  copy; if it does, `(bot, seq)` is the same and the app drops it.
 - A **new** message always has a new `seq`. Track the last `seq` per
   `bot`; a gap means a missed message and is the cue to ask for the
   digest (`>d`).
@@ -135,9 +154,11 @@ as u32 unless stated.
 ## 3. Warning (type 1)
 
 Sent when a warning, watch or advisory becomes active in the bot's
-coverage, and again when something material changes (expiry moved by 30
-minutes or more, tags changed, area changed). Not sent for wording-only
-updates.
+coverage, and again when something material changes: the expiry changed
+(to the minute), tags changed, area changed. Not sent for wording-only
+updates. The one exception to the minute rule is an expiry the bot had to
+invent (a product in force until further notice is given one 12 hours
+ahead): that counts only when it moves by 30 minutes.
 
 Flags nibble: bit 0 = update of an identity already sent (informational;
 the app replaces by identity either way).
@@ -145,7 +166,7 @@ the app replaces by identity either way).
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
 | 4 | 1 | `event` | VTEC event code, `protocol.json` `events` (e.g. `SV.W` = 3). Name and long name from `event_names`. Severity from the significance letter: W warning, A watch, Y advisory, S statement |
-| 5 | 1 | `office` | Index into `index.json` `offices` (issuing NWS office, e.g. `EWX`) |
+| 5 | 1 | `office` | Index into `index.json` `offices`: the issuing office, a WFO (e.g. `EWX`) or a national centre (`NHC`, or `WNS` for the Storm Prediction Center). A product from an office the bundle does not list is not sent at all |
 | 6 | 2 | `etn` | u16, event tracking number. `(event, office, etn)` is the identity |
 | 8 | 4 | `expires` | u32 Unix minutes, absolute. Show a countdown from the phone's clock; treat as expired when passed |
 | 12 | 1 | `tags` | bits 7-6 tornado: 0 none, 1 possible, 2 radar indicated, 3 observed. bits 5-4 flood source: 0 none, 1 radar, 2 radar and gauge, 3 observed. bits 3-2 flood damage: 0 none, 1 considerable, 2 catastrophic. bit 1: polygon follows. bit 0: area list follows |
@@ -203,10 +224,13 @@ not hold is one `>w <identity>` request away.
 | 4 | 4 | `now` | u32 Unix minutes when the digest was built. Entries are relative to it, so a message drained from an offline queue hours later still decodes correctly |
 | 8 | 1 | `feed_health` | Minutes since the bot last received any product from its home office, in units of 4 minutes, capped at 255. 255 means nothing has ever been received |
 | 9 | 1 | `count` | 0 to 25 |
-| 10 | 6 × count | entries | Each: `event` u8, `office` u8, `etn` u16 LE, `expires_rel` u16 LE minutes after `now` |
+| 10 | 6 × count | entries | Each: `event` u8, `office` u8, `etn` u16 LE, `expires_rel` u16 LE minutes after `now`. Sorted by expiry, soonest first |
 
 An identity the app holds that is absent from the digest has ended:
-remove it.
+remove it, with one exception. The digest lists at most 25 identities, the
+25 that expire soonest, so when `count` is 25 the list may have been cut.
+In that case keep a held identity whose expiry is at or after the last
+listed entry's; it may simply not have fitted.
 
 `feed_health` measures one office's quietness, not the satellite link. The
 home office is the one resolved from the bot's home coordinate unless the
@@ -227,13 +251,14 @@ in one packet, every hour, and on request. The interval is fixed: this bot
 does not speed observations up during severe weather.
 
 The station list is not fixed either. It is recomputed for every batch:
-stations inside the coverage radius that have filed a recent METAR,
-nearest first, at most 14. Stations drop out when they stop reporting, so
-do not treat the batch as a stable description of what the bot covers.
+stations inside the coverage radius that have filed a METAR in the last
+120 minutes, nearest first, at most 14. Stations drop out when they stop
+reporting, so do not treat the batch as a stable description of what the
+bot covers.
 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
-| 4 | 4 | `ts` | u32 Unix minutes of the newest observation in the batch |
+| 4 | 4 | `ts` | u32 Unix minutes of the newest report in the batch (when the bot's feed received it). Each station's report may be up to 120 minutes older than `ts` |
 | 8 | 1 | `n` | Station count, 1 to 14 |
 | 9 | 11 × n | stations | Below |
 
@@ -242,15 +267,19 @@ Per station (11 bytes):
 | Size | Field | Meaning |
 |---|---|---|
 | 2 | `station` | u16 LE index into `index.json` `stations` (ICAO list) |
-| 1 | `temp` | i8 °F; −128 = unknown |
+| 1 | `temp` | i8 °F; −128 = unknown (in practice never: a report without a temperature group is not sent) |
 | 1 | `dewpoint` | i8 °F; −128 = unknown |
-| 1 | `dir_sky` | High nibble: wind direction as a 16-point compass (0 N, 4 E, 8 S, 12 W; 0 with speed 0 = calm). Low nibble: sky code (`protocol.json` `sky_codes`) |
+| 1 | `dir_sky` | High nibble: wind direction as a 16-point compass (0 N, 4 E, 8 S, 12 W; 0 with speed 0 = calm). The nibble has no unknown value: a variable wind (VRB) or a report without a wind group also sends 0, so 0 with a speed above 0 means north or variable. Low nibble: sky code (`protocol.json` `sky_codes`); 15 when the report has no cloud or weather group |
 | 1 | `wind` | u8 mph; 255 = unknown |
 | 1 | `gust` | u8 mph; 0 = none |
-| 1 | `visibility` | u8 statute miles; 255 = unknown |
-| 1 | `pressure` | u8, (inHg − 29.00) × 100; 255 = unknown. 92 = 29.92 |
-| 1 | `humidity` | u8 percent; 255 = unknown |
+| 1 | `visibility` | u8 whole statute miles, rounded down (1/2SM and M1/4SM are 0, 1 1/2SM is 1); 255 = unknown |
+| 1 | `pressure` | u8, (inHg − 29.00) × 100; 255 = unknown, also sent for a reading outside 29.00 to 31.54 inHg. 92 = 29.92 |
+| 1 | `humidity` | u8 percent; 255 = unknown (temperature or dewpoint unknown) |
 | 1 | `feels` | i8, feels-like minus temperature in °F (heat index or wind chill); 0 = same |
+
+A group the METAR did not carry is sent as that field's unknown value; the
+bot never fills in a default. A station whose report still cannot be
+encoded is left out, and the rest of the batch is sent.
 
 A single-station request (`>o KAUS`) is the same message with `n = 1`.
 
@@ -261,9 +290,9 @@ bot's home point every 6 hours and on request for any point.
 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
-| 4 | 2 | `point` | u16 LE index into `pfm_points.json` `points`; 0xFFFF = a place with no bundled point (the bot resolved it to the nearest point; use the request you sent to label it) |
+| 4 | 2 | `point` | u16 LE index into `pfm_points.json` `points`. For `>f <index>` it is the index you asked for whenever the forecast is at that point's coordinates (some points share coordinates, e.g. 1617 and 1840); a forecast from another point carries that point's own index. 0xFFFF = a place with no bundled point (the bot resolved it to the nearest point; use the request you sent to label it) |
 | 6 | 4 | `issued` | u32 Unix minutes the forecast was issued |
-| 10 | 1 | `first` | Period id of the first entry. The id space numbers half-days from the issue date: even = day, odd = night, day offset = id / 2. This bot emits whole days only, so `first` is always even and the first entry covers day `first / 2` |
+| 10 | 1 | `first` | Period id of the first entry. The id space numbers half-days from the issue date, which is the local date of `issued` in the point's own time zone: even = day, odd = night, day offset = id / 2. This bot emits whole days only, so `first` is always even and the first entry covers day `first / 2`. An evening issuance usually has no usable rest of today, so its first entry is tomorrow and `first` is 2 |
 | 11 | 1 | `n` | Entry count, 1 to 14. In practice 1 to 7, one per day |
 | 12 | 5 x n | periods | Below, consecutive days |
 
@@ -276,6 +305,9 @@ Per period (5 bytes):
 | 1 | `pop` | u8 probability of precipitation, percent; 255 = not given |
 | 1 | `cond` | Low nibble: sky code. High nibble flags: bit 4 thunder, bit 5 wintry (snow, sleet, freezing rain), bit 6 windy (sustained 20 mph or more), bit 7 fog or haze |
 | 1 | `wind` | High nibble: direction (16-point compass). Low nibble: speed / 5 mph (15 = 75 or more) |
+
+Label the entries from the issue date: entry `i` is the local date of
+`issued` plus `first / 2 + i` days.
 
 Every entry carries both a high and a low, so render one row per day. A
 127 in either field means that half of the day is missing from the source
@@ -304,7 +336,7 @@ space weather. Request only; never broadcast on a schedule.
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
 | 4 | 1 | `subject` | 0 warning narrative, 1 forecast discussion (AFD), 2 space weather, 3 storm reports, 4 rainfall, 5 METAR/TAF raw, 6 hazardous outlook, 7 nowcast, 8 general |
-| 5 | 1 | `group` | Same value for every chunk of one reply (the `seq` of its first chunk) |
+| 5 | 1 | `group` | Same value for every chunk of one reply: the `seq` its first chunk was transmitted with |
 | 6 | 1 | `idx` | Chunk number, from 0 |
 | 7 | 1 | `total` | Chunks in this reply, 1 to 8 |
 | 8 | ≤157 | `text` | UTF-8, never split inside a code point |
@@ -330,16 +362,34 @@ type and get a text DM back.
 | `>o` | Observations for the coverage stations |
 | `>o KAUS` | Observations, one station |
 | `>f` | Forecast for the bot's home point |
-| `>f 102` | Forecast for point index 102 |
+| `>f 102` | Forecast for point index 102; `point` is 102 whenever the forecast is at that point's coordinates (section 7) |
 | `>f round rock tx` | Forecast for a place the bot resolves (nearest point; `point` may be 0xFFFF) |
 | `>afd EWX` | Forecast discussion, Text subject 1 |
 | `>space` | Space weather summary, Text subject 2 |
-| `>storm TX` `>rain TX` `>metar KAUS` `>taf KAUS` `>hwo` | Text, subjects 3, 4, 5, 5, 6 |
+| `>metar KAUS` | That station's own METAR from the last 120 minutes, Text subject 5, starting `METAR KAUS`. Never another station's: without one, Not available reason 0, request `m` |
+| `>taf KAUS` | That station's own current TAF, Text subject 5, starting `TAF KAUS` (an amendment reads `TAF KAUS AMD ...`). Never another station's: without one, Not available reason 0, request `t` |
+| `>metar round rock tx`, `>taf round rock tx`, bare `>metar` / `>taf` | The nearest station with a report (the bot's home without an argument), Text subject 5, labelled with that station and its distance, e.g. `METAR (KGTU 15km) KGTU 151155Z ...` |
+| `>storm TX` `>rain TX` `>hwo` | Text, subjects 3, 4, 6 |
 
-Rules the bot applies: one request per sender every 5 seconds, and at
-most 60 answered requests per hour across all senders; a request the bot
-cannot serve gets a Not available message. Both limits are enforced
-silently, so a throttled request produces no reply at all (see 8.3).
+A request "names a station" when its argument is a 4-character ICAO code
+the bot knows; anything else is resolved as a place.
+
+Rules the bot applies:
+
+- One request per sender every 5 seconds.
+- A budget of 60 answer **packets** per hour across all senders (packets,
+  not requests: a bare `>w` can take 7). It is checked before an answer is
+  built. Once 60 packets went out in the last hour, requests get no reply;
+  the answer that crosses 60 still goes out whole.
+- A `>` request sent **as a DM** first passes the limiter for people's
+  text commands: one reply per sender every 5 seconds, at most 40 per
+  sender per hour and 400 per hour in total, counted together with text
+  commands. A `>` line **on `#meshwx`** skips that limiter and meets only
+  the two limits above.
+- A request the bot cannot serve gets a Not available message.
+
+Every limit is enforced silently: a throttled request produces no reply at
+all (see 8.3).
 
 There is no cache. Every answer is built from the bot's state at the
 moment it replies, so a Digest you receive is always current and can be
@@ -371,13 +421,14 @@ the zone.
 | 4 | 1 | `request`: ASCII code of the request's first letter (`w`, `o`, `f`, `a`, `s`, `r`, `m`, `t`, `h`, `d`) |
 | 5 | 1 | `reason`: 0 no data yet, 1 unknown location, 2 unsupported, 3 bot error, 4 rate limited (try later) |
 
-`reason` 0 is ambiguous in this bot. It is sent both when nothing is
-active for a place and when the bot holds no data for it. Treat it as "no
-answer available right now", not as "try again shortly".
+`reason` 0 is ambiguous in this bot. It is sent when nothing is active for
+a place, when the bot holds no data for it, and when a named station has
+no current METAR or TAF. Treat it as "no answer available right now", not
+as "try again shortly".
 
-`reason` 4 is defined but never sent. Both of the bot's limits drop the
-request without replying, so silence means either out of range or
-throttled, and the app cannot tell which.
+`reason` 4 is defined but never sent. None of the bot's limits replies, so
+silence means either out of range or throttled, and the app cannot tell
+which.
 
 ---
 
@@ -389,7 +440,7 @@ here; the bot never sends names.
 | File | Size | Contents | Used for |
 |---|---|---|---|
 | `protocol.json` | 11 KB | Version, message types, enums: `events` (code → `TO.W`), `event_names` (`short`, `long`), `sky_codes`, `text_subjects`, `not_available_reasons`, and the v5 tables | Every decode |
-| `index.json` | ~20 KB | `offices`: ordered list of NWS office codes (the `office` byte). `stations`: ordered ICAO list (the `station` u16). `states`: ordered state/territory codes (the `state` byte, bits 6-0). Append-only: an index never changes meaning | Warning, digest, observations |
+| `index.json` | ~20 KB | `offices`: ordered list of office codes (the `office` byte): the 125 WFOs in alphabetical order, then the national centres `NHC` (125, National Hurricane Center) and `WNS` (126, Storm Prediction Center). `stations`: ordered ICAO list (the `station` u16). `states`: ordered state/territory codes (the `state` byte, bits 6-0). Append-only: new entries go at the end, so an index never changes meaning | Warning, digest, observations |
 | `stations.json` | 185 KB | ICAO → name, state, lat, lon | Station search, labels, map pins |
 | `pfm_points.json` | 104 KB | `points`: ordered list `[name, office, lat, lon, zone]`; the list position is the `point` u16 | Forecast labels, "forecast for my location" (nearest point by distance) |
 | `places.json` | 1.4 MB | `places`: list `[NAME, ST, lat, lon, population]` | Place search and autocomplete |
@@ -397,7 +448,7 @@ here; the bot never sends names.
 | `zones.geojson` | 10 MB | Zone polygons (`code` property, e.g. `TXZ192`) | Filling a zone-based warning on the map. Optional download; the app can fall back to the zone centroid pin |
 | `counties.json` | 227 KB | County UGC (`TXC453`) → name, state, representative lat/lon | Naming the counties of a storm-based warning; centroid pin |
 | `counties.geojson` | 4.8 MB | County polygons (Census cartographic boundaries, 1:5M, `code`/`name`/`state` properties), Polygon or MultiPolygon | Filling counties on the map when a warning has no polygon, and as the outline under one. Optional download like `zones.geojson` |
-| `wfos.json` | 9 KB | Office code → states, lat, lon | Office names, `>afd` picker |
+| `wfos.json` | 9 KB | Office code → `states`, `lat`, `lon`, `zone_count`, in `index.json` `offices` order. `NHC` and `WNS` have no states or zones and also carry a `name` | Office names, `>afd` picker (skip entries with no states) |
 | `weather_dict.json`, `regions.json`, `state_index.json` | | Legacy (v3/v4). Not used by v5; `state_index.json` is the same list as `index.json` `states` | |
 
 Area runs decode to UGC codes: state code from `index.json` `states`,
@@ -406,8 +457,11 @@ then `C` or `Z`, then the 3-digit number. `TXC453` is in `counties.json`,
 Louisiana parishes, Alaska boroughs and Virginia's independent cities are
 all "counties" here, as in the NWS products.
 
-Bundle versioning: `protocol.json` `version` (8 for v5.0). The bot's
-advert does not carry a version; a bump is announced in the repository.
+Bundle versioning: `protocol.json` `version` (8 for v5.0) and `index.json`
+`version` (2 since revision 3). Revision 3 changed two bundle files:
+`index.json` (`NHC` and `WNS` appended to `offices`, `version` 1 to 2) and
+`wfos.json` (the two matching entries). The bot's advert does not carry a
+version; a bump is announced in the repository.
 
 ## 10. Rendering
 
@@ -465,9 +519,10 @@ expiry.
 ### 10.3 Observations and forecasts
 
 Temperatures are whole °F; show feels-like when `feels` is non-zero.
-Wind: "WNW 15 gusting 26". Pressure: `29.00 + pressure/100` inHg. A
-station is "stale" when `ts` is older than 2 hours. A forecast is stale
-after 12 hours from `issued`.
+Wind: "WNW 15 gusting 26". Pressure: `29.00 + pressure/100` inHg. Leave
+out a field sent as unknown rather than showing its sentinel, and show
+visibility 0 as "under 1 mi". A station is "stale" when `ts` is older
+than 2 hours. A forecast is stale after 12 hours from `issued`.
 
 ### 10.4 Text fallback for people
 
@@ -545,8 +600,8 @@ binary path does not cover.
 1. Add `#meshwx`; confirm firmware ≥ 1.15 on the radio.
 2. Decode `GRP_DATA` with `data_type 0xFF10`; run the test vectors.
 3. Track `(bot, seq)`; dedupe; detect gaps → `>d`.
-4. Warnings keyed by `(event, office, etn)`; apply Cancel and Digest.
-5. Render from the bundle tables; never from strings on the wire.
+4. Warnings keyed by `(event, office, etn)`; apply Cancel and Digest (mind a full digest, section 5).
+5. Render from the bundle tables; never from strings on the wire. Hide unknown fields.
 6. Requests with `>`, by DM to pick one bot or as channel text; 15 s timeout, one retry.
 7. Stale badges from `ts`, `issued`, `expires`, `feed_health`.
 8. Text fallback screen with the human commands and `more`.
@@ -562,7 +617,30 @@ event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
 
-## 16. Corrections in revision 2
+## 16. Changes in revision 3
+
+Revision 2 described behaviour the bot did not have in several places,
+and left some rules unstated. Revision 3 fixes the bot and states the
+rules:
+
+| Section | Revision 2 bot | Revision 3 |
+|---|---|---|
+| 2.2, 2.3, 8.1 | `seq` was taken when a message was built, so numbers were skipped (a message not sent, a text retried shorter, a failed send), an answer could interleave with a broadcast out of order, and a restart started again from the clock | `seq` is assigned at transmit from one counter for broadcasts and answers, used only by packets the radio accepted, in order, one batch at a time, and saved across restarts. A resend is byte-identical, same `seq`. A text reply's `group` is its first chunk's transmitted `seq` |
+| 3 | Only an expiry moved by 30 minutes or more was sent, so an extension from 21:00 to 21:25 never reached the app | Any change to a real expiry is sent; only an invented one (until further notice) counts in 30-minute steps |
+| 3, 9 | Products from the National Hurricane Center and the Storm Prediction Center were sent as office 0 (ABQ) | `NHC` (125) and `WNS` (126) are appended to `index.json` `offices`; a product from any other unlisted office is not sent |
+| 5 | (silent) | Entries are sorted by expiry; with `count` 25 the list may be cut, so keep held identities expiring at or after the last entry |
+| 6 | Missing groups were sent as invented values (wind 0, visibility 10, pressure 29.92, a variable wind as north); 1/2SM was sent as 1 and M1/4SM or 1 1/2SM as 10; one pressure outside 29.00 to 31.54 inHg lost the whole batch | Missing groups are sent as unknown; visibility is whole miles rounded down; an out-of-range pressure is unknown; a report may be up to 120 minutes older than `ts` |
+| 7 | `first` counted from the first day with enough data, so an evening issuance labelled tomorrow as today | `first` counts from the local date of `issued` at the point |
+| 7, 8.2 | `>f <index>` could come back under another index with the same coordinates | It carries the index asked for |
+| 8.2 | "At most 60 answered requests per hour", checked after the answer was built | 60 answer packets per hour, checked before building; a `>` DM also passes the people's text limiter (40 per sender, 400 per hour), a channel line does not |
+| 8.2, 8.3 | `>metar ICAO` and `>taf ICAO` could answer with a neighbouring station's report or a "no METAR" sentence | A named station gets its own report, starting `METAR <ICAO>` or `TAF <ICAO>`, or Not available reason 0 |
+
+The wire layout did not change, so a revision 2 decoder decodes every
+revision 3 packet. Update the bundle's `index.json` and `wfos.json`, apply
+the digest rule in section 5, hide unknown observation fields, and label
+forecast days from `issued` and `first`.
+
+## 17. Corrections in revision 2
 
 Revision 1, the 15 Sep 2026 kit, described behaviour the bot does not
 have. Checked against the running bot, commit 67adefc:
