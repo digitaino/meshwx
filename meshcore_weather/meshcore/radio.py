@@ -857,7 +857,10 @@ class MeshcoreRadio:
         text = clean_text(text, 200)
         pubkey_prefix = "".join(c for c in str(pubkey_prefix) if c in "0123456789abcdefABCDEF")[:64]
 
-        logger.info("DM from %s (%s): %s", sender_name, pubkey_prefix[:8], text[:80])
+        # Sender timestamp and path length tell a client's automatic resend (same
+        # timestamp) from a new message: the evidence the delivery design needs.
+        logger.info("DM from %s (%s, ts %s, path %s): %s", sender_name, pubkey_prefix[:8],
+                    payload.get("sender_timestamp"), payload.get("path_len"), text[:80])
 
         if self._dm_handler:
             try:
