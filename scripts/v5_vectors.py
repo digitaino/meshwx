@@ -272,7 +272,60 @@ def build_vectors(index: dict) -> list:
                 },
             ],
         ),
-        "point 102 = Austin Bergstrom-Travis TX",
+        "point 102 = Austin Bergstrom-Travis TX; the reserved half-day form, "
+        "odd first_period with alternating temperatures",
+    )
+
+    # 6b. Forecast as this bot actually sends it: whole days, even first_period,
+    #     every entry carrying BOTH a high and a low. Temperatures follow a real
+    #     WX-AUS week for point 103 (spec 7).
+    add(
+        "forecast_seven_days",
+        v5.encode_forecast(
+            26,
+            BOT,
+            point=103,
+            issued_min=NOW_MIN - 60,
+            first_period=0,  # day 0; always even for daily periods
+            periods=[
+                {   # day 0
+                    "high_f": 102, "low_f": 77, "pop_pct": 0, "sky": 0,
+                    "thunder": False, "wintry": False, "windy": False,
+                    "fog": False, "wind_dir_deg": 180, "wind_mph": 10,
+                },
+                {   # day 1
+                    "high_f": 100, "low_f": 78, "pop_pct": 0, "sky": 1,
+                    "thunder": False, "wintry": False, "windy": False,
+                    "fog": False, "wind_dir_deg": 180, "wind_mph": 10,
+                },
+                {   # day 2
+                    "high_f": 99, "low_f": 76, "pop_pct": 30, "sky": 3,
+                    "thunder": True, "wintry": False, "windy": False,
+                    "fog": False, "wind_dir_deg": 180, "wind_mph": 10,
+                },
+                {   # day 3
+                    "high_f": 98, "low_f": 74, "pop_pct": 10, "sky": 2,
+                    "thunder": False, "wintry": False, "windy": False,
+                    "fog": False, "wind_dir_deg": 157.5, "wind_mph": 5,
+                },
+                {   # day 4
+                    "high_f": 98, "low_f": 75, "pop_pct": 0, "sky": 1,
+                    "thunder": False, "wintry": False, "windy": False,
+                    "fog": False, "wind_dir_deg": 135, "wind_mph": 5,
+                },
+                {   # day 5
+                    "high_f": 99, "low_f": 75, "pop_pct": 10, "sky": 2,
+                    "thunder": False, "wintry": False, "windy": False,
+                    "fog": False, "wind_dir_deg": 180, "wind_mph": 10,
+                },
+                {   # day 6
+                    "high_f": 95, "low_f": 74, "pop_pct": 20, "sky": 3,
+                    "thunder": False, "wintry": False, "windy": False,
+                    "fog": False, "wind_dir_deg": 157.5, "wind_mph": 10,
+                },
+            ],
+        ),
+        "point 103 = Austin Camp Mabry-Travis TX; the daily form this bot sends",
     )
 
     # 7. Text: a warning narrative that needs two chunks.

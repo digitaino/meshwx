@@ -312,7 +312,115 @@
         }
       ]
     },
-    "note": "point 102 = Austin Bergstrom-Travis TX"
+    "note": "point 102 = Austin Bergstrom-Travis TX; the reserved half-day form, odd first_period with alternating temperatures"
+  },
+  {
+    "name": "forecast_seven_days",
+    "hex": "1a7a4c5067006013c7010007664d000082644e000182634c1e1382624a0a0271624b000161634b0a02825f4a140372",
+    "decoded": {
+      "seq": 26,
+      "bot": 19578,
+      "type": 5,
+      "name": "forecast",
+      "flags": 0,
+      "point": 103,
+      "issued_min": 29823840,
+      "first_period": 0,
+      "periods": [
+        {
+          "high_f": 102,
+          "low_f": 77,
+          "pop_pct": 0,
+          "sky": 0,
+          "thunder": false,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 180.0,
+          "wind_dir": "S",
+          "wind_mph": 10
+        },
+        {
+          "high_f": 100,
+          "low_f": 78,
+          "pop_pct": 0,
+          "sky": 1,
+          "thunder": false,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 180.0,
+          "wind_dir": "S",
+          "wind_mph": 10
+        },
+        {
+          "high_f": 99,
+          "low_f": 76,
+          "pop_pct": 30,
+          "sky": 3,
+          "thunder": true,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 180.0,
+          "wind_dir": "S",
+          "wind_mph": 10
+        },
+        {
+          "high_f": 98,
+          "low_f": 74,
+          "pop_pct": 10,
+          "sky": 2,
+          "thunder": false,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 157.5,
+          "wind_dir": "SSE",
+          "wind_mph": 5
+        },
+        {
+          "high_f": 98,
+          "low_f": 75,
+          "pop_pct": 0,
+          "sky": 1,
+          "thunder": false,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 135.0,
+          "wind_dir": "SE",
+          "wind_mph": 5
+        },
+        {
+          "high_f": 99,
+          "low_f": 75,
+          "pop_pct": 10,
+          "sky": 2,
+          "thunder": false,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 180.0,
+          "wind_dir": "S",
+          "wind_mph": 10
+        },
+        {
+          "high_f": 95,
+          "low_f": 74,
+          "pop_pct": 20,
+          "sky": 3,
+          "thunder": false,
+          "wintry": false,
+          "windy": false,
+          "fog": false,
+          "wind_dir_deg": 157.5,
+          "wind_dir": "SSE",
+          "wind_mph": 10
+        }
+      ]
+    },
+    "note": "point 103 = Austin Camp Mabry-Travis TX; the daily form this bot sends"
   },
   {
     "name": "text_warning_narrative_chunk0",

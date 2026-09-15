@@ -1,13 +1,23 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, 2026-09-15. This is the document an app developer builds
-against. It replaces the v3/v4 protocol documents, the April 2026 iOS
-brief and the v4 client guide, all of which are now superseded.
+Version 5.0, revision 2, 2026-09-15. This is the document an app developer
+builds against. It replaces the v3/v4 protocol documents, the April 2026
+iOS brief and the v4 client guide, all of which are now superseded.
+
+Revision 2 corrects statements in sections 1, 6, 7, 8.2, 8.3, 12 and 13
+that described behaviour this bot does not have. Nothing on the wire
+changed. If you hold revision 1, read section 16 first.
 
 The reference encoder and decoder is `meshcore_weather/protocol/v5.py`
 (pure Python, standard library only). Test vectors are in
 `docs/meshwx_v5_vectors.json`; a client implementation is correct when it
 decodes every vector to the JSON shown and re-encodes it to the same hex.
+
+The JSON keys in the vectors are the reference decoder's, and they are
+friendlier than the wire field names used in the tables below. The wire's
+`issued` decodes as `issued_min`, `first` as `first_period`, `pop` as
+`pop_pct`, and `cond` and `wind` expand into `sky`, `thunder`, `wintry`,
+`windy`, `fog`, `wind_dir_deg`, `wind_dir` and `wind_mph`.
 
 Design rule: the mesh carries identifiers and numbers, the phone carries
 tables and words. Second rule: nothing is flooded twice unless a person
@@ -28,13 +38,15 @@ products from the GOES satellite and puts two things on the mesh:
 2. **Text for people**: anyone can send commands like `wx austin tx` to the
    bot on `#meshwx` or by DM and get a plain-text reply.
 
-An app talks to the bot by DM using the same command grammar people use,
-prefixed with `>`; the bot answers on the channel as binary so every
-listening app benefits from one request.
+An app talks to the bot using the same command grammar people use,
+prefixed with `>`, sent either as a DM or on `#meshwx`; the bot answers on
+the channel as binary so every listening app benefits from one request.
 
-There is no discovery channel. The bot's advert (name `WX-AUS`, latitude,
-longitude) is how an app finds it, and every MeshCore app already collects
-adverts.
+There is no discovery channel. The bot's advert (name `WX-AUS`) is how an
+app finds it, and every MeshCore app already collects adverts. Do not rely
+on the advert's position: this bot never sets the firmware's advert
+location policy, so its adverts carry latitude and longitude 0,0 even
+though the node knows where it is.
 
 ### 1.1 What the app needs
 
@@ -189,18 +201,35 @@ not hold is one `>w <identity>` request away.
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
 | 4 | 4 | `now` | u32 Unix minutes when the digest was built. Entries are relative to it, so a message drained from an offline queue hours later still decodes correctly |
-| 8 | 1 | `feed_health` | Minutes since the bot last received any product from its home office, in units of 4 minutes, capped at 255 (17 hours or more, or unknown). Show "feed stale" above about 60 (4 hours): silence from the bot then does not mean calm weather |
+| 8 | 1 | `feed_health` | Minutes since the bot last received any product from its home office, in units of 4 minutes, capped at 255. 255 means nothing has ever been received |
 | 9 | 1 | `count` | 0 to 25 |
 | 10 | 6 × count | entries | Each: `event` u8, `office` u8, `etn` u16 LE, `expires_rel` u16 LE minutes after `now` |
 
 An identity the app holds that is absent from the digest has ended:
 remove it.
 
+`feed_health` measures one office's quietness, not the satellite link. The
+home office is the one resolved from the bot's home coordinate unless the
+operator listed offices explicitly; for WX-AUS it is EWX. A calm night at
+a single office pushes this past 60 (4 hours) while the feed is perfectly
+healthy, so word it as "the bot has not heard from EWX for 5 h" rather
+than as a broken feed. Only 255 justifies telling the user that alerts may
+not be reaching them at all.
+
+Known limitation: a quiet home office and a dead satellite feed are
+indistinguishable in this byte. The bot does not currently publish a
+whole-feed liveness figure.
+
 ## 6. Observations (type 4)
 
 Current conditions for the METAR stations in the bot's coverage, batched
-in one packet, every hour (every 30 minutes while a tornado or severe
-thunderstorm warning is active in coverage), and on request.
+in one packet, every hour, and on request. The interval is fixed: this bot
+does not speed observations up during severe weather.
+
+The station list is not fixed either. It is recomputed for every batch:
+stations inside the coverage radius that have filed a recent METAR,
+nearest first, at most 14. Stations drop out when they stop reporting, so
+do not treat the batch as a stable description of what the bot covers.
 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
@@ -227,26 +256,42 @@ A single-station request (`>o KAUS`) is the same message with `n = 1`.
 
 ## 7. Forecast (type 5)
 
-A point forecast (NWS PFM), seven periods, every 6 hours for the bot's
-home point and on request for any point.
+A point forecast (NWS PFM) as **whole days**, up to seven of them, for the
+bot's home point every 6 hours and on request for any point.
 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
 | 4 | 2 | `point` | u16 LE index into `pfm_points.json` `points`; 0xFFFF = a place with no bundled point (the bot resolved it to the nearest point; use the request you sent to label it) |
 | 6 | 4 | `issued` | u32 Unix minutes the forecast was issued |
-| 10 | 1 | `first` | Period id of the first entry: 0 today, 1 tonight, 2 tomorrow, 3 tomorrow night, and so on (even = day, odd = night, day offset = id ÷ 2 from the issue date) |
-| 11 | 1 | `n` | Period count, 1 to 14 |
-| 12 | 5 × n | periods | Below |
+| 10 | 1 | `first` | Period id of the first entry. The id space numbers half-days from the issue date: even = day, odd = night, day offset = id / 2. This bot emits whole days only, so `first` is always even and the first entry covers day `first / 2` |
+| 11 | 1 | `n` | Entry count, 1 to 14. In practice 1 to 7, one per day |
+| 12 | 5 x n | periods | Below, consecutive days |
 
 Per period (5 bytes):
 
 | Size | Field | Meaning |
 |---|---|---|
-| 1 | `high` | i8 °F; 127 = not given (night periods) |
-| 1 | `low` | i8 °F; 127 = not given (day periods) |
+| 1 | `high` | i8 degrees F, the day's high; 127 = not available |
+| 1 | `low` | i8 degrees F, the night's low; 127 = not available |
 | 1 | `pop` | u8 probability of precipitation, percent; 255 = not given |
 | 1 | `cond` | Low nibble: sky code. High nibble flags: bit 4 thunder, bit 5 wintry (snow, sleet, freezing rain), bit 6 windy (sustained 20 mph or more), bit 7 fog or haze |
-| 1 | `wind` | High nibble: direction (16-point compass). Low nibble: speed ÷ 5 mph (15 = 75 or more) |
+| 1 | `wind` | High nibble: direction (16-point compass). Low nibble: speed / 5 mph (15 = 75 or more) |
+
+Every entry carries both a high and a low, so render one row per day. A
+127 in either field means that half of the day is missing from the source
+product, which happens at the edges of the PFM window. It does not mark a
+night period.
+
+The half-day id space is kept so a later bot can send day and night
+entries without a format change. A client that sees an odd `first`, or
+entries where one temperature is always 127, is talking to such a bot and
+should fall back to alternating rows.
+
+Two forecast vectors ship in `meshwx_v5_vectors.json`, and a client should
+decode both. `forecast_seven_days` is what this bot sends: seven whole
+days, even `first`, every entry carrying a high and a low.
+`forecast_seven_periods` is the reserved half-day form: odd `first`, with
+the temperatures alternating between 127 and a value.
 
 ## 8. Text (type 6) and Not available (type 7)
 
@@ -270,9 +315,10 @@ at most once).
 
 ### 8.2 Request grammar (app side)
 
-Requests are DMs to the bot. An app request starts with `>`; the answer
-comes back on `#meshwx` as v5 messages, never as a DM. The same commands
-without `>` are what people type and get a text DM back.
+An app request starts with `>` and may be sent either as a DM to the bot
+or as text on `#meshwx`. Either way the answer comes back on `#meshwx` as
+v5 messages, never as a DM. The same commands without `>` are what people
+type and get a text DM back.
 
 | Request | Answer |
 |---|---|
@@ -290,11 +336,33 @@ without `>` are what people type and get a text DM back.
 | `>space` | Space weather summary, Text subject 2 |
 | `>storm TX` `>rain TX` `>metar KAUS` `>taf KAUS` `>hwo` | Text, subjects 3, 4, 5, 5, 6 |
 
-Rules the bot applies: one request per sender every 5 seconds; an
-identical request within 5 minutes gets the cached answer re-sent with a
-new `seq`; a request the bot cannot serve gets a Not available message.
+Rules the bot applies: one request per sender every 5 seconds, and at
+most 60 answered requests per hour across all senders; a request the bot
+cannot serve gets a Not available message. Both limits are enforced
+silently, so a throttled request produces no reply at all (see 8.3).
+
+There is no cache. Every answer is built from the bot's state at the
+moment it replies, so a Digest you receive is always current and can be
+trusted immediately.
+
 Wait up to 15 seconds for an answer before showing a failure; retry once,
 then tell the user the bot may be out of range.
+
+**Coverage and place arguments.** A request that names a place is served
+nationwide. Coverage filters only the scheduled broadcasts and the two
+argument-free requests `>w` and `>o`. What limits a distant answer is what
+the EMWIN satellite feed carries, not policy.
+
+**A Digest follows the bare `>w` only.** `>w TXC453` and
+`>w SV.W.EWX.42` answer with warnings alone, so do not wait for a Digest
+to mark those replies complete.
+
+**County codes versus zone codes.** Storm-based warnings (tornado, severe
+thunderstorm, flash flood) carry county codes such as `TXC453`.
+Advisories, watches and most other products carry public zone codes such
+as `TXZ192`. A county query matches nothing while only zone-coded products
+are active, and the reverse. When you do not know which is in force, query
+the zone.
 
 ### 8.3 Not available (type 7)
 
@@ -302,6 +370,14 @@ then tell the user the bot may be out of range.
 |---|---|---|
 | 4 | 1 | `request`: ASCII code of the request's first letter (`w`, `o`, `f`, `a`, `s`, `r`, `m`, `t`, `h`, `d`) |
 | 5 | 1 | `reason`: 0 no data yet, 1 unknown location, 2 unsupported, 3 bot error, 4 rate limited (try later) |
+
+`reason` 0 is ambiguous in this bot. It is sent both when nothing is
+active for a place and when the bot holds no data for it. Treat it as "no
+answer available right now", not as "try again shortly".
+
+`reason` 4 is defined but never sent. Both of the bot's limits drop the
+request without replying, so silence means either out of range or
+throttled, and the app cannot tell which.
 
 ---
 
@@ -434,22 +510,32 @@ binary path does not cover.
 
 ## 12. Discovery and several bots
 
-- A bot is any advert whose name starts with `WX-`. Its position is in
-  the advert. Show the nearest; let the user pick.
+- A bot is any advert whose name starts with `WX-`. Show the ones you have
+  heard and let the user pick. The advert is meant to carry the bot's
+  position, but this bot never sets the firmware's advert location policy,
+  so positions arrive as 0,0 and cannot be used to rank bots by distance.
 - Every message carries `bot` (two bytes of the public key). Keep
   separate state per bot; when two bots cover the same place you may
   hear the same warning identity from both, and it is the same warning.
-- Send requests to the bot you selected. A request naming a place is
-  answered only by the nearest bot to that place if bots can hear each
-  other; the bot you asked always answers requests that do not name a
-  place.
+- Send requests to the bot you selected. How many bots answer depends on
+  how the request was sent, not on what it names:
+  - **As a DM**: only the addressed bot can decrypt it, so only that bot
+    answers. This is the normal path for an app, and it is how you choose
+    which bot serves you.
+  - **As channel text on `#meshwx`**: every bot on the channel decrypts
+    it, and each one that can serve it answers. Expect duplicates where
+    coverage overlaps.
+
+  There is no coordination between bots and no nearest-bot suppression in
+  either case. Dedupe on `(bot, seq)` and on warning identity.
 
 ## 13. Airtime etiquette
 
 - Never poll. Request on user action, and at most once per 5 seconds.
 - Prefer the digest over `>w` when you only need to know what is active.
-- Do not re-request something you received in the last 5 minutes; the
-  bot would only re-send the cached bytes.
+- Do not re-request something you already hold. The bot has no cache: it
+  rebuilds and re-transmits the whole answer, spending airtime for
+  everyone on the mesh.
 - Listen passively: the scheduled broadcasts (warnings on change, digest
   every 3 h, observations hourly, home forecast every 6 h) cover the
   common case without any request.
@@ -461,7 +547,7 @@ binary path does not cover.
 3. Track `(bot, seq)`; dedupe; detect gaps → `>d`.
 4. Warnings keyed by `(event, office, etn)`; apply Cancel and Digest.
 5. Render from the bundle tables; never from strings on the wire.
-6. Requests by DM with `>`; 15 s timeout, one retry.
+6. Requests with `>`, by DM to pick one bot or as channel text; 15 s timeout, one retry.
 7. Stale badges from `ts`, `issued`, `expires`, `feed_health`.
 8. Text fallback screen with the human commands and `more`.
 
@@ -475,3 +561,23 @@ longer on the wire (names come from the bundle), warnings carry the VTEC
 event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
+
+## 16. Corrections in revision 2
+
+Revision 1, the 15 Sep 2026 kit, described behaviour the bot does not
+have. Checked against the running bot, commit 67adefc:
+
+| Section | Revision 1 said | The bot actually |
+|---|---|---|
+| 1, 12 | The advert carries the bot's position | Sends 0,0. It never sets the firmware's advert location policy |
+| 1, 8.2 | Requests are DMs | Accepts `>` as a DM or as channel text on `#meshwx` |
+| 6 | Observations speed up to every 30 minutes in severe weather | Runs on a fixed hourly interval |
+| 6 | (silent) | The station list is recomputed per batch and changes through the day |
+| 7 | Forecasts alternate day and night periods | Sends whole days, each with a high and a low, `first` always even |
+| 8.2, 13 | An identical request within 5 minutes returns a cached answer | Has no cache; every answer is rebuilt |
+| 8.2 | (silent) | Place-named requests are served nationwide; coverage filters only broadcasts and the bare `>w` and `>o` |
+| 8.3 | Reason 4 means rate limited | Reason 4 is never sent; throttled requests get silence |
+| 12 | Only the nearest bot answers a request naming a place | A DM is answered only by the addressed bot; channel text may be answered by every bot that hears it |
+
+Nothing on the wire changed between revision 1 and revision 2. Only the
+description did, so a revision 1 client keeps working.
