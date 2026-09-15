@@ -64,11 +64,14 @@ class Settings(BaseSettings):
     # Radio hardware swaps. The bot keeps a profile of its node (identity key,
     # name, position, LoRa parameters, TX power, contacts) in
     # data/node_profile.json. When a different radio answers on the port:
-    #   auto    write the profile onto it (import the key, apply the settings,
-    #           restore the contacts, reboot): phones and the app see the same bot
-    #   manual  run with the new radio's own identity until "Adopt" is clicked
+    #   manual  (default) nothing is written: the portal shows the radio under
+    #           Radio > Hardware and waits for "Adopt" (or "start a new profile")
+    #   auto    write the profile onto it at once (import the key, apply the
+    #           settings, restore the contacts, reboot), no questions asked
     #   off     never adopt (the profile is still kept up to date)
-    radio_adopt: str = "auto"
+    # Until a foreign radio is adopted the bot holds its adverts, so phones do
+    # not learn a stranger's key under the bot's name.
+    radio_adopt: str = "manual"
     # Health: nothing heard from anyone for this long means the receiver is deaf
     radio_rx_silent_min: int = 30
     # Initial load uses 1-hour bundle for coverage, then polls 2-minute bundle

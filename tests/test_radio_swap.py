@@ -411,3 +411,96 @@ def test_adopt_setting_is_validated_and_live(client):
     r = c.post("/api/settings/env", json={"MCW_RADIO_ADOPT": "manual", "MCW_RADIO_RX_SILENT_MIN": "45"})
     assert r.status_code == 200 and settings.radio_adopt == "manual" and settings.radio_rx_silent_min == 45
     assert "MCW_RADIO_ADOPT=manual" in Path(".env").read_text()
+
+
+# -- losing the node --
+
+class _LostMC:
+    """A node whose link is dead: nothing answers."""
+    is_connected = False
+    self_info = {"public_key": KEY_A}
+
+    class commands:
+        @staticmethod
+        async def get_bat():
+            return _Res(EventType.ERROR, {"reason": "no_event_received"})
+
+    async def disconnect(self):
+        pass
+
+
+def test_link_lost_fires_the_handler_once_and_stops_the_radio(monkeypatch):
+    r = radio_mod.MeshcoreRadio()
+    r._mc, r._running = _LostMC(), True
+    seen = []
+
+    async def handler(reason):
+        seen.append(reason)
+
+    r.on_disconnect(handler)
+    asyncio.run(r._on_disconnected(SimpleNamespace(payload={"reason": "serial_disconnect"})))
+    asyncio.run(r._link_lost("again"))
+    assert seen == ["serial port closed: serial_disconnect"] and not r.connected and r._lost
+
+
+def test_watchdog_notices_a_vanished_port_or_a_silent_node(monkeypatch, tmp_path):
+    monkeypatch.setattr(radio_mod.MeshcoreRadio, "LINK_CHECK_S", 0.0)
+    seen = []
+
+    async def handler(reason):
+        seen.append(reason)
+
+    r = radio_mod.MeshcoreRadio()
+    r._mc, r._running, r._port_real = _LostMC(), True, str(tmp_path / "ttyACM0")
+    r.on_disconnect(handler)
+    asyncio.run(r._link_watchdog())
+    assert seen and "gone" in seen[0]
+
+    dev = tmp_path / "ttyUSB0"; dev.write_text("")
+    r2 = radio_mod.MeshcoreRadio()
+    mc = _LostMC(); mc.is_connected = True
+    r2._mc, r2._running, r2._port_real = mc, True, str(dev)
+    seen.clear(); r2.on_disconnect(handler)
+    asyncio.run(r2._link_watchdog())
+    assert seen and "3 commands" in seen[0]
+
+
+def test_bot_reconnects_in_the_background_when_the_link_is_lost(monkeypatch):
+    from meshcore_weather.main import WeatherBot
+    bot = WeatherBot()
+    calls = []
+
+    async def reconnect():
+        calls.append("reconnect")
+
+    monkeypatch.setattr(bot, "reconnect_radio", reconnect)
+
+    async def go():
+        await bot._handle_radio_lost("usb pulled")
+        await bot._radio_task
+    asyncio.run(go())
+    assert calls == ["reconnect"] and "usb pulled" in bot._radio_last_error
+
+
+def test_manual_is_the_default_and_a_foreign_radio_holds_its_advert(monkeypatch):
+    from meshcore_weather.config import Settings
+    assert Settings.model_fields["radio_adopt"].default == "manual"
+    monkeypatch.setattr(settings, "tx_enabled", True)
+    sent = []
+
+    class _MC:
+        self_info = {"name": "stranger"}
+
+        class commands:
+            @staticmethod
+            async def send_advert(flood=False):
+                sent.append(flood); return _Res(EventType.OK)
+
+    r = radio_mod.MeshcoreRadio()
+    r._mc = _MC()
+    r.pending_adoption = {"radio": {"name": "stranger"}}
+    asyncio.run(r._send_advert())
+    assert sent == []
+    r.pending_adoption = None
+    asyncio.run(r._send_advert())
+    assert sent == [True]

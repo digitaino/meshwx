@@ -25,16 +25,24 @@ Channels are not in the profile: the bot creates `#meshwx` on any node
 that lacks it, and MeshCore derives a hashtag channel's key from its name,
 so the new radio gets the identical key on its own.
 
-When a radio answers on the port with a key that is not the profile's, the
-bot **adopts** it: writes the profile onto it, reboots it, reconnects and
-checks that the node now reports the profile's key. The result goes into
-the profile's history and shows under Radio › Hardware.
+When a radio answers on the port with a key that is not the profile's,
+nothing is written to it. The bot connects, holds its adverts (so phones
+do not learn a stranger's key under the bot's name) and shows the radio
+under Radio › Hardware as "Different radio" with two choices:
+
+- **Adopt**: write the profile onto it (key, name, position, LoRa
+  settings, TX power, contacts), reboot it, reconnect and check that the
+  node now reports the profile's key. The result goes into the profile's
+  history and shows on the card.
+- **Forget the old node, start a new profile**: keep the radio's own
+  identity and save it as the profile. People re-add the bot from its
+  next advert.
 
 `MCW_RADIO_ADOPT` (System › Settings, "Replacement radio"):
 
-- `auto` (default): adopt on the next connect. Two failed attempts on the
-  same radio stop the automation; the portal then offers the button.
-- `manual`: run with the new radio's own identity until "Adopt" is clicked.
+- `manual` (default): ask first, as above.
+- `auto`: adopt on the first connect without asking. Two failed attempts
+  on the same radio stop the automation; the portal then offers the button.
 - `off`: never adopt. The profile is still refreshed.
 
 ## The swap, step by step
@@ -56,15 +64,19 @@ the profile's history and shows under Radio › Hardware.
    sudo systemctl restart meshcore-weather
    ```
 
-   The bot opens the configured port, or scans every USB serial port when
+   Or just unplug the old radio and plug in the new one: the bot notices
+   the lost link and reconnects on its own within about a minute. Either
+   way it opens the configured port, or scans every USB serial port when
    that one is missing or silent (a different USB chip gets a different
-   device name), finds the companion, sees the foreign key, adopts, reboots
-   the node and reconnects. About 30 seconds in total.
-5. **Confirm** under Radio › Hardware: the board model, "Last adoption:
-   ok", and the public key under Identity matching the profile. Then
+   device name), finds the companion and sees the foreign key.
+5. **Adopt** under Radio › Hardware: the card says "Different radio" and
+   names both nodes. Click **Adopt: make this radio the bot**. The bot
+   writes the profile, reboots the node and reconnects; about 20 seconds.
+6. **Confirm** on the same card: the board model, "Last adoption: ok",
+   and the public key under Identity matching the profile. Then
    Radio › Health › **Test transmit**: an echo within a few seconds means
    the new radio is getting out.
-6. If the port name changed, set `MCW_SERIAL_PORT` under System ›
+7. If the port name changed, set `MCW_SERIAL_PORT` under System ›
    Settings to what Hardware shows as "on", or install the udev rule below
    and use `/dev/meshcore`.
 
@@ -124,6 +136,8 @@ and adverts; people re-add the bot from the new advert.
 
 ## Troubleshooting
 
+- **"Different radio" and no Adopt button**: the profile has no identity
+  key (the old node's firmware refused the export). Start a new profile.
 - **"Different radio" stays after adoption**: open Hardware, read the last
   adoption note. "node refused the identity key" means the firmware build
   has key import disabled; use a stock Companion Radio USB build.

@@ -6,6 +6,7 @@ portal has no login: keep it on the LAN or gate it at the edge (see server.py)."
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -116,8 +117,11 @@ async def radio_state(request: Request) -> JSONResponse:
     }
     if radio.connected:
         try:
-            out["info"] = await radio.info()
-            out["channels"] = await radio.list_channels()
+            # A node that has stopped answering must not hang the page.
+            out["info"] = await asyncio.wait_for(radio.info(), 10)
+            out["channels"] = await asyncio.wait_for(radio.list_channels(), 10)
+        except asyncio.TimeoutError:
+            out["error"] = "the node is not answering (link lost? the bot reconnects on its own)"
         except Exception as e:
             out["error"] = str(e)
     else:
@@ -822,7 +826,7 @@ async def _radio_stats_cached(radio) -> dict | None:
     stats = None
     if radio.connected:
         try:
-            stats = await radio.stats()
+            stats = await asyncio.wait_for(radio.stats(), 10)
         except Exception:
             stats = None
     _RADIO_STATS_CACHE.update(t=now, stats=stats)

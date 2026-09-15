@@ -175,6 +175,10 @@ class MeshcoreRadio:
         self.device: dict = {}                 # DEVICE_INFO: firmware build, model, capacity
         self.max_contacts: int = settings.contact_slots
         self.port: str | None = None           # the port the node actually answered on
+        self._port_real: str | None = None     # its device node, to notice an unplug
+        self._disconnect_handler: Callable | None = None
+        self._watchdog_task: asyncio.Task | None = None
+        self._lost = False
         self.pending_adoption: dict | None = None   # a radio that is not the node in the profile
         self.adoption: dict | None = None      # the last adoption attempt (ok, steps, note)
         self.profile_note: str | None = None   # why the profile could not be refreshed, if so
@@ -202,6 +206,11 @@ class MeshcoreRadio:
     def on_dm(self, handler: Callable) -> None:
         """Register handler: async def handler(pubkey_prefix, sender_name, text)"""
         self._dm_handler = handler
+
+    def on_disconnect(self, handler: Callable) -> None:
+        """Register handler: async def handler(reason). Called once when the
+        link to the node is lost (USB unplugged, node dead, port gone)."""
+        self._disconnect_handler = handler
 
     async def start(self) -> None:
         """Connect to Meshcore radio via serial or TCP."""
@@ -254,6 +263,7 @@ class MeshcoreRadio:
                 tried.append(f"{p}: no companion response")
                 continue
             self.port = p
+            self._port_real = os.path.realpath(p)
             if p != port:
                 logger.warning("Radio answered on %s, not on the configured %s; update MCW_SERIAL_PORT "
                                "under System > Settings (or install the udev rule for /dev/meshcore)", p, port)
@@ -479,6 +489,10 @@ class MeshcoreRadio:
         # every DM ack: the delivery tracker decides whether to send again.
         self._mc.subscribe(EventType.RX_LOG_DATA, self._on_rx_log)
         self._mc.subscribe(EventType.ACK, self._on_ack)
+        # The serial layer reports a closed port (USB pulled, node reset by
+        # something else); without this the bot would keep talking to a link
+        # that answers nothing, as it did the first time a radio was swapped.
+        self._mc.subscribe(EventType.DISCONNECTED, self._on_disconnected)
         self._channel_secrets = {}
 
         # Start auto-fetching messages from the device
@@ -514,14 +528,21 @@ class MeshcoreRadio:
         # Auto-refresh contacts when adverts arrive
         self._mc.auto_update_contacts = True
 
-        # Load contacts, make room for people, advertise ourselves
+        # Load contacts, make room for people, advertise ourselves. A radio
+        # that is not the profile's node keeps quiet about itself until the
+        # operator adopts it or starts a new profile: an advert would hand
+        # every phone a stranger's key under the bot's name.
         await self._mc.ensure_contacts()
         await self.housekeep_contacts()
-        await self._send_advert()
+        if self.pending_adoption:
+            logger.warning("Advert held: this radio is not the node in the profile (adopt it under Radio > Hardware)")
+        else:
+            await self._send_advert()
 
-        # Periodic tasks: re-advert and refresh contacts
+        # Periodic tasks: re-advert, refresh contacts, watch the link
         self._advert_task = asyncio.create_task(self._advert_loop())
         self._contacts_task = asyncio.create_task(self._contacts_loop())
+        self._watchdog_task = asyncio.create_task(self._link_watchdog())
 
         logger.info("Meshcore radio connected. Node: %s", self._mc.self_info.get("name") or self._mc.self_info.get("adv_name", "?"))
         logger.info("Radio TX: %s", "ENABLED" if settings.tx_enabled
@@ -605,7 +626,7 @@ class MeshcoreRadio:
 
     async def stop(self) -> None:
         self._running = False
-        for task in (self._advert_task, self._contacts_task):
+        for task in (self._advert_task, self._contacts_task, self._watchdog_task):
             if task:
                 task.cancel()
                 try:
@@ -868,6 +889,53 @@ class MeshcoreRadio:
         if code:
             delivery_tracker.on_ack(code)
 
+    # -- Losing the node ------------------------------------------------------
+    #
+    # Three ways to notice: the serial layer says the port closed, the
+    # device node disappears from /dev, or the node stops answering
+    # commands. Each ends in _link_lost(), once, which tells the bot to
+    # reconnect (and adopt whatever answers next).
+
+    LINK_CHECK_S = 15
+    SILENT_COMMANDS = 3
+
+    async def _on_disconnected(self, event) -> None:
+        await self._link_lost("serial port closed: " + str((event.payload or {}).get("reason") or "unknown"))
+
+    async def _link_watchdog(self) -> None:
+        silent = 0
+        while self._running:
+            await asyncio.sleep(self.LINK_CHECK_S)
+            if not self._running or not self._mc:
+                return
+            if self._port_real and not os.path.exists(self._port_real):
+                await self._link_lost(f"{self._port_real} is gone (unplugged?)")
+                return
+            if getattr(self._mc, "is_connected", True) is False:
+                await self._link_lost("serial layer reports no connection")
+                return
+            try:
+                res = await self._mc.commands.get_bat()
+                ok = res is not None and res.type != EventType.ERROR
+            except Exception:
+                ok = False
+            silent = 0 if ok else silent + 1
+            if silent >= self.SILENT_COMMANDS:
+                await self._link_lost(f"node answered nothing to {silent} commands in a row")
+                return
+
+    async def _link_lost(self, reason: str) -> None:
+        if self._lost or not self._running:
+            return
+        self._lost = True
+        self._running = False
+        logger.error("Radio link lost: %s", reason)
+        if self._disconnect_handler:
+            try:
+                await self._disconnect_handler(reason)
+            except Exception:
+                logger.exception("Error in disconnect handler")
+
     async def _channel_secret(self, idx: int) -> bytes | None:
         """The slot's secret, cached; needed to know the bytes of what we send."""
         cached = self._channel_secrets.get(idx)
@@ -933,6 +1001,9 @@ class MeshcoreRadio:
         """Advertise ourselves so other nodes can discover and DM us."""
         if not settings.tx_enabled:
             logger.info("TX disabled — suppressed advertisement")
+            return
+        if self.pending_adoption:
+            logger.info("Advert held: this radio is not the node in the profile yet")
             return
         try:
             await self._mc.commands.send_advert(flood=True)

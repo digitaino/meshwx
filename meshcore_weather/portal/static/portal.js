@@ -692,8 +692,8 @@ var Portal = {
         var r = pend.radio || {}, pr = pend.profile || {};
         $("hw-pending-text").innerHTML = "This radio is <strong>" + esc(r.name || "?") + "</strong> (" + esc((r.public_key || "").slice(0, 8)) + "…" +
           (r.model ? ", " + esc(r.model) : "") + "), not the saved node <strong>" + esc(pr.name || "?") + "</strong> (" + esc((pr.public_key || "").slice(0, 8)) + "…). " +
-          (pend.why_not ? "It cannot be adopted: " + esc(pend.why_not) + "." : pend.mode === "auto" ? "Automatic adoption did not take (" + (pend.attempts || 0) + " attempts)." : "Adoption is set to " + esc(pend.mode) + ".") +
-          " Until it is adopted, phones and the app see a different bot.";
+          (pend.why_not ? "It cannot be adopted: " + esc(pend.why_not) + "." : pend.mode === "auto" ? "Automatic adoption did not take (" + (pend.attempts || 0) + " attempts)." : pend.mode === "off" ? "Adoption is switched off in Settings." : "Nothing has been written to it.") +
+          " Adverts are held until you decide: adopt it to make it " + esc(pr.name || "the bot") + ", or start a new profile to keep its own identity.";
       }
       var la = p.last_adoption;
       $("hw-profile").innerHTML = !prof ? "No profile saved yet" + (p.note ? " (" + esc(p.note) + ")" : "") + "." :

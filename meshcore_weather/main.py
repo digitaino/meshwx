@@ -115,6 +115,7 @@ class WeatherBot:
         self.radio.on_channel_message(self._handle_channel_message)
         self.radio.on_dm(self._handle_dm)
         self.radio.on_advert(self._handle_advert)
+        self.radio.on_disconnect(self._handle_radio_lost)
 
         await self.emwin.start()
         await self._refresh_store()
@@ -159,12 +160,19 @@ class WeatherBot:
             self._broadcaster = AppResponder(self.store, self.radio, render_text=self._process_command)
             await self._broadcaster.start()
 
+    async def _handle_radio_lost(self, reason: str) -> None:
+        """The radio reports its link is gone: reconnect in the background
+        (a swapped board is adopted on the way) and keep serving meanwhile."""
+        self._radio_last_error = f"link lost: {reason}"
+        logger.warning("Reconnecting to the radio after a lost link (%s)", reason)
+        self._radio_task = asyncio.create_task(self.reconnect_radio())
+
     async def reconnect_radio(self) -> None:
         """Drop the radio link and connect again (serial port changed, node
         rebooted). Falls back to the retry loop if it does not come up."""
-        if self._radio_task:
+        if self._radio_task and self._radio_task is not asyncio.current_task():
             self._radio_task.cancel()
-            self._radio_task = None
+        self._radio_task = None
         try:
             await self.radio.stop()
         except Exception:
@@ -179,6 +187,7 @@ class WeatherBot:
         self.radio.on_channel_message(self._handle_channel_message)
         self.radio.on_dm(self._handle_dm)
         self.radio.on_advert(self._handle_advert)
+        self.radio.on_disconnect(self._handle_radio_lost)
         try:
             await self.radio.start()
         except Exception as e:
