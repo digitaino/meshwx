@@ -208,6 +208,21 @@ plugged in later. To try text commands from the Pi's shell:
 .venv/bin/meshcore-weather-cli interactive
 ```
 
+### Updating the Pi
+
+The Pi's checkout tracks `main` on GitHub over HTTPS (the repository is
+public, so the Pi needs no key). Push to GitHub, then:
+
+```bash
+ssh digitaino@mesh-wx.digitaino.com meshcore-weather/scripts/pi_update.sh
+```
+
+It fetches, refuses to run over tracked files edited on the Pi, stops the
+bot, checks out the new commit, reinstalls when `pyproject.toml` changed,
+checks that the code imports, and starts the bot again. It prints the commit
+to roll back to (`pi_update.sh <commit>`). Files git ignores stay as they are:
+`.env`, `data/`, `.venv`, CoreScope's config, passwords and bundles.
+
 ### The public page (port 8080)
 
 The goestools dashboard on the Pi (`deploy/goes-dashboard/`, installed as

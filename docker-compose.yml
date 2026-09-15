@@ -51,7 +51,13 @@ services:
       - ./corescope/config.json:/app/data/config.json:ro
       - ./corescope/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./corescope/join:/app/join:ro
+    # Memory guardrails (added 2026-09-14). Without these the Go server grew to
+    # ~12GB RSS for ~2.4GB of tracked data over 8 days, pushed the OrbStack VM
+    # into swap, and users saw 30-120s responses and 502s. GOMEMLIMIT is a soft
+    # cap that makes the GC return memory; mem_limit is the hard backstop.
+    mem_limit: 10g
     environment:
+      - GOMEMLIMIT=8GiB
       - NODE_ENV=production
       # Use our standalone Mosquitto (with auth) instead of the bundled one.
       - DISABLE_MOSQUITTO=true

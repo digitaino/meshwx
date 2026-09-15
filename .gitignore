@@ -22,9 +22,12 @@ data/emwin_cache/
 # Dev-box cache for bundle builder shapefile downloads
 .cache/
 
-# IDE
+# IDE and tool caches
 .vscode/
 .idea/
+.claude/
+.pytest_cache/
+.ruff_cache/
 *.swp
 *.swo
 
