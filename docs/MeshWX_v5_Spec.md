@@ -599,7 +599,34 @@ than 2 hours. A forecast is stale after 12 hours from `issued`.
 
 The bot's text commands (send on `#meshwx` or by DM). Replies come by DM;
 a sender the bot cannot DM gets one reply on the channel instead. Long
-replies are paged with "(1/3) more"; send `more` for the next page.
+replies are paged with "(1/3) more"; send `more` for the next page. A DM
+reply fits in 156 bytes of UTF-8, "(1/3) more" included.
+
+How the bot answers requests by DM:
+
+- A reply leaves about 2 s after the request arrived, so the bot's own
+  ACK of the request clears the first repeater first.
+- Replies to one person go out one at a time, in order. The next one
+  starts when the phone has acknowledged the one before, or when the bot
+  has given up on it.
+- A reply keeps one timestamp and one text for all its tries, so a phone
+  that already has it hides the repeats.
+- A phone that hears no ACK sends the DM again. The bot takes it as the
+  same request when the timestamp and the text are the same, within 30
+  minutes, or when the text is the same within 2 minutes of the first
+  copy. Case and extra spaces do not count. A copy gets nothing when its
+  reply was acknowledged or is still going out. It gets the same reply
+  again when that reply was never acknowledged, and an answer when the
+  rate limit had dropped the request. After 2 minutes the same text is a
+  new request.
+- `more` is the exception, because people send it again on purpose. A
+  `more` with the timestamp of an earlier one is a copy. A `more` with a
+  new timestamp is a new request once the page before it (for the first
+  `more`, page 1) was acknowledged; while that page is still going out, or
+  was never acknowledged, it is a copy.
+- `more` sends the first page your phone has not acknowledged. It may
+  repeat a page whose ACK was lost; it never skips one. "That was the
+  whole reply" comes only after the last page was acknowledged.
 
 ```
 wx <city ST|ZIP|ST>       conditions, today's high/low, warnings (a state or nothing: overview)
@@ -665,6 +692,10 @@ binary path does not cover.
 ## 13. Airtime etiquette
 
 - Never poll. Request on user action, and at most once per 5 seconds.
+- Wait 15 s for an answer before you ask again. A `>` request sent again
+  by DM (same text within 2 minutes, or same timestamp within 30 minutes)
+  is answered again only when the last answer finished going out at least
+  12 s earlier; a quicker repeat gets nothing.
 - Prefer the digest over `>w` when you only need to know what is active.
 - Do not re-request something you already hold. The bot has no cache: it
   rebuilds and re-transmits the whole answer, spending airtime for
@@ -717,6 +748,7 @@ rules:
 | 8.2, 8.3 | `>metar ICAO` and `>taf ICAO` could answer with a neighbouring station's report or a "no METAR" sentence | A named station gets its own report, starting `METAR <ICAO>` or `TAF <ICAO>`, or Not available reason 0 |
 | 8.2, 10.4 | (none) | `>sat` and the text command `sat` report the bot's GOES receiver as one line, Text subject 8 |
 | 8.2 | Said coverage filtered only the bare `>w` and `>o` | The bare `>d` is filtered too |
+| 10.4, 13 | (silent). Every DM was a new request: a phone's resend was answered again, and resent `more`s skipped pages or ended a reply early | A DM reply leaves about 2 s after the request, one at a time per person, with one timestamp for all its tries, in 156 bytes. A resend of a request (same timestamp and text within 30 minutes, or same text within 2 minutes) gets no second answer, only the same reply again if it was never acknowledged. `more` with a new timestamp is a new request once the page before it was acknowledged, and sends the first page not acknowledged. A `>` request sent again by DM is answered again only 12 s after the last answer went out |
 | 9 | Pointed at the top-level `text_subjects` and `not_available_reasons` in `protocol.json` | Use the tables under `v5`; the top-level ones are v4 |
 | 8.2, 9, 10.4 | (none) | A US ZIP (`78701`, or ZIP+4 `78701-1234`) works wherever a place does: people's commands, `>f`, `>metar`, `>taf`, `>hwo`. For `>f`, 5 digits is a ZIP and 1-4 digits a point index. New bundle file `zips.json` (Census 2020 ZCTAs): the bot and the app resolve a ZIP from the same table. Section 9.1 states the label rule for a place and a ZIP (`Hell's Kitchen, NY 10019`), which the bot's replies follow; it used to send `Hell'S Kitchen` |
 

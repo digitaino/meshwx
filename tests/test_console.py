@@ -80,6 +80,23 @@ class ChannelFakeRadio:
         self.dms.append((prefix, text))
         return True
 
+    # One try of a DM reply (delivery.DmOutbox): a flood contact that ACKs at once.
+    def dm_route_len(self, prefix):
+        return -1
+
+    async def dm_reset_path(self, prefix):
+        pass
+
+    async def dm_transmit(self, prefix, text, ts, attempt):
+        import os
+        from meshcore_weather.meshcore.delivery import delivery_tracker
+        if not settings.tx_enabled:
+            return None
+        self.dms.append((prefix, text))
+        code = os.urandom(4).hex()
+        asyncio.get_running_loop().call_soon(delivery_tracker.on_ack, code)
+        return {"ack": code, "timeout_ms": 1000}
+
     async def advert_if_stale(self, max_age_s=3600):
         self.adverts += 1
         return True

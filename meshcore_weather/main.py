@@ -12,6 +12,7 @@ from pathlib import Path
 from meshcore_weather.config import settings
 from meshcore_weather.emwin.fetcher import create_source
 from meshcore_weather.geodata import resolver, zip_code
+from meshcore_weather.meshcore.delivery import DM_MAX_BYTES, DmReply, DmRequests, dm_outbox
 from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.nlp import parse_intent
 from meshcore_weather.core.pages import split_pages
@@ -22,6 +23,8 @@ from meshcore_weather.traffic import traffic_log
 logger = logging.getLogger(__name__)
 
 RADIO_RETRY_SECONDS = 60
+# "@lat,lon <command>": a DM that carries the sender's position
+LOC_PREFIX = re.compile(r"^@(-?\d+\.?\d*),(-?\d+\.?\d*)\s+(.*)")
 
 # One message, under the channel budget, no newlines (phones wrap it).
 # A DM already is the private reply, so it does not say "DM me".
@@ -91,6 +94,11 @@ class WeatherBot:
         self._all_replies: list[float] = []
         self._channel_reply_by_sender: dict[str, float] = {}
         self._channel_replies: list[float] = []
+        # DM requests and replies (meshcore/delivery.py): copies of a request,
+        # the per-contact reply queue. The clock is injectable for tests.
+        self._clock = time.time
+        self._dm_requests = DmRequests()
+        self.dm_outbox = dm_outbox
         self._sdr_monitor = None
         # Map sender names to pubkey prefixes — persisted to disk
         self._known_contacts: dict[str, str] = {}  # name -> pubkey_prefix
@@ -258,9 +266,10 @@ class WeatherBot:
                 pass
         await self.radio.stop()
         await self.emwin.stop()
-        from meshcore_weather.meshcore.delivery import loop_lag
+        from meshcore_weather.meshcore.delivery import delivery_tracker, loop_lag
         await loop_lag.stop()
         traffic_log.flush(force=True)
+        delivery_tracker.flush_outcomes()
         logger.info("Weather bot stopped")
 
     async def _refresh_loop(self) -> None:
@@ -313,6 +322,7 @@ class WeatherBot:
         if ch != self.radio.channel_idx:
             return
 
+        arrived = self._clock()
         req = traffic_log.record("channel_in", sender=sender, text=text, hops=hops)
         command, location = await self._parse(text)
         traffic_log.update(req, command=command, location=location)
@@ -341,7 +351,7 @@ class WeatherBot:
                 return
             await self._respond_channel(sender, command, location, hops, req=req)
             return
-        await self._respond_dm(pubkey, sender, command, location, req=req)
+        await self._respond_dm(pubkey, sender, command, location, req=req, arrived_at=arrived)
 
     # Commands that name a place are answered by the nearest bot only.
     _PLACE_COMMANDS = {"wx", "forecast", "warn", "outlook", "metar", "taf", "nowcast"}
@@ -424,17 +434,117 @@ class WeatherBot:
         if not forced and await self.radio.advert_if_stale():
             logger.info("Adverted so %s can DM us next time", sender)
 
-    async def _handle_dm(self, pubkey_prefix: str, sender_name: str, text: str) -> None:
-        """Handle a direct message."""
+    async def _handle_dm(self, pubkey_prefix: str, sender_name: str, text: str,
+                         sender_ts: int | None = None, path_len: int | None = None) -> None:
+        """Handle a direct message. With the text, `sender_ts` (the sender's
+        own timestamp) tells a copy of an earlier request from a new one."""
         text = text.strip()
         if not text:
             return
 
         prefix = self._normalize_key(pubkey_prefix)
-        req = traffic_log.record("dm_in", sender=sender_name, key=prefix, text=text)
+        now = self._clock()
+        loc = LOC_PREFIX.match(text)
+        paging_on = None
+        if (await self._parse(loc.group(3) if loc else text))[0] == "more":
+            paging_on = lambda candidate: self._more_copy_of(prefix, candidate)    # noqa: E731
+        # A sender's app sends a DM again when it hears no ACK. Copies are
+        # recognised first, so the rate limiter never sees one.
+        async with self._dm_requests.lock(prefix):
+            dreq, how = self._dm_requests.match(prefix, sender_ts, text, now, paging_on=paging_on)
+            action = self._copy_action(dreq, now) if how else None
+        if how:
+            await self._handle_dm_copy(dreq, how, action, prefix, sender_name, text, sender_ts, now)
+            return
+        dreq.ev = traffic_log.record("dm_in", sender=sender_name, key=prefix, text=text)
+        await self._answer_dm(dreq, prefix, sender_name, text, now)
+
+    def _more_copy_of(self, prefix: str, candidate):
+        """`more` with a new sender timestamp. People page on quickly, so the
+        same text alone does not make a copy. It copies the `more` before it
+        (for the first `more`, the command that opened the session) only while
+        that reply is queued, being tried or failed: a sender that retries with
+        a new timestamp never queues another page while one is in flight, and a
+        failed page goes again instead of being skipped. Once that reply is
+        confirmed, this is the next page."""
+        if candidate is not None:
+            reply = candidate.reply
+            return None if reply is not None and reply.state == "confirmed" else candidate
+        last = (self._paging.get(prefix) or {}).get("last")
+        if last is None or last.state == "confirmed":
+            return None
+        return last.request
+
+    # A `>` request is answered with channel datagrams, which carry no ACK, so
+    # a copy of one cannot wait for a confirmation. Apps resend automatically
+    # 5-6 s apart; the iOS weather tool asks again after 15 s of silence. A
+    # copy is answered again only this long after the last answer went out.
+    APP_COPY_GAP_S = 12
+
+    def _copy_action(self, dreq, now: float) -> str:
+        """What a copy of `dreq` gets, decided and claimed under the sender's
+        lock: "answer" (it was never answered: answer it now), "redeliver"
+        (the same reply again), or the reason it gets nothing."""
+        state = dreq.state
+        if state in ("limited", "app_unanswered"):
+            dreq.state = "building"
+            return "answer"
+        if state == "app":
+            if dreq.app_done_at is None:
+                return "app answer still going out"
+            if now - dreq.app_done_at < self.APP_COPY_GAP_S:
+                return f"app answer went out {now - dreq.app_done_at:.0f} s ago"
+            dreq.state = "building"
+            return "answer"
+        if state == "replied":
+            r = dreq.reply
+            if r.state == "confirmed":
+                return "reply confirmed"
+            if r.state in ("failed", "dropped"):
+                r.state = "queued"
+                return "redeliver"
+            return "reply queued or being tried"
+        if state == "building":
+            return "request still being handled"
+        return "request not answered"
+
+    async def _handle_dm_copy(self, dreq, how: str, action: str, prefix: str, sender_name: str, text: str,
+                              sender_ts: int | None, now: float) -> None:
+        gap = now - dreq.first_at
+        logger.info("DM copy %d of a request from %s (%s, ts %s, %.1f s after the first): %s",
+                    dreq.copies, sender_name, how, sender_ts, gap, action)
+        traffic_log.record("dm_copy", sender=sender_name, key=prefix, text=text, req=dreq.ev,
+                           reason=f"copy {dreq.copies}, {how}, +{gap:.0f} s: {action}")
+        self.dm_outbox.note_copy(dreq.reply)
+        if action == "answer":
+            await self._answer_dm(dreq, prefix, sender_name, text, now, copy=True)
+        elif action == "redeliver":
+            r = dreq.reply
+            if not self._rate_check(prefix, copy=True):
+                r.state = "failed" if r.tries else "dropped"
+                traffic_log.record("dropped", reason="rate limit", req=dreq.ev)
+                return
+            await self.dm_outbox.submit(r, lambda: self.radio, not_before=now + settings.dm_reply_delay_s)
+
+    async def _answer_dm(self, dreq, prefix: str, sender_name: str, text: str, arrived: float,
+                         copy: bool = False) -> None:
+        """Answer a DM request when it arrives, or when a copy of one the rate
+        limiter dropped comes in (`copy`: the per-sender spacing is skipped).
+        A request that ends in an error is left for its next copy to answer."""
+        try:
+            await self._answer_dm_now(dreq, prefix, sender_name, text, arrived, copy)
+        except Exception:
+            if dreq.state == "building" or (dreq.state == "app" and dreq.app_done_at is None):
+                dreq.state = "limited"
+            logger.warning("DM request from %s ended in an error; its next copy is answered again", sender_name)
+            raise
+
+    async def _answer_dm_now(self, dreq, prefix: str, sender_name: str, text: str, arrived: float,
+                             copy: bool) -> None:
+        req = dreq.ev
 
         # Parse @lat,lng prefix for location-aware commands
-        loc_match = re.match(r"^@(-?\d+\.?\d*),(-?\d+\.?\d*)\s+(.*)", text)
+        loc_match = LOC_PREFIX.match(text)
         if loc_match:
             try:
                 lat = float(loc_match.group(1))
@@ -453,9 +563,10 @@ class WeatherBot:
         # Every DM meets the people's limiter, `>` app requests included (spec 8.2).
         command, location = await self._parse(text)
         traffic_log.update(req, command=command, location=location)
-        if not self._rate_check(prefix, follow_up=(command == "more")):
+        if not self._rate_check(prefix, follow_up=(command == "more"), copy=copy):
             logger.debug("DM rate-limited from %s", sender_name)
             traffic_log.record("dropped", reason="rate limit", req=req)
+            dreq.state = "limited"
             return
 
         # They're DMing us — DMs work both ways, clear all blocks
@@ -472,17 +583,18 @@ class WeatherBot:
 
         if text.startswith(">"):
             traffic_log.update(req, kind="data_request")
-            await self._handle_app_request(text, sender_name, prefix, "dm", None, req=req)
+            await self._handle_app_request(text, sender_name, prefix, "dm", None, req=req, dreq=dreq)
             return
 
         # Admin commands (DM-only, verified by pubkey)
         if self._is_admin(prefix):
-            result = await self._handle_admin(text, prefix, sender_name)
+            result = await self._handle_admin(text, prefix, sender_name, arrived)
             if result is not None:
+                dreq.state = "done"                  # runs once: its copies get nothing
                 traffic_log.update(req, kind="admin", command=text.split(None, 1)[0].lower())
                 return
 
-        await self._respond_dm(prefix, sender_name, command, location, req=req)
+        await self._respond_dm(prefix, sender_name, command, location, req=req, arrived_at=arrived, dreq=dreq)
 
     async def _handle_advert(self, contact_name: str, pubkey_prefix: str) -> None:
         """Handle a new advert — only greet users who were using the channel."""
@@ -505,24 +617,34 @@ class WeatherBot:
         self._dm_blocked.discard(contact_name)
 
     async def _handle_app_request(self, text: str, sender_name: str, sender_key: str, transport: str,
-                                  hops: int | None, req: dict | None = None) -> None:
-        """A `>` request from an app (docs/MeshWX_v5_Spec.md 8.2)."""
+                                  hops: int | None, req: dict | None = None, dreq=None) -> None:
+        """A `>` request from an app (docs/MeshWX_v5_Spec.md 8.2). `dreq`: the
+        DM request it arrived as, so its copies know when the answer went out."""
         if req is None:
             req = traffic_log.record("data_request", sender=sender_name, key=sender_key if transport == "dm" else None,
                                      text=text[:40], transport=transport, hops=hops)
         if not self._broadcaster:
             traffic_log.record("dropped", reason="broadcasts off: no data channel", req=req, sender=sender_name)
+            if dreq is not None:
+                dreq.state = "done"
             return
+        if dreq is not None:
+            dreq.state, dreq.app_done_at = "app", None
         outcome = await self._broadcaster.handle_request(text, sender_key)
         logger.info("App request from %s: %s -> %s", sender_name, text[:40], outcome)
         if outcome in ("rate limited", "hourly budget spent"):
             traffic_log.record("dropped", reason=outcome, req=req, sender=sender_name)
+            if dreq is not None:
+                dreq.state = "app_unanswered"
+        elif dreq is not None:
+            dreq.app_done_at = self._clock()
 
     def _is_admin(self, pubkey_prefix: str) -> bool:
         admin = settings.admin_key.lower().strip()
         return bool(admin) and pubkey_prefix.startswith(admin)
 
-    async def _handle_admin(self, text: str, prefix: str, sender_name: str) -> str | None:
+    async def _handle_admin(self, text: str, prefix: str, sender_name: str,
+                            arrived: float | None = None) -> str | None:
         """Handle admin commands. Returns response string, or None if not an admin command."""
         parts = text.strip().split(None, 1)
         cmd = parts[0].lower() if parts else ""
@@ -540,23 +662,23 @@ class WeatherBot:
                     key = c.get("public_key", "")[:12]
                     lines.append(f" {name} ({key})")
                 reply = "\n".join(lines)
-            await self._send_dm_paginated(prefix, sender_name, reply)
+            await self._send_dm_paginated(prefix, sender_name, reply, arrived)
             return reply
 
         if cmd == "remove" and arg:
             await self.radio._mc.ensure_contacts(follow=True)
             contact = self.radio._mc.get_contact_by_name(arg)
             if not contact:
-                await self.radio.send_dm(prefix, f"Contact '{arg}' not found.")
+                await self._send_dm(prefix, arrived,f"Contact '{arg}' not found.")
                 return "not found"
             key = contact.get("public_key", "")
             name = contact.get("adv_name", "?")
             # Confirm before removing (can't DM after delete)
             is_self = self._normalize_key(key) == prefix
             if is_self:
-                await self.radio.send_dm(prefix, f"Removing: {name} (you). Re-advert to reconnect.")
+                await self._send_dm(prefix, arrived,f"Removing: {name} (you). Re-advert to reconnect.")
             else:
-                await self.radio.send_dm(prefix, f"Removing: {name}")
+                await self._send_dm(prefix, arrived,f"Removing: {name}")
             try:
                 await self.radio._mc.commands.remove_contact(key)
                 self._known_contacts.pop(name, None)
@@ -569,10 +691,10 @@ class WeatherBot:
             await self.radio._mc.ensure_contacts(follow=True)
             contacts = self.radio._mc._contacts or {}
             if not contacts:
-                await self.radio.send_dm(prefix, "No contacts to remove.")
+                await self._send_dm(prefix, arrived,"No contacts to remove.")
                 return "empty"
             contact_list = list(contacts.values())
-            await self.radio.send_dm(prefix, f"Clearing {len(contact_list)} contacts. Re-advert to reconnect.")
+            await self._send_dm(prefix, arrived,f"Clearing {len(contact_list)} contacts. Re-advert to reconnect.")
             removed = 0
             for c in contact_list:
                 try:
@@ -587,48 +709,48 @@ class WeatherBot:
         if cmd == "advert":
             await self.radio._send_advert()
             await self.radio._mc.ensure_contacts(follow=True)
-            await self.radio.send_dm(prefix, "Advert sent + contacts refreshed.")
+            await self._send_dm(prefix, arrived,"Advert sent + contacts refreshed.")
             return "advert"
 
         if cmd == "refresh":
             await self.radio._mc.ensure_contacts(follow=True)
             count = len(self.radio._mc._contacts or [])
-            await self.radio.send_dm(prefix, f"Contacts refreshed: {count} contacts.")
+            await self._send_dm(prefix, arrived,f"Contacts refreshed: {count} contacts.")
             return "refresh"
 
         if cmd == "broadcast":
             if not self._broadcaster:
-                await self.radio.send_dm(prefix, "Broadcasts are off: no data channel configured.")
+                await self._send_dm(prefix, arrived,"Broadcasts are off: no data channel configured.")
                 return "disabled"
-            await self.radio.send_dm(prefix, "Running scheduler tick...")
+            await self._send_dm(prefix, arrived,"Running scheduler tick...")
             try:
                 sent = await self._broadcaster.scheduler.tick()
-                await self.radio.send_dm(prefix, f"Scheduler tick sent {sent} message(s).")
+                await self._send_dm(prefix, arrived,f"Scheduler tick sent {sent} message(s).")
             except Exception as e:
-                await self.radio.send_dm(prefix, f"Broadcast error: {e}")
+                await self._send_dm(prefix, arrived,f"Broadcast error: {e}")
             return "broadcast"
 
         if cmd == "warnings-broadcast":
             if not self._broadcaster:
-                await self.radio.send_dm(prefix, "Broadcasts are off: no data channel configured.")
+                await self._send_dm(prefix, arrived,"Broadcasts are off: no data channel configured.")
                 return "disabled"
             try:
                 sent = await self._broadcaster.scheduler.run_job_now("warnings")
-                await self.radio.send_dm(prefix, f"Sent {sent} warning message(s).")
+                await self._send_dm(prefix, arrived,f"Sent {sent} warning message(s).")
             except Exception as e:
-                await self.radio.send_dm(prefix, f"Warning broadcast error: {e}")
+                await self._send_dm(prefix, arrived,f"Warning broadcast error: {e}")
             return "warnings-broadcast"
 
         if cmd == "test-data-ch":
             ch = self.radio.data_channel_idx
             if ch is None:
-                await self.radio.send_dm(prefix, "No data channel configured.")
+                await self._send_dm(prefix, arrived,"No data channel configured.")
                 return "no ch"
             if not settings.tx_enabled:
-                await self.radio.send_dm(prefix, "TX disabled — test ping suppressed.")
+                await self._send_dm(prefix, arrived,"TX disabled — test ping suppressed.")
                 return "tx-disabled"
             await self.radio._mc.commands.send_chan_msg(ch, "test ping")
-            await self.radio.send_dm(prefix, f"Sent text test on ch {ch}.")
+            await self._send_dm(prefix, arrived,f"Sent text test on ch {ch}.")
             return "test"
 
         if cmd == "admin":
@@ -642,15 +764,23 @@ class WeatherBot:
                 "broadcast - run a scheduler tick now\n"
                 "warnings-broadcast - send warnings"
             )
-            await self._send_dm_paginated(prefix, sender_name, reply)
+            await self._send_dm_paginated(prefix, sender_name, reply, arrived)
             return reply
 
         return None  # Not an admin command, fall through to normal handling
 
-    async def _send_dm_paginated(self, pubkey: str, sender_name: str, text: str) -> None:
+    async def _send_dm_paginated(self, pubkey: str, sender_name: str, text: str,
+                                 arrived: float | None = None) -> None:
         """Send a long admin reply: page 1 now, the rest on 'more'."""
         pages = self._start_session(self._normalize_key(pubkey), "admin", text)
-        await self.radio.send_dm(pubkey, pages[0])
+        await self._send_dm(pubkey, arrived, pages[0])
+
+    async def _send_dm(self, pubkey: str, arrived: float | None, text: str) -> bool:
+        """An admin reply: behind the contact's other replies and tried like
+        them, no earlier than MCW_DM_REPLY_DELAY_S after its request arrived."""
+        at = self._clock() if arrived is None else arrived
+        return await self.dm_outbox.submit(DmReply(key=pubkey, text=text, kind="admin"), lambda: self.radio,
+                                           not_before=at + settings.dm_reply_delay_s)
 
     # -- Replies and paging --
     #
@@ -689,12 +819,21 @@ class WeatherBot:
             live = sorted(((v["ts"], k) for k, v in self._paging.items() if v["ts"] > cutoff), reverse=True)
             self._paging = {k: self._paging[k] for _, k in live[: self.PAGE_SESSIONS_MAX]}
 
+    def _pages(self, response: str) -> list[str]:
+        """Pages fit both transports and a DM's 156 UTF-8 bytes."""
+        return split_pages(response, self.page_budget(), max_bytes=DM_MAX_BYTES)
+
     def _start_session(self, key: str, command: str, response: str) -> list[str]:
+        pages = self._pages(response)
+        self._set_session(key, command, pages)
+        return pages
+
+    def _set_session(self, key: str, command: str, pages: list[str]) -> dict:
         now = time.time()
         self._prune_sessions(now)
-        pages = split_pages(response, self.page_budget())
-        self._paging[key] = {"pages": pages, "next": 1, "ts": now, "command": command}
-        return pages
+        session = {"pages": pages, "next": 1, "ts": now, "command": command, "replies": {}, "confirmed": set()}
+        self._paging[key] = session
+        return session
 
     def reply_chunk(self, command: str, location: str, sender_key: str,
                     dm: bool = False) -> tuple[str | None, bool]:
@@ -720,27 +859,84 @@ class WeatherBot:
         pages = self._start_session(sender_key, (command + " " + location).strip(), response)
         return pages[0], len(pages) > 1
 
-    async def _respond_dm(self, pubkey_prefix: str, sender_name: str, command: str, location: str,
-                          req: dict | None = None) -> None:
-        """Send the reply as a DM."""
-        chunk, _ = self.reply_chunk(command, location, self.person_key(sender_name, pubkey_prefix), dm=True)
-        if not chunk:
-            traffic_log.record("dropped", reason="nothing to say", req=req, sender=sender_name, key=pubkey_prefix)
-            return
+    # A page sent by DM counts as delivered once the sender's ACK confirms it.
+    # A page sent any other way (channel, console) cannot be confirmed and
+    # counts as delivered once sent.
 
-        ev = traffic_log.record("reply_dm", text=chunk, chars=len(chunk), req=req, sender=sender_name,
-                                key=pubkey_prefix, command=command, location=location, ok=settings.tx_enabled)
-        success = await self.radio.send_dm(pubkey_prefix, chunk, ev=ev)
-        if not success:
-            traffic_log.update(ev, kind="dm_failed", ok=False)
-        if success:
-            logger.info("Response to %s (DM): %s", sender_name, chunk.replace("\n", " | "))
+    @staticmethod
+    def _track_page(session: dict, idx: int, reply: DmReply) -> None:
+        session.setdefault("replies", {})[idx] = reply
+        session["last"] = reply                      # the page a new-timestamp `more` is judged by
+        session["next"] = max(session["next"], idx + 1)
+        session["ts"] = time.time()
+        reply.on_confirmed.append(lambda r, s=session, i=idx: s.setdefault("confirmed", set()).add(i))
+
+    @staticmethod
+    def _first_unconfirmed(session: dict) -> int | None:
+        replies, confirmed = session.get("replies", {}), session.get("confirmed", set())
+        for idx in range(len(session["pages"])):
+            if idx in confirmed or (idx not in replies and idx < session["next"]):
+                continue
+            return idx
+        return None
+
+    def _dm_more(self, person: str, reply: DmReply) -> str:
+        """`more` by DM: the first page the sender has not confirmed, chosen when
+        the reply is about to go out, not when `more` arrived. It may repeat a
+        page whose ACK was lost; it never skips one."""
+        self._prune_sessions(time.time())
+        session = self._paging.get(person)
+        if not session:
+            reply.kind = "note"
+            return "Nothing to continue. Send a command first."
+        idx = self._first_unconfirmed(session)
+        if idx is None:
+            reply.kind = "note"
+            return f"That was the whole reply to '{session['command']}'. Send a new command."
+        self._track_page(session, idx, reply)
+        return session["pages"][idx]
+
+    async def _respond_dm(self, pubkey_prefix: str, sender_name: str, command: str, location: str,
+                          req: dict | None = None, arrived_at: float | None = None, dreq=None) -> DmReply | None:
+        """Send the reply as a DM: behind this contact's earlier replies, no
+        earlier than MCW_DM_REPLY_DELAY_S after the request arrived, tried
+        until the sender's ACK confirms it (meshcore/delivery.py DmOutbox)."""
+        person = self.person_key(sender_name, pubkey_prefix)
+        arrived = self._clock() if arrived_at is None else arrived_at
+        pages: list[str] | None = None
+
+        def prepare(r: DmReply) -> None:             # just before its first try
+            if pages is not None:
+                self._track_page(self._set_session(person, (command + " " + location).strip(), pages), 0, r)
+            r.ev = traffic_log.record("reply_dm", text=r.text, chars=len(r.text), req=req, sender=sender_name,
+                                      key=pubkey_prefix, command=command, location=location, ok=settings.tx_enabled)
+
+        if command == "more":
+            reply = DmReply(key=pubkey_prefix, kind="page", build=lambda r: self._dm_more(person, r), prepare=prepare)
         else:
-            # DM failed: drop it. The user will retry; no channel fallback,
+            response = HELP_TEXT_DM if command == "help" else self._process_command(command, location)
+            if not response:
+                traffic_log.record("dropped", reason="nothing to say", req=req, sender=sender_name, key=pubkey_prefix)
+                if dreq is not None:
+                    dreq.state = "done"
+                return None
+            pages = self._pages(response)
+            reply = DmReply(key=pubkey_prefix, text=pages[0], prepare=prepare)
+        reply.request = dreq
+        if dreq is not None:
+            dreq.state, dreq.reply = "replied", reply
+        if await self.dm_outbox.submit(reply, lambda: self.radio, not_before=arrived + settings.dm_reply_delay_s):
+            logger.info("Response to %s (DM): %s", sender_name, reply.text.replace("\n", " | "))
+        elif reply.state == "dropped":
+            traffic_log.record("dropped", reason="reply queue full", req=req, sender=sender_name, key=pubkey_prefix)
+        elif reply.state == "failed" and not reply.tries:
+            # DM refused: drop it. The user will retry; no channel fallback,
             # no advert. Forget the stale mapping so a fresh advert re-learns it.
+            traffic_log.update(reply.ev, kind="dm_failed", ok=False)
             logger.info("DM to %s failed — forgetting the path; the next channel command gets a channel reply", sender_name)
             self._dm_blocked.add(sender_name)
             self._known_contacts.pop(sender_name, None)
+        return reply
 
     # -- Helpers --
 
@@ -789,14 +985,19 @@ class WeatherBot:
     REPLIES_PER_SENDER_PER_HOUR = 40
     REPLIES_PER_HOUR = 400
 
-    def _rate_check(self, sender_key: str, follow_up: bool = False) -> bool:
+    def _rate_check(self, sender_key: str, follow_up: bool = False, copy: bool = False) -> bool:
         """One reply per sender per 5 s, plus hourly budgets. A 'more' is a
         follow-up to a reply we just sent and only needs 2 s of spacing;
-        it still counts against the hourly budgets."""
-        now = time.time()
-        last = self._rate_limit.get(sender_key, 0)
-        if now - last < (2 if follow_up else 5):
-            return False
+        it still counts against the hourly budgets. A `copy` of a DM request
+        that has to be sent (its first was dropped here, or its reply failed)
+        skips the spacing and leaves it untouched, but spends the hourly
+        budgets, which can still refuse it. A copy that gets nothing never
+        comes here."""
+        now = self._clock()
+        if not copy:
+            last = self._rate_limit.get(sender_key, 0)
+            if now - last < (2 if follow_up else 5):
+                return False
         hour_ago = now - 3600
         hist = [ts for ts in self._reply_history.get(sender_key, []) if ts > hour_ago]
         self._reply_history[sender_key] = hist
@@ -807,7 +1008,8 @@ class WeatherBot:
         if len(self._all_replies) >= self.REPLIES_PER_HOUR:
             logger.warning("Rate limit: %d replies this hour overall — ignoring", len(self._all_replies))
             return False
-        self._rate_limit[sender_key] = now
+        if not copy:
+            self._rate_limit[sender_key] = now
         hist.append(now)
         self._all_replies.append(now)
         # Bounded state: a flood of made-up sender names must not grow memory.

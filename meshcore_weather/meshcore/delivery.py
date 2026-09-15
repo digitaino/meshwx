@@ -235,7 +235,16 @@ class DeliveryTracker:
         self._by_ack: dict[str, Outbound] = {}
         self._tasks: set[asyncio.Task] = set()
         self._resends: deque[float] = deque(maxlen=1000)
-        self._outcomes: deque[tuple] = deque(maxlen=5000)   # (t, kind, echoed, acked, resent, echo_ms)
+        # (t, kind, echoed, acked, resent, echo_ms[, DM reply fields]); a DM reply's row is a list,
+        # updated in place when its reply is delivered again, confirmed late or copied again
+        self._outcomes: deque = deque(maxlen=5000)
+        self._dm_acks: dict[str, tuple[object, Callable[[str], None]]] = {}   # DM ack code -> (reply, hook)
+        # ACKs that matched nothing. After a stalled loop an ACK can be handled
+        # before its try's code is registered; expect_dm_ack looks here first.
+        self._early_acks: deque[tuple[float, str]] = deque(maxlen=32)
+        self._last_save = 0.0
+        self._outcomes_dirty = False
+        self._save_handle: tuple[asyncio.TimerHandle, asyncio.AbstractEventLoop] | None = None
         self.started_at = time.time()
         self.last_repeat_heard_at = 0.0
         self.last_rx_at = 0.0
@@ -253,13 +262,15 @@ class DeliveryTracker:
             if self._persist_path.exists():
                 cut = time.time() - OUTCOMES_KEEP_S
                 rows = json.loads(self._persist_path.read_text()).get("outcomes", [])
-                self._outcomes.extend(tuple(r) for r in rows if isinstance(r, list) and len(r) == 6 and r[0] >= cut)
+                self._outcomes.extend(tuple(r) for r in rows if isinstance(r, list) and r and r[0] >= cut
+                                      and (len(r) == 6 or (len(r) == 7 and isinstance(r[6], dict))))
         except Exception as e:
             logger.warning("Ignoring delivery outcome file: %s", e)
 
     def _save_outcomes(self) -> None:
         if not self._persist_path:
             return
+        self._last_save = time.time()
         try:
             cut = time.time() - OUTCOMES_KEEP_S
             self._persist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -295,6 +306,63 @@ class DeliveryTracker:
         if ob is not None and ob.acked_at is None:
             ob.acked_at = time.time()
             ob.done.set()
+            return
+        entry = self._dm_acks.get(code)
+        if entry is not None:
+            entry[1](code)
+            return
+        self._early_acks.append((time.time(), code))
+
+    # -- DM replies (DmOutbox): every attempt's code stays registered until
+    # the reply is confirmed or its late window closes --
+
+    EARLY_ACK_S = 30.0
+    SAVE_EVERY_S = 60.0
+
+    def expect_dm_ack(self, code: str, owner: object, hook: Callable[[str], None]) -> None:
+        self._dm_acks[code] = (owner, hook)
+        now = time.time()
+        for i, (t, early) in enumerate(self._early_acks):
+            if early == code and now - t <= self.EARLY_ACK_S:
+                del self._early_acks[i]
+                hook(code)
+                return
+
+    def forget_dm_ack(self, code: str, owner: object) -> None:
+        """Only the owner's registration: another reply may hold the same code."""
+        entry = self._dm_acks.get(code)
+        if entry is not None and entry[0] is owner:
+            del self._dm_acks[code]
+
+    def add_outcome(self, row: list) -> None:
+        self._outcomes.append(row)
+        self.outcomes_changed()
+
+    def outcomes_changed(self) -> None:
+        """Save the rows soon, not on every change: at most once a minute from
+        the event loop, and at shutdown (flush_outcomes)."""
+        if not self._persist_path:
+            return
+        self._outcomes_dirty = True
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if self._save_handle is not None and self._save_handle[1] is loop and not loop.is_closed():
+            return
+        wait = self._last_save + self.SAVE_EVERY_S - time.time()
+        if wait <= 0 or loop is None:
+            self.flush_outcomes()
+        else:
+            self._save_handle = (loop.call_later(wait, self.flush_outcomes), loop)
+
+    def flush_outcomes(self) -> None:
+        if self._save_handle is not None:
+            self._save_handle[0].cancel()
+            self._save_handle = None
+        if self._outcomes_dirty:
+            self._outcomes_dirty = False
+            self._save_outcomes()
 
     # -- tracking one send --
 
@@ -403,7 +471,7 @@ class DeliveryTracker:
         d = self.outcome(ob)
         self._outcomes.append((now, ob.kind, ob.echoed_at is not None, ob.acked_at is not None,
                                ob.attempts - 1, d.get("echo_ms")))
-        self._save_outcomes()
+        self.outcomes_changed()
         if ob.ev is not None:
             from meshcore_weather.traffic import traffic_log
             traffic_log.update(ob.ev, delivery=d, push=True)
@@ -545,4 +613,438 @@ def summarize_observations(observations: list[dict]) -> dict:
             "paths": sorted(paths)[:4]}
 
 
+# -- DM requests and replies ----------------------------------------------------------------
+#
+# Stock firmware and apps (v1.15-v1.17.1). The bot's node ACKs every copy of a
+# DM it receives, 200 ms after arrival; the sender's app alone decides to send
+# again, with the same text and the same or a new timestamp, and each copy
+# reaches the bot as its own CONTACT_MSG_RECV. For the bot's own DMs the bot
+# picks timestamp and attempt; the attempt goes into the payload and the
+# expected ACK code, the node keeps the last 8 codes, so an earlier attempt's
+# ACK still arrives. v1.15 relays drop an ACK code they already relayed and
+# attempt 4 repeats attempt 0's code: attempts stop at 3. Receiving apps hide
+# copies on (contact, timestamp, text), so every try of one reply message
+# keeps both. Routes change only through PATH packets or reset_path.
+
+DM_MAX_BYTES = 156        # DM text limit is 160 bytes; v1.15 phones receive at most 156
+DM_MAX_ATTEMPT = 3
+DM_LATE_ACK_S = 60.0      # an ACK up to this long after the last try still confirms, late
+DM_QUEUE_MAX = 5          # replies waiting per contact; more are dropped
+
+
+def normalise_request(text: str) -> str:
+    """Trimmed, whitespace collapsed, lower case: two DMs with this in common are one request."""
+    return " ".join(text.split()).lower()
+
+
+def clip_bytes(text: str, max_bytes: int) -> str:
+    """At most `max_bytes` of UTF-8, never cut inside a character."""
+    raw = text.encode("utf-8")
+    return text if len(raw) <= max_bytes else raw[:max_bytes].decode("utf-8", "ignore")
+
+
+@dataclass(eq=False)
+class DmReply:
+    """One reply to one contact. Its text is fixed once chosen; each message
+    of it (normally one) keeps one timestamp for all its tries."""
+    key: str                                           # contact key prefix
+    text: str | None = None                            # None: `build` picks it just before it goes out
+    kind: str = "answer"                               # answer | page | note | admin
+    build: Callable[["DmReply"], str | None] | None = field(default=None, repr=False)
+    prepare: Callable[["DmReply"], None] | None = field(default=None, repr=False)   # once, before the first try
+    on_confirmed: list = field(default_factory=list, repr=False)
+    request: "DmRequest | None" = field(default=None, repr=False)
+    ev: dict | None = field(default=None, repr=False)
+    state: str = "new"                                 # queued | sending | confirmed | failed | dropped
+    ts: int | None = None
+    used: set = field(default_factory=set)             # attempts spent on the current timestamp
+    messages: int = 0
+    tries: int = 0
+    route: int | None = None                           # hops at the first try, -1 flood
+    acks: dict = field(default_factory=dict, repr=False)   # ack code -> (attempt, sent at)
+    ack_code: str | None = None
+    ack_attempt: int | None = None
+    late: bool = False
+    first_try_at: float | None = None
+    last_try_at: float | None = None
+    confirmed_at: float | None = None
+    cycle_open: bool = False                           # between the first try and the end of the last wait
+    prepared: bool = False
+    row: list | None = field(default=None, repr=False)
+    waiter: asyncio.Future | None = field(default=None, repr=False)
+    hold: asyncio.Future | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        self.key = self.key[:12].lower()
+
+
+@dataclass
+class _DmJob:
+    reply: DmReply
+    radio: Callable[[], object]
+    not_before: float
+    started: asyncio.Future
+
+
+class DmOutbox:
+    """DM replies. Replies to one contact go out in order, each only when the
+    one before is confirmed or has failed; contacts never wait on each other.
+
+    Tries of one message: with a stored route, attempts 0 and 1 on it, then
+    reset_path and attempt 2 by flood; with none, attempts 0 and 1 by flood.
+    Each waits suggested_timeout x 1.2 (3-30 s) for the ACK, the next try a
+    little jitter later. The ACK of any attempt confirms, up to 60 s after the
+    last try (late). Delivered again (a copy of its request came in after it
+    failed): attempt 3 by flood on the same timestamp, then, if that fails
+    too, a new message. The route is never reset after the last try.
+
+    The radio passed in has dm_transmit(key, text, ts, attempt) ->
+    {"ack", "timeout_ms"} | None, dm_route_len(key) -> hops | -1 | None and
+    dm_reset_path(key). Clock, sleep and jitter are injectable for tests."""
+
+    def __init__(self, tracker: "DeliveryTracker", clock: Callable[[], float] = time.time,
+                 sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
+                 jitter: Callable[[], float] | None = None):
+        self.tracker = tracker
+        self.clock = clock
+        self.sleep = sleep
+        self.jitter = jitter or (lambda: random.uniform(0.5, 2.0))
+        self._queues: dict[str, deque[_DmJob]] = {}
+        self._workers: dict[str, asyncio.Task] = {}
+        self._last_ts = 0                              # one clock for every contact (see _plan)
+
+    async def submit(self, reply: DmReply, radio: Callable[[], object], not_before: float = 0.0) -> bool:
+        """Queue a reply, or another delivery of one that failed. Returns once
+        its first try is on the air (True), or when it was not sent."""
+        q = self._queues.setdefault(reply.key, deque())
+        if len(q) >= DM_QUEUE_MAX:
+            reply.state = "failed" if reply.tries else "dropped"
+            logger.warning("DM reply to %s dropped: %d replies already waiting", reply.key[:8], len(q))
+            return False
+        job = _DmJob(reply, radio, not_before, asyncio.get_running_loop().create_future())
+        reply.state = "queued"
+        q.append(job)
+        worker = self._workers.get(reply.key)
+        if worker is None or worker.done():
+            self._workers[reply.key] = asyncio.create_task(self._run(reply.key, q))
+        return await job.started
+
+    def pending(self, key: str) -> int:
+        return len(self._queues.get(key[:12].lower(), ()))
+
+    async def _run(self, key: str, q: deque[_DmJob]) -> None:
+        try:
+            while q:
+                job = q[0]
+                try:
+                    await self._deliver(job)
+                except asyncio.CancelledError:
+                    self._forget(job.reply)            # shutting down: no loop left to take an ACK
+                    raise
+                except Exception:
+                    logger.exception("DM reply to %s", key[:8])
+                    r = job.reply
+                    if r.state in ("queued", "sending"):
+                        r.state, r.cycle_open = "failed", False
+                        if r.tries:
+                            self._record(r)
+                            self._hold_codes(r)
+                        else:
+                            self._forget(r)
+                    elif r.state == "confirmed":
+                        self._forget(r)
+                finally:
+                    job.reply.cycle_open = False
+                    if q and q[0] is job:
+                        q.popleft()
+                    if not job.started.done():
+                        job.started.set_result(False)
+        except asyncio.CancelledError:
+            for job in q:
+                if not job.started.done():
+                    job.started.cancel()
+            q.clear()
+            raise
+        finally:
+            if self._queues.get(key) is q and not q:
+                del self._queues[key]
+            if self._workers.get(key) is asyncio.current_task():
+                del self._workers[key]
+
+    async def _deliver(self, job: _DmJob) -> None:
+        r = job.reply
+        wait = job.not_before - self.clock()
+        if wait > 0:
+            await self.sleep(wait)
+        if r.state == "confirmed":                     # a late ACK came in while it waited
+            return
+        if not r.prepared:
+            if r.text is None:
+                r.text = r.build(r) if r.build else None
+                if not r.text:
+                    r.state = "dropped"
+                    return
+            r.text = clip_bytes(r.text, DM_MAX_BYTES)
+            r.prepared = True
+            if r.prepare:
+                r.prepare(r)
+        radio = job.radio()
+        plan, hops = self._plan(r, radio)
+        r.state, r.cycle_open = "sending", True
+        self._cancel_hold(r)
+        for i, (attempt, flood) in enumerate(plan):
+            if i:
+                await self.sleep(self.jitter())
+                if r.state == "confirmed":
+                    break
+                radio = job.radio()
+            if flood and self._routed(radio, r.key):
+                logger.info("DM to %s: route reset for the flood try (attempt %d)", r.key[:8], attempt)
+                await radio.dm_reset_path(r.key)
+            res = await radio.dm_transmit(r.key, r.text, r.ts, attempt)
+            if not res:
+                break
+            now = self.clock()
+            if not r.used:
+                r.messages += 1                        # a message counts once a try of it is on the air
+            if r.first_try_at is None:
+                r.first_try_at, r.route = now, hops
+            r.tries += 1
+            r.used.add(attempt)
+            r.last_try_at = now
+            if not job.started.done():
+                job.started.set_result(True)
+            code = res.get("ack")
+            if code:
+                r.acks[code] = (attempt, now)
+            if r.state == "confirmed":                 # an earlier attempt's ACK came in during the hand-over
+                self._record(r, log=False)
+                break
+            if code:
+                self.tracker.expect_dm_ack(code, r, lambda c, r=r: self._acked(r, c))
+            window = min(30.0, max(3.0, (res.get("timeout_ms") or 4000) / 1000 * 1.2))
+            if await self._wait_confirmed(r, window):
+                break
+        r.cycle_open = False
+        if r.state == "confirmed":
+            self._forget(r)                            # any code registered after the confirmation
+            return
+        r.state = "failed"
+        if r.tries:
+            self._record(r)
+            self._hold_codes(r)
+
+    @staticmethod
+    def _routed(radio, key: str) -> bool:
+        hops = radio.dm_route_len(key)
+        return hops is not None and hops >= 0
+
+    def _plan(self, r: DmReply, radio) -> tuple[list[tuple[int, bool]], int]:
+        """(attempt, by flood) for each try of this delivery, and the route's hops (-1: flood)."""
+        hops = radio.dm_route_len(r.key)
+        hops = hops if hops is not None and hops >= 0 else -1
+        if r.used and DM_MAX_ATTEMPT not in r.used:
+            return [(DM_MAX_ATTEMPT, True)], hops      # delivered again: same timestamp, attempt 3, flood
+        if r.ts is None or r.used:
+            # A new message: the first delivery, or attempt 3 of the last one
+            # is spent. One clock for every contact: the ACK code hashes
+            # timestamp, attempt, text and the bot's own key, not the
+            # recipient, so two replies with one text in one second would
+            # share their codes. (A message no try of which went out keeps its
+            # unused timestamp and starts again from attempt 0.)
+            r.ts = self._last_ts = max(int(self.clock()), self._last_ts + 1)
+            r.used = set()
+        plan = [(0, False), (1, False), (2, True)] if hops >= 0 else [(0, False), (1, False)]
+        return (plan[:1] if settings.retransmit_max == 0 else plan), hops     # 0: measure only
+
+    async def _wait_confirmed(self, r: DmReply, timeout: float) -> bool:
+        if r.state == "confirmed":
+            return True
+        r.waiter = asyncio.get_running_loop().create_future()
+        timer = asyncio.ensure_future(self.sleep(timeout))
+        try:
+            await asyncio.wait((r.waiter, timer), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            timer.cancel()
+            if not r.waiter.done():
+                r.waiter.cancel()
+            r.waiter = None
+        return r.state == "confirmed"
+
+    def _acked(self, r: DmReply, code: str) -> None:
+        if r.state == "confirmed" or code not in r.acks:
+            return
+        r.late = not r.cycle_open
+        r.state, r.ack_code, r.ack_attempt, r.confirmed_at = "confirmed", code, r.acks[code][0], self.clock()
+        if r.waiter is not None and not r.waiter.done():
+            r.waiter.set_result(True)
+        self._cancel_hold(r)
+        self._forget(r)
+        self._record(r)
+        for hook in r.on_confirmed:
+            try:
+                hook(r)
+            except Exception:
+                logger.exception("DM confirmation hook failed")
+
+    def _forget(self, r: DmReply) -> None:
+        for code in r.acks:
+            self.tracker.forget_dm_ack(code, r)
+
+    def _hold_codes(self, r: DmReply) -> None:
+        """Keep listening for the reply's codes until DM_LATE_ACK_S after its last try."""
+        last = r.last_try_at
+
+        async def expire():
+            await self.sleep(max(0.0, last + DM_LATE_ACK_S - self.clock()))
+            if r.state != "confirmed" and not r.cycle_open and r.last_try_at == last:
+                self._forget(r)
+
+        self._cancel_hold(r)
+        r.hold = asyncio.ensure_future(expire())
+
+    @staticmethod
+    def _cancel_hold(r: DmReply) -> None:
+        if r.hold is not None:
+            r.hold.cancel()
+            r.hold = None
+
+    def note_copy(self, r: DmReply | None) -> None:
+        """A copy of the request came in: the row counts it."""
+        if r is not None and r.row is not None:
+            self._record(r, log=False)
+
+    # -- the record --
+
+    @staticmethod
+    def row_fields(r: DmReply) -> dict:
+        """What data/delivery_outcomes.json keeps per reply: never its text or a key."""
+        ok = r.state == "confirmed"
+        req = r.request
+        return {"reply": r.kind,
+                "ack_attempt": r.ack_attempt if ok else None,
+                "late": bool(ok and r.late),
+                "confirm_ms": int((r.confirmed_at - r.first_try_at) * 1000)
+                if ok and r.first_try_at is not None else None,
+                "route": "flood" if r.route is None or r.route < 0 else r.route,
+                "tries": r.tries, "messages": r.messages,
+                "copies": req.copies if req is not None else None,
+                "copy_after_try": bool(req is not None and r.first_try_at is not None
+                                       and req.last_copy_at > r.first_try_at)}
+
+    def outcome(self, r: DmReply) -> dict:
+        ok = r.state == "confirmed"
+        f = self.row_fields(r)
+        sent_at = r.acks[r.ack_code][1] if ok and r.ack_code in r.acks else None
+        return {"result": "acked" if ok else "no_ack", "echo": False, "acked": ok,
+                "rtt_ms": int((r.confirmed_at - sent_at) * 1000) if sent_at is not None else None,
+                "rtt_total_ms": f["confirm_ms"], "attempts": r.tries, "resent": max(0, r.tries - 1),
+                "skipped": None, **f}
+
+    def _record(self, r: DmReply, log: bool = True) -> None:
+        ok = r.state == "confirmed"
+        f = self.row_fields(r)
+        if r.row is None:
+            r.row = [time.time(), "dm", False, ok, max(0, r.tries - 1), None, f]
+            self.tracker.add_outcome(r.row)
+        else:
+            r.row[3], r.row[4], r.row[6] = ok, max(0, r.tries - 1), f
+            self.tracker.outcomes_changed()
+        if r.ev is not None:
+            from meshcore_weather.traffic import traffic_log
+            traffic_log.update(r.ev, delivery=self.outcome(r), push=True)
+        if not log:
+            return
+        route = "flood" if f["route"] == "flood" else f"{f['route']}-hop route"
+        if ok:
+            logger.info("Delivery dm to %s: acked%s, attempt %d, %.1f s from the first try (%s), %d tr%s",
+                        r.key[:8], " LATE" if r.late else "", r.ack_attempt, f["confirm_ms"] / 1000, route,
+                        r.tries, "y" if r.tries == 1 else "ies")
+        else:
+            logger.info("Delivery dm to %s: no ack after %d tr%s (%s); an ACK still counts for %d s",
+                        r.key[:8], r.tries, "y" if r.tries == 1 else "ies", route, int(DM_LATE_ACK_S))
+
+
+@dataclass(eq=False)
+class DmRequest:
+    """One DM request and every copy of it the sender's app sent."""
+    key: str
+    norm: str
+    first_at: float
+    timestamps: set = field(default_factory=set)
+    copies: int = 1                                    # DMs received carrying it, the first included
+    last_copy_at: float = 0.0
+    state: str = "building"                            # building | limited | done | replied | app | app_unanswered
+    reply: DmReply | None = field(default=None, repr=False)
+    app_done_at: float | None = None
+    ev: dict | None = field(default=None, repr=False)
+
+
+class DmRequests:
+    """Recent DM requests per sender, to tell a copy from a new request. A DM
+    is a copy when (a) sender key prefix, sender timestamp and normalised text
+    all match within MCW_DM_COPY_RETAIN_S (automatic resends, reconnect
+    replays), or (b) key prefix and normalised text match within
+    MCW_DM_COPY_WINDOW_S of the request's first copy (most senders that resend
+    change the timestamp)."""
+
+    PER_SENDER = 32
+    SENDERS = 5000
+
+    def __init__(self) -> None:
+        self._by_key: dict[str, list[DmRequest]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def lock(self, key: str) -> asyncio.Lock:
+        """Held around lookup and insert: a copy can arrive while the first is still handled."""
+        lock = self._locks.get(key)
+        if lock is None:
+            if len(self._locks) >= self.SENDERS:
+                self._locks = {k: v for k, v in self._locks.items() if v.locked()}
+            lock = self._locks[key] = asyncio.Lock()
+        return lock
+
+    def match(self, key: str, sender_ts: int | None, text: str, now: float,
+              paging_on: Callable[[DmRequest | None], DmRequest | None] | None = None
+              ) -> tuple[DmRequest, str | None]:
+        """The request this DM belongs to and how it matched; None: a new request, now on record.
+
+        `paging_on` is for `more`, which people repeat on purpose. When the DM
+        has a sender timestamp that matched nothing, it replaces the
+        same-text rule: given the same-text request inside the window (or
+        None), it returns the request this DM copies, or None for a new one."""
+        window, retain = settings.dm_copy_window_s, settings.dm_copy_retain_s
+        keep = max(window, retain)
+        reqs = [r for r in self._by_key.get(key, ()) if now - r.first_at <= keep]
+        norm = normalise_request(text)
+        hit = how = None
+        if sender_ts is not None:
+            hit = next((r for r in reversed(reqs) if r.norm == norm and sender_ts in r.timestamps
+                        and now - r.first_at <= retain), None)
+            how = "same timestamp" if hit else None
+        if hit is None:
+            hit = next((r for r in reversed(reqs) if r.norm == norm and now - r.first_at <= window), None)
+            how = "same text" if hit else None
+            if paging_on is not None and sender_ts is not None:
+                hit = paging_on(hit)
+                hit = hit if hit is not None and hit in reqs else None
+                how = "new timestamp, the page before it unconfirmed" if hit else None
+        if hit is not None:
+            hit.copies += 1
+            hit.last_copy_at = now
+            if sender_ts is not None and len(hit.timestamps) < 16:
+                hit.timestamps.add(sender_ts)
+        else:
+            hit = DmRequest(key, norm, now, {sender_ts} if sender_ts is not None else set())
+            reqs = (reqs + [hit])[-self.PER_SENDER:]
+        self._by_key[key] = reqs
+        if len(self._by_key) > self.SENDERS:
+            live = sorted(((v[-1].first_at, k) for k, v in self._by_key.items() if v and now - v[-1].first_at <= keep),
+                          reverse=True)[: self.SENDERS // 2]
+            self._by_key = {k: self._by_key[k] for _, k in live}
+            self._by_key[key] = reqs
+        return hit, how
+
+
 delivery_tracker = DeliveryTracker(persist_path=Path(settings.data_dir) / "delivery_outcomes.json")
+dm_outbox = DmOutbox(delivery_tracker)

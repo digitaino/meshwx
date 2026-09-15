@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 KINDS = {
     "channel_in": ("in", True),      # text on the request channel
     "dm_in": ("in", True),           # a DM (public view: command only)
+    "dm_copy": ("in", False),        # a sender's app sent an earlier DM request again (never public)
     "data_request": ("in", True),    # an app's `>` request
     "peer": ("in", True),            # another WX-* bot's message, ignored
     "advert": ("in", True),          # a node adverted (we learned/refreshed a contact)
@@ -169,7 +170,8 @@ class TrafficLog:
         direction, public = KINDS[kind]
         if transport is None:
             transport = {"channel_in": "channel", "reply_channel": "channel", "peer": "channel",
-                         "dm_in": "dm", "reply_dm": "dm", "dm_failed": "dm", "admin": "dm"}.get(kind)
+                         "dm_in": "dm", "dm_copy": "dm", "reply_dm": "dm", "dm_failed": "dm",
+                         "admin": "dm"}.get(kind)
         now = time.time()
         ms = None
         if req is not None and "_t0" in req:

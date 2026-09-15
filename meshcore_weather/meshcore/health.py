@@ -48,7 +48,7 @@ def unheard_streak(outcomes: list[tuple]) -> int:
     """Consecutive most recent channel sends with neither echo nor ACK."""
     n = 0
     for row in reversed(outcomes):
-        t, kind, echoed, acked, resent, echo_ms = row
+        t, kind, echoed, acked, resent, echo_ms = row[:6]     # a DM reply row carries a 7th field
         if kind not in CHANNEL_KINDS:
             continue
         if echoed or acked:

@@ -5,6 +5,8 @@ rule fix that followed). Everything under "facts" was
 checked against the v1.17.1 firmware source, the meshcore-py library in the
 venv, real packets on scope.digitaino.com, or the live radios. From "The
 system" on, this describes the code as of 4387a71 (checked 2026-09-15).
+The DM part was rewritten later that day for the request and reply rules
+(section "DM requests and replies").
 
 ## Where we are
 
@@ -81,10 +83,11 @@ One object for the life of the process, shared by every radio connection.
 The radio hands it every `RX_LOG_DATA` frame (always, not only when MQTT is
 on) and every `ACK`.
 
-Every tracked send registers an `Outbound` record: kind (`channel_text`,
-`channel_data` or `dm`), the packet hash (none for a DM), a resend function
-that repeats the send exactly, sent time, attempt number, the DM ack code
-if any, and a reference to the traffic-log event.
+Every tracked channel send registers an `Outbound` record: kind
+(`channel_text` or `channel_data`), the packet hash, a resend function
+that repeats the send exactly, sent time, attempt number, and a reference
+to the traffic-log event. DM replies have their own schedule (section "DM
+requests and replies"); the tracker only routes their ACKs.
 
 - On `RX_LOG_DATA`: parse header and path, hash payload-type + payload. If
   it matches an outstanding record and `path_len ≥ 1`, mark it **echoed**
@@ -93,8 +96,7 @@ if any, and a reference to the traffic-log event.
   `last_repeat_heard_at`: proof that some repeater is in range.
 - On `ACK`: match the code, mark **acked** with the round-trip time.
 - A record's timer fires after the **echo window** (`MCW_ECHO_WINDOW_S`,
-  default 8 s; for a DM the firmware's `suggested_timeout × 1.2`, kept
-  between 3 and 30 s). Time the bot's own event loop spent blocked is added
+  default 8 s). Time the bot's own event loop spent blocked is added
   back, up to one more window: a handler that ran late is no proof that
   nobody repeated us. No echo and no ack means **retransmit**, after
   0.5–2 s of jitter, up to `MCW_RETRANSMIT_MAX` times (default 1), unless:
@@ -117,13 +119,9 @@ if any, and a reference to the traffic-log event.
   compute the hash before sending, register, send with an explicit
   timestamp, resend with the same timestamp. Echoes on the Austin mesh
   normally come back within about 4 s.
-- **DM**: register the ack code from `MSG_SENT`. Resend on no ack; the
-  resend carries the next attempt number, so the firmware expects a new ack
-  code, which replaces the old one. If the DM was never acked and the
-  contact has a direct path, reset the path to flood (what
-  `send_msg_with_retry` does) so the next message does not die on a stale
-  route. DMs are matched on the ACK only: the bot does not compute a DM's
-  hash, so it cannot tell "echoed but not acked" from "not even echoed".
+- **DM**: see "DM requests and replies" below. DMs are matched on the ACK
+  only: the bot does not compute a DM's hash, so it cannot tell "echoed
+  but not acked" from "not even echoed".
 - **Channel datagrams** (`GRP_DATA`: every v5 broadcast, every answer to an
   app request, and the portal's link test): the same echo logic, always on,
   with no separate switch. The scheduler stamps the v5 `seq` into the packet
@@ -132,6 +130,98 @@ if any, and a reference to the traffic-log event.
   and continues after a restart. A resend waits only for the radio's send
   lock, so it can go out after later packets of the same batch.
 - **Adverts** are not tracked.
+
+### DM requests and replies (`DmRequests`, `DmOutbox`)
+
+Stock firmware (v1.15 to v1.17.1) and stock apps, nothing added on the
+phone. The bot's node ACKs every copy of a DM it receives, 200 ms after
+arrival, and the bot cannot know whether that ACK arrived. The sender's app
+alone decides to send again, with the same text and the same timestamp or
+a new one (PocketMesh keeps it, meshcore_py and meshcore-cli change it).
+For its own DMs the bot picks timestamp and attempt. The attempt goes into
+the payload and the expected ACK code, and the node keeps the last 8 codes,
+so an earlier attempt's ACK still arrives. v1.15 relays drop an ACK code
+they already relayed, and attempt 4 repeats attempt 0's code, so attempts
+stop at 3. Phones hide copies on contact, timestamp and text.
+
+Field, 15 Sep, one PocketMesh user on a lossy 2-hop link: 13 replies, 3
+confirmed on the first try, 3 after the resend, 7 never. 7 of 21 DMs were
+copies, 4.7 to 51 s after the first. Replies left within about 1 s of the
+node's own ACK, and one of the pair was often lost. A copy of `more` got
+"That was the whole reply" while page 2 was still undelivered.
+
+- **Tries.** One timestamp per reply message for all its tries, and no two
+  reply messages, to anyone, share one: the ACK code hashes timestamp,
+  attempt, text and the bot's own key, not the recipient. With a
+  stored route: attempts 0 and 1 on the route, then `reset_path` and
+  attempt 2 by flood. With no route: attempts 0 and 1 by flood. Each try
+  waits `suggested_timeout × 1.2`, kept between 3 and 30 s, and the next
+  try follows 0.5 to 2 s later. The route is reset only before the flood
+  try, never after the last one. `MCW_RETRANSMIT_MAX=0` sends attempt 0
+  only. DM tries do not use the hourly retransmit budget or the quiet-mesh
+  check.
+- **Late ACK.** Every attempt's code stays registered. An ACK for any
+  attempt confirms the reply, up to 60 s after the last try; one that comes
+  after the last wait is recorded as a late confirmation. An ACK handled
+  before its try's code is on record (after a stalled event loop) is kept
+  30 s and still counts.
+- **One reply in flight per contact.** Replies to one contact go out in
+  order. The next starts when the one before is confirmed or has failed.
+  Contacts never wait on each other. Channel requests answered by DM and
+  admin DMs join the same queue. At most 5 replies wait per contact.
+- **Pause.** A reply's first try leaves no earlier than
+  `MCW_DM_REPLY_DELAY_S` (2 s) after its request arrived, so the node's own
+  ACK of the request clears the first repeater first. Admin replies wait
+  the same pause.
+- **Copies.** A DM is a copy of an earlier request from the same sender
+  when key prefix, sender timestamp and text (trimmed, spaces collapsed,
+  lower case) match within `MCW_DM_COPY_RETAIN_S` (1800 s), or key prefix
+  and text match within `MCW_DM_COPY_WINDOW_S` (120 s) of the request's
+  first copy. After that the same text is a new request. Copies are
+  recognised under a per-sender lock, before the rate limiter. A copy gets:
+  - nothing, when the reply is confirmed, queued or being tried;
+  - the same reply again, when it failed: attempt 3 by flood on the same
+    timestamp, then, if that fails too and another copy comes, a new
+    message (new timestamp, attempts from 0). A reply the node refused
+    before any try went out starts again from attempt 0, with no route
+    reset. A reply is never rebuilt for
+    a copy, and paging never moves on;
+  - an answer now, when the rate limiter had dropped the request or its
+    handling ended in an error.
+
+  A copy never meets the per-sender spacing. One that gets nothing costs
+  nothing; one that sends something counts against the hourly budgets,
+  which can still refuse it. Each copy is logged with its sender timestamp
+  and its gap from the first copy, and recorded as a `dm_copy` traffic
+  event (admin feed only).
+- **`more`.** People send it again on purpose, so the same text alone does
+  not make a copy. A `more` with the timestamp of an earlier one is a copy.
+  A `more` with a new timestamp is a copy only while the reply to the
+  `more` before it (for the first `more`, to the command that opened the
+  session) is queued, being tried or failed; once that reply is confirmed,
+  it is a new request. A `more` without a timestamp follows the same-text
+  rule. It sends the first page the sender has not confirmed, chosen when
+  the reply is about to go out, not when `more` arrived. It may repeat a
+  page whose ACK was lost; it never skips one. A page sent on the channel
+  counts as delivered. "That was the whole reply" comes only after the last
+  page is confirmed.
+- **`>` requests by DM.** Their answer is channel datagrams, which carry no
+  ACK. A copy is answered again only when the last answer finished going
+  out at least 12 s before (apps resend automatically 5 to 6 s apart; the
+  iOS weather tool asks again after 15 s of silence). The app request
+  limits still apply.
+- **156 bytes.** Every DM reply, page marker included, fits in 156 UTF-8
+  bytes (the limit is 160; v1.15 phones receive at most 156). Pages are cut
+  on bytes as well as characters, never inside a character. Channel
+  replies keep their channel budget.
+- **Record.** A DM reply's row in `data/delivery_outcomes.json` carries a
+  seventh field: `reply` (answer, page, note or admin), `ack_attempt`,
+  `late`, `confirm_ms` (first try to confirmation), `route` (hops at the
+  first try, or `flood`), `tries`, `messages` (timestamps used), `copies`
+  (DMs received for the request, the first included) and `copy_after_try`.
+  No text and no key. The row is updated when the reply goes again, is
+  confirmed late or gets another copy. The file is written at most once a
+  minute, and at shutdown.
 
 ### CoreScope correlation (optional, internet)
 
@@ -160,7 +250,8 @@ This is optional, and weather data never depends on it.
 - Traffic feed, per reply: `echo 1.2 s via D0,3A`, `ack 2.4 s`,
   `resent ×1`, `no echo`, `no ack`, `no echo · not resent: <reason>`, and,
   once CoreScope has answered, the number of observers whose copy came
-  through a repeater (paths in the tooltip).
+  through a repeater (paths in the tooltip). A copy of a DM request shows
+  as its own line with what it got and why.
 - Radio › Health tiles: "Heard" (share of tracked sends echoed or acked in
   the last hour, with sent and resent), "Echo" (median echo delay, and the
   24 h share), "Last heard", "Unheard streak", "Loop lag". The Overview
@@ -172,14 +263,20 @@ This is optional, and weather data never depends on it.
 ### Configuration
 
 ```
-MCW_RETRANSMIT_MAX=1            # 0 turns the whole thing into measurement only
+MCW_RETRANSMIT_MAX=1            # 0 turns the whole thing into measurement only (a DM: attempt 0 only)
 MCW_ECHO_WINDOW_S=8
 MCW_RETRANSMIT_PER_HOUR=30
 MCW_MESH_QUIET_S=600            # no repeat heard from anyone this long: no resend
 MCW_SCOPE_URL=                  # e.g. https://scope.digitaino.com
 MCW_SCOPE_MODE=stats            # stats | decide
 MCW_SCOPE_MIN_OBSERVERS=2       # observers of a REPEATED copy before decide mode skips a resend
+MCW_DM_REPLY_DELAY_S=2.0        # a DM reply's first try, at least this long after its request
+MCW_DM_COPY_WINDOW_S=120        # same sender and text within this of the first copy: a copy
+MCW_DM_COPY_RETAIN_S=1800       # same sender, timestamp and text within this: a copy
 ```
+
+The Pi's `.env` sets none of `MCW_RETRANSMIT_*`, `MCW_ECHO_*` or `MCW_DM_*`,
+so it runs these defaults.
 
 ## Verify before trusting it
 

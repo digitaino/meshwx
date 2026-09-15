@@ -18,10 +18,12 @@ from meshcore_weather.config import settings
 from meshcore_weather.meshcore import profile
 from meshcore_weather.meshcore.delivery import (
     PAYLOAD_GRP_DATA,
+    DmReply,
     Outbound,
     build_channel_data_payload,
     build_channel_payload,
     delivery_tracker,
+    dm_outbox,
     packet_hash,
 )
 from meshcore_weather.mqtt import MqttPublisher
@@ -740,54 +742,60 @@ class MeshcoreRadio:
     _beacon_deprecation_logged = False
 
     async def send_dm(self, pubkey_prefix: str, text: str, ev: dict | None = None) -> bool:
-        """Send a direct message to a contact by their public key prefix and
-        wait for the recipient's ACK; without one it is sent again once, and
-        a direct path that fails twice is reset to flood for next time."""
+        """Send a one-off DM (admin replies). It waits behind replies to the
+        same contact and is tried like them (delivery.DmOutbox). Returns once
+        its first try is on the air; False when it was not sent."""
         if not settings.tx_enabled:
             logger.info("TX disabled — suppressed DM to %s", pubkey_prefix[:8])
             return False
         if not self._mc:
             logger.error("Cannot send DM - not connected")
             return False
-        ts = int(time.time())
+        # Called while its request is handled, so the pause counts from now.
+        return await dm_outbox.submit(DmReply(key=pubkey_prefix, text=text, kind="admin", ev=ev), lambda: self,
+                                      not_before=dm_outbox.clock() + settings.dm_reply_delay_s)
+
+    async def dm_transmit(self, pubkey_prefix: str, text: str, ts: int, attempt: int) -> dict | None:
+        """One try of a DM with the timestamp and attempt the caller picked:
+        {"ack": the code the node expects, "timeout_ms"}, or None if not sent."""
+        if not settings.tx_enabled:
+            logger.info("TX disabled — suppressed DM to %s", pubkey_prefix[:8])
+            return None
+        if not self._mc:
+            logger.error("Cannot send DM - not connected")
+            return None
         try:
-            result = await self._mc.commands.send_msg(pubkey_prefix, text, timestamp=ts)
-            if result.type == EventType.ERROR:
-                logger.warning("DM to %s failed: %s", pubkey_prefix[:8], result.payload)
-                return False
-            logger.info("DM sent to %s: %s", pubkey_prefix[:8], text[:80])
+            result = await self._mc.commands.send_msg(pubkey_prefix, text, timestamp=ts, attempt=attempt)
         except Exception:
             logger.exception("Failed to send DM to %s", pubkey_prefix[:8])
-            return False
-        self._track_dm(pubkey_prefix, text, ts, result.payload or {}, ev)
-        return True
-
-    def _track_dm(self, pubkey_prefix: str, text: str, ts: int, sent: dict, ev: dict | None) -> None:
+            return None
+        if result.type == EventType.ERROR:
+            logger.warning("DM to %s failed: %s", pubkey_prefix[:8], result.payload)
+            return None
+        sent = result.payload or {}
         ack = sent.get("expected_ack")
         ack = ack.hex() if isinstance(ack, (bytes, bytearray)) else (ack or None)
-        if not ack:
+        logger.info("DM sent to %s (ts %d, attempt %d): %s", pubkey_prefix[:8], ts, attempt, text[:80])
+        return {"ack": ack, "timeout_ms": sent.get("suggested_timeout") or 4000}
+
+    def dm_route_len(self, pubkey_prefix: str) -> int | None:
+        """Hops of the contact's stored route; -1 without one (flood); None for no such contact."""
+        contact = self.find_contact_by_key(pubkey_prefix)
+        if not contact:
+            return None
+        try:
+            return int(contact.get("out_path_len", -1))
+        except (TypeError, ValueError):
+            return -1
+
+    async def dm_reset_path(self, pubkey_prefix: str) -> None:
+        contact = self.find_contact_by_key(pubkey_prefix)
+        if not contact or not self._mc:
             return
-        window = min(30.0, max(3.0, sent.get("suggested_timeout", 4000) / 1000 * 1.2))
-
-        async def resend(attempt: int):
-            if not settings.tx_enabled or not self._mc:
-                return False
-            res = await self._mc.commands.send_msg(pubkey_prefix, text, timestamp=ts, attempt=attempt)
-            if res.type == EventType.ERROR:
-                return False
-            logger.info("No ACK from %s: DM sent again (attempt %d)", pubkey_prefix[:8], attempt + 1)
-            code = (res.payload or {}).get("expected_ack")
-            return code.hex() if isinstance(code, (bytes, bytearray)) else (code or True)
-
-        async def give_up():
-            contact = self.find_contact_by_key(pubkey_prefix)
-            if contact and contact.get("out_path_len", -1) >= 0 and self._mc:
-                logger.info("DM to %s never acked on its %d-hop path: resetting to flood",
-                            pubkey_prefix[:8], contact["out_path_len"])
-                await self._mc.commands.reset_path(contact.get("public_key") or pubkey_prefix)
-
-        delivery_tracker.track(Outbound(kind="dm", hash=None, ack=str(ack), resend=resend, ev=ev,
-                                        window_s=window, give_up=give_up))
+        try:
+            await self._mc.commands.reset_path(contact.get("public_key") or pubkey_prefix)
+        except Exception:
+            logger.debug("reset_path failed for %s", pubkey_prefix[:8], exc_info=True)
 
     # -- Contact lookup --
 
@@ -859,12 +867,16 @@ class MeshcoreRadio:
 
         # Sender timestamp and path length tell a client's automatic resend (same
         # timestamp) from a new message: the evidence the delivery design needs.
+        sender_ts = payload.get("sender_timestamp")
+        sender_ts = sender_ts if isinstance(sender_ts, int) else None
+        path_len = payload.get("path_len")
+        path_len = path_len if isinstance(path_len, int) else None
         logger.info("DM from %s (%s, ts %s, path %s): %s", sender_name, pubkey_prefix[:8],
-                    payload.get("sender_timestamp"), payload.get("path_len"), text[:80])
+                    sender_ts, path_len, text[:80])
 
         if self._dm_handler:
             try:
-                await self._dm_handler(pubkey_prefix, sender_name, text)
+                await self._dm_handler(pubkey_prefix, sender_name, text, sender_ts, path_len)
             except Exception:
                 logger.exception("Error in DM handler")
 

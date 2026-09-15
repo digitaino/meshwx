@@ -19,7 +19,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 - **MeshWX v5 for apps.** Warnings with storm tags, polygons and county/zone runs, cancels, an active-warning digest for loss recovery, batched observations, point forecasts, text and "not available", each one MeshCore `GRP_DATA` packet on `#meshwx`. The mesh carries identifiers and numbers; the phone carries the tables. Spec: [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md).
 - **Text replies for people.** Anyone on `#meshwx` can send `wx austin tx`, `warn TX` or `sat`, on the channel or by DM, and get a text reply, by DM where the bot can reach them. Long replies are paged with `more`. This is how people without the app use the bot.
 - **One request grammar for apps and people.** An app sends `>f 102` and gets a binary answer on the channel for every listener; a person sends `forecast austin tx` and gets text.
-- **Delivery confirmation.** The radio hears a repeater's copy of each channel packet the bot sends. When none comes back within the echo window, the packet goes out once more, byte for byte the same, so nobody sees it twice. DMs wait for the recipient's ACK instead.
+- **Delivery confirmation.** The radio hears a repeater's copy of each channel packet the bot sends. When none comes back within the echo window, the packet goes out once more, byte for byte the same, so nobody sees it twice. DM replies wait for the recipient's ACK instead: about 2 s after the request, one at a time per person, one timestamp for all tries (attempts 0 and 1 on the route, then one by flood). A phone's resend of a request is not answered twice.
 - **Discovery by advert.** The node is named `WX-<city>` (e.g. `WX-AUS`); apps list adverts whose name starts with `WX-`. No discovery channel, no beacon.
 - **A broadcast schedule** of four v5 jobs (warnings on change, digest, observations, home forecast), edited in the portal and kept in `data/broadcast_config.json`.
 - **Radio swaps.** The bot keeps a profile of its node (identity key, name, position, LoRa settings, contacts) and can write it onto a replacement radio, asking first by default. See [`docs/Radio_Swap.md`](docs/Radio_Swap.md).
@@ -40,6 +40,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 | MeshWX v5 wire format, spec revision 3 | shipped |
 | Text replies for people, paged with `more` | shipped |
 | Echo tracking and one byte-identical resend | shipped |
+| DM replies: ACK tries, one reply at a time per person, resends of a request recognised | shipped |
 | Radio swap: node profile, adoption, health verdict | shipped |
 | Receiver status (`sat`, `>sat`) | shipped |
 | Admin portal and public dashboard | shipped |
@@ -364,13 +365,16 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MCW_RETRANSMIT_MAX` | `1` | Resends of a packet nobody repeated (or a DM nobody acknowledged); `0` = measure only |
+| `MCW_RETRANSMIT_MAX` | `1` | Resends of a channel packet nobody repeated; `0` = measure only, and a DM reply gets attempt 0 only |
 | `MCW_ECHO_WINDOW_S` | `8.0` | Seconds to wait for a repeater's echo before resending |
 | `MCW_RETRANSMIT_PER_HOUR` | `30` | Resends allowed per hour |
 | `MCW_MESH_QUIET_S` | `600` | When no repeat has been heard from anyone for this many seconds, skip the resend |
 | `MCW_SCOPE_URL` | *(empty)* | CoreScope instance to ask who heard a packet; empty = off |
 | `MCW_SCOPE_MODE` | `stats` | `stats` records the observers; `decide` also skips a resend CoreScope saw repeated |
 | `MCW_SCOPE_MIN_OBSERVERS` | `2` | Observers of a repeated copy needed before it counts |
+| `MCW_DM_REPLY_DELAY_S` | `2.0` | A DM reply's first try leaves at least this long after its request arrived |
+| `MCW_DM_COPY_WINDOW_S` | `120` | A DM with the same sender and text within this many seconds of the first is a copy of that request |
+| `MCW_DM_COPY_RETAIN_S` | `1800` | A DM with the same sender, timestamp and text within this many seconds is a copy |
 
 **EMWIN**
 
@@ -489,16 +493,29 @@ started on the channel continues by DM. A paging session lasts 15 minutes.
     nothing.
   - `dm_only`: a DM or nothing.
   - `channel`: every reply floods on the channel, paged like a DM. For testing.
-- A DM that fails is not retried on the channel; the bot forgets that
-  sender's DM path, so their next channel command is handled like a
-  stranger's.
+- A DM reply leaves about 2 s after the request and waits for the phone's
+  ACK: attempts 0 and 1 on the stored route, then a route reset and
+  attempt 2 by flood (0 and 1 by flood without a route), all with one
+  timestamp. Replies to one person go one at a time, in order.
+- A phone that hears no ACK sends its DM again. The same text within 2
+  minutes, or the same timestamp and text within 30 minutes, is the same
+  request: it gets nothing if the reply was acknowledged or is still going
+  out, and the same reply again if it was never acknowledged. `more` with a
+  new timestamp is a new request once the page before it was acknowledged,
+  and sends the first page not acknowledged.
+- A DM the node refuses to send is not retried on the channel; the bot
+  forgets that sender's DM path, so their next channel command is handled
+  like a stranger's.
 - Messages from nodes whose name starts with `MCW_PEER_BOT_PREFIX` are
   ignored. When a peer bot's advert carries a position, a channel command
   that names a place is answered only by the bot nearest to that place.
 
 Limits: one reply per sender every 5 seconds (2 seconds for `more`), at most
 40 per sender and 400 in total per hour; a `>` request sent by DM counts
-too. Anything over a limit gets no reply.
+too. Anything over a limit gets no reply. A resend of a DM request is never
+held to the 5 seconds and costs nothing unless something is sent for it; a
+`>` request resent by DM is answered again only 12 seconds after the last
+answer went out.
 
 ### Admin commands
 

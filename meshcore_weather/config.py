@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     scope_url: str = ""
     scope_mode: str = "stats"
     scope_min_observers: int = 2          # observers that heard a REPEATED copy before it counts
+    # DM requests. A sender's app sends a DM again when it hears no ACK, with
+    # the same text and the same or a new timestamp. Such a copy of a request
+    # is never answered twice: same sender, timestamp and text within
+    # dm_copy_retain_s, or same sender and text within dm_copy_window_s of
+    # the request's first copy. After that the same text is a new request.
+    dm_copy_window_s: int = 120
+    dm_copy_retain_s: int = 1800
+    # A DM reply leaves no earlier than this after its request arrived, so
+    # the node's own ACK of the request clears the first repeater first.
+    dm_reply_delay_s: float = 2.0
     # Radio hardware swaps. The bot keeps a profile of its node (identity key,
     # name, position, LoRa parameters, TX power, contacts) in
     # data/node_profile.json. When a different radio answers on the port:
