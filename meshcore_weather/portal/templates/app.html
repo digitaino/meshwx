@@ -405,6 +405,9 @@
                 <span class="form-hint">Optional, internet. Empty = off.</span></div>
               <div><label class="form-label" for="env-MCW_SCOPE_MODE">CoreScope use <span class="badge badge-muted">live</span></label>
                 <select class="input" id="env-MCW_SCOPE_MODE"><option value="stats">stats: note who heard each reply</option><option value="decide">decide: also skip a resend the mesh observed</option></select></div>
+              <div><label class="form-label" for="env-MCW_SCOPE_MIN_OBSERVERS">Observers of a repeat needed <span class="badge badge-muted">live</span></label>
+                <input class="input" type="number" min="1" max="20" id="env-MCW_SCOPE_MIN_OBSERVERS">
+                <span class="form-hint">Only observers whose copy went through a repeater count. One neighbour hearing us direct proves nothing.</span></div>
             </div>
             <div class="flex gap-2" style="align-items:center;flex-wrap:wrap">
               <button class="btn btn-primary" onclick="Portal.settings.save(this, 'host')">Save</button>

@@ -194,8 +194,8 @@ fetch('/api/state').then(r=>r.json()).then(render).finally(connect);
 // ---- mesh weather bot (read-only bundle proxied from the bot's portal) ----
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let botLastId=0,botFeedInit=false,botStarted=null;
-function dvKey(ev){const d=ev.delivery;return d?`${d.result||''}${d.resent||0}${d.observed_by||0}`:''}
-function dlv(d){if(!d)return '';let t=d.acked?`ack${d.rtt_ms!=null?' '+(d.rtt_ms/1000).toFixed(1)+' s':''}`:d.echo?`repeated${d.echo_ms!=null?' '+(d.echo_ms/1000).toFixed(1)+' s':''}${d.via?' via '+esc(d.via):''}`:d.result==='skipped'?'no repeat heard':'no repeat heard';if(d.resent)t+=` · resent ×${d.resent}`;if(d.observed_by)t+=` · heard by ${d.observed_by} observer${d.observed_by===1?'':'s'}`;return ` <span class="t">[${t}]</span>`}
+function dvKey(ev){const d=ev.delivery;return d?`${d.result||''}${d.resent||0}${d.observed_by||0}${d.observed_repeats||0}`:''}
+function dlv(d){if(!d)return '';let t=d.acked?`ack${d.rtt_ms!=null?' '+(d.rtt_ms/1000).toFixed(1)+' s':''}`:d.echo?`repeated${d.echo_ms!=null?' '+(d.echo_ms/1000).toFixed(1)+' s':''}${d.via?' via '+esc(d.via):''}`:'no repeat heard';if(d.resent)t+=` · resent ×${d.resent}`;const rep=d.observed_repeats||0,dir=(d.observed_by||0)-rep;if(rep)t+=` · repeat heard by ${rep} observer${rep===1?'':'s'}`;if(dir)t+=` · ${dir} heard it direct only`;return ` <span class="t">[${t}]</span>`}
 function botLine(ev){const ts=new Date(ev.t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
  const tr=ev.transport==='channel'?'CH':ev.transport==='dm'?'DM':ev.kind.startsWith('advert')?'ADV':'';const who=ev.sender?`<span class="who">${esc(ev.sender)}</span> `:'';
  const cmd=ev.command?` <span class="t">[${esc(ev.command)}${ev.location?' · '+esc(ev.location):''}]</span>`:'';let cls='in',body='';

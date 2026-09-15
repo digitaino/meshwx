@@ -37,6 +37,7 @@ ENV_WRITABLE = {
     "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
     "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE",
     "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
+    "MCW_SCOPE_MIN_OBSERVERS",
 }
 
 # Radio presets an operator can apply with one click.
@@ -658,12 +659,14 @@ _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADI
               "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_TX_ENABLED",
               "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
               "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE", "MCW_SDR_DASHBOARD_URL",
-              "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE"}
+              "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
+              "MCW_SCOPE_MIN_OBSERVERS"}
 
 # Value checks, run before anything touches .env: a bad value must never be
 # persisted, because the next start would refuse the file.
 _INT_KEYS = {"MCW_SERIAL_BAUD", "MCW_HOME_RADIUS_KM", "MCW_SDR_POLL_INTERVAL", "MCW_CHANNEL_REPLY_MAX_HOPS",
-             "MCW_ADVERT_INTERVAL_HOURS", "MCW_CONTACT_KEEP_FREE", "MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR"}
+             "MCW_ADVERT_INTERVAL_HOURS", "MCW_CONTACT_KEEP_FREE", "MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR",
+             "MCW_SCOPE_MIN_OBSERVERS"}
 _FLOAT_KEYS = {"MCW_ECHO_WINDOW_S"}
 _BOOL_KEYS = {"MCW_TX_ENABLED", "MCW_CONTACT_HOUSEKEEPING"}
 _CHOICES = {"MCW_REPLY_MODE": ("dm", "channel", "dm_only"), "MCW_EMWIN_SOURCE": ("sdr", "internet"),
@@ -724,8 +727,8 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
             settings.contact_housekeeping = val.strip().lower() in _TRUE
         elif key == "MCW_CONTACT_KEEP_FREE":
             settings.contact_keep_free = max(0, int(val))
-        elif key in ("MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR"):
-            setattr(settings, key[4:].lower(), int(val))
+        elif key in ("MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_MIN_OBSERVERS"):
+            setattr(settings, key[4:].lower(), max(1, int(val)) if key == "MCW_SCOPE_MIN_OBSERVERS" else int(val))
         elif key == "MCW_ECHO_WINDOW_S":
             settings.echo_window_s = float(val)
         elif key == "MCW_SCOPE_URL":

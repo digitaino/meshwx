@@ -208,8 +208,10 @@ class DeliveryTracker:
                     break
                 if settings.scope_url and settings.scope_mode == "decide" and ob.hash:
                     ob.observed = await scope_lookup(settings.scope_url, ob.hash, ob.ptype)
-                    if ob.observed:
-                        ob.skipped = "seen by CoreScope"
+                    # Only a repeated copy proves a repeater carried it; an
+                    # observer next door hearing us direct proves nothing.
+                    if ob.observed and ob.observed["repeated_by"] >= settings.scope_min_observers:
+                        ob.skipped = f"CoreScope: {ob.observed['repeated_by']} observers heard a repeat"
                         break
                 await asyncio.sleep(random.uniform(0.5, 2.0))
                 if ob.heard:
@@ -279,7 +281,8 @@ class DeliveryTracker:
                 "acked": ob.acked_at is not None, "rtt_ms": rtt_ms,
                 "attempts": ob.attempts, "resent": ob.attempts - 1, "skipped": ob.skipped,
                 "observed_by": (ob.observed or {}).get("observers"),
-                "observer": (ob.observed or {}).get("observer")}
+                "observed_repeats": (ob.observed or {}).get("repeated_by"),
+                "observed_paths": (ob.observed or {}).get("paths")}
 
     # -- for the portal --
 
@@ -304,22 +307,47 @@ class DeliveryTracker:
 
 
 async def scope_lookup(url: str, hash_hex: str, ptype: int, timeout: float = 3.0) -> dict | None:
-    """Ask a CoreScope instance whether any observer heard the packet. The
-    search parameter does not match hashes, so this scans the last 15
-    minutes of the packet type and matches on our side. Fail-soft."""
+    """Ask a CoreScope instance who heard the packet and how. The search
+    parameter does not match hashes, so this scans the last 15 minutes of
+    the packet type, matches on our side, then reads every observation:
+    `observers` = distinct observers, `repeated_by` = distinct observers
+    whose copy had at least one repeater in its path (the only ones that
+    prove a repeat), `direct_by` = observers that heard us zero-hop. Fail-soft."""
     try:
         import httpx
+        base = url.rstrip("/")
         async with httpx.AsyncClient(timeout=timeout) as c:
-            r = await c.get(url.rstrip("/") + "/api/packets",
-                            params={"timeRange": "15m", "type": str(ptype), "limit": "300"})
+            r = await c.get(base + "/api/packets", params={"timeRange": "15m", "type": str(ptype), "limit": "300"})
             r.raise_for_status()
-            for p in r.json().get("packets", []):
-                if p.get("hash") == hash_hex:
-                    return {"observers": p.get("observation_count"), "observer": p.get("observer_name"),
-                            "path": p.get("_parsedPath")}
+            hit = next((p for p in r.json().get("packets", []) if p.get("hash") == hash_hex), None)
+            if hit is None:
+                return None
+            r = await c.get(f"{base}/api/packets/{hit['id']}")
+            r.raise_for_status()
+            return summarize_observations(r.json().get("observations") or [])
     except Exception as e:
         logger.debug("CoreScope lookup failed: %s", e)
     return None
+
+
+def summarize_observations(observations: list[dict]) -> dict:
+    import json as _json
+    repeated, direct, paths = set(), set(), set()
+    for o in observations:
+        who = o.get("observer_id") or o.get("observer_name") or "?"
+        path = o.get("path_json") or o.get("path") or []
+        if isinstance(path, str):
+            try:
+                path = _json.loads(path)
+            except ValueError:
+                path = []
+        if path:
+            repeated.add(who)
+            paths.add(",".join(str(h).upper() for h in path))
+        else:
+            direct.add(who)
+    return {"observers": len(repeated | direct), "repeated_by": len(repeated), "direct_by": len(direct - repeated),
+            "paths": sorted(paths)[:4]}
 
 
 delivery_tracker = DeliveryTracker()

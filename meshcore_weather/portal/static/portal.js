@@ -68,10 +68,14 @@ function deliveryBadge(d) {
   var b = "";
   if (d.acked) b += ' <span class="badge badge-success" title="the recipient acknowledged it">ack ' + (d.rtt_ms != null ? (d.rtt_ms / 1000).toFixed(1) + " s" : "") + "</span>";
   else if (d.echo) b += ' <span class="badge badge-success" title="a repeater repeated it">echo ' + (d.echo_ms != null ? (d.echo_ms / 1000).toFixed(1) + " s" : "") + (d.via ? " via " + esc(d.via) : "") + "</span>";
-  else if (d.result === "skipped") b += ' <span class="badge badge-muted" title="' + esc(d.skipped) + '">no echo · not resent</span>';
+  else if (d.result === "skipped") b += ' <span class="badge badge-warning">no echo · not resent: ' + esc(d.skipped) + "</span>";
   else b += ' <span class="badge badge-danger">' + (d.result === "no_ack" ? "no ack" : "no echo") + "</span>";
   if (d.resent) b += ' <span class="badge badge-warning">resent ×' + d.resent + "</span>";
-  if (d.observed_by) b += ' <span class="badge badge-muted" title="CoreScope">heard by ' + d.observed_by + " observer" + (d.observed_by === 1 ? "" : "s") + "</span>";
+  if (d.observed_by) {
+    var rep = d.observed_repeats || 0, direct = d.observed_by - rep;
+    b += rep ? ' <span class="badge ' + (rep >= 2 ? "badge-success" : "badge-muted") + '" title="CoreScope: observers whose copy came through a repeater' + (d.observed_paths ? ": " + esc(d.observed_paths.join(" | ")) : "") + '">repeat heard by ' + rep + " observer" + (rep === 1 ? "" : "s") + "</span>" : "";
+    if (direct) b += ' <span class="badge badge-muted" title="CoreScope: heard us at zero hops, proves no repeat">direct only: ' + direct + "</span>";
+  }
   return b;
 }
 
@@ -999,7 +1003,7 @@ var Portal = {
     _groups: {
       coverage: ["MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_HOME_STATES", "MCW_HOME_WFOS"],
       host: ["MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR", "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_TIMEZONE", "MCW_LOG_LEVEL",
-             "MCW_SCOPE_URL", "MCW_SCOPE_MODE"],
+             "MCW_SCOPE_URL", "MCW_SCOPE_MODE", "MCW_SCOPE_MIN_OBSERVERS"],
     },
     load: function () {
       var self = this;

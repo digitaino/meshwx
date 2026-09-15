@@ -1,6 +1,7 @@
 # Delivery confirmation and retransmit: design
 
-2026-09-15. A design, not yet implemented. Everything under "facts" was
+2026-09-15. Implemented the same day (commit 6af542e and the CoreScope
+rule fix that followed). Everything under "facts" was
 checked against the v1.17.1 firmware source, the meshcore-py library in the
 venv, real packets on scope.digitaino.com, or the live radios.
 
@@ -119,9 +120,11 @@ Off unless `MCW_SCOPE_URL` is set (for us: `https://scope.digitaino.com`).
 Two uses, both fail-soft with a 3 s timeout, never in the send path:
 
 - `MCW_SCOPE_MODE=decide`: when the echo window passes with no local echo,
-  one query; if any observer saw the hash, record `observed_by` and skip
-  the retransmit. Catches the case where our node did not hear the repeat
-  but the mesh did.
+  one query. Only observers whose copy carries a repeater in its path
+  count (`repeated_by`); an observer next door that heard us at zero hops
+  proves nothing. At least `MCW_SCOPE_MIN_OBSERVERS` (default 2) of them
+  are needed before the retransmit is skipped. Catches the case where our
+  node did not hear the repeat but the mesh did.
 - `MCW_SCOPE_MODE=stats` (default when a URL is set): 30–60 s after every
   reply, one query to fill in how many observers heard it and through which
   repeaters. This becomes "heard by 4 observers via D0, 3A" on the feed and
@@ -148,6 +151,7 @@ MCW_RETRANSMIT_PER_HOUR=30
 MCW_RETRANSMIT_BROADCASTS=false
 MCW_SCOPE_URL=                  # e.g. https://scope.digitaino.com
 MCW_SCOPE_MODE=stats            # stats | decide
+MCW_SCOPE_MIN_OBSERVERS=2       # observers of a REPEATED copy before decide mode skips a resend
 ```
 
 ## Verify before trusting it

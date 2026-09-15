@@ -122,6 +122,35 @@ def test_budgets_and_a_quiet_mesh_skip_the_retransmit(fast, monkeypatch):
     assert sends == [1] and ob.skipped == "budget: hourly retransmits spent"
 
 
+def test_corescope_only_vetoes_a_resend_when_repeats_were_observed(fast, monkeypatch):
+    from meshcore_weather.meshcore.delivery import summarize_observations
+    obs = [{"observer_id": "A", "path_json": "[]"}, {"observer_id": "A", "path_json": '["AB"]'},
+           {"observer_id": "B", "path_json": '["AB","78"]'}, {"observer_id": "C", "path_json": []}]
+    assert summarize_observations(obs) == {"observers": 3, "repeated_by": 2, "direct_by": 1, "paths": ["AB", "AB,78"]}
+
+    monkeypatch.setattr(settings, "scope_url", "https://scope.example")
+    monkeypatch.setattr(settings, "scope_mode", "decide")
+    monkeypatch.setattr(settings, "scope_min_observers", 2)
+    answers = []
+
+    async def fake_lookup(url, h, ptype):
+        return answers.pop(0)
+    monkeypatch.setattr(delivery, "scope_lookup", fake_lookup)
+
+    sends = []
+    answers.append({"observers": 1, "repeated_by": 0, "direct_by": 1, "paths": []})   # a neighbour, zero hops
+    ob = _outbound(sends)
+    _track(fast, ob)
+    assert sends == [1] and ob.skipped is None                # proves nothing: resent anyway
+
+    answers.append({"observers": 3, "repeated_by": 2, "direct_by": 1, "paths": ["AB"]})
+    answers.append(None)
+    ob = _outbound(sends)
+    _track(fast, ob)
+    assert sends == [1] and ob.skipped == "CoreScope: 2 observers heard a repeat"
+    assert fast.outcome(ob)["observed_repeats"] == 2
+
+
 def test_dm_uses_the_ack_and_re_registers_the_new_code(fast):
     sends, gave_up = [], []
 
