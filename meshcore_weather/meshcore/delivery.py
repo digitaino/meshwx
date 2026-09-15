@@ -127,9 +127,15 @@ class Outbound:
     echo_snr: float | None = None
     acked_at: float | None = None
     skipped: str | None = None
-    observed: dict | None = None
+    observed: dict | None = None                 # the SETTLED CoreScope reading, the only one fit to show
+    probe: dict | None = None                    # what CoreScope said at resend-decision time, seconds in
     lag_given_s: float = 0.0                     # window extended by a blocked loop
+    last_tx_at: float = 0.0                      # the transmission an echo is timed against
     done: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self) -> None:
+        if not self.last_tx_at:
+            self.last_tx_at = self.sent_at
 
     @property
     def heard(self) -> bool:
@@ -356,11 +362,17 @@ class DeliveryTracker:
                     ob.skipped = reason
                     break
                 if settings.scope_url and settings.scope_mode == "decide" and ob.hash:
-                    ob.observed = await scope_lookup(settings.scope_url, ob.hash, ob.ptype)
+                    # This runs seconds after the send, while observers are
+                    # still reporting, so it is only ever good enough to veto
+                    # a resend. It never becomes the observer count on the
+                    # record: that comes from the settled read in _finish.
+                    ob.probe = await scope_lookup(settings.scope_url, ob.hash, ob.ptype)
+                    logger.info("CoreScope probe %s after %.1fs: %s", ob.hash, time.time() - ob.sent_at,
+                                ob.probe or "no answer (packet not in the page, or the lookup failed)")
                     # Only a repeated copy proves a repeater carried it; an
                     # observer next door hearing us direct proves nothing.
-                    if ob.observed and ob.observed["repeated_by"] >= settings.scope_min_observers:
-                        ob.skipped = f"CoreScope: {ob.observed['repeated_by']} observers heard a repeat"
+                    if ob.probe and ob.probe["repeated_by"] >= settings.scope_min_observers:
+                        ob.skipped = f"CoreScope: {ob.probe['repeated_by']} observers heard a repeat"
                         break
                 await asyncio.sleep(random.uniform(0.5, 2.0))
                 if ob.heard:
@@ -372,6 +384,8 @@ class DeliveryTracker:
                 except Exception as e:
                     logger.warning("Retransmit failed: %s", e)
                     res = False
+                if res is not False:
+                    ob.last_tx_at = time.time()
                 ob.attempts += 1
                 if res is False:
                     break
@@ -395,7 +409,9 @@ class DeliveryTracker:
             traffic_log.update(ob.ev, delivery=d, push=True)
         logger.info("Delivery %s: %s", ob.kind, d["result"] + (f" via {fmt_path(ob.via)}" if ob.via else "") +
                     (f" ({d['echo_ms']} ms)" if d.get("echo_ms") is not None else "") +
-                    (f", {ob.attempts - 1} retransmit" if ob.attempts > 1 else "") +
+                    (f", {ob.attempts - 1} retransmit, {d['echo_total_ms']} ms from the first send"
+                     if ob.attempts > 1 and d.get("echo_total_ms") is not None else
+                     f", {ob.attempts - 1} retransmit" if ob.attempts > 1 else "") +
                     (f", waited {ob.lag_given_s:.1f}s longer for a stalled loop" if ob.lag_given_s else ""))
         if not ob.heard and ob.give_up is not None:
             try:
@@ -429,8 +445,14 @@ class DeliveryTracker:
 
     @staticmethod
     def outcome(ob: Outbound) -> dict:
-        echo_ms = int((ob.echoed_at - ob.sent_at) * 1000) if ob.echoed_at else None
-        rtt_ms = int((ob.acked_at - ob.sent_at) * 1000) if ob.acked_at else None
+        # Timed against the transmission that was echoed, not against the
+        # first one: a resent packet is byte-identical, so measuring from the
+        # original reported the echo window and the back-off as if they were
+        # mesh latency (10.8 s for a mesh that answered in under a second).
+        echo_ms = int((ob.echoed_at - ob.last_tx_at) * 1000) if ob.echoed_at else None
+        rtt_ms = int((ob.acked_at - ob.last_tx_at) * 1000) if ob.acked_at else None
+        echo_total_ms = int((ob.echoed_at - ob.sent_at) * 1000) if ob.echoed_at else None
+        rtt_total_ms = int((ob.acked_at - ob.sent_at) * 1000) if ob.acked_at else None
         if ob.acked_at:
             result = "acked"
         elif ob.echoed_at:
@@ -440,6 +462,7 @@ class DeliveryTracker:
         else:
             result = "no_ack" if ob.kind == "dm" else "no_echo"
         return {"result": result, "echo": ob.echoed_at is not None, "echo_ms": echo_ms,
+                "echo_total_ms": echo_total_ms, "rtt_total_ms": rtt_total_ms,
                 "via": fmt_path(ob.via) if ob.via else None, "snr": ob.echo_snr,
                 "acked": ob.acked_at is not None, "rtt_ms": rtt_ms,
                 "attempts": ob.attempts, "resent": ob.attempts - 1, "skipped": ob.skipped,
@@ -474,8 +497,12 @@ class DeliveryTracker:
 
 async def scope_lookup(url: str, hash_hex: str, ptype: int, timeout: float = 3.0) -> dict | None:
     """Ask a CoreScope instance who heard the packet and how. The search
-    parameter does not match hashes, so this scans the last 15 minutes of
-    the packet type, matches on our side, then reads every observation:
+    parameter does not match hashes, so this pulls a page of this packet
+    type and matches on our side. NB the server ignores `timeRange`: a
+    "15m" query returns packets days old. What saves it is the ordering,
+    newest first, so a packet seconds old sits at the top of the page and
+    `limit` is what really governs the reach. Then it reads every
+    observation:
     `observers` = distinct observers, `repeated_by` = distinct observers
     whose copy had at least one repeater in its path (the only ones that
     prove a repeat), `direct_by` = observers that heard us zero-hop. Fail-soft."""
@@ -485,8 +512,10 @@ async def scope_lookup(url: str, hash_hex: str, ptype: int, timeout: float = 3.0
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.get(base + "/api/packets", params={"timeRange": "15m", "type": str(ptype), "limit": "300"})
             r.raise_for_status()
-            hit = next((p for p in r.json().get("packets", []) if p.get("hash") == hash_hex), None)
+            page = r.json().get("packets", [])
+            hit = next((p for p in page if p.get("hash") == hash_hex), None)
             if hit is None:
+                logger.debug("CoreScope: %s not in the %d newest type-%d packets", hash_hex, len(page), ptype)
                 return None
             r = await c.get(f"{base}/api/packets/{hit['id']}")
             r.raise_for_status()

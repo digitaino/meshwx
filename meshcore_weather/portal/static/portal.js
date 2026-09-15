@@ -67,10 +67,17 @@ function deliveryBadge(d) {
   if (!d) return "";
   var b = "";
   if (d.acked) b += ' <span class="badge badge-success" title="the recipient acknowledged it">ack ' + (d.rtt_ms != null ? (d.rtt_ms / 1000).toFixed(1) + " s" : "") + "</span>";
-  else if (d.echo) b += ' <span class="badge badge-success" title="a repeater repeated it">echo ' + (d.echo_ms != null ? (d.echo_ms / 1000).toFixed(1) + " s" : "") + (d.via ? " via " + esc(d.via) : "") + "</span>";
+  else if (d.echo) {
+    var tip = "a repeater repeated it, timed from the transmission that was echoed";
+    if (d.resent && d.echo_total_ms != null) tip += ". " + (d.echo_total_ms / 1000).toFixed(1) + " s since the first send; the resend is byte-identical so we cannot tell which copy came back";
+    b += ' <span class="badge badge-success" title="' + tip + '">echo ' + (d.echo_ms != null ? (d.echo_ms / 1000).toFixed(1) + " s" : "") + (d.via ? " via " + esc(d.via) : "") + "</span>";
+  }
   else if (d.result === "skipped") b += ' <span class="badge badge-warning">no echo · not resent: ' + esc(d.skipped) + "</span>";
   else b += ' <span class="badge badge-danger">' + (d.result === "no_ack" ? "no ack" : "no echo") + "</span>";
   if (d.resent) b += ' <span class="badge badge-warning">resent ×' + d.resent + "</span>";
+  // Only the settled CoreScope reading lands here. The probe taken to decide
+  // the resend is seconds old and used to render as "direct only: 1" on
+  // exactly the replies the mesh had in fact carried.
   if (d.observed_by) {
     var rep = d.observed_repeats || 0, direct = d.observed_by - rep;
     b += rep ? ' <span class="badge ' + (rep >= 2 ? "badge-success" : "badge-muted") + '" title="CoreScope: observers whose copy came through a repeater' + (d.observed_paths ? ": " + esc(d.observed_paths.join(" | ")) : "") + '">repeat heard by ' + rep + " observer" + (rep === 1 ? "" : "s") + "</span>" : "";

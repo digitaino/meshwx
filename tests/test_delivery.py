@@ -148,7 +148,8 @@ def test_corescope_only_vetoes_a_resend_when_repeats_were_observed(fast, monkeyp
     ob = _outbound(sends)
     _track(fast, ob)
     assert sends == [1] and ob.skipped == "CoreScope: 2 observers heard a repeat"
-    assert fast.outcome(ob)["observed_repeats"] == 2
+    assert ob.probe["repeated_by"] == 2                       # the decision used it
+    assert fast.outcome(ob)["observed_repeats"] is None       # but it never reaches the record
 
 
 def test_dm_uses_the_ack_and_re_registers_the_new_code(fast):
@@ -290,3 +291,47 @@ def test_loop_lag_is_judged_on_a_window_not_on_the_whole_run():
     assert lag.pct == 0.0 and lag.recent_worst == 0.0    # aged out of the window
     st = lag.stats()
     assert st["total_s"] == 30.0 and st["worst_s"] == 5.4 and st["pct"] == 0.0
+
+
+def test_the_resend_decision_probe_never_becomes_the_observer_count(fast, monkeypatch):
+    """The probe runs seconds after the send, while observers are still
+    reporting. Showing it read "direct only: 1" on replies the mesh had
+    already carried to fourteen observers."""
+    monkeypatch.setattr(settings, "scope_url", "https://scope.example")
+    monkeypatch.setattr(settings, "scope_mode", "decide")
+    monkeypatch.setattr(settings, "scope_min_observers", 2)
+    thin = {"observers": 1, "repeated_by": 0, "direct_by": 1, "paths": []}
+
+    async def fake_lookup(url, h, ptype):
+        return thin
+    monkeypatch.setattr(delivery, "scope_lookup", fake_lookup)
+    sends = []
+    ob = _outbound(sends)
+    _track(fast, ob)
+    assert ob.probe == thin and ob.observed is None
+    d = fast.outcome(ob)
+    assert d["observed_by"] is None and d["observed_repeats"] is None
+
+
+def test_echo_is_timed_against_the_transmission_that_was_echoed(fast):
+    """A resent packet is byte-identical, so timing from the first send
+    reported the echo window plus the back-off as mesh latency."""
+    sends, payload = [], b"\x11\x00\x00" + b"\x00" * 16
+    h = packet_hash(5, payload)
+    ob = _outbound(sends, h, ev={"delivery": None})
+    ob.window_s = 0.2
+
+    async def run():
+        task = fast.track(ob)
+        while not sends:                              # first window lapses, it resends
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.02)                     # the resend is on the air
+        fast.on_rx_log(_echo_raw(payload))            # and this is its echo
+        await task
+
+    asyncio.run(run())
+    assert sends == [1] and ob.attempts == 2
+    d = fast.outcome(ob)
+    assert d["echo"] and d["resent"] == 1
+    assert d["echo_ms"] < d["echo_total_ms"]          # since the resend, not since the first send
+    assert d["echo_ms"] < 120 and d["echo_total_ms"] >= 180
