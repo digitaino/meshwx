@@ -2,8 +2,10 @@
 
 Everything specific to the CoreScope packet analyzer + the regional
 observer network it ingests from. The weather bot itself lives under
-`meshcore_weather/`; the two stacks share `docker-compose.yml` and
-`.env` at the repo root but are otherwise independent.
+`meshcore_weather/`; the two stacks share `docker-compose.yml` at the repo
+root but are otherwise independent (the CoreScope services read their own
+config under `corescope/`, not the root `.env`). In production the bot runs
+on the receiver Pi under systemd, outside that compose file.
 
 ## Layout
 
@@ -80,8 +82,10 @@ firmware-flashed observer setup steps, see
 
 ## Where the bot fits in
 
-The weather bot publishes its own radio's RX packets to the same
-broker (under the `weatherbot` MQTT user). It's just another packet
-source from CoreScope's perspective. The wiring lives in
-`meshcore_weather/mqtt/publisher.py` and is gated by
-`MCW_MQTT_ENABLED` in the root `.env`.
+With `MCW_MQTT_ENABLED=true` in the bot's `.env` (default `false`), the
+weather bot publishes its own radio's RX packets to the legacy Mosquitto
+broker (`MCW_MQTT_HOST`, default `mosquitto`; `mosquitto/passwords.example`
+names the user `weatherbot`). It's just another packet source from
+CoreScope's perspective. The wiring lives in
+`meshcore_weather/mqtt/publisher.py`. On 2026-09-15 the production bot on
+the receiver Pi does not publish: there is no broker on the Pi.

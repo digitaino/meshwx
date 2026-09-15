@@ -2,15 +2,17 @@
 
 > **Status: idea, parked for later.** This document captures the concept and feasibility analysis so it can be picked up again in a future session without losing context. Nothing here is implemented yet.
 
+> 2026-09-15: statements about the bot and the protocol updated for MeshWX v5 (`docs/MeshWX_v5_Spec.md`). The v3/v4 messages, COBS framing, radar grid, FEC parity and discovery beacons this page first built on are retired.
+
 ## The concept
 
 A small, low-power, standalone hardware device that:
 
 - Houses an MCU (ESP32 or nRF52) + LoRa radio + e-ink display + battery
-- Joins the bot's MeshWX broadcast channel as a passive receiver
-- Decodes the bot's binary weather broadcasts (`0x10` radar, `0x20`/`0x21` warnings, `0x30` observation, `0x31` forecast)
+- Joins the bot's `#meshwx` channel as a passive receiver
+- Decodes the bot's v5 datagrams (MeshCore `GRP_DATA`, `data_type 0xFF10`: warning, cancel, digest, observations, forecast)
 - Renders a weather dashboard to the e-ink display
-- Updates automatically on each broadcast cycle (typically hourly)
+- Updates automatically on each broadcast (observations hourly, home forecast every 6 hours, warnings when they change)
 - Runs for months on a single charge, indefinitely with a small solar panel
 - Costs ~$30-50 in parts at hobbyist scale, sub-$20 BOM at production scale
 
@@ -18,18 +20,18 @@ The user-facing pitch: "**A real weather station that doesn't need WiFi or the i
 
 ## Why this is a great fit for the existing protocol
 
-Every architectural decision in MeshWX (v3/v4) happens to be exactly what an embedded receiver wants. None of it was deliberately chosen for the e-ink use case, but it falls out of the airtime-first principle:
+Every architectural decision in MeshWX happens to be exactly what an embedded receiver wants. None of it was deliberately chosen for the e-ink use case, but it falls out of the airtime-first principle:
 
-- **Structured binary fields, not text** — an MCU can decode a `0x30` observation in ~50 lines of C: read 16 bytes, unpack int8s, look up sky code in a static table, render to display. No string parsing, no JSON, no allocations.
-- **Periodic broadcasts at human time scales** — each broadcast job runs on its own `interval_minutes` (the default jobs are hourly). E-ink refreshes naturally fit that cadence (1-3 seconds per refresh, ~50,000 refresh lifetime → years of hourly updates).
-- **COBS encoding eliminates null bytes** — same trick that fixes the meshcore firmware companion-protocol truncation also makes parsing trivially robust on a tiny MCU buffer.
-- **136-byte max payload** — fits in any LoRa-class radio buffer with room to spare.
-- **Tiny per-message size** — observation 16B, forecast 21B, warning 50-100B, radar grid 134B. Whole hourly cycle is well under 1 KB.
-- **Home location proactive broadcasts (commit `50b660f`)** — the bot pushes obs + forecast for the home city automatically. The device doesn't need to send anything; it just listens.
-- **Absolute expiry timestamps (commit `202007e`)** — receiver computes "expired" from its own clock with no server-time math, no wraparound bugs.
-- **v4 sequence numbers** — receiver can detect gaps and measure link quality without any back-chatter.
-- **v4 FEC/XOR parity** — if the receiver misses one radar quadrant, it can recover it from the parity unit. Perfect for lossy multi-hop paths.
-- **v4 discovery beacons** — a new device can find nearby bots by listening on `#meshwx-discover` instead of being pre-configured with a channel name.
+- **Structured binary fields, not text** — an MCU can decode a v5 observations message in ~50 lines of C: a 9-byte header, then 11 bytes per station, unpack int8s, look up the sky code in a static table, render to display. No string parsing, no JSON, no allocations.
+- **Periodic broadcasts at human time scales** — observations hourly, the digest every 3 hours, the home forecast every 6 hours, each job on its own `interval_minutes`. E-ink refreshes naturally fit that cadence (1-3 seconds per refresh, ~50,000 refresh lifetime → years of hourly updates).
+- **Raw bytes on the air** — `GRP_DATA` carries binary as-is, so there is no framing to undo on a tiny MCU buffer.
+- **165-byte max payload** — every message fits one packet; only text replies are chunked.
+- **Tiny per-message size** — one station's observation 20B, a 14-station batch 163B, a 7-day forecast 47B, a typical storm warning ~51B. A whole hourly cycle is well under 1 KB.
+- **Proactive home broadcasts** — the bot's scheduler pushes coverage observations and the home forecast automatically. The device doesn't need to send anything; it just listens.
+- **Absolute expiry timestamps** — a warning's `expires` is Unix minutes, so the receiver computes "expired" from its own clock with no server-time math, no wraparound bugs.
+- **Sequence numbers** — every packet carries the bot's `seq`, saved across the bot's restarts, so the receiver can detect gaps and measure link quality without any back-chatter.
+- **A digest to catch up from** — every 3 hours the bot lists every active warning, so a receiver that missed a packet knows what it is missing without asking.
+- **A resend when the mesh did not repeat** — the bot sends a packet once more, byte for byte, when no repeater echoed it, which helps a lossy first hop.
 
 The bot we've built is, accidentally on purpose, **already the perfect data source for this device**.
 
@@ -66,36 +68,36 @@ Three layers, totaling roughly 1500-2500 lines of C/C++:
 │   - Layout engine: places fields on the e-paper     │
 │   - Refresh policy: full vs partial, when to wake   │
 ├────────────────────────────────────────────────────┤
-│ MeshWX decoder (port from meshcore_weather/protocol)│
-│   - cobs_decode (~30 lines)                         │
-│   - unpack_observation (~80 lines)                  │
-│   - unpack_forecast (~60 lines, 7 periods × 7 bytes)│
-│   - unpack_warning_polygon / _zones (~150 lines)    │
-│   - unpack_radar_grid (~40 lines)                   │
+│ MeshWX v5 decoder (port of protocol/v5.py)          │
+│   - header + type dispatch (~20 lines)              │
+│   - unpack_observations (~60 lines, 11 B/station)   │
+│   - unpack_forecast (~40 lines, 5 B/day)            │
+│   - unpack_warning: polygon + area runs (~120 lines)│
+│   - unpack_cancel / unpack_digest (~30 lines)       │
 ├────────────────────────────────────────────────────┤
 │ Meshcore stack                                      │
 │   - Already in the existing Meshcore firmware       │
-│   - Hooks: on_channel_msg(channel_id, payload, len) │
+│   - Hook: GRP_DATA on #meshwx, data_type 0xFF10     │
 └────────────────────────────────────────────────────┘
 ```
 
-**The MeshWX decoder layer is a straightforward C port of `meshcore_weather/protocol/meshwx.py`.** Every pack/unpack function in our Python code maps cleanly to a C function operating on a `uint8_t*` buffer. Estimated effort: a few hours of focused work to produce a single-header library.
+**The MeshWX decoder layer is a straightforward C port of `meshcore_weather/protocol/v5.py`** (pure Python, standard library only). Every pack/unpack function in our Python code maps cleanly to a C function operating on a `uint8_t*` buffer, and `docs/meshwx_v5_vectors.json` gives the port its tests. Estimated effort: a few hours of focused work to produce a single-header library.
 
-## Embedded preload bundle (NOT the full 9.9 MB)
+## Embedded preload bundle (NOT the full 17 MB)
 
 The full `client_data/` bundle is way too big for a microcontroller, but **the device only needs data for its own home location**, which is dramatically smaller. At provisioning time (USB serial config or BLE pairing), bake in:
 
 | Item | Size | Purpose |
 |---|---|---|
-| Home zone code | 6 bytes | "TXZ192" — to recognize warnings + forecasts targeting it |
-| Home METAR ICAO | 4 bytes | "KATT" — to recognize observations |
-| Home PFM point ID | 4 bytes | uint32 — to recognize PFM-keyed forecasts |
+| Home zone and county codes | ~12 bytes | "TXZ192", "TXC453" — to recognize warnings whose area runs cover them |
+| Home station index | 2 bytes | u16 index into `index.json` `stations` (KATT) — to pick its row out of an observations batch |
+| Home forecast point index | 2 bytes | u16 index into `pfm_points.json` — to recognize the home forecast |
 | Home name string | ~30 bytes | "Austin TX" — for display |
 | Home lat/lon | 8 bytes | for distance-to-warning calculations |
-| State index table | ~580 bytes | to decode `state_idx` in zone refs |
+| State code table | ~250 bytes | `index.json` `states`, to decode the state byte of an area run |
 | Sky-code → glyph table | ~100 bytes | static lookup for icon rendering |
 | Compass nibble → label | ~64 bytes | 16 wind direction strings |
-| Warning type → label table | ~100 bytes | "Tornado", "Severe TStorm", etc. |
+| Event code → label table | ~100 bytes | a few common `protocol.json` events: "Tornado", "Severe TStorm", etc. |
 | **Total** | **~1 KB** | fits in any nRF52 / ESP32 flash |
 
 For drawing warning shapes on a tiny e-ink (probably not needed at low res), a regional zone polygon subset of ~50-200 KB still fits.
@@ -121,7 +123,7 @@ For drawing warning shapes on a tiny e-ink (probably not needed at low res), a r
 
 ### 4.2" / 400×300 (Waveshare module)
 
-Add: dewpoint/RH bar, wind compass rose, pressure trend arrow, mini radar grid (16×16 from `0x10` messages — perfect resolution for that size), active-warning banner with countdown timer, larger forecast strip with full condition icons.
+Add: dewpoint/RH bar, wind compass rose, pressure trend arrow, active-warning banner with countdown timer, a count of active alerts from the digest, larger forecast strip with full condition icons.
 
 ### 7.5" / 800×480 (Waveshare module)
 
@@ -146,24 +148,22 @@ This is fundamentally a low-power use case because of the 1-hour update cadence.
 
 Honestly, almost nothing. Run through the checklist:
 
-- ✅ Periodic obs broadcast for home city — done in `50b660f`
-- ✅ Periodic forecast broadcast for home city — done in `50b660f`
-- ✅ Periodic warnings broadcast for coverage area — done in Phase 1
-- ✅ Periodic radar broadcast for coverage area — done in Phase 1
-- ✅ Compact binary format with COBS encoding — done in v3
-- ✅ Absolute expiry timestamps so receivers can compute "expired" without server math — done in v3
-- ✅ Proactive nature: receiver doesn't need to send anything — done
-- ✅ FEC/XOR parity for radar quadrants — done in v4
-- ✅ Sequence numbers for gap detection and link quality — done in v4
-- ✅ Discovery beacons on `#meshwx-discover` — done in v4
-- ✅ Fire weather forecasts (FWF) — done in v4
-- ✅ Nowcast (NOW) short-term forecasts — done in v4
+- ✅ Periodic observations for the coverage stations, hourly
+- ✅ Periodic forecast for the home city, every 6 hours
+- ✅ Warnings when they start or change, cancels when they end early
+- ✅ Digest of every active warning, every 3 hours
+- ✅ Compact binary datagrams on `#meshwx` (MeshWX v5)
+- ✅ Absolute expiry timestamps so receivers can compute "expired" without server math
+- ✅ Proactive nature: receiver doesn't need to send anything
+- ✅ Sequence numbers for gap detection and link quality
+- ✅ Byte-identical resend when no repeater echoed a packet
+- Retired with v4: radar grid, FEC parity, discovery beacons, fire weather and nowcast broadcasts
 
-**One nice-to-have for embedded receivers: a periodic heartbeat broadcast.** The v4 discovery beacon (`0xF0`) on `#meshwx-discover` is close to this — a sleeping device could listen on the discover channel for a beacon to know when the next broadcast cycle is coming. A dedicated heartbeat on the data channel with a "next cycle in N seconds" field would be even better for power optimization.
+**One nice-to-have for embedded receivers: a periodic heartbeat broadcast.** v5 has none; the digest every 3 hours (with its `now` and `feed_health`) is the closest thing. A heartbeat with a "next cycle in N seconds" field would be much better for power optimization.
 
 ## Implementation phases (when we come back to this)
 
-1. **Phase 1 — MVP (1-2 weekends)**: Buy a T-Echo. Install Meshcore firmware. Write a sketch on a separate dev board that demonstrates receiving + decoding a `0x30` observation broadcast and printing it to serial. Goal: prove the protocol works on hardware.
+1. **Phase 1 — MVP (1-2 weekends)**: Buy a T-Echo. Install Meshcore firmware. Write a sketch on a separate dev board that demonstrates receiving + decoding a v5 observations broadcast and printing it to serial. Goal: prove the protocol works on hardware.
 
 2. **Phase 2 — Single-screen display (1 week)**: Add e-paper rendering on the T-Echo. Show the latest observation as plain text. Update on each broadcast. No layout polish yet.
 
@@ -171,7 +171,7 @@ Honestly, almost nothing. Run through the checklist:
 
 4. **Phase 4 — Power optimization (a few days)**: Add deep sleep, broadcast time prediction, low-battery handling, optional solar charging support.
 
-5. **Phase 5 — Productization (open-ended)**: Custom enclosure, OTA firmware updates over BLE, configuration UI (probably via BLE companion app), multi-location support, possibly a small button UI for switching between locations or viewing the radar grid.
+5. **Phase 5 — Productization (open-ended)**: Custom enclosure, OTA firmware updates over BLE, configuration UI (probably via BLE companion app), multi-location support, possibly a small button UI for switching between locations.
 
 MVP through Phase 3 is realistically **2-4 weeks of evening/weekend hacking** for someone comfortable with embedded C and the existing Meshcore stack.
 
@@ -179,8 +179,8 @@ MVP through Phase 3 is realistically **2-4 weeks of evening/weekend hacking** fo
 
 These are what I'd want to add to MeshWX before targeting an embedded receiver as a first-class consumer:
 
-1. **Heartbeat broadcast on data channel** — the v4 discovery beacon exists but only on `#meshwx-discover`. A data-channel heartbeat with "next cycle in N seconds" would let devices sleep more precisely.
-2. **Single-header C decoder library** — port the relevant pieces of `meshcore_weather/protocol/meshwx.py` to a clean self-contained C/C++ header file (`meshwx.h`) that any Arduino/PlatformIO project can drop in. Keep it allocation-free, no malloc, fixed-size buffers. Must handle v4 frame unwrapping + FEC recovery.
+1. **Heartbeat broadcast** — v5 has none. A datagram with "next cycle in N seconds" would let devices sleep more precisely; types 8 to 11 are reserved for new structured messages.
+2. **Single-header C decoder library** — port the relevant pieces of `meshcore_weather/protocol/v5.py` to a clean self-contained C/C++ header file (`meshwx.h`) that any Arduino/PlatformIO project can drop in. Keep it allocation-free, no malloc, fixed-size buffers. It must decode every vector in `docs/meshwx_v5_vectors.json`.
 3. **Document the embedded receiver use case** in `docs/` — once it has a real reference implementation, it should be a first-class consumer of the protocol alongside the iOS app, not an afterthought.
 
 ## Open questions / decisions for the future-us session
@@ -191,7 +191,7 @@ When we come back to this, here are the things to decide before writing any code
 2. **Display size**: 1.54", 2.9", 4.2", 7.5"? Smaller = lower power + cheaper, bigger = richer dashboard.
 3. **Application firmware approach**: Write fresh application firmware that calls into Meshcore as a library? Fork the Meshcore messenger and add a "weather mode"? Run alongside Meshcore as a separate "companion" app?
 4. **Provisioning UX**: How does the user set their home location? Buttons + display menu? BLE companion app on phone? USB serial console? Pre-configured at sale time?
-5. **Multi-location support**: Single home or N homes? If N, does each location consume the same bot's broadcasts (has to be in the bot's coverage area) or do we need a "request specific location" path that wakes the receiver to send a `0x02` DM?
+5. **Multi-location support**: Single home or N homes? If N, does each location consume the same bot's broadcasts (has to be in the bot's coverage area) or do we need a "request specific location" path that wakes the receiver to send a `>f <index>` request (the answer comes back on the channel)?
 6. **Display refresh policy**: Always refresh on every received broadcast? Refresh only on data changes (saves e-paper lifetime)? Different policies for warnings (immediate) vs forecast (gentle)?
 7. **Branding / market**: Hobby kit (sold as PCB + parts), assembled product, open-source reference design, commercial product?
 
@@ -207,15 +207,14 @@ For users who want weather information at a remote cabin, on a boat, in a rural 
 - **LilyGO T-Echo product page**: lilygo.cc — search for "T-Echo nRF52840"
 - **Waveshare e-paper modules**: waveshare.com/product/displays/e-paper.htm
 - **GxEPD2 library**: github.com/ZinggJM/GxEPD2 (Arduino e-paper driver, supports most Waveshare displays)
-- **Existing protocol reference**: `meshcore_weather/protocol/meshwx.py` in this repo (the source of truth that the C decoder library would mirror)
+- **Existing protocol reference**: `meshcore_weather/protocol/v5.py` in this repo (the source of truth that the C decoder library would mirror), with `docs/meshwx_v5_vectors.json`
 - **Wire format spec**: `docs/MeshWX_v5_Spec.md` in this repo
-- **Bot side already-shipped commits relevant to this**:
-  - `50b660f` — home city obs + forecast broadcast (the data source the device consumes)
+- **Bot side commits this page first pointed at** (v3 era; the v5 code in `ad6dc24` replaced them):
+  - `50b660f` — home city obs + forecast broadcast
   - `9d08fde` — PFM forecast quality upgrade
   - `1091d57` — `LOC_PFM_POINT` city-search support
-  - `202007e` — v3 wire format with absolute expiry timestamps (the foundation that makes embedded clients work without time sync)
-- **v4 protocol additions relevant to this**: FEC/XOR parity (radar recovery), sequence numbers (link quality), discovery beacons (auto-provisioning), fire weather + nowcast (new products)
+  - `202007e` — v3 wire format with absolute expiry timestamps
 
 ---
 
-*Document parked for later. When we revisit this, the realistic next concrete step is "buy a T-Echo and write the C port of `meshwx.py`". Everything else is downstream of those two things.*
+*Document parked for later. When we revisit this, the realistic next concrete step is "buy a T-Echo and write the C port of `protocol/v5.py`". Everything else is downstream of those two things.*

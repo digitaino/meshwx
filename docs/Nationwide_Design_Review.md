@@ -1,5 +1,14 @@
 # One channel, many bots: adversarial review of the nationwide design
 
+> **Status, 2026-09-15:**
+> - Still in the code as reviewed (db766a5, 48a1e34, `main.py`): `#meshwx` for every bot, the reply modes, the stranger channel reply with its hop gate and budget (once per sender per 10 min, 12 an hour), and ignoring `WX-*` senders.
+> - Done from the §4 to-do list: `set_time` on connect shipped in db766a5 itself (`radio.py`). The Overview shows red while `reply_mode=channel` (db766a5, kept by d5171e4).
+> - Changed:
+>   - MeshWX v5 (ad6dc24) sends broadcasts as GRP_DATA, specified on `#meshwx` (spec §2.1). The bot uses one slot when `MCW_MESHWX_CHANNEL` equals the text channel, which is now the `config.py` default (`#meshwx`).
+>   - The nearest-bot rule covers only people's place commands sent as channel text; `>` requests and DMs have none (spec §12). It also skips peers that advertise 0,0, and this bot's own adverts carry 0,0 (spec §1).
+> - Still open: `MCW_FLOOD_SCOPE` (#9, #11) and a country/band guard on transmit (#12). Neither exists in the code.
+> - Where the current truth lives: `docs/MeshWX_v5_Spec.md` revision 3, §8.2 (request limits) and §12 (several bots).
+
 2026-09-14. Written after the Austin bot went live on the Pi and the question
 "should every bot have its own channel?" came up. Companion to section 7 of
 `MeshWX_Airtime_Review.md`, which first proposed the shared channel; this is
@@ -9,6 +18,8 @@ the attack on it.
 
 - **One request channel for every bot, everywhere: `#meshwx`.** Binary
   broadcasts on `#meshwx-data` until GRP_DATA lets them share the channel.
+  [2026-09-15: v5 GRP_DATA is specified on `#meshwx` (ad6dc24); see the
+  status note on the default config.]
 - **Replies are DMs.** A channel command from a sender the bot cannot DM gets
   one reply on the bot's own channel if it arrived within a few hops, plus an
   advert, so the next exchange can be a DM. Budgets: one per sender per
@@ -18,6 +29,8 @@ the attack on it.
   from those adverts. A request that names a place is answered only by the
   nearest bot to that place; requests without a place are answered by every
   bot that hears them, by DM. Bots ignore messages from `WX-*` senders.
+  [2026-09-15: adverts carry 0,0 (spec §1); the nearest-bot rule applies
+  only to people's channel text, not to `>` requests or DMs (spec §12).]
 - **Containment is not the channel name.** Physical range, the repeaters' hop
   limits, MeshCore region scope, and each bot's coverage radius are what keep
   floods local.

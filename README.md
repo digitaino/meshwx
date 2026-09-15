@@ -1,91 +1,155 @@
 # Meshcore Weather
 
-**Off-grid weather data infrastructure for [Meshcore](https://meshcore.co) LoRa mesh networks.** Fetches NWS EMWIN weather products (forecasts, warnings, observations, storm reports, etc.), parses them with canonical NWS tooling, and broadcasts them on a LoRa mesh channel as compact structured binary messages that any subscribed client — phone apps, web clients, standalone hardware displays — can decode offline, without the internet.
+**Off-grid weather for [Meshcore](https://meshcore.co) LoRa mesh networks.** The bot takes NWS EMWIN products (warnings, observations, forecasts, storm reports and more), parses them with canonical NWS tooling, and puts them on a MeshCore channel two ways: compact MeshWX v5 binary datagrams that apps decode offline, and plain-text replies for anyone who sends it a command. In production the products come from a GOES-19 dish received by goestools on a Raspberry Pi, so nothing depends on the internet; NOAA's internet EMWIN feed is the alternative for a bot without a dish.
 
 ```
-┌──────────────┐     ┌─────────────────┐     ┌──────────────────┐
-│  GOES-16     │     │                 │     │  #aus-meshwx-v4  │     ┌─────────────┐
-│  (future SDR)├────►│  meshcore-      ├────►│  LoRa channel    ├────►│  iOS app    │
-└──────────────┘     │  weather        │     │                  │     └─────────────┘
-                     │                 │     │  0x21 Zone Warn  │     ┌─────────────┐
-┌──────────────┐     │  • fetch        │     │  0x3E Space Wx   ├────►│  Web client │
-│  NOAA EMWIN  │     │  • parse (pyIEM)│     │  0x20 Warning    │     └─────────────┘
-│  internet    ├────►│  • schedule     │     │  0x30 Obs        │     ┌─────────────┐
-└──────────────┘     │  • broadcast    │     │  0x31 Forecast   ├────►│  E-ink      │
-                     └────────┬────────┘     │  0x38 Fire Wx    │     │  dashboard  │
-                              │              │  0x3C Nowcast     │     │  (future)   │
-                              ▼              │  0xF0 Beacon      │
-                    ┌─────────────────┐      └──────────────────┘
-                    │ Web admin portal│
-                    │ localhost:8080  │
-                    └─────────────────┘
+GOES-19 dish ─ goesrecv ─ goesproc ─┐                          ┌─► MeshWX apps: v5 datagrams
+  (the Pi, production)              │    ┌──────────────────┐  │   (GRP_DATA on #meshwx)
+                                    ├───►│ meshcore-weather │──┤
+NOAA EMWIN over the internet ───────┘    │ parse, schedule, │  │
+  (the alternative)                      │ answer requests  │  └─► people: text replies
+                                         └────────┬─────────┘      (#meshwx and DMs)
+                                                  │
+                                   admin portal, public dashboard
 ```
 
 ## What this gives you
 
-- **A working operator node** that can run on a Raspberry Pi or any Linux/macOS box with a LoRa serial radio attached. Docker-compose one-liner.
-- **MeshWX v5**, a compact binary protocol for apps: warnings with storm tags, polygons and county/zone runs, an active-warning digest for loss recovery, batched observations and point forecasts, as MeshCore `GRP_DATA` packets on `#meshwx`. The mesh carries identifiers and numbers; the phone carries the tables. Spec: `docs/MeshWX_v5_Spec.md`.
-- **Discovery by advert** — a bot adverts as a chat node named `WX-<IATA>` (e.g. `WX-AUS`) with its lat/lon, so every MeshCore app already collects what it needs to list nearby weather bots. No discovery channel, no beacon, no extra airtime.
-- **A per-job broadcast schedule system** with a web admin UI. Operators define arbitrary `(product, location, interval)` jobs via the portal — e.g. "Austin METAR every 30 min", "TX storm reports every 10 min", "EWX outlook every 12 hr". Jobs persist across restarts.
-- **Preload bundle** (`client_data/`, ~18 MB with the polygons) that ships with every client app — NWS zones and counties with polygons, census places, METAR stations, WFO metadata, PFM forecast points, and the wire index tables. With this preloaded, broadcasts only carry compact IDs instead of full names, slashing airtime.
-- **pyIEM-powered parsing** — the reference Python library for NWS text products (VTEC, UGC, CAP standards). Runs fully offline with a `legacy_dict` UGC provider built from bundled zones data.
-- **Canonical NWS data quality**: forecasts from PFM (Point Forecast Matrix) tables, warnings with correct VTEC extraction and polygon winding, absolute expiry timestamps so clients always know exactly when data becomes invalid.
-- **One request grammar for apps and people.** An app DMs `>f 102` and gets a binary answer on the channel for everyone; a person DMs `forecast austin tx` and gets text back. Same words, one bot.
-- **Legacy text-command interface** that lets a human user on the mesh DM the bot in plain English (`wx austin`, `forecast dallas tx`, `warn OK`) and get text replies. Secondary to the binary protocol but still works.
+- **An operator node.** In production: a Raspberry Pi 4 (2 GB) running goestools for the dish and this bot for the mesh, with a MeshCore companion radio on USB, under systemd. Any Linux or macOS box with internet EMWIN works for development.
+- **MeshWX v5 for apps.** Warnings with storm tags, polygons and county/zone runs, cancels, an active-warning digest for loss recovery, batched observations, point forecasts, text and "not available", each one MeshCore `GRP_DATA` packet on `#meshwx`. The mesh carries identifiers and numbers; the phone carries the tables. Spec: [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md).
+- **Text replies for people.** Anyone on `#meshwx` can send `wx austin tx`, `warn TX` or `sat`, on the channel or by DM, and get a text reply, by DM where the bot can reach them. Long replies are paged with `more`. This is how people without the app use the bot.
+- **One request grammar for apps and people.** An app sends `>f 102` and gets a binary answer on the channel for every listener; a person sends `forecast austin tx` and gets text.
+- **Delivery confirmation.** The radio hears a repeater's copy of each channel packet the bot sends. When none comes back within the echo window, the packet goes out once more, byte for byte the same, so nobody sees it twice. DMs wait for the recipient's ACK instead.
+- **Discovery by advert.** The node is named `WX-<city>` (e.g. `WX-AUS`); apps list adverts whose name starts with `WX-`. No discovery channel, no beacon.
+- **A broadcast schedule** of four v5 jobs (warnings on change, digest, observations, home forecast), edited in the portal and kept in `data/broadcast_config.json`.
+- **Radio swaps.** The bot keeps a profile of its node (identity key, name, position, LoRa settings, contacts) and can write it onto a replacement radio, asking first by default. See [`docs/Radio_Swap.md`](docs/Radio_Swap.md).
+- **Receiver status on the mesh.** `sat` (or `>sat` from an app) answers with the dish's lock, signal quality, packets dropped in the last minute and the age of the newest EMWIN file.
+- **An admin portal** for the radio, receiver, text bot, schedule, logs and settings, and a **public dashboard** on the Pi that shows the receiver and a redacted live feed of the bot.
+- **An accuracy audit.** `scripts/audit.py` compares the bot's answers with api.weather.gov, IEM, aviationweather.gov and SWPC; `deploy/` has an hourly timer for it and the portal's Overview shows the result.
+- **CoreScope hooks.** Optional MQTT publishing of every raw packet the radio hears, for the CoreScope packet analyzer (`corescope/`), and an optional CoreScope lookup that records who heard each packet and can veto a resend.
+- **Preload bundle** (`client_data/`, about 17 MB, 15 MB of it the optional zone and county polygons) that ships with every app: the office, station and state index tables, zones, counties, places, METAR stations, PFM forecast points and the protocol enums.
+- **pyIEM-powered parsing** — the reference Python library for NWS text products (VTEC, UGC, polygons), run fully offline with a UGC provider built from the bundled zones.
 
 ## Status
 
 | Area | State |
 |---|---|
-| EMWIN data ingestion (internet) | ✅ production |
-| EMWIN data ingestion (GOES SDR) | ⏳ stubbed, pending SDR hookup |
-| pyIEM canonical product parsing | ✅ shipped |
-| MeshWX v5 wire format (warning, cancel, digest, observations, forecast, text) | ✅ shipped |
-| Echo tracking and byte-identical resend when the mesh did not repeat us | ✅ shipped |
-| Discovery by advert (`WX-<IATA>` chat node) | ✅ shipped |
-| Broadcast schedule system + web portal UI | ✅ shipped |
-| iOS client | 🔨 building against v5 |
-| Text-command interface | ✅ shipped (legacy) |
-| Standalone e-ink dashboard (consumer) | 💡 idea parked in `docs/Future_EInk_Dashboard.md` |
+| EMWIN from the GOES-19 dish (goestools, `MCW_EMWIN_SOURCE=sdr`) | production |
+| EMWIN over the internet (`MCW_EMWIN_SOURCE=internet`) | works; the alternative for a bot without a dish |
+| pyIEM product parsing | shipped |
+| MeshWX v5 wire format, spec revision 3 | shipped |
+| Text replies for people, paged with `more` | shipped |
+| Echo tracking and one byte-identical resend | shipped |
+| Radio swap: node profile, adoption, health verdict | shipped |
+| Receiver status (`sat`, `>sat`) | shipped |
+| Admin portal and public dashboard | shipped |
+| Accuracy audit (`scripts/audit.py`) | shipped |
+| MQTT packet publishing for CoreScope | shipped, off by default |
+| iOS client | building against v5 |
+| Standalone e-ink dashboard | idea parked in `docs/Future_EInk_Dashboard.md` |
 
 ## Wire format at a glance
 
-Every message is one MeshCore `GRP_DATA` packet (`data_type 0xFF10`) on the
-`#meshwx` channel, at most 165 bytes, with a 4-byte header: sequence number,
-two bytes of the bot's public key, message type. Little-endian throughout.
+Every message is one MeshCore `GRP_DATA` packet (`data_type 0xFF10`) on
+`#meshwx`, at most 165 bytes, with a 4-byte header: sequence number, the
+first two bytes of the bot's public key, and the message type (high nibble)
+with flags (low nibble). Little-endian throughout. The sequence number is
+assigned when a packet is transmitted, from one counter shared by broadcasts
+and answers and saved across restarts; a resend repeats the same bytes and
+the same number.
 
 | Type | Message | Size | When |
 |---|---|---|---|
-| 1 | Warning: VTEC event, office, ETN, absolute expiry, storm tags, polygon and/or zone or county runs | 15 to ~110 B | on change; life-safety warnings once more after 90 s |
+| 1 | Warning: VTEC event, office, ETN, absolute expiry, storm tags, polygon and/or county or zone runs | 15 B + polygon + runs (a typical storm warning is 51 B) | on change; tornado, severe thunderstorm, flash flood and extreme wind warnings once more after 90 s |
 | 2 | Cancel | 8 B | when a warning ends before its expiry |
-| 3 | Digest: every active identity with its expiry, plus feed health | 10 + 6 per warning | every 3 h, after a cancel, on request |
-| 4 | Observations: up to 14 stations in one packet | 9 + 10 per station | hourly, on request |
-| 5 | Forecast: 7 daily periods for a PFM point | 12 + 5 per period | every 6 h for the home point, on request |
-| 6 | Text: warning narrative, forecast discussion, storm reports, METAR/TAF, outlook, space weather | chunked | on request only |
+| 3 | Digest: up to 25 active identities with their expiry, plus feed health | 10 B + 6 per warning | every 3 h, a minute after a cancel, on request |
+| 4 | Observations: up to 14 stations in one packet | 9 B + 11 per station | hourly, on request |
+| 5 | Forecast: up to 7 whole days for a PFM point | 12 B + 5 per day | every 6 h for the home point, on request |
+| 6 | Text: warning narrative, forecast discussion, space weather, storm reports, rainfall, METAR/TAF, outlook, receiver status | up to 8 chunks of 157 B of text | on request only |
 | 7 | Not available | 6 B | answer to a request the bot cannot serve |
 
-Requests are DMs prefixed with `>` (`>d`, `>w`, `>w SV.W.EWX.42`, `>o KAUS`,
-`>f 102`, `>afd EWX`). The full byte layouts, the preload bundle, rendering
-guidance and test vectors: **`docs/MeshWX_v5_Spec.md`** and
-`docs/meshwx_v5_vectors.json`. Reference codec: `meshcore_weather/protocol/v5.py`.
+Requests start with `>` and reach the bot as a DM or as text on `#meshwx`;
+the answer always comes back on `#meshwx` as v5 messages.
+
+| Request | Answer |
+|---|---|
+| `>d` | Digest |
+| `>w` | Warnings in coverage (at most 6, newest first), then a Digest |
+| `>w SV.W.EWX.42`, `>w TXC453`, `>w TXZ192` | One warning by identity, or the warnings touching a county or zone |
+| `>wt SV.W.EWX.42` | That warning's narrative as Text |
+| `>o`, `>o KAUS` | Observations for the coverage stations, or for one station |
+| `>f`, `>f 102`, `>f round rock tx` | Forecast for the home point, a PFM point index, or a place |
+| `>afd EWX` | Forecast discussion |
+| `>metar KAUS`, `>taf KAUS` | That station's own report, or Not available; a place gets the nearest reporting station |
+| `>space`, `>storm TX`, `>rain TX`, `>hwo` | Space weather, storm reports, rainfall, hazardous weather outlook |
+| `>sat` | The bot's GOES receiver, one line of Text |
+
+Limits: one request per sender every 5 s and 60 answer packets per hour
+across all senders; a `>` sent as a DM also counts against the text-command
+limits. A throttled request gets no reply.
+
+The full byte layouts, the preload bundle, rendering guidance and these
+rules in detail: **[`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md)**
+(revision 3) and [`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json).
+Reference codec: [`meshcore_weather/protocol/v5.py`](meshcore_weather/protocol/v5.py).
 
 ## For client developers (iOS, web, embedded)
 
-Start and finish with **`docs/MeshWX_v5_Spec.md`**. Decode the test vectors, ship
-the `client_data/` bundle, follow the request rules. The v3/v4 documents are gone;
-nothing from them decodes as v5.
+Start and finish with **`docs/MeshWX_v5_Spec.md`**. If you built against
+revision 2, read its section 16 first: the wire layout did not change, the
+bundle did. Decode the test vectors, ship the `client_data/` bundle, follow
+the request rules.
+
+| Bundle file | Contents (spec section 9) |
+|---|---|
+| `protocol.json` | Version, message types, event codes and names, sky codes, text subjects, Not available reasons |
+| `index.json` | The tables the wire indexes into: `offices` (the 125 WFOs in alphabetical order, then `NHC` at 125 and `WNS` at 126), `stations`, `states`. Append-only; `version` 2 |
+| `stations.json`, `pfm_points.json`, `places.json` | Station, forecast point and place lookup |
+| `zones.json`, `counties.json` | Names and centroids for zone and county codes |
+| `zones.geojson`, `counties.geojson` | Polygons; optional downloads |
+| `wfos.json` | Office states and positions, in `index.json` `offices` order |
+| `regions.json`, `state_index.json`, `weather_dict.json` | v3/v4 leftovers, not used by v5 |
+
+`index.json` and the test vectors are generated by `scripts/v5_vectors.py`;
+never edit them by hand. The v3/v4 documents are gone; nothing from them
+decodes as v5.
 
 ## For operators
 
 ### Configure your coverage once via `.env`
 
 ```bash
-MCW_HOME_CITIES=Austin TX,San Antonio TX        # Cities to broadcast obs+forecast for
-MCW_HOME_STATES=TX                              # States for warning filtering
-MCW_HOME_WFOS=EWX,FWD,HGX,SJT                   # NWS offices — narrows warnings
+# The first city is the home point: the radius centre and the home forecast.
+MCW_HOME_CITIES=Austin TX
+# Every forecast zone within this many km of the home point.
+MCW_HOME_RADIUS_KM=120
+# Optional: whole states and whole NWS offices on top.
+MCW_HOME_STATES=TX,OK
+MCW_HOME_WFOS=EWX,FWD
 ```
 
-Coverage determines which warnings get filtered to your area, and which home cities get proactive obs/forecast broadcasts. On first run, the bot synthesizes a default broadcast schedule from your coverage config.
+Coverage decides which warnings the scheduled broadcasts and the bare `>w`
+carry; the observation stations are the ones within the radius of the home
+point. Commands and requests that name a place are answered nationwide. With
+no coverage set at all, broadcasts carry every warning.
+
+### The default schedule
+
+On first start the bot writes `data/broadcast_config.json` with four jobs.
+Only these four products can be scheduled; everything narrative is
+request-only.
+
+| Job | Every | Sends |
+|---|---|---|
+| `warnings` | 2 min | New and changed warnings in coverage, a Cancel for one that ended early, and one repeat of a tornado, severe thunderstorm, flash flood or extreme wind warning 90 s later |
+| `digest` | 180 min | The active-warning Digest (also a minute after any Cancel) |
+| `observations` | 60 min | One packet for up to 14 stations within the radius that reported in the last 120 min |
+| `forecast` | 360 min | The forecast for the first home city |
+
+The scheduler checks every 30 s and spaces packets 2 s apart. A job's
+location is `coverage`, `city`, `pfm_point` or `station` (observations for
+one station). A v4 job file is migrated when it loads: retired products are
+dropped and a forecast job runs no more often than every 3 h.
 
 ### Then manage everything else from the admin portal
 
@@ -94,56 +158,39 @@ Each setting lives in exactly one place, next to the status it affects:
 
 | Section | What it shows | What you set there |
 |---|---|---|
-| **Overview** | Dish lock, feed age, radio link, transmit and reply mode, answers in the last hour, jobs, log problems, audit result, host. Refreshes every 15 s; the header strip repeats the three that matter on every page. | nothing |
-| **Text Bot** | Request/reply counters, the live feed of the channel and DMs (with why a request was not answered), a "try a command" box that runs the DM path, the `help` text | reply mode (with a confirmation before `channel`), stranger hop limit, advert interval, peer-bot prefix |
-| **Broadcasts** | Jobs with last/next run and bytes, data-channel counters, the broadcast log (jobs, app requests, beacons) | jobs (add, edit, enable, run now, delete), "run due jobs" |
-| **Radio** | Link, node, LoRa parameters, battery, all 8 channel slots, the contact table with housekeeping status | node name and location, LoRa preset or parameters, TX power, transmit on/off, the three channel names, contact housekeeping |
-| **Satellite** | goesrecv lock and signal history, goesproc, what the EMWIN feed delivered, a browser for every product in the store | pointing / receive mode |
-| **System** | Logs (satellite, radio, bot; live, filterable), host stats | coverage (cities, radius, states, offices), serial port, EMWIN source and directory, timezone, log level, restart |
+| **Overview** | Dish, feed, radio, transmit and reply mode, requests and replies, jobs, log problems, host; recent requests; the accuracy audit result. Refreshes every 15 s; the header strip repeats dish, radio and transmit on every page. | nothing |
+| **Text Bot** | Request/reply counters, the live feed of the channel and DMs (with why a request was not answered), a "try a command" box that runs the DM path, the `help` text, the channels it listens on, peer bots heard | reply mode (with a confirmation before `channel`), stranger hop limit, advert interval, peer-bot prefix, resend limit, echo window, resends per hour |
+| **Broadcasts** | Counters, jobs with last/next run and bytes, the broadcast log (jobs and app requests) | jobs (add, edit, enable, run now, delete), "run due jobs" |
+| **Radio** | Link, health verdict, hardware and node profile, LoRa parameters, all channel slots, the contact table with housekeeping status | test transmit, adopt a replacement radio or start a new profile, node name and location, LoRa preset or parameters, TX power, transmit on/off, advert, reboot, the text and data channel names, contact housekeeping |
+| **Satellite** | goesrecv and goesproc, signal stats and history, what the EMWIN feed delivered in the last hour, a browser for every product in the store, a link to the public dashboard | pointing / receive mode |
+| **System** | Logs (satellite, radio, bot; live, filterable), bot and host stats | coverage (cities, radius, states, offices), serial port, EMWIN source and directory, dashboard URL, timezone, log level, CoreScope, replacement-radio mode, receiver-silent threshold, restart |
 
 Settings are written to `.env` and applied live where the bot can (the
 response says which keys need a restart). Values are validated before the
-file is touched. The schedule persists in `data/broadcast_config.json`.
-The portal has no login: keep it on the LAN or gate it at the edge.
-
-### Example schedule you might configure
-
-```
-ID                Name                       Product        Location       Interval
-─────────────────────────────────────────────────────────────────────────────────
-warnings-coverage Active TX warnings         warnings       coverage       5 min
-obs-austin-tx     Austin current wx          observation    city:Austin TX 30 min
-obs-san-antonio   San Antonio current wx     observation    city:San...    30 min
-forecast-austin   Austin 7-day forecast      forecast       city:Austin TX 2 hr
-forecast-sa       San Antonio 7-day          forecast       city:San...    2 hr
-ewx-hwo           EWX hazardous outlook      outlook        city:Austin TX 12 hr
-tx-storm-reports  TX storm reports           storm_reports  city:Austin TX 10 min
-kaus-taf          KAUS TAF snapshot          taf            station:KAUS   60 min
-kdfw-taf          KDFW TAF snapshot          taf            station:KDFW   60 min
-fire-wx-austin    Austin fire weather        fire_weather   city:Austin TX 6 hr
-nowcast-austin    Austin nowcast             nowcast        city:Austin TX 1 hr
-```
+file is touched. The portal has no login: keep it on the LAN or gate it at
+the edge. Every state-changing request must carry the header
+`X-Requested-With: meshcore-portal`, so a web page opened on the LAN cannot
+change anything through someone's browser.
 
 ## Quick start
 
-### With Docker (recommended)
+### With Docker
 
 ```bash
 git clone https://github.com/digitaino/meshwx.git
 cd meshwx
 cp .env.example .env
-# Edit .env with your MCW_SERIAL_PORT, MCW_MESHWX_CHANNEL, MCW_HOME_*, etc.
-
-docker compose up -d
+# Edit .env: MCW_HOME_CITIES, MCW_ADMIN_KEY, the channels
+docker compose up -d meshcore-weather
 ```
 
-The container will:
-
-1. Connect to your configured serial radio (or TCP radio proxy)
-2. Start fetching EMWIN data from NOAA every 2 minutes
-3. Bootstrap a default broadcast schedule from your `.env` coverage config
-4. Launch the admin portal on `http://localhost:8080`
-5. Start the broadcast scheduler
+`docker-compose.yml` also defines the CoreScope stack (`mosquitto`,
+`corescope`, `obs-broker`), which needs its own git-ignored configuration
+under `corescope/`; naming the service starts the bot alone. The compose
+file points the bot at `tcp://host.docker.internal:4403`, a TCP bridge to
+the radio on the host: on macOS `scripts/start.sh` runs socat for it and
+then starts the whole compose stack. The portal is on
+`http://localhost:8080` when `MCW_PORTAL_ENABLED=true`.
 
 ### Without Docker
 
@@ -156,33 +203,43 @@ cp .env.example .env
 meshcore-weather
 ```
 
+On start the bot loads EMWIN (`internet`: NOAA's 1-hour bundle, then the
+2-minute bundle every `MCW_EMWIN_POLL_INTERVAL` seconds; `sdr`: the goesproc
+directory), connects to the radio (or retries every minute until one
+answers), starts the scheduler once a data channel is up, and starts the
+portal if enabled.
+
 ### First-run verification
 
-Once the bot is running, you should see log lines like:
+On the first start you should see log lines like these (slot numbers vary):
 
 ```
-INFO schedule.store: Bootstrap schedule: 4 default jobs (1 home cities → obs+forecast pairs)
-INFO scheduler: Broadcast scheduler started: 4 jobs, tick every 30s
-INFO portal.server: Portal running at http://0.0.0.0:8080
-INFO radio: Listening on channel 3 (#digitaino-wx-bot)
-INFO radio: Data channel 4 (#aus-meshwx-v4)
+[INFO] meshcore_weather.meshcore.radio: Listening on channel 1 (#meshwx)
+[INFO] meshcore_weather.meshcore.radio: Data channel 1 (#meshwx, shared with text)
+[INFO] meshcore_weather.schedule.store: Bootstrap schedule: 4 default jobs
+[INFO] meshcore_weather.schedule.scheduler: Broadcast scheduler started: 4 jobs, tick every 30s
+[INFO] meshcore_weather.portal.server: Portal running at http://0.0.0.0:8080
+[INFO] meshcore_weather.main: Weather bot is running. Listening on channel 1 (#meshwx) + DMs
 ```
 
-Visit `http://localhost:8080/schedule` in a browser and you should see your 4 default jobs ticking over with live stats.
+Open `http://localhost:8080/#broadcasts` to see the four jobs, and type
+`help` or `wx austin tx` into Text Bot > Try a command.
 
 ## CLI tools
 
-The bot ships with a `meshcore-weather-cli` helper for operations and debugging:
+`meshcore-weather-cli` runs the bot's code without the mesh:
 
 ```bash
-meshcore-weather-cli fetch              # Fetch EMWIN products from NOAA into local cache
-meshcore-weather-cli query "Austin TX"  # Run the text-command parser against stored data (no radio)
-meshcore-weather-cli interactive        # Simulate mesh commands in a local REPL
-meshcore-weather-cli contacts           # List known contacts on the radio device
+meshcore-weather-cli fetch              # Load products from the configured EMWIN source and list them
+meshcore-weather-cli query "Austin TX"  # The wx reply for a place, from those products (no radio)
+meshcore-weather-cli interactive        # Type commands as a person would; "more" pages, "sat" reads the receiver
+meshcore-weather-cli sat                # The sat reply: one read of the goestools dashboard, no products loaded
+meshcore-weather-cli contacts           # List the contacts on the radio
 meshcore-weather-cli remove <name>      # Remove a contact by name
-meshcore-weather-cli clear-contacts     # Remove all contacts (fresh start)
-meshcore-weather-cli sat                # GOES receiver status, as the sat command replies
+meshcore-weather-cli clear-contacts     # Remove every contact
 ```
+
+The last three open the radio themselves; stop the bot first.
 
 ## Running on the receiver Pi (no Docker)
 
@@ -194,20 +251,44 @@ has no room for the image build); a venv is enough:
 git clone https://github.com/digitaino/meshwx.git ~/meshcore-weather
 cd ~/meshcore-weather
 python3 -m venv .venv && .venv/bin/pip install -e ".[portal]"
-cp deploy/pi.env.example .env        # edit: serial port, home city, admin key
+cp deploy/pi.env.example .env        # edit: serial port, home city, admin key, then MCW_TX_ENABLED
 sudo cp deploy/meshcore-weather.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now meshcore-weather
 journalctl -u meshcore-weather -f
 ```
 
+The unit runs as `digitaino` from `/home/digitaino/meshcore-weather`; change
+`User`, `WorkingDirectory`, `EnvironmentFile` and `ExecStart` for another
+account. systemd reads `.env` as well, and it does not strip comments after
+a value, so keep comments on their own lines.
+
 `MCW_EMWIN_SOURCE=sdr` makes the bot read goesproc's `emwin/YYYY-MM-DD/` tree
-directly; nothing is fetched from the internet. The bot starts without a
-radio and keeps retrying the serial port every minute, so the Heltec can be
+directly; no EMWIN is fetched from the internet. `MCW_SDR_DASHBOARD_URL`
+(`http://127.0.0.1:8080`) is the goestools dashboard that the `sat` reply,
+the receiver log lines and the Satellite page read. The bot starts without a
+radio and keeps retrying every minute, trying `/dev/meshcore` and every USB
+serial port when the configured one does not answer, so the radio can be
 plugged in later. To try text commands from the Pi's shell:
 
 ```bash
 .venv/bin/meshcore-weather-cli interactive
 .venv/bin/meshcore-weather-cli sat      # GOES receiver status, as the sat command replies
+```
+
+The rest of `deploy/`:
+
+| File | What it is |
+|---|---|
+| `99-meshcore-radio.rules` | udev rule: `/dev/meshcore` for any supported USB radio board |
+| `meshcore-weather-audit.service`, `meshcore-weather-audit.timer` | `scripts/audit.py` hourly, results in `data/audit.json` for the Overview |
+| `goes-dashboard/` | The public page (below) |
+| `goes-cleanup/` | Hourly retention for goestools output: images 1 day, EMWIN and text 3 days, oldest days removed while the disk is over 70 % |
+
+The audit timer is installed like the bot's unit:
+
+```bash
+sudo cp deploy/meshcore-weather-audit.* /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now meshcore-weather-audit.timer
 ```
 
 ### Updating the Pi
@@ -221,9 +302,10 @@ ssh digitaino@mesh-wx.digitaino.com meshcore-weather/scripts/pi_update.sh
 
 It fetches, refuses to run over tracked files edited on the Pi, stops the
 bot, checks out the new commit, reinstalls when `pyproject.toml` changed,
-checks that the code imports, and starts the bot again. It prints the commit
-to roll back to (`pi_update.sh <commit>`). Files git ignores stay as they are:
-`.env`, `data/`, `.venv`, CoreScope's config, passwords and bundles.
+checks that the code imports (and goes back to the old commit if it does
+not), and starts the bot again. It prints the commit to roll back to
+(`pi_update.sh <commit>`). Files git ignores stay as they are: `.env`,
+`data/`, `.venv`, CoreScope's config, passwords and bundles.
 
 ### The public page (port 8080)
 
@@ -232,12 +314,14 @@ The goestools dashboard on the Pi (`deploy/goes-dashboard/`, installed as
 public, read-only page: receiver stats and imagery, plus a card that explains
 the mesh weather bot and how to reach it, its request/reply counters, and a
 live feed of what it sees on its channel. That card is fed by the admin
-portal's `/api/public/bot` bundle, proxied at `/api/bot` on the same port,
-so the portal itself (8081) never has to be exposed. DMs are redacted in the
-bundle (command and reply length only). To update the page:
+portal's `/api/public/bot` bundle (read from `BOT_URL`, default
+`http://127.0.0.1:8081`), proxied at `/api/bot` on the same port, so the
+portal itself never has to be exposed. DMs are redacted in the bundle
+(command and reply length only). To update the page:
 
 ```bash
-scp deploy/goes-dashboard/dashboard.* pi:~/goes/ && ssh pi sudo systemctl restart goes-dashboard
+scp deploy/goes-dashboard/dashboard.* digitaino@mesh-wx.digitaino.com:goes/
+ssh digitaino@mesh-wx.digitaino.com sudo systemctl restart goes-dashboard
 ```
 
 The admin portal's Text Bot page shows the same feed unredacted (sender names,
@@ -245,213 +329,338 @@ DM text, admin and console commands, and why a request was not answered).
 
 ## Configuration reference
 
-All settings are environment variables prefixed with `MCW_`. See `.env.example` for the full list. Most commonly adjusted:
+All settings are environment variables prefixed with `MCW_`, read from the
+environment and from `.env` in the working directory. `.env.example` (dev
+box) and `deploy/pi.env.example` (receiver Pi) are starting points.
+
+**Radio and channels**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MCW_SERIAL_PORT` | `/dev/cu.usbserial-0001` | Serial port or `tcp://host:port` for a networked radio |
+| `MCW_SERIAL_PORT` | `/dev/cu.usbserial-0001` | Serial port of the companion radio, or `tcp://host:port` for a radio behind a TCP bridge. When a serial port is missing or silent the bot also tries `/dev/meshcore` and every USB serial port |
 | `MCW_SERIAL_BAUD` | `115200` | Serial baud rate |
-| `MCW_TX_ENABLED` | `true` | `false` = receive-only passive observer: suppresses all RF transmission (adverts, channel messages, binary datagrams, DMs). RX and MQTT continue |
-| `MCW_MESHCORE_CHANNEL` | `#digitaino-wx-bot` | Channel for text commands (never `0`/public) |
-| `MCW_MESHWX_CHANNEL` | *(empty)* | Channel for the binary data datagrams. The same name as `MCW_MESHCORE_CHANNEL` shares one slot |
-| `MCW_HOME_CITIES` | *(empty)* | Comma-separated cities to seed the default schedule |
-| `MCW_HOME_STATES` | *(empty)* | Comma-separated states for warning filtering |
-| `MCW_HOME_WFOS` | *(empty)* | Comma-separated WFOs for coverage filtering |
-| `MCW_EMWIN_SOURCE` | `internet` | `internet` or `sdr` (future) |
-| `MCW_EMWIN_POLL_INTERVAL` | `120` | EMWIN refresh interval in seconds |
-| `MCW_EMWIN_MAX_AGE_HOURS` | `12` | Expire products older than this |
-| `MCW_PORTAL_ENABLED` | `false` | Set to `true` to enable the web admin portal |
+| `MCW_MESHCORE_CHANNEL` | `#meshwx` | The request channel for people and apps; created on a free slot if the node lacks it. Never slot 0 (public) |
+| `MCW_MESHWX_CHANNEL` | `#meshwx` | The data channel for v5 datagrams and `>` answers. The same name as `MCW_MESHCORE_CHANNEL` shares one slot, which is where v5 apps listen; a different name takes a second slot. Empty = no broadcasts and no `>` answers |
+| `MCW_TX_ENABLED` | `true` | `false` = receive only: adverts, replies, datagrams and resends become logged no-ops. Receiving, MQTT and the portal continue |
+| `MCW_ADVERT_INTERVAL_HOURS` | `6` | Hours between flood adverts |
+| `MCW_CONTACT_HOUSEKEEPING` | `true` | Keep the node's contact table for people: store companions only, remove repeaters, rooms and sensors, and the people heard longest ago when free slots run low. The admin and peer bots are never removed. `false` = firmware behaviour |
+| `MCW_CONTACT_SLOTS` | `100` | Contact capacity to assume when the firmware does not report one |
+| `MCW_CONTACT_KEEP_FREE` | `10` | Slots housekeeping leaves free for newcomers |
+| `MCW_RADIO_ADOPT` | `manual` | A different radio on the port: `manual` waits for Adopt in the portal, `auto` writes the saved profile onto it at once, `off` never adopts |
+| `MCW_RADIO_RX_SILENT_MIN` | `30` | Minutes with nothing heard before the health verdict calls the receiver silent |
+
+**Text replies**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCW_REPLY_MODE` | `dm` | `dm`, `dm_only` or `channel` (see "How replies go out") |
+| `MCW_CHANNEL_REPLY_MAX_HOPS` | `2` | A sender the bot cannot DM gets a channel reply only within this many hops |
+| `MCW_PEER_BOT_PREFIX` | `WX-` | Name prefix of other weather bots; their channel messages are ignored |
+| `MCW_ADMIN_KEY` | *(empty)* | Hex public-key prefix allowed to run admin commands by DM |
+| `MCW_TIMEZONE` | `America/Chicago` | Time zone for times in text replies; the wire is always UTC |
+
+**Delivery**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCW_RETRANSMIT_MAX` | `1` | Resends of a packet nobody repeated (or a DM nobody acknowledged); `0` = measure only |
+| `MCW_ECHO_WINDOW_S` | `8.0` | Seconds to wait for a repeater's echo before resending |
+| `MCW_RETRANSMIT_PER_HOUR` | `30` | Resends allowed per hour |
+| `MCW_MESH_QUIET_S` | `600` | When no repeat has been heard from anyone for this many seconds, skip the resend |
+| `MCW_SCOPE_URL` | *(empty)* | CoreScope instance to ask who heard a packet; empty = off |
+| `MCW_SCOPE_MODE` | `stats` | `stats` records the observers; `decide` also skips a resend CoreScope saw repeated |
+| `MCW_SCOPE_MIN_OBSERVERS` | `2` | Observers of a repeated copy needed before it counts |
+
+**EMWIN**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCW_EMWIN_SOURCE` | `internet` | `internet` (NOAA bundles) or `sdr` (the goesproc directory) |
+| `MCW_EMWIN_POLL_INTERVAL` | `120` | Seconds between store refreshes; with `internet`, also between bundle downloads |
+| `MCW_EMWIN_BASE_URL` | `https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip` | Bundle loaded at start (`internet`) |
+| `MCW_EMWIN_POLL_URL` | `https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txtmin02.zip` | Bundle polled after that (`internet`) |
+| `MCW_EMWIN_MAX_AGE_HOURS` | `12` | Hours a product stays in the store; warning-class products stay at least 48 h and storm reports at least 24 h |
+| `MCW_SDR_EMWIN_DIR` | `~/goes-images/emwin` | goesproc's EMWIN output (`YYYY-MM-DD/` directories) |
+| `MCW_SDR_POLL_INTERVAL` | `30` | Seconds between directory scans |
+| `MCW_SDR_DASHBOARD_URL` | `http://127.0.0.1:8080` | The goestools dashboard: the `sat` reply, receiver log lines, the portal's Satellite page and Overview |
+
+**Coverage**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCW_HOME_CITIES` | *(empty)* | Comma-separated places; the first is the home point (radius centre, home forecast, `>f` and `>o` without an argument) |
+| `MCW_HOME_RADIUS_KM` | `120` | Every forecast zone within this radius of the home point is covered; `0` = no radius |
+| `MCW_HOME_STATES` | *(empty)* | Comma-separated states, covered whole |
+| `MCW_HOME_WFOS` | *(empty)* | Comma-separated NWS offices, covered whole |
+
+**Portal**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCW_PORTAL_ENABLED` | `false` | Run the admin portal (needs the `[portal]` extra) |
 | `MCW_PORTAL_HOST` | `0.0.0.0` | Portal bind address |
 | `MCW_PORTAL_PORT` | `8080` | Portal port |
-| `MCW_ADMIN_KEY` | *(empty)* | Pubkey prefix of the admin user for DM admin commands |
-| `MCW_LOG_LEVEL` | `INFO` | Log level |
 
-Once the bot is running, **the broadcast schedule is managed via `data/broadcast_config.json` and the portal**, NOT via environment variables. Env vars are bootstrap config only.
+**MQTT (CoreScope)**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCW_MQTT_ENABLED` | `false` | Publish every raw packet the radio hears to an MQTT broker |
+| `MCW_MQTT_HOST` | `mosquitto` | Broker host |
+| `MCW_MQTT_PORT` | `1883` | Broker port |
+| `MCW_MQTT_TOPIC_PREFIX` | `meshcore` | Topics are `<prefix>/<iata>/<public key>/packets` |
+| `MCW_MQTT_IATA` | `AUS` | Region code in the topic |
+| `MCW_MQTT_USERNAME`, `MCW_MQTT_PASSWORD` | *(empty)* | Broker credentials |
+| `MCW_MQTT_ORIGIN` | `meshcore-weather` | Observer name in each published message |
+
+**Other**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCW_DATA_DIR` | `data` | Where the bot keeps its state: schedule, warning state and sequence number, known contacts, node profile, EMWIN cache |
+| `MCW_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
+| `MCW_MESHWX_REFRESH_COOLDOWN` | `300` | Not read by the current code (left from v4) |
+
+Once the bot is running, **the broadcast schedule is managed in the portal and `data/broadcast_config.json`**, not in environment variables.
 
 ## Data sources
 
-Every message broadcast is derived from an official NWS product ingested via EMWIN. Parsing is done by [pyIEM](https://github.com/akrherz/pyIEM) wherever possible, with custom parsers where pyIEM doesn't cover a specific product (notably the PFM column-position parser in `parser/pfm.py`).
+Every message is derived from an official NWS product received over EMWIN. Parsing is done by [pyIEM](https://github.com/akrherz/pyIEM) wherever it covers the product, with custom parsers for the rest (notably the PFM column-position parser in `parser/pfm.py`).
 
-Supported product types:
+| Product | Used for |
+|---|---|
+| Warnings, watches and advisories with VTEC (TOR, SVR, SVS, FFW, FLW, FLS, WSW, NPW, RFW, MWW, ...) and SPS | `warn`, `wx`; v5 Warning, Cancel and Digest; `>w`, `>wt` |
+| METAR collectives (SAH) | `wx` conditions, `metar`; v5 Observations; `>metar` |
+| PFM (Point Forecast Matrix) | `forecast`, `wx`; v5 Forecast |
+| TAF | `taf`; `>taf` |
+| HWO (Hazardous Weather Outlook) | `outlook`; `>hwo` |
+| LSR (Local Storm Reports) | `storm`; `>storm` |
+| RWR (Regional Weather Roundup) | `rain`; `>rain` |
+| AFD (Area Forecast Discussion) | `>afd` |
+| SWPC products (3-Day Forecast, Daily Indices, alerts) | `space`; `>space` |
 
-| Product | Source | Produces |
-|---|---|---|
-| **PFM** | Point Forecast Matrix | `0x31` Forecast (structured numeric data, daily aggregates) |
-| **ZFP** | Zone Forecast Product | `0x31` Forecast fallback (narrative regex extraction) |
-| **RWR** | Regional Weather Roundup | `0x30` Observation, `0x34` Rain Obs |
-| **METAR** | SAH/aviation | `0x30` Observation, `0x35` METAR |
-| **TAF** | Terminal Aerodrome Forecast | `0x36` TAF snapshot |
-| **HWO** | Hazardous Weather Outlook | `0x32` Outlook (day-1 and days-2-7 hazards) |
-| **LSR** | Local Storm Reports | `0x33` Storm Reports |
-| **FWF** | Fire Weather Forecast | `0x38` Fire Weather (wind, RH, temp, Haines, lightning) |
-| **NOW** | Short Term Forecast | `0x3C` Nowcast (urgency flags, text) |
-| **RTP** | Regional Temp/Precip | `0x3A` Daily Climate (high/low/precip/snow) |
-| **SVR/SVS/TOR/FFW/FLW/FLS/WSW/NPW/RFW/MWW/SPS/...** | NWS warnings | `0x20`/`0x21` Warning broadcasts with VTEC metadata |
+Warnings carry VTEC event tracking across product segments (`protocol/vtec_events.py`), polygons, county (`TXC453`) and zone (`TXZ192`) codes, and absolute expiry times. Warning-class products stay in the store for 48 h and storm reports for 24 h, so the VTEC expiry and the report time decide what is current (`emwin/retention.py`).
 
-Warnings include canonical VTEC event tracking (phenomenon / significance / action / ETN / office), correct polygon winding, both zone (`TXZ192`) and county FIPS (`TXC029`) UGC support, and absolute expiry timestamps so clients never display stale warnings.
+## Text commands for people
 
-## Text-command interface (legacy)
+Anyone can send these on `#meshwx` or by DM. A message that is not a
+command is read as a place: `austin tx` means `wx austin tx`.
 
-The bot also supports a human-friendly text command interface via channel messages or DMs. This is the **original** interface and predates the binary protocol. It still works and is useful for debugging the data pipeline from a phone or terminal without needing a custom client, but the binary protocol is the primary integration path going forward.
+| Command | Example | Reply |
+|---------|---------|-------|
+| `wx <city ST or station>` | `wx Austin TX`, `wx KAUS`, `wx AUS` | Current conditions, today's high/low, active warnings |
+| `wx`, `wx <state>` | `wx TX`, `TX`, `wx texas` | National or state overview |
+| `forecast <city ST>` | `forecast Miami FL` | Daily forecast from the nearest PFM point |
+| `warn`, `warn <ST>`, `warn <city ST>` | `warn KS` | Active watches, warnings and advisories: national, a state, or a place |
+| `outlook <city ST>` | `outlook Des Moines IA` | Hazardous weather outlook |
+| `storm [ST or city ST]` | `storm SD` | Storm reports from the last 6 hours (the home state without an argument) |
+| `rain [ST or city ST]` | `rain FL` | Rainfall reports (the home state without an argument) |
+| `metar <ICAO or city ST>` | `metar KJFK` | Raw METAR |
+| `taf <ICAO or city ST>` | `taf KJFK` | Terminal aerodrome forecast |
+| `space` | `space` | Space weather |
+| `sat` | `sat` | The bot's GOES receiver: lock, signal quality, packets dropped in the last minute, age of the newest EMWIN file. A bot on internet EMWIN says it has no receiver |
+| `more` | `more` | The next page of the last long reply |
+| `help` | `help` | The command list |
 
-### Overview commands
+Aliases: `warning`, `warnings` and `wanr` for `warn`; `storms` for `storm`;
+`swx` and `solar` for `space`; `satellite`, `goes` and `signal` for `sat`.
+The receiver words count only on their own, so `satellite beach fl` is
+still a place. `<command> more` (or `next`) also means `more`. Both 3-letter
+(IATA/FAA) and 4-letter (ICAO) station codes work.
 
-| Command | Description |
-|---------|-------------|
-| `wx` | National overview |
-| `wx TX` or just `TX` | State overview |
-| `wx Austin TX` | City-level conditions, observations, forecast |
-| `help` | List commands |
-| `more` | Next page of a long reply. A long reply is cut into numbered pages on item boundaries; page 1 ends with `(1/3) more`, and each `more` sends the next page on whichever transport it arrives |
+### Long replies
 
-### Detailed commands
+A reply is rendered in full and cut into numbered pages at the message
+budget, on item boundaries; page 1 ends `(1/3) more`. `more` from the same
+person sends the next page on whichever transport it arrives, so a reply
+started on the channel continues by DM. A paging session lasts 15 minutes.
 
-| Command | Example | Description |
-|---------|---------|-------------|
-| `forecast <city ST>` | `forecast Miami FL` | Zone forecast or discussion summary |
-| `warn` / `warn <ST>` / `warn <city ST>` | `warn KS` | Warning listing at various granularities |
-| `outlook <city ST>` | `outlook Des Moines IA` | 1-7 day hazardous weather outlook |
-| `rain` / `rain <ST>` | `rain FL` | Areas reporting rain |
-| `storm` / `storm <ST>` | `storm SD` | Local storm reports |
-| `metar <ICAO>` | `metar KJFK` | Raw METAR |
-| `taf <ICAO>` | `taf KJFK` | Terminal aerodrome forecast text |
+### How replies go out
 
-Both 3-letter (IATA/FAA) and 4-letter (ICAO) station codes work: `wx AUS` = Austin-Bergstrom, `wx KJFK` = JFK NYC, `wx SJU` = San Juan PR.
+- **A DM** is answered by DM.
+- **A command on the channel** depends on `MCW_REPLY_MODE`:
+  - `dm` (default): a DM when the bot can DM the sender (its node has them
+    stored, or they have DMed or adverted before). Otherwise a sender at
+    most `MCW_CHANNEL_REPLY_MAX_HOPS` hops away (default 2) gets one reply
+    on the channel, cut to one message ending `… DM me for all`, at most
+    one per sender per 10 minutes and 12 per hour in total, and the bot
+    adverts if it has not in the last hour. A sender farther away gets
+    nothing.
+  - `dm_only`: a DM or nothing.
+  - `channel`: every reply floods on the channel, paged like a DM. For testing.
+- A DM that fails is not retried on the channel; the bot forgets that
+  sender's DM path, so their next channel command is handled like a
+  stranger's.
+- Messages from nodes whose name starts with `MCW_PEER_BOT_PREFIX` are
+  ignored. When a peer bot's advert carries a position, a channel command
+  that names a place is answered only by the bot nearest to that place.
 
-### Hybrid DM/channel transport
-
-The bot uses a channel-with-DM-fallback routing system to keep channel spam low:
-
-1. New users send commands on the channel and get a few free replies plus a prompt to send an advert
-2. When a user adverts, the bot detects it, re-adverts itself, and sends a DM welcome
-3. After that, responses go DM-first automatically
-4. If DMs break (user deleted the bot contact), the bot detects the failure and falls back to channel with a nudge to re-advert
-
-Text commands have a 5-second per-user rate limit. App requests (`>` prefixed DMs) have their own 5-second per-sender limit and an hourly budget on the responder.
+Limits: one reply per sender every 5 seconds (2 seconds for `more`), at most
+40 per sender and 400 in total per hour; a `>` request sent by DM counts
+too. Anything over a limit gets no reply.
 
 ### Admin commands
 
-Authenticated by `MCW_ADMIN_KEY` (pubkey prefix), available via DM only:
+DM only, from a public key that starts with `MCW_ADMIN_KEY`:
 
 | Command | Description |
 |---------|-------------|
 | `admin` | Show admin help |
-| `contacts` | List all known contacts |
+| `contacts` | List all contacts on the node |
 | `remove <name>` | Remove a specific contact |
-| `clear-contacts` | Remove ALL contacts from the device |
+| `clear-contacts` | Remove ALL contacts from the node |
 | `advert` | Send a flood advert + refresh contacts |
-| `refresh` | Reload contacts from the device |
+| `refresh` | Reload contacts from the node |
+| `broadcast` | Run a scheduler tick now (the jobs that are due) |
+| `warnings-broadcast` | Run the `warnings` job now |
+| `test-data-ch` | Send a `test ping` text on the data channel |
 
 ## Architecture
 
 ```
 meshcore_weather/
-├── config.py              # Settings loaded from env vars (pydantic-settings)
-├── main.py                # Entry point, DM/channel routing, command dispatch
-├── nlp.py                 # Typo-tolerant text command parser
+├── main.py                # Entry point: store, radio, portal; channel/DM routing, text commands, paging, limits, admin commands
+├── config.py              # Settings from MCW_ environment variables and .env (pydantic-settings)
+├── nlp.py                 # Text command parser: command words, aliases, bare-word sat
+├── cli.py                 # meshcore-weather-cli
+├── traffic.py             # What the text bot heard and said: live feed, counters, redacted public view
 ├── activity.py            # Broadcast log (data-channel events) for the portal
-├── cli.py                 # CLI helpers for testing + radio admin
+├── sdr_monitor.py         # Reads the goestools dashboard: receiver log lines and the sat reply
+│
+├── core/                  # One implementation per product, shared by text and binary
+│   ├── services.py        # Observation, forecast, warnings, outlook, storm reports, rain, METAR/TAF for a place
+│   ├── render_text.py     # One-message text renderings
+│   ├── overview.py        # National and state overviews
+│   ├── pages.py           # Numbered pages for long replies
+│   ├── space_weather.py   # SWPC products into the space reply
+│   └── vtec_names.py      # Names for VTEC phenomenon.significance pairs
 │
 ├── emwin/
-│   └── fetcher.py         # EMWIN ingestion (internet now, SDR stubbed)
+│   ├── fetcher.py         # InternetSource (NOAA zip bundles) and SDRSource (goesproc directory)
+│   └── retention.py       # How long each product type stays in the store
 │
 ├── parser/
-│   ├── weather.py         # NWS text product parsing + text-command queries
+│   ├── weather.py         # WeatherStore: products by EMWIN identifier, lookups
 │   └── pfm.py             # PFM column-position parser + daily downsampler
 │
 ├── protocol/
-│   ├── v5.py              # MeshWX v5 codec (stdlib only; the reference decoder)
-│   ├── v5_builders.py     # store data -> v5 messages (one implementation for jobs and requests)
-│   ├── broadcaster.py     # AppResponder: `>` requests, owns the Scheduler
-│   ├── coverage.py        # Operator coverage (centre + radius, states, WFOs -> zone set)
+│   ├── v5.py              # MeshWX v5 codec (stdlib only; the reference encoder and decoder)
+│   ├── v5_builders.py     # Store data -> v5 messages (one implementation for jobs and requests)
+│   ├── broadcaster.py     # AppResponder: answers `>` requests, owns the Scheduler
 │   ├── warnings.py        # pyIEM-backed warning extraction with storm tags
-│   ├── meshwx.py, encoders.py, fec.py   # v3/v4 era: kept for the EMWIN parsers the text bot uses
+│   ├── vtec_events.py     # VTEC event lifecycle across product segments
+│   ├── coverage.py        # Operator coverage (home radius, states, WFOs -> zone set)
+│   └── meshwx.py, encoders.py, fec.py   # v3/v4 code, still imported for METAR parsing and shared tables
 │
-├── schedule/              # Unified broadcast schedule system
-│   ├── models.py          # BroadcastJob, BroadcastConfig (pydantic)
-│   ├── store.py           # Atomic JSON persistence + env-var bootstrap
-│   ├── executor.py        # Product → builder registry (data-driven)
-│   └── scheduler.py       # Tick loop, per-job intervals, radio transmission
+├── schedule/
+│   ├── models.py          # BroadcastJob, BroadcastConfig; the four schedulable products
+│   ├── store.py           # Atomic JSON persistence, default jobs, v4 migration
+│   ├── executor.py        # Job -> v5 messages; warning state and life-safety repeats
+│   └── scheduler.py       # Tick loop and the one transmit path: spacing, seq stamping, state saved across restarts
+│
+├── meshcore/
+│   ├── radio.py           # MeshCore companion: port discovery, channels, DMs, adverts, GRP_DATA, contacts
+│   ├── delivery.py        # Echo and ACK tracking, the single resend, CoreScope lookups
+│   ├── health.py          # Radio health verdict (tx_suspect, rx_silent, idle, tx_off)
+│   └── profile.py         # Node profile and its adoption onto a replacement radio
+│
+├── mqtt/
+│   └── publisher.py       # Raw RX packets to an MQTT broker for CoreScope
 │
 ├── portal/                # FastAPI admin portal (one page, hash routing, no build step)
-│   ├── server.py          # app factory, mutation header check, uvicorn lifecycle
+│   ├── server.py          # App factory, state-change header check, uvicorn lifecycle
 │   ├── sse.py             # SSE helper with heartbeats (logs, traffic, broadcast log)
-│   ├── logbuf.py          # log ring buffer behind System > Logs
+│   ├── logbuf.py          # Log ring buffer behind System > Logs
 │   ├── routes/
 │   │   ├── pages.py       # GET / (the page)
-│   │   ├── api.py         # products, broadcast log, channels, schedule CRUD
-│   │   └── admin.py       # overview, radio, satellite, console, traffic, settings, audit
+│   │   ├── api.py         # Product browser, broadcast log, channels, schedule CRUD
+│   │   └── admin.py       # Overview, radio, satellite, console, traffic, public bundle, logs, settings, audit
 │   ├── templates/app.html
 │   └── static/            # portal.js + portal.css, nothing vendored
 │
-├── client_data/           # Preload bundle shipped to clients (package-data)
-│   ├── zones.json         # NWS forecast zones
-│   ├── places.json        # US Census places
-│   ├── stations.json      # METAR stations
-│   ├── wfos.json          # NWS Weather Forecast Offices
-│   ├── state_index.json   # State/marine prefix → 1-byte index
-│   ├── protocol.json      # Protocol version + enum reference
-│   ├── pfm_points.json    # PFM forecast points (name, WFO, lat/lon, zone)
-│   ├── regions.json       # MeshWX region definitions + bounds (coverage/beacon)
-│   ├── zones.geojson      # Simplified zone polygons for map rendering
-│   └── weather_dict.json  # Reserved for future dict text compression
+├── client_data/           # Preload bundle for apps (package data; spec section 9)
+│   ├── protocol.json, index.json, wfos.json
+│   ├── stations.json, pfm_points.json, places.json
+│   ├── zones.json, zones.geojson, counties.json, counties.geojson
+│   └── regions.json, state_index.json, weather_dict.json   # v3/v4, not used by v5
 │
-├── geodata/               # Source data for the client_data bundle
-│   └── *.json
-│
-└── meshcore/
-    └── radio.py           # Meshcore radio interface: channels, DMs, adverts
+└── geodata/               # Offline resolver for places, stations and zones (__init__.py)
+    └── zones.json, places.json, stations.json, state_index.json
+```
+
+```
+deploy/      systemd units, udev rule, goestools dashboard and cleanup for the Pi
+scripts/     pi_update.sh, audit.py, v5_vectors.py, build_client_data.py, build_places.py, start.sh
+tests/       pytest suite
+corescope/   CoreScope packet analyzer and observer brokers (separate Docker stack)
+docs/        below
 ```
 
 ## Docs
 
-- `docs/MeshWX_v5_Spec.md` — the protocol and the app developer's guide (wire, bundle, rendering, requests)
-- `docs/meshwx_v5_vectors.json` — test vectors every client must pass
-- `docs/MeshWX_Airtime_Review.md` — the review that led to v5, with the airtime numbers
-- `docs/Delivery_Confirmation_Design.md` — echo tracking and resend
-- `docs/Radio_Swap.md` — replacing the radio (same or different board): the node profile, adoption, the udev rule, the Health card
-- `docs/Admin_Portal_Review_2026-09-14.md` — the portal revamp record
-- `docs/Future_EInk_Dashboard.md` — parked project idea for a standalone e-ink hardware display
+- [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md) — the protocol and the app developer's guide (wire, requests, bundle, rendering), revision 3. The current contract.
+- [`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json) — test vectors every client must pass, generated by `scripts/v5_vectors.py`
+- [`docs/Radio_Swap.md`](docs/Radio_Swap.md) — replacing the radio (same or different board): the node profile, adoption, the udev rule, the Health card
+- [`docs/Delivery_Confirmation_Design.md`](docs/Delivery_Confirmation_Design.md) — echo tracking and the single resend: the design and the firmware facts it rests on
+- [`docs/USB_Radio_Restart.md`](docs/USB_Radio_Restart.md) — what happens on the Pi when the USB radio is unplugged, dies or reboots, and what to check
+- [`docs/Future_EInk_Dashboard.md`](docs/Future_EInk_Dashboard.md) — parked idea for a standalone e-ink display, written against the v4 message codes
+
+Dated reviews, kept as records of what was found and changed at the time.
+Where they disagree with the spec or the code, the spec and the code are
+right.
+
+- [`docs/MeshWX_Airtime_Review.md`](docs/MeshWX_Airtime_Review.md) — 2026-09-10: the airtime review that led to v5
+- [`docs/Satellite_Feed_Findings.md`](docs/Satellite_Feed_Findings.md) — 2026-09-13: what the GOES-19 EMWIN feed on the Pi delivers
+- [`docs/System_Review.md`](docs/System_Review.md) — 2026-09-13: whether the pieces between the feed and the wire agree
+- [`docs/Nationwide_Design_Review.md`](docs/Nationwide_Design_Review.md) — 2026-09-14: one request channel for every bot, attacked
+- [`docs/Security_Notes.md`](docs/Security_Notes.md) — 2026-09-14: what an attacker can reach before going live, and what is left
+- [`docs/Accuracy_Audit_2026-09-14.md`](docs/Accuracy_Audit_2026-09-14.md) — 2026-09-14: answers checked against independent sources, the fixes, and `scripts/audit.py`
+- [`docs/Admin_Portal_Review_2026-09-14.md`](docs/Admin_Portal_Review_2026-09-14.md) — 2026-09-14: the portal revamp record
 
 ## Safety
 
-- **Channel isolation**: the bot will never transmit on channel 0 (public) or any channel other than its configured ones. Enforced at both the message handler and radio driver layers.
-- **Text-command rate limit**: 5 seconds per user for text DMs (human-user protection)
-- **Binary-request rate limit**: 5 minutes per `(data_type, location)` tuple on the broadcaster (multi-client broadcast amortization)
-- **DM fallback**: if DMs fail, the bot detects it and falls back to channel responses gracefully
-- **Channel spam limits**: unknown contacts get a small number of free channel replies then must advert
-- **Input sanitization**: text commands are length-limited and stripped of control characters
-- **Admin authentication**: admin commands require matching `MCW_ADMIN_KEY` pubkey prefix — cannot be spoofed via channel
+- **Channel isolation**: the radio driver never transmits on channel 0 (public) and sends only on the bot's configured text and data channel slots.
+- **Receive-only switch**: `MCW_TX_ENABLED=false` turns every advert, reply, datagram and resend into a logged no-op.
+- **Text reply limits**: 5 seconds per sender, 40 per sender and 400 in total per hour; a sender the bot cannot DM gets at most one channel reply per 10 minutes, 12 per hour overall, and only within the hop limit.
+- **App request limits**: 5 seconds per sender and 60 answer packets per hour, checked before an answer is built.
+- **Resend limits**: one resend per packet by default, 30 per hour, none while no repeater has been heard for 10 minutes.
+- **Input sanitization**: control characters are stripped, messages cut to 200 characters and places to 50.
+- **Admin authentication**: admin commands only by DM, matched on the sender's public key, not their name.
+- **Identity**: a radio that is not the node in the saved profile sends no adverts until it is adopted or a new profile is started.
+- **Portal**: no login, so keep it on the LAN; state-changing requests need the `X-Requested-With: meshcore-portal` header. The public page gets a redacted bundle.
 
 ## Roadmap
 
 Shipped:
 
 - [x] Internet-based EMWIN data fetching with disk cache
-- [x] pyIEM canonical NWS product parsing (VTEC, UGC, polygons)
-- [x] MeshWX v5: GRP_DATA transport, warning/cancel/digest/observations/forecast/text, `>` request grammar
-- [x] Discovery by advert (`WX-<IATA>` chat node with lat/lon)
-- [x] Echo tracking: byte-identical resend when no repeater repeated us
-- [x] Absolute Unix-minute expiry timestamps (no client-side countdown drift)
-- [x] PFM forecast source (structured numeric data, displacing ZFP narrative regex)
-- [x] Fire weather forecasts (FWF → 0x38)
-- [x] Nowcasts (NOW → 0x3C) with urgency flags
-- [x] Daily climate summaries (RTP → 0x3A)
-- [x] QPF precipitation grids (0x12)
-- [x] Unified per-job broadcast schedule system (any product, any location, any interval)
-- [x] Admin portal: overview, text bot feed and console, broadcasts, radio, satellite, logs and settings
-- [x] Preload bundle (`client_data/`) with PFM points, zone and county polygons, places, stations
+- [x] EMWIN from the GOES-19 dish via goestools (`MCW_EMWIN_SOURCE=sdr`)
+- [x] pyIEM canonical NWS product parsing (VTEC, UGC, polygons) and a VTEC event lifecycle tracker
+- [x] PFM forecast source, sent as whole days
+- [x] MeshWX v5 revision 3: GRP_DATA on `#meshwx`, warning/cancel/digest/observations/forecast/text/not available, `>` request grammar
 - [x] App requests answered on the channel so one request serves every listener
-- [x] Legacy text-command interface with typo-tolerant parser
-- [x] Hybrid DM/channel routing with admin commands
-- [x] Docker container with serial passthrough
-- [ ] iOS client against v5
+- [x] Discovery by advert (`WX-<city>` chat node)
+- [x] Echo tracking and one byte-identical resend; DM ACKs; optional CoreScope check
+- [x] Absolute Unix-minute expiry timestamps (no client-side countdown drift)
+- [x] Per-job broadcast schedule, edited in the portal
+- [x] Preload bundle (`client_data/`) with the index tables, PFM points, zone and county polygons, places, stations
+- [x] Text commands for people with numbered pages and `more`
+- [x] DM-first replies: reply modes, hop-limited channel replies for strangers, admin commands
+- [x] Contact housekeeping
+- [x] Radio swap: node profile, adoption, udev rule, health verdict
+- [x] Receiver status: `sat` and `>sat`
+- [x] Admin portal: overview, text bot feed and console, broadcasts, radio, satellite, logs and settings
+- [x] Public dashboard card with a redacted live feed
+- [x] Accuracy audit against api.weather.gov, IEM, aviationweather.gov and SWPC
+- [x] MQTT packet publishing for CoreScope
+- [x] Pi deployment: systemd unit, git-based updates with `scripts/pi_update.sh`
+- [x] Docker container (radio over a TCP bridge)
 
 Planned:
 
-- [ ] GOES-E SDR satellite downlink via goesrecv/goestools
+- [ ] iOS client against v5
+- [ ] A permanent `GRP_DATA` data type requested upstream (spec section 2.1)
 - [ ] H-VTEC hydrologic metadata (flood severity, river ID, stage forecast)
-- [ ] Dictionary text compression for warning headlines
 - [ ] 3-hourly hour-by-hour PFM forecast format
 - [ ] Standalone e-ink weather display hardware product (see `docs/Future_EInk_Dashboard.md`)
 
@@ -465,5 +674,5 @@ Created and maintained by Rafael Pesquera ([@digitaino](https://github.com/digit
 
 ## Related
 
-- **[meshwx-client](https://github.com/digitaino/meshwx-client)** — Desktop & web client for receiving and displaying MeshWX weather data. Connects via USB or Bluetooth.
-- **[DigitainoMesh](https://github.com/digitaino/DigitainoMesh)** — iOS MeshCore client with built-in MeshWX weather decoding.
+- **[DigitainoMesh](https://github.com/digitaino/DigitainoMesh)** — a native MeshCore client for iOS and iPadOS.
+- **[meshwx-client](https://github.com/digitaino/meshwx-client)** — desktop and web client for the earlier MeshWX v4 protocol; it does not decode v5.

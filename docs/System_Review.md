@@ -1,5 +1,18 @@
 # MeshWX System Review: one system, not parts
 
+> **Status, 2026-09-15:**
+> - Committed: resolver and core services (4ecb1d2), PFM and multi-VTEC fixes (d99d110), every product through the services (5e84db5), event byte (00c367e), radius coverage (c170e67), places with population and territories (e19f8a0), space weather (a0474aa, 7b9a275). The §4 rules still hold.
+> - Changed:
+>   - The wire is now MeshWX v5 (ad6dc24), so 0x20, 0x21, 0x30, 0x31, 0x37 and 0x3E are no longer sent. The event code lives on as the v5 `event` byte.
+>   - Text replies page at 147 chars with `more` (c8066a5, d8e4da0).
+>   - A stranger with no DM path gets one budgeted channel reply again (48a1e34).
+> - Done from the open lists: Guam and USVI places (e19f8a0), and a low-above-high swap in the PFM daily downsampler (6908e27).
+> - Still open:
+>   - PGUM is still missing from `stations.json`.
+>   - There is no SPC day-1 outlook, because the feed carries no outlook points (`Satellite_Feed_Findings.md` §10).
+>   - Local duplicate names still rank distance-first; the resolver is untouched since, apart from 72246e7.
+> - Where the current truth lives: `docs/MeshWX_v5_Spec.md` revision 3 (§10.4 text commands, §11 places), `core/services.py`, `geodata/__init__.py`.
+
 Adversarial review of the whole bot as a system, 2026-09-13. Companion to `MeshWX_Airtime_Review.md` (the wire) and `Satellite_Feed_Findings.md` (the feed). This one is about whether the pieces between the feed and the wire agree with each other, and what was done about it today.
 
 ## 1. What the system looked like
@@ -87,8 +100,8 @@ Springfield, LA (also AR/MO/CO; add state) 1:55PM (KREG 47km): 93F …
 | # | Was | Now |
 |---|---|---|
 | 1 | Warnings-near used the v3 4-bit type nibble | **One-byte VTEC event code** on 0x20, 0x21 and 0x37 (byte 1), from the append-only table in `core/vtec_names.py`, exported as `events` in `client_data/protocol.json` (76 codes). Severity is implied by the significance letter. Text and wire now name the same event. |
-| 2 | Outlook, storm reports, rain, METAR/TAF raw, nowcast had separate text and binary code | All are `core.services` objects (`Outlook`, `StormReports`, `RainObs`, `Nowcast`, `Taf`, `raw_metar_for`) with `to_bytes()` and a `render_text` function. Text commands, scheduler builders and on-demand builders call them. Fire weather and daily climate remain scheduler-only (no text command exists for them). |
-| 3 | Channel reply path, nudges, reactive adverts | Deleted. Replies are DM-only; a channel command from a sender with no DM path is logged and ignored; a failed DM is dropped, never retried on a channel. |
+| 2 | Outlook, storm reports, rain, METAR/TAF raw, nowcast had separate text and binary code | All are `core.services` objects (`Outlook`, `StormReports`, `RainObs`, `Nowcast`, `Taf`, `raw_metar_for`) with `to_bytes()` and a `render_text` function. Text commands, scheduler builders and on-demand builders call them. Fire weather and daily climate remain scheduler-only (no text command exists for them). [2026-09-15: no longer scheduled; v5 has four job products and drops other jobs on load, `schedule/store.py`] |
+| 3 | Channel reply path, nudges, reactive adverts | Deleted. Replies are DM-only; a channel command from a sender with no DM path is logged and ignored; a failed DM is dropped, never retried on a channel. [2026-09-15: 48a1e34 brought back one budgeted channel reply, plus an advert, for a sender with no DM path] |
 | 4 | Coverage was zone-set-by-state; a WFO implied its whole state | `MCW_HOME_RADIUS_KM` (default 120) around the first home city: every public zone whose polygon intersects the circle. Storm polygons are tested against the circle itself, so a small SVR that contains no zone centroid is still caught. A WFO now adds only its zones; only `MCW_HOME_STATES` widens to a state. |
 | 5 | Old regex text helpers in `WeatherStore` | Deleted (1,160 → 400 lines). State and national overviews come from `core/overview.py` on the pyIEM extraction; marine UGC prefixes are excluded from state counts. |
 | 6 | Places table had no population and no territories | `scripts/build_places.py` merges GeoNames cities500 (population, PR/GU/VI/AS/MP) with the Census list (34,937 rows). Resolver ranks local candidates by distance, non-local by population, and still flags ambiguity. `wx hagatna` and `wx charlotte amalie` resolve. |
@@ -101,7 +114,7 @@ Still open, smaller: Guam has no METAR station in `stations.json` (PGUM missing 
 
 ### Space weather (added 2026-09-14)
 
-The `space_weather` job type used to dump the newest SWPC file as 0x40 text chunks; on real data it shipped 132 bytes of header plus "No Data." It is now a structured product in `core/space_weather.py`: the SWPC 3-Day Forecast (max Kp last 24 h, max Kp per day for three days, G scale, S1+ and R1-R2/R3+ probabilities) merged with the Daily Indices (sunspot number, 10.7 cm flux, X-ray background) and the live SWPC alert envelope (observed and expected K-index, R2/R3 flare, S-scale proton event). 27 bytes on the wire (message 0x3E, request type 9), one DM line via the `space` / `swx` / `solar` command:
+The `space_weather` job type used to dump the newest SWPC file as 0x40 text chunks; on real data it shipped 132 bytes of header plus "No Data." It is now a structured product in `core/space_weather.py`: the SWPC 3-Day Forecast (max Kp last 24 h, max Kp per day for three days, G scale, S1+ and R1-R2/R3+ probabilities) merged with the Daily Indices (sunspot number, 10.7 cm flux, X-ray background) and the live SWPC alert envelope (observed and expected K-index, R2/R3 flare, S-scale proton event). 27 bytes on the wire (message 0x3E, request type 9), one DM line via the `space` / `swx` / `solar` command [2026-09-15: v5 sends no 0x3E; apps ask `>space` and get Text subject 2, and the line reads `Kp 24h max` where it said `Kp now` (6908e27)]:
 
 ```
 Kp now 3.0, next 3d 3.7/3.7/4.7 (G1 Tue). SFI 114 SSN 77 xray B3.0. R1-2 10%
@@ -138,7 +151,7 @@ The operator's requirement is the whole US plus Puerto Rico, since other mesh co
 | Hilo HI | HIZ053 (polygon) | PHTO (5) | yes | Hilo (5, 7) |
 | Miami, Key West, New York, Boston, Chicago, Denver, Minneapolis, New Orleans, OKC, Omaha, Burlington, El Paso, Brownsville, Amarillo | polygon | 2–13 km | yes | 2–13 km, 6–7 days |
 | Seattle, Los Angeles, Phoenix | polygon | 3–13 km | yes | 9–20 km, 6 days |
-| Guam, US Virgin Islands | **unresolved** | — | — | places.json has no GU/VI entries (zones and stations exist; station codes `PGUM`, `TIST` work) |
+| Guam, US Virgin Islands | **unresolved** | — | — | places.json has no GU/VI entries (zones and stations exist; station codes `PGUM`, `TIST` work) [2026-09-15: places.json now has 28 GU and 8 VI rows, e19f8a0] |
 
 Across every forecast point in the cache: 7,062 points give 7 days, 1,929 give 6, 254 give fewer (mostly products that only carry 3 days, plus 26 with header glitches now skipped per point instead of per product).
 

@@ -9,6 +9,8 @@ A MeshCore node is its Ed25519 key pair, stored in the radio's flash.
 Every phone that saved `WX-AUS` saved that key, and the v5 bot id in
 every datagram is its first two bytes. A fresh radio has a fresh key: to
 phones and to the app it is a different bot until it carries the old key.
+The v5 sequence number is not in the radio: the bot keeps it on the Pi
+(`data/warning_state.json`), so apps see the numbers continue after a swap.
 
 The bot therefore keeps a **node profile** in `data/node_profile.json`
 (mode 0600, git-ignored) and refreshes it after every successful connect:
@@ -121,9 +123,10 @@ Wio-SX1262, Heltec T114 and so on. What changes between boards:
 | **hearing nothing** | no packet from anyone for the configured time (default 30 min) | check the antenna, then Test transmit; a deaf radio is a dead radio |
 | unclear | sends unheard, and either no repeater was heard or this bot's own event loop was stalling | check the Loop lag tile first, then CoreScope |
 
-The node's own counters sit under the verdict: a noise floor well above
-about −105 dBm on a quiet channel means interference or a failing front
-end; airtime totals reset on reboot.
+The node's own counters sit under the verdict: a noise floor far above
+the usual −110 to −120 dBm on a quiet channel (the tile turns amber above
+−95 dBm) means interference or a failing front end; airtime totals reset
+on reboot.
 
 **Loop lag** is the tile to read before blaming the radio. The bot runs the
 EMWIN parser, the portal and the schedulers on one thread, so a long

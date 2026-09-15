@@ -1,156 +1,136 @@
 # USB Radio Restart Guide
 
-When the USB radio is disconnected and reconnected (or the Mac restarts), the
-meshcore-weather container will keep running but silently fail. The Python
-process never exits, so Docker's `restart:` policy never fires — the container
-looks healthy while receiving nothing.
+What happens when the USB radio is unplugged, dies or reboots, and what to
+check. Production is the receiver Raspberry Pi: the bot runs as
+`meshcore-weather.service` under systemd, with the radio on USB.
 
-## Automatic recovery (installed)
+> 2026-09-15: rewritten for the Pi. The earlier version described a Docker
+> container on a Mac that kept running but silently failed after a replug,
+> a socat bridge, and two launchd agents that recreated the container. The
+> bot now notices a lost link and reconnects by itself.
 
-Two launchd agents now supervise the chain. In normal operation you should not
-need to do anything by hand.
+## What happens on its own
 
-| Agent | Job |
-|-------|-----|
-| `com.digitaino.meshcore-socat` | Runs the socat bridge (`/dev/cu.usbserial-0001` <-> TCP :4403). `KeepAlive` respawns it on crash, on unplug/replug, and at login. |
-| `com.digitaino.meshcore-watchdog` | Every 60s checks for an ESTABLISHED connection on :4403. After 3 consecutive misses it runs `docker compose up -d --force-recreate meshcore-weather`, then cools down 5 min. Skips the recreate when the serial device is absent (radio genuinely unplugged). |
+The bot notices a lost link in any of three ways
+(`meshcore_weather/meshcore/radio.py`):
 
-Script: `~/.meshcore-bridge/watchdog.sh`
-Logs: `~/Library/Logs/meshcore-socat.log`, `~/Library/Logs/meshcore-watchdog.log`
+- the serial layer reports the port closed (at once);
+- the device node disappears from `/dev` (checked every 15 s);
+- the node answers nothing to three commands in a row (one every 15 s).
 
-Check status:
+It logs `Radio link lost: <reason>` and `Reconnecting to the radio after a
+lost link`, then connects again in the background. It tries the configured
+port (`MCW_SERIAL_PORT`, `/dev/meshcore` on the Pi), then `/dev/meshcore`,
+then every USB serial port it can see (`/dev/serial/by-id/*`,
+`/dev/ttyACM*`, `/dev/ttyUSB*`). ESP32 boards reset when the port opens, so
+it waits for the boot and asks up to three times.
 
-```bash
-launchctl print gui/$(id -u)/com.digitaino.meshcore-socat | grep -E 'state|runs'
-launchctl print gui/$(id -u)/com.digitaino.meshcore-watchdog | grep -E 'state|runs'
-tail -20 ~/Library/Logs/meshcore-watchdog.log
-```
+If nothing answers, it logs `Radio not available after reconnect (...);
+retrying every 60s` and tries again every minute (`RADIO_RETRY_SECONDS` in
+`main.py`). When a radio answers: `Radio connected after retry`.
 
-A healthy link looks like this — a LISTEN socket, an ESTABLISHED pair, and a
-socat child holding the serial device:
+While the radio is away the bot keeps running: the EMWIN store, the portal
+and the CLI stay up. Scheduled broadcasts and app requests stop until the
+radio is back; the broadcaster then starts again and the sequence number
+continues from `data/warning_state.json`. The same retry loop covers a bot
+started with no radio plugged in.
 
-```bash
-lsof -nP -iTCP:4403        # OrbStack -> socat ESTABLISHED, plus socat LISTEN
-lsof /dev/cu.usbserial-0001 # one socat child
-```
+A radio that answers with a different key is a replacement board: see
+`docs/Radio_Swap.md`.
 
-End-to-end recovery from a destroyed bridge takes roughly 3-5 minutes
-(≤10s for socat, up to 3 min for the watchdog to confirm, ~90s for the
-container to reload EMWIN data and reconnect).
+## When the bot process exits
 
-## Manual fix (if you've disabled the agents)
-
-From the `meshcore-weather` project directory:
-
-```bash
-docker compose up --build --force-recreate -d
-```
-
-The `--force-recreate` flag is important — without it Docker may see no image
-changes and skip the restart. The socat bridge (TCP:4403 <-> serial) stays
-running and reconnects automatically when the USB device reappears. Only the
-container needs a recreate to re-establish the connection through socat.
+`deploy/meshcore-weather.service` has `Restart=always` and `RestartSec=5`.
+Any exit (a crash, System › Restart in the portal, `scripts/pi_update.sh`,
+the 700 MB memory limit) brings the bot back five seconds later with the
+current `.env`.
 
 ## How to confirm it's working
 
 ```bash
-docker logs meshcore-weather --tail 20
+systemctl status meshcore-weather
+journalctl -u meshcore-weather -f
+ls -l /dev/meshcore
 ```
 
-You should see:
+A healthy start looks like this (the Pi, 2026-09-15):
 
 ```
-Connecting to Meshcore radio via TCP host.docker.internal:4403
-Listening on channel 3 (#digitaino-wx-bot)
-Data channel 6 (#aus-meshwx-v4)
-Sent advertisement (flood)
-Meshcore radio connected.
+Connecting to Meshcore radio on /dev/meshcore @ 115200 baud
+Node firmware v1.17.1-d929643 (14-Aug-2026), 350 contact slots
+Listening on channel 1 (#meshwx)
+Data channel 1 (#meshwx, shared with text)
+Meshcore radio connected. Node: WX-AUS
+Weather bot is running. Listening on channel 1 (#meshwx) + DMs
 ```
 
-If you see `Sent ch6: XXB` lines appearing every few minutes, data is flowing.
+`Sent data on ch 1: ... bytes (type 0xFF10)` lines mean broadcasts are going
+out, and `Delivery channel_data: echoed via ...` means a repeater carried
+one. In the portal, the status strip shows `radio down` while the link is
+gone, and Radio › Health › **Test transmit** checks that the radio is
+getting out.
 
 ## How to tell it's broken
 
 ```bash
-docker logs meshcore-weather --tail 50 | grep -i "warn\|error\|fail"
+journalctl -u meshcore-weather --since "1 hour ago" | grep -E "Radio link lost|Reconnecting|Radio not available|connected after retry"
 ```
 
-If you see repeated lines like:
+Repeated `Radio not available` lines mean no port answers: see below.
 
-```
-WARNING: Binary send failed on data ch 6: {'reason': 'no_event_received'}
-```
+## Doing it by hand
 
-...the serial connection is dead and the container needs a restart.
-
-## If socat also died
-
-The socat bridge forwards TCP port 4403 to the USB serial device. It is now
-managed by launchd and should respawn on its own:
-
-```bash
-# Check the agent
-launchctl print gui/$(id -u)/com.digitaino.meshcore-socat | grep -E 'state|runs'
-
-# Kick it manually if needed
-launchctl kickstart -k gui/$(id -u)/com.digitaino.meshcore-socat
-```
-
-Note: after socat restarts, the container's TCP session is dead and the app
-does **not** reconnect by itself — it needs a `--force-recreate`. That is
-exactly what the watchdog agent does automatically.
+- **Portal**: Radio › **Reconnect now** drops the link and connects again,
+  exactly as after a lost link.
+- **Whole bot**: `sudo systemctl restart meshcore-weather`.
+- **Radio**: unplug and replug it; the bot notices within 15 s.
 
 ## USB device not showing up at all
 
-If `/dev/cu.usbserial-0001` doesn't exist after reconnecting the cable:
-
 ```bash
-ls /dev/cu.usb*
+ls -l /dev/meshcore /dev/serial/by-id/ /dev/ttyACM* /dev/ttyUSB*
 ```
 
-If nothing appears, the radio isn't being recognized by macOS. Try a different
-USB port or cable.
+On the Pi the Heltec V4 is `/dev/ttyACM0`, and `/dev/meshcore` points at it.
+
+- `ttyACM0` or `ttyUSB0` exists but `/dev/meshcore` does not: the udev rule
+  is missing or does not know the board's USB chip. The bot scans every
+  port anyway; install the rule for a stable name:
+
+  ```bash
+  sudo cp deploy/99-meshcore-radio.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules && sudo udevadm trigger
+  ```
+
+- No tty at all: try another cable (charge-only cables carry no data) or
+  another port. A board in bootloader mode shows up as a different device;
+  press reset once.
+- `no companion response on ...`: the port opens but nothing answers. The
+  firmware must be MeshCore **Companion Radio (USB)**; BLE-only builds and
+  repeater firmware never answer on serial.
+
+## Docker on a Mac
+
+`docker-compose.yml` still runs the bot in a container that reaches the
+radio over TCP (`MCW_SERIAL_PORT=tcp://host.docker.internal:4403`), with a
+bridge on the host forwarding that port to the USB serial device. The bridge
+is not in this repository. The bot handles a dead TCP link the same way (a
+closed connection, or three unanswered commands) and retries every 60 s; the
+port scan and the `/dev` check apply only to a serial port.
 
 ## CoreScope MQTT bridge
 
-The stack also runs `corescope` and `mosquitto` containers alongside
-`meshcore-weather`. CoreScope is a meshcore packet analyzer with a web
-dashboard; Mosquitto is the auth-required broker between them. The weather
-bot publishes raw RX packets to Mosquitto so CoreScope can decode and
-visualize them — passive piggyback, no extra radio writes.
+When `MCW_MQTT_ENABLED=true` (default `false`) the bot publishes every
+packet its radio receives to the Mosquitto broker at `MCW_MQTT_HOST`
+(default `mosquitto`, the service name in `docker-compose.yml`), on
+`meshcore/<IATA>/<radio-pubkey>/packets`, as JSON in the CoreScope format.
+The observer name CoreScope shows comes from `MCW_MQTT_ORIGIN` (default
+`meshcore-weather`). MQTT is fail-soft: a broker that is down never stops
+the bot.
 
-All of CoreScope's config and observer-management tooling lives under
-`corescope/`. See `corescope/README.md` for the layout and
-`corescope/Observer_Onboarding.md` for the full operator flow.
+The setting is read when the radio connects, so restart the bot after
+changing it. On 2026-09-15 the Pi does not publish: it runs no broker and no
+Docker.
 
-- **Dashboard**: <http://localhost:8082>
-- **Broker**: `mosquitto:1883` inside the Docker network, also exposed on the
-  host as `localhost:1883` for debugging with `mosquitto_sub`.
-- **Topic**: `meshcore/AUS/<radio-pubkey>/packets` — JSON in the
-  Cisien/CoreScope format.
-
-### Toggling MQTT publishing
-
-Set `MCW_MQTT_ENABLED` in `.env`:
-
-- `false` — bot runs as before, no MQTT traffic, CoreScope sees nothing.
-- `true` — bot publishes every received RF packet.
-
-After flipping the value, run `docker compose up --build --force-recreate -d`.
-
-The observer name CoreScope displays comes from `MCW_MQTT_ORIGIN` (published as
-the JSON `origin` field). It is currently `Digitaino Central Observer`.
-
-### Verifying it's flowing
-
-```bash
-# stats from CoreScope
-curl -s http://localhost:8082/api/stats | python3 -m json.tool
-
-# raw packets on the broker (you'll need a credential — see corescope/README.md)
-mosquitto_sub -h localhost -u corescope -P "$(grep ^MCW_MQTT_PASSWORD .env | cut -d= -f2)" -t 'meshcore/#' -v
-```
-
-If the bot ever stops working after enabling MQTT, set
-`MCW_MQTT_ENABLED=false` and recreate — MQTT is fail-soft and disabled by
-default, so this is a safe rollback.
+CoreScope, Mosquitto and the signed-token observer broker are defined in
+`docker-compose.yml`. See `corescope/README.md` for the layout and
+`corescope/Observer_Onboarding.md` for the operator flow.

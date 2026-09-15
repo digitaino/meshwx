@@ -1,5 +1,11 @@
 # MeshWX Airtime Review and v5 Proposal
 
+> **Status, 2026-09-15:**
+> - Built as MeshWX v5 (ad6dc24), mostly as §8 revised it: GRP_DATA with `data_type 0xFF10`, a 4-byte header with a 2-byte bot id, the event byte, storm and flood tags, county and zone runs, one int16 polygon form, cancel, a digest with `now` and feed health, batched observations, and `>` requests answered as GRP_DATA. No headline, COBS or discovery channel; one builder module. Also landed: county bundle (a7d8ead), radius coverage (c170e67), §9 resolver fixes (4ecb1d2, e19f8a0), radar removal (ba449f0).
+> - Decided differently: one `#meshwx` for text and data everywhere, not per city (db766a5, ad6dc24); `>` requests by DM or channel text; a real expiry change is sent to the minute (d649b0a); warnings from a 2-minute job, not on ingest; observations stay hourly; instead of the double send, one byte-identical resend only when no echo is heard (6af542e); adverts every 6 h, plus one for a stranger if none went out in the hour (48a1e34); no GRP_TXT warning line and no nearest-bot rule for broadcasts.
+> - Still open: region scope (`MCW_FLOOD_SCOPE`, §7.1), a registered `data_type`, a Swift decoder (none in this repo), a separate permissive licence (the repo is Apache-2.0), and the Austin repeaters' firmware versions.
+> - Where the current truth lives: `docs/MeshWX_v5_Spec.md` revision 3 (§16 lists the 2026-09-15 changes), the reference codec `protocol/v5.py`, and `docs/meshwx_v5_vectors.json`.
+
 Adversarial review of the MeshWX protocol and the EMWIN → mesh pipeline, written 2026-09-10 against the working tree at commit d8d4aed plus uncommitted changes. Goal set by the operator:
 
 1. Cut LoRa airtime on the Austin mesh to the minimum that still delivers warnings and observations.
@@ -324,7 +330,7 @@ Consequences for the weather bot:
 
 **Same feed, no server-side federation.** Every bot runs the same container against the same national EMWIN feed and parses independently. Nothing needs to be shared between operators. CoreScope/MQTT can observe other bots' output for monitoring but is not part of the protocol.
 
-**Operator config surface for a replica** (everything else is derived):
+**Operator config surface for a replica** (everything else is derived) [2026-09-15: not built under these names. Coverage is `MCW_HOME_CITIES` plus `MCW_HOME_RADIUS_KM`; `MCW_CALLSIGN`, `MCW_CENTER`, `MCW_RADIUS_KM` and `MCW_FLOOD_SCOPE` do not exist]:
 
 ```
 MCW_CALLSIGN=WX-SAT           # advert name
@@ -348,7 +354,7 @@ Channel (`#meshwx`), data_type, tables, and schedule defaults are fixed by the p
 
 These supersede the corresponding parts of section 4 and 7.
 
-1. **One channel per deployment, carrying both binary and text.** Drop the shared `#meshwx` and the separate human text channel. `#wx-aus` carries GRP_DATA for apps and, for life-safety events only, one GRP_TXT line for everyone else. Group text and group data share a channel key, so a plain MeshCore app sees only the text and a MeshWX app sees both. One slot to join, local by construction, and the app derives the channel from the bot's advert name (`WX-AUS` → `#wx-aus`). Travelers re-join automatically when the app hears a new bot.
+1. **One channel per deployment, carrying both binary and text.** Drop the shared `#meshwx` and the separate human text channel. [2026-09-15: not adopted; v5 kept one shared `#meshwx` for text and data, spec §2.1] `#wx-aus` carries GRP_DATA for apps and, for life-safety events only, one GRP_TXT line for everyone else. Group text and group data share a channel key, so a plain MeshCore app sees only the text and a MeshWX app sees both. One slot to join, local by construction, and the app derives the channel from the bot's advert name (`WX-AUS` → `#wx-aus`). Travelers re-join automatically when the app hears a new bot.
 
 2. **Flood tags in the warning message.** pyIEM exposes them and they are the actionable part of a flash flood warning. Tag bytes become: `hail` (¼ in, u8), `wind` (mph, u8), and one flags byte with `tornado` (2 bits: none / possible / radar indicated / observed), `flood_source` (2 bits: none / radar / radar+gauge / observed), `flood_damage` (2 bits: none / considerable / catastrophic), plus polygon-present and zones-present bits.
 
@@ -404,6 +410,6 @@ The wire format. All of this is server-side resolution; the client still sends a
 Ahead of the full v5 layout, and since no clients exist to break:
 
 - **Warning event byte.** 0x20, 0x21 and 0x37 carry a one-byte VTEC event code at byte 1 instead of the 4-bit type/severity nibble. Codes come from the append-only table in `core/vtec_names.py`, exported to `client_data/protocol.json` as `events` (code → `"HT.Y"`), with `event_names` (short/long) for display. 0 = unknown. Severity is derived from the significance letter (W/A/Y/S). This is the v5 event table, shipped early.
-- `protocol.json` version 6 drops `warning_types` and `severities`.
+- `protocol.json` version 6 drops `warning_types` and `severities`. [2026-09-15: now version 8. The v5 warning (type 1) carries this event byte and replaced 0x20/0x21/0x37, ad6dc24]
 
 Everything else in the v4 wire format is unchanged until the v5 transport (GRP_DATA) lands.

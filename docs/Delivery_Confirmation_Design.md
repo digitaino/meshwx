@@ -3,9 +3,13 @@
 2026-09-15. Implemented the same day (commit 6af542e and the CoreScope
 rule fix that followed). Everything under "facts" was
 checked against the v1.17.1 firmware source, the meshcore-py library in the
-venv, real packets on scope.digitaino.com, or the live radios.
+venv, real packets on scope.digitaino.com, or the live radios. From "The
+system" on, this describes the code as of 4387a71 (checked 2026-09-15).
 
 ## Where we are
+
+> The state before 6af542e. MeshWX v5 (ad6dc24) has since retired the v4
+> frames, FEC parity and beacons mentioned here.
 
 The bot never checks whether anything it sends was heard.
 
@@ -66,18 +70,21 @@ again. The bot should do the same, with a budget.
    it. The `search=` parameter does not match hashes, so lookup is a time
    window filtered by hash on our side. Channel packets are encrypted, so
    CoreScope cannot attribute them to WX-AUS; the hash is the only key.
+   (Found later: the server ignores `timeRange`. The lookup relies on the
+   newest-first order instead and asks for 300 packets.)
 
 ## The system
 
-### DeliveryTracker (new: `meshcore/delivery.py`)
+### DeliveryTracker (`meshcore/delivery.py`)
 
-One object owned by the radio. It subscribes to `RX_LOG_DATA` (always, not
-only when MQTT is on) and `ACK`.
+One object for the life of the process, shared by every radio connection.
+The radio hands it every `RX_LOG_DATA` frame (always, not only when MQTT is
+on) and every `ACK`.
 
-Every outbound packet registers an `Outbound` record: hash, kind
-(`channel_text`, `dm`, `data`, `beacon`), the exact bytes or the arguments
-needed to resend them identically, sent time, attempt number, the DM ack
-code if any, and a reference to the traffic-log event.
+Every tracked send registers an `Outbound` record: kind (`channel_text`,
+`channel_data` or `dm`), the packet hash (none for a DM), a resend function
+that repeats the send exactly, sent time, attempt number, the DM ack code
+if any, and a reference to the traffic-log event.
 
 - On `RX_LOG_DATA`: parse header and path, hash payload-type + payload. If
   it matches an outstanding record and `path_len ≥ 1`, mark it **echoed**
@@ -85,76 +92,99 @@ code if any, and a reference to the traffic-log event.
   Separately, any packet from anyone with `path_len ≥ 1` updates
   `last_repeat_heard_at`: proof that some repeater is in range.
 - On `ACK`: match the code, mark **acked** with the round-trip time.
-- A record's timer fires after the **echo window** (default 5 s; for DMs
-  the firmware's `suggested_timeout × 1.2`, the library's convention). No
-  echo and no ack means **retransmit once**, after 0.5–2 s of jitter, unless:
-  transmit is off; `MCW_RETRANSMIT_MAX` is 0; the per-hour retransmit budget
-  is spent; no repeat from anyone was heard in the last 10 minutes (nothing
-  would change, and the user's own "no repeater in range" case); or the
-  CoreScope check (below) says the packet was observed.
-- The outcome lands on the traffic-log event as
-  `delivery: {echo, echo_ms, via, acked, rtt_ms, attempts, observed_by}` so
-  the feed, the counters and the public page can show it.
+- A record's timer fires after the **echo window** (`MCW_ECHO_WINDOW_S`,
+  default 8 s; for a DM the firmware's `suggested_timeout × 1.2`, kept
+  between 3 and 30 s). Time the bot's own event loop spent blocked is added
+  back, up to one more window: a handler that ran late is no proof that
+  nobody repeated us. No echo and no ack means **retransmit**, after
+  0.5–2 s of jitter, up to `MCW_RETRANSMIT_MAX` times (default 1), unless:
+  transmit is off; the per-hour retransmit budget is spent; no repeat from
+  anyone was heard in the last 10 minutes once the bot has been up that
+  long (nothing would change, and the user's own "no repeater in range"
+  case); or the CoreScope check (below) says a repeated copy was observed.
+  With `MCW_RETRANSMIT_MAX=0` it only measures.
+- The outcome lands on the traffic-log event as `delivery: {result, echo,
+  echo_ms, via, snr, acked, rtt_ms, attempts, resent, skipped,
+  observed_by, ...}` so the feed, the counters and the public page can show
+  it. `echo_ms` and `rtt_ms` are timed from the transmission that was
+  heard, not from the first send. The last 24 hours of outcomes survive a
+  restart (`data/delivery_outcomes.json`).
 
 ### Per kind
 
-- **Channel text** (the reply mode the Pi runs today): compute the hash
-  before sending, register, send with an explicit timestamp, resend with
-  the same timestamp. The echo normally comes back within 0.5–3 s with one
-  or two hops.
-- **DM**: register the ack code from `MSG_SENT`. Retry once on no ack. If
-  the contact has a direct path and the retry also gets no ack, reset the
-  path to flood (what `send_msg_with_retry` does) so the next message does
-  not die on a stale route. The DM's first hop is also visible in the RX
-  log as an echo, so "echoed but not acked" and "not even echoed" are told
-  apart.
-- **Binary broadcasts**: same echo logic on GRP_DATA. Opt-in
-  (`MCW_RETRANSMIT_BROADCASTS`, default off); when on, only jobs whose
-  product is a warning class are retransmitted, since that is where a
-  missed packet matters.
-- **Beacons**: never retransmitted.
+- **Channel text** (every reply in `reply_mode=channel`, which the Pi runs
+  on 2026-09-15, and otherwise the one channel reply a stranger gets):
+  compute the hash before sending, register, send with an explicit
+  timestamp, resend with the same timestamp. Echoes on the Austin mesh
+  normally come back within about 4 s.
+- **DM**: register the ack code from `MSG_SENT`. Resend on no ack; the
+  resend carries the next attempt number, so the firmware expects a new ack
+  code, which replaces the old one. If the DM was never acked and the
+  contact has a direct path, reset the path to flood (what
+  `send_msg_with_retry` does) so the next message does not die on a stale
+  route. DMs are matched on the ACK only: the bot does not compute a DM's
+  hash, so it cannot tell "echoed but not acked" from "not even echoed".
+- **Channel datagrams** (`GRP_DATA`: every v5 broadcast, every answer to an
+  app request, and the portal's link test): the same echo logic, always on,
+  with no separate switch. The scheduler stamps the v5 `seq` into the packet
+  before it goes to the radio, so a resend repeats the stamped bytes under
+  the same `seq`. The `seq` counter is saved in `data/warning_state.json`
+  and continues after a restart. A resend waits only for the radio's send
+  lock, so it can go out after later packets of the same batch.
+- **Adverts** are not tracked.
 
 ### CoreScope correlation (optional, internet)
 
-Off unless `MCW_SCOPE_URL` is set (for us: `https://scope.digitaino.com`).
-Two uses, both fail-soft with a 3 s timeout, never in the send path:
+Off unless `MCW_SCOPE_URL` is set (e.g. `https://scope.digitaino.com`).
+Every lookup is fail-soft with a 3 s timeout and never in the send path. It
+pulls the newest 300 packets of that payload type, finds our hash, and reads
+every observation of it.
 
 - `MCW_SCOPE_MODE=decide`: when the echo window passes with no local echo,
   one query. Only observers whose copy carries a repeater in its path
   count (`repeated_by`); an observer next door that heard us at zero hops
   proves nothing. At least `MCW_SCOPE_MIN_OBSERVERS` (default 2) of them
   are needed before the retransmit is skipped. Catches the case where our
-  node did not hear the repeat but the mesh did.
-- `MCW_SCOPE_MODE=stats` (default when a URL is set): 30–60 s after every
-  reply, one query to fill in how many observers heard it and through which
-  repeaters. This becomes "heard by 4 observers via D0, 3A" on the feed and
-  a propagation percentage on the tiles and the public page.
+  node did not hear the repeat but the mesh did. This probe runs seconds
+  after the send, while observers are still reporting, so it only ever
+  vetoes a resend and never goes on the record.
+- `MCW_SCOPE_MODE=stats` (the default): no probe.
+- In both modes, 45 s after a send has settled, one query records how many
+  observers heard it, how many heard a repeated copy, and through which
+  repeaters. A thinner answer never replaces a fuller one.
 
-This is the bot's only internet dependency and it stays optional; weather
-data remains EMWIN-only.
+This is optional, and weather data never depends on it.
 
 ### What the operator sees
 
-- Text Bot feed, per reply: `echo 1.2 s via D0,3A`, `ACK 2.4 s`,
-  `resent ×1`, `no echo`, `heard by 4 observers`.
-- Tiles: "Echoed · 24 h 91%", "Resent · 24 h 3", "Mesh heard"
-  (last repeat from anyone, as an age).
-- Settings: Text Bot › Behaviour gets retransmit max (0, 1, 2), echo window,
-  per-hour budget; System › Settings gets the CoreScope URL and mode.
+- Traffic feed, per reply: `echo 1.2 s via D0,3A`, `ack 2.4 s`,
+  `resent ×1`, `no echo`, `no ack`, `no echo · not resent: <reason>`, and,
+  once CoreScope has answered, the number of observers whose copy came
+  through a repeater (paths in the tooltip).
+- Radio › Health tiles: "Heard" (share of tracked sends echoed or acked in
+  the last hour, with sent and resent), "Echo" (median echo delay, and the
+  24 h share), "Last heard", "Unheard streak", "Loop lag". The Overview
+  says how many replies were heard back.
+- Settings: Text Bot has "Resend if not heard, max" (0 measure only, 1, 2),
+  "Echo window (s)" and the per-hour budget; System › Settings has the
+  CoreScope URL, mode and minimum observers.
 
 ### Configuration
 
 ```
 MCW_RETRANSMIT_MAX=1            # 0 turns the whole thing into measurement only
-MCW_ECHO_WINDOW_S=5
+MCW_ECHO_WINDOW_S=8
 MCW_RETRANSMIT_PER_HOUR=30
-MCW_RETRANSMIT_BROADCASTS=false
+MCW_MESH_QUIET_S=600            # no repeat heard from anyone this long: no resend
 MCW_SCOPE_URL=                  # e.g. https://scope.digitaino.com
 MCW_SCOPE_MODE=stats            # stats | decide
 MCW_SCOPE_MIN_OBSERVERS=2       # observers of a REPEATED copy before decide mode skips a resend
 ```
 
 ## Verify before trusting it
+
+The plan as written before the first run. The measurement has since moved
+the echo window from 5 s to 8 s (`docs/Radio_Swap.md`).
 
 1. Measurement only first (`MCW_RETRANSMIT_MAX=0`) for a day on the Pi:
    confirm echoes match, and read the echo-delay distribution to set the

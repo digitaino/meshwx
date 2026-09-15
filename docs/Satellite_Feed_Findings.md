@@ -1,5 +1,11 @@
 # GOES-19 EMWIN Feed: First-Light Findings
 
+> **Status, 2026-09-15:**
+> - Implemented: the SDR directory watcher reading bytes (5e17c64); the portal on 8081 on the Pi (569ae3c); bugs 1–3 and the §9 PFM fixes (d99d110); Alaska and Guam PFM parsing (d99d110, fbe608d); flood tags and county runs in v5 (ad6dc24) with county polygons in the bundle (a7d8ead); a warning first seen through a follow-up is sent as new (fbe608d tracker, v5 executor); radar removed (ba449f0).
+> - Changed: the bot's store keeps warnings 48 h, LSRs 24 h and everything else 12 h (6908e27); the Pi keeps EMWIN text 3 days (a4ab09a); space weather reaches apps as v5 Text subject 2 (`>space`), not 0x3E.
+> - Still open: no per-office silence monitor in the portal (the digest's `feed_health` covers only the home office, spec §5); days 4–7 of a PFM still carry wind 0 because the `Wind char` row is not applied (`parser/pfm.py`); no real-product fixture for SEL or WOU; no day-1 risk product, since outlook points are not on the feed (§10).
+> - Where the current truth lives: receiver status over the mesh is `sat` / `>sat` (4387a71, spec §8.2); the Pi's retention is `deploy/goes-cleanup/cleanup.sh`.
+
 Inspection of `mesh-wx.digitaino.com` on 2026-09-13, about 12 hours after the 1.7 GHz antenna went up. Written to decide what the v5 protocol and the bot can rely on from the satellite feed alone. Companion to `MeshWX_Airtime_Review.md`.
 
 ## 1. The station
@@ -8,7 +14,7 @@ Inspection of `mesh-wx.digitaino.com` on 2026-09-13, about 12 hours after the 1.
 |---|---|
 | Host | Raspberry Pi 4, aarch64, 4 cores, 2 GB RAM, 29 GB SD (20 GB free), 43 °C |
 | Receiver | goestools: `goesrecv` (RTL-SDR R820T, 1694.1 MHz, 2.4 Msps, gain 30 fixed, bias tee on for SAWbird+ GOES) → `goesproc -m packet` |
-| Services | `goesrecv.service`, `goesproc.service`, `goes-dashboard.service` (Python, port 8080), `goes-cleanup.timer` (hourly; images 3 days, text 30 days, emergency purge at 80 % disk) |
+| Services | `goesrecv.service`, `goesproc.service`, `goes-dashboard.service` (Python, port 8080), `goes-cleanup.timer` (hourly; images 3 days, text 30 days, emergency purge at 80 % disk) [2026-09-15: now images 1 day, EMWIN/text 3 days, purge at 70 %; `deploy/goes-cleanup/cleanup.sh`, a4ab09a] |
 | Output | `~/goes-images/emwin/YYYY-MM-DD/` for EMWIN; `goes19/` for ABI imagery; `dcs/`, `nws/`, `text/` handlers configured |
 | CPU | goesrecv ~65 % of one core; load average 0.8 |
 
@@ -87,7 +93,7 @@ Conclusion: the parser, store, pyIEM path, and encoders work unchanged on satell
 - **The hot set is fully available from the satellite**: warnings with VTEC and polygons, METARs for local stations, PFM for local points, ZFP as fallback, HWO, LSR, NOW, FWF, CLI. Nothing in the v5 proposal needs the internet.
 - **Send-on-ingest is realistic.** Warnings land within about a minute of issue; the 5-minute scheduler tick should go.
 - **Loss handling belongs in the station, not the protocol.** At 2 % packet drop most multi-packet products still arrive, but a warning lost at the satellite hop is lost for good. The v5 digest already covers clients that missed a broadcast; the same idea does not exist for the bot itself. Two mitigations: improve the RF margin (section 1), and keep a per-office "last seen product time" check so the bot can flag when EWX has gone quiet for longer than normal.
-- **Retention is already handled** on the Pi (30 days of text). The bot's own 12-hour store window stays as is.
+- **Retention is already handled** on the Pi (30 days of text). The bot's own 12-hour store window stays as is. [2026-09-15: the Pi now keeps text 3 days (a4ab09a); the bot keeps warnings 48 h and LSRs 24 h (6908e27)]
 - **Port 8080 is taken** by the goes dashboard. The bot's portal must move (e.g. 8081) when it runs on this Pi.
 - **No radar product.** Confirmed again that the GIFs are the wrong shape for the mesh. Leave radar out of v5.
 
@@ -219,7 +225,7 @@ v5: zones `TXZ173, 191–194, 205–209, 220–225` are 4 runs × 4 bytes = 16, 
 - Delta logic: first sighting via a follow-up statement counts as NEW.
 - Remove `AWW` from the warning product set; add `SEL`/`WOU` testing when a watch is issued.
 
-## 9. Fixes applied (2026-09-13, uncommitted in the working tree)
+## 9. Fixes applied (2026-09-13, uncommitted in the working tree) [2026-09-15: committed as d99d110]
 
 | Bug | Fix | Test |
 |---|---|---|
@@ -251,7 +257,8 @@ alert) arrived at 11:06Z. This is the standard SWPC alert envelope, so the
 K-index alerts/warnings/watches (`ALTK04`–`K09`, `WARK04`–`K07`, `WATA20/30/50`),
 flare summaries (`SUMX01`) and proton alerts will arrive the same way as
 `<CODE>US`. The bot now parses that envelope into two alert bytes in 0x3E
-(see System_Review section 3, space weather). Also on the downlink, all from KWNP:
+(see System_Review section 3, space weather) [2026-09-15: v5 sends no 0x3E;
+apps ask `>space` and get Text subject 2]. Also on the downlink, all from KWNP:
 `DAYPRE` (3-day predictions with 3-hourly mid-latitude K and A indices),
 `DAYDSF` (daily summary/forecast with flare and storm probabilities), `DAYDIS`
 (forecast discussion), `DAYEVT` (event reports), `DAYOBS` (sunspot region table),

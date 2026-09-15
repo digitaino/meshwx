@@ -1,5 +1,11 @@
 # Admin portal review and revamp, 2026-09-14
 
+> **Status, 2026-09-15:**
+> - Implemented as described, in d5171e4. `portal/templates/app.html` and `portal/static/portal.js` still render the six sections and the ten Overview tiles.
+> - Added since: Radio has Health and Hardware cards for radio swaps and adoption (cf1da42, ddd48a3, `docs/Radio_Swap.md`). Text Bot > Behaviour and System carry the echo and resend settings (6af542e).
+> - Superseded: the "Kept on purpose" paragraph at the end. ad6dc24 replaced the v4 protocol and scheduler with MeshWX v5 (four job products) and stopped decoding WXQ/MWX requests; the last prefix check went on 2026-09-15. The same commit deleted the iOS brief and dropped the discovery channel role, so Radio now edits two roles, text and data. `MCW_MESHWX_CHANNEL` is still read.
+> - Where the current truth lives: the portal code above, the README's admin portal section, and `docs/MeshWX_v5_Spec.md` revision 3.
+
 Two adversarial reviews (one on navigation and UX, one on dead code and
 leftovers from the original meshwx project) were run against the admin
 portal on :8081, and the portal was rebuilt from their findings. This is the
@@ -51,7 +57,8 @@ with a link.
   and the broadcast log (renamed from Activity Log, honest labels, live dot).
 - **Radio**: link and node tiles, reconnect, identity, LoRa preset merged into
   the Apply flow, transmit, the single channel editor (three role names plus
-  the slot table under a disclosure), contacts with housekeeping and the real
+  the slot table under a disclosure) [2026-09-15: two roles now, text and
+  data, since ad6dc24], contacts with housekeeping and the real
   slot count from the firmware.
 - **Satellite**: signal, feed, goesrecv/goesproc, and the product browser
   (moved from Broadcasts). Pointing mode asks first because it stops the feed.
@@ -71,3 +78,4 @@ coverage in `/api/system`, a shared SSE helper with heartbeats
 Kept on purpose: the WXQ/MWX text-prefixed app requests (the iOS brief still
 publishes them), the `MCW_MESHWX_*` env keys (live `.env` files use them),
 the v4 binary protocol and scheduler (live, three jobs enabled on the Pi).
+[2026-09-15: superseded by ad6dc24; see the status note at the top.]
