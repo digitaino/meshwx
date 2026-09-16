@@ -6,6 +6,7 @@ on-demand path now share: polygon zones, home-aware disambiguation,
 text/binary renderings that come from the same object.
 """
 
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -99,6 +100,9 @@ def _store_with(*records):
 
 def _metar_product(icao: str, line: str, age_min: int = 10, seq: int = 1) -> dict:
     ts = datetime.now(timezone.utc) - timedelta(minutes=age_min)
+    # The report's own DDHHMMZ group is its time; `age_min` is meant for the report, so
+    # the group is stamped from `ts` rather than left as whatever the test typed.
+    line = re.sub(r"^([A-Z0-9]{4}\s+(?:COR\s+)?)\d{6}Z", rf"\g<1>{ts:%d%H%M}Z", line)
     return {
         "filename": f"A_SAUS70KWBC{ts:%d%H%M}_C_KWIN_{ts:%Y%m%d%H%M%S}_{seq:06d}-2-SAHOURLY.TXT",
         "raw_text": f"SAUS70 KWBC {ts:%d%H%M}\r\r\nMETAR\r\r\n{line}=\r\r\n",
@@ -113,7 +117,9 @@ class TestObservation:
         store = _store_with(_metar_product(second, f"{second} 131855Z 18005G16KT 10SM FEW050 36/21 A2999"))
         ob = services.observation_for(store, loc)
         assert ob is not None and ob.station == second
-        assert ob.temp_f == 97 and ob.wind_gust_mph == 18 and ob.obs_utc_min == 18 * 60 + 55
+        # The group is stamped from the product's time, so the minutes agree with observed_at.
+        assert ob.temp_f == 97 and ob.wind_gust_mph == 18
+        assert ob.obs_utc_min == ob.observed_at.hour * 60 + ob.observed_at.minute
 
     def test_skips_stale_station(self):
         loc = resolver.resolve("Round Rock, TX")

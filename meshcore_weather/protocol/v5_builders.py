@@ -19,7 +19,7 @@ from pathlib import Path
 from meshcore_weather.geodata import resolver
 from meshcore_weather.parser.weather import WeatherStore
 from meshcore_weather.protocol import v5
-from meshcore_weather.protocol.encoders import parse_metar
+from meshcore_weather.protocol.encoders import parse_metar, metar_observed_at
 
 logger = logging.getLogger(__name__)
 
@@ -370,6 +370,9 @@ def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str]) ->
         if idx is None or not raw:
             continue
         text, ts = raw
+        # The product's time is when the collective arrived, the same for every
+        # station in it; the report's own DDHHMMZ group is when it was taken.
+        ts = metar_observed_at(text, ts) or ts
         if (now - ts) > timedelta(minutes=OBS_MAX_AGE_MIN):
             continue
         f = parse_metar(text)

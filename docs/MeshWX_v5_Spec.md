@@ -328,7 +328,7 @@ Flags nibble: bit 0 = per-station ages present (new in revision 5).
 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
-| 4 | 4 | `ts` | u32 Unix minutes of the newest report in the batch (when the bot's feed received it). Each station's report may be up to 120 minutes older than `ts`; with flag bit 0 set, each station says by how much |
+| 4 | 4 | `ts` | u32 Unix minutes of the newest report in the batch, by the report's own `DDHHMMZ` group — not when the bot's feed received the collective it came in, which is one time for every station in it. Each station's report may be up to 120 minutes older than `ts`; with flag bit 0 set, each station says by how much |
 | 8 | 1 | `n` | Station count, 1 to 14 (1 to 13 with the ages) |
 | 9 | 11 × n | stations | Below |
 | 9 + 11 × n | ceil(n / 2) | ages | Only when flags bit 0 is set. Below |

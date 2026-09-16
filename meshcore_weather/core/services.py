@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from meshcore_weather.geodata.names import place_name
 from meshcore_weather.parser.pfm import PFMPoint, downsample_to_daily, parse_pfm
 from meshcore_weather.parser.weather import EMWINProduct, WeatherStore
-from meshcore_weather.protocol.encoders import parse_metar
+from meshcore_weather.protocol.encoders import parse_metar, metar_observed_at
 from meshcore_weather.protocol.meshwx import (
     LOC_STATION,
     LOC_ZONE,
@@ -105,6 +105,9 @@ def observation_for(
         if not raw:
             continue
         text, ts = raw
+        # The product's time is when the collective arrived, the same for every
+        # station in it; the report's own DDHHMMZ group is when it was taken.
+        ts = metar_observed_at(text, ts) or ts
         if (now - ts) > timedelta(minutes=max_age_min):
             continue
         fields = parse_metar(text)

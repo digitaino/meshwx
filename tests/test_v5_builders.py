@@ -1,6 +1,7 @@
 """Store data -> v5 messages (protocol/v5_builders.py) and the warnings job
 state machine (schedule/executor.py): new, update, repeat, cancel."""
 
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -176,8 +177,11 @@ def _metar_store(*lines):
     from meshcore_weather.parser.weather import WeatherStore
     ts = datetime.now(timezone.utc) - timedelta(minutes=10)
     store = WeatherStore()
+    # Each line's own DDHHMMZ group is what the batch reads as the report time, so it
+    # is stamped from the product's time rather than left as whatever the test typed.
+    stamped = [re.sub(r"^([A-Z0-9]{4}\s+(?:COR\s+)?)\d{6}Z", rf"\g<1>{ts:%d%H%M}Z", line) for line in lines]
     store.ingest([{"filename": f"A_SAUS70KWBC{ts:%d%H%M}_C_KWIN_{ts:%Y%m%d%H%M%S}_{i:06d}-2-SAHOURLY.TXT",
-                   "raw_text": "SAUS70 KWBC\nMETAR\n" + line} for i, line in enumerate(lines, 1)])
+                   "raw_text": "SAUS70 KWBC\nMETAR\n" + line} for i, line in enumerate(stamped, 1)])
     return store
 
 
@@ -219,7 +223,9 @@ def _aged_metar_store(pairs):
     store = WeatherStore()
     store.ingest([
         {"filename": f"A_SAUS70KWBC{ts:%d%H%M}_C_KWIN_{ts:%Y%m%d%H%M%S}_{i:06d}-2-SAHOURLY.TXT",
-         "raw_text": "SAUS70 KWBC\nMETAR\n" + line}
+         # The report's own DDHHMMZ group is its time, so it is stamped from `ts`.
+         "raw_text": "SAUS70 KWBC\nMETAR\n"
+                     + re.sub(r"^([A-Z0-9]{4}\s+(?:COR\s+)?)\d{6}Z", rf"\g<1>{ts:%d%H%M}Z", line)}
         for i, (ts, line) in enumerate(
             ((now - timedelta(minutes=m), line) for m, line in pairs), 1)
     ])

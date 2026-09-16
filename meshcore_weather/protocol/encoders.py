@@ -6,7 +6,7 @@ commands already produce and turns them into compact binary for broadcast.
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from meshcore_weather.protocol.meshwx import (
     LOC_ZONE, LOC_STATION,
@@ -85,6 +85,41 @@ def classify_sky(text: str) -> int:
 
 
 # -- METAR observation encoding --
+
+_METAR_TIME_RE = re.compile(r"^[A-Z0-9]{4}\s+(?:COR\s+)?(\d{2})(\d{2})(\d{2})Z")
+
+
+def metar_observed_at(metar_text: str, near: datetime) -> datetime | None:
+    """When the report was taken, from its own DDHHMMZ group.
+
+    ``near`` is the time of the product it arrived in. A METAR collective
+    bundles many stations into one product, so that time is the same for
+    every station in it and says nothing about any one of them; the group
+    does. The day is resolved in ``near``'s month unless that lands more than
+    ten minutes ahead of ``near`` (a report cannot be taken after it arrives,
+    give or take a clock), which means the previous month. None when the line
+    carries no time group.
+    """
+    m = _METAR_TIME_RE.match(metar_text.strip())
+    if not m:
+        return None
+    day, hour, minute = (int(x) for x in m.groups())
+    if not (1 <= day <= 31 and hour < 24 and minute < 60):
+        return None
+    year, month = near.year, near.month
+    for _ in range(2):
+        try:
+            when = near.replace(year=year, month=month, day=day, hour=hour, minute=minute,
+                                second=0, microsecond=0)
+        except ValueError:
+            when = None
+        if when is not None and when <= near + timedelta(minutes=10):
+            return when
+        month -= 1
+        if month == 0:
+            year, month = year - 1, 12
+    return None
+
 
 def parse_metar(metar_text: str) -> dict | None:
     """Decode the fields MeshWX carries from a raw METAR line.
