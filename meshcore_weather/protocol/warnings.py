@@ -458,6 +458,16 @@ def _segment_to_entry(
 
     onset_unix_min = int(onset_at.timestamp() / 60) if onset_at else 0
 
+    # When the product said it was issued, from its own header (pyIEM's
+    # `valid`), never when the bot received the file: the phone shows this as
+    # "issued 8:24 PM" and a radio that was out of range for three hours must
+    # not turn that into the time it finally heard the warning. The lifecycle
+    # replay keeps the NEW segment's time for the identity, so a continuation
+    # (SVS) does not restamp a warning as newly issued.
+    issued_at = getattr(tracker_state, "issued_at", None) if tracker_state is not None else None
+    if issued_at is None:
+        issued_at = getattr(parsed, "valid", None)
+
     entry = {
         # Storm-based warning tags (pyIEM reads them from the product text):
         # the actionable numbers of a severe or flash flood warning.
@@ -468,6 +478,7 @@ def _segment_to_entry(
         "event_code": event,
         "onset_at": onset_at,          # when the warning becomes active (None = immediate)
         "onset_unix_min": onset_unix_min,
+        "issued_at": issued_at,        # the product's own issuance (spec 3, revision 5)
         "expires_at": expires_at,      # canonical absolute expiry (NWS-authoritative)
         "expires_estimated": expires_estimated,  # invented (until further notice): moves with the clock
         "expiry_minutes": expiry_minutes,  # convenience — minutes from "now"
@@ -561,6 +572,10 @@ def _extract_warnings_fallback(store: WeatherStore) -> list[dict]:
             "severity": severity,
             "onset_at": onset_at,
             "onset_unix_min": int(onset_at.timestamp() / 60),
+            # No parsed product header on this path, and the filename's time is
+            # when the bot received the file, not when NWS issued it: say
+            # nothing rather than something wrong (spec 3, revision 5).
+            "issued_at": None,
             "expires_at": expires_at,
             "expires_estimated": expires_estimated,
             "expiry_minutes": expiry_minutes,

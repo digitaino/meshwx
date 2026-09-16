@@ -56,6 +56,7 @@ def reencode(d: dict) -> bytes:
             polygon=polygon,
             areas=areas,
             update=d["update"],
+            issued_min=d["issued_min"],
         )
     if name == "cancel":
         return v5.encode_cancel(
@@ -319,6 +320,79 @@ def test_warning_tag_range_checks():
             )
 
 
+# -- Revision 5: the issue time ---------------------------------------------
+
+
+def _warning(**over):
+    kwargs = dict(
+        event=3, office=35, etn=42, expires_min=NOW + 45,
+        polygon=[(30.52, -97.98), (30.61, -97.62), (30.38, -97.41)],
+        areas=[(42, True, 453, 1)],
+    )
+    kwargs.update(over)
+    return v5.encode_warning(17, BOT, **kwargs)
+
+
+def test_warning_issue_time_roundtrips_as_minutes_before_expiry():
+    data = _warning(issued_min=NOW + 24)          # issued 21 min before expiry
+    out = roundtrip(data)
+    assert out["flags"] == v5.FLAG_WARNING_ISSUED
+    assert out["issued_min"] == NOW + 24
+    # Two trailing bytes, after the polygon and the areas, holding the gap.
+    assert int.from_bytes(data[-2:], "little") == 21
+    assert len(data) == len(_warning()) + 2
+
+
+def test_warning_issue_time_is_the_last_two_bytes_and_nothing_else_moves():
+    """A revision 4 decoder stops after the area list, so the old form is the
+    new one with its last two bytes and its flag bit taken away."""
+    new = _warning(issued_min=NOW - 600, update=True)
+    old = _warning(update=True)
+    assert new[3] == (1 << 4) | v5.FLAG_WARNING_UPDATE | v5.FLAG_WARNING_ISSUED
+    assert new[:3] == old[:3] and new[4:-2] == old[4:]
+    assert v5.decode(old)["issued_min"] is None
+    # What a revision 4 decoder sees: everything it knows, unchanged.
+    was = v5.decode(old)
+    now = v5.decode(new)
+    assert {k: v for k, v in now.items() if k not in ("flags", "issued_min")} == {
+        k: v for k, v in was.items() if k not in ("flags", "issued_min")
+    }
+
+
+def test_warning_issue_time_saturates_rather_than_failing():
+    # Two months before the expiry is past the u16; it pins at 45.5 days.
+    far = v5.decode(_warning(issued_min=NOW + 45 - 90000))
+    assert far["issued_min"] == NOW + 45 - v5.MAX_ISSUED_BEFORE_EXPIRY
+    # A product issued after its own expiry is nonsense, not a reason to drop
+    # a warning: it encodes as 0, "issued when it expires".
+    assert v5.decode(_warning(issued_min=NOW + 100))["issued_min"] == NOW + 45
+
+
+def test_warning_issue_time_survives_a_polygon_that_has_to_go():
+    """The polygon is what a warning sheds under pressure; two bytes of issue
+    time must not be the thing that makes the packet too big to send."""
+    ring = [(30.0 + i * 0.01, -97.0 - i * 0.01) for i in range(30)]
+    areas = [(42, False, 100 + i, 1) for i in range(30)]
+    with pytest.raises(ValueError, match="over the 165-byte limit"):
+        v5.encode_warning(
+            1, BOT, event=3, office=1, etn=1, expires_min=NOW,
+            polygon=ring, areas=areas, issued_min=NOW - 30,
+        )
+    data = v5.encode_warning(
+        1, BOT, event=3, office=1, etn=1, expires_min=NOW,
+        polygon=ring[:8], areas=areas[:12], issued_min=NOW - 30,
+    )
+    assert len(data) <= v5.MAX_DATA
+    assert v5.decode(data)["issued_min"] == NOW - 30
+    assert len(v5.decode(data)["polygon"]) == 8
+
+
+def test_warning_truncated_issue_time_raises():
+    data = _warning(issued_min=NOW)
+    with pytest.raises(ValueError, match="warning issue time"):
+        v5.decode(data[:-1])
+
+
 # ---------------------------------------------------------------------------
 # Cancel
 # ---------------------------------------------------------------------------
@@ -443,6 +517,93 @@ def test_obs_count_limits():
 def test_obs_pressure_out_of_range():
     with pytest.raises(ValueError, match="out of encodable range"):
         v5.encode_obs(1, BOT, ts_min=NOW, stations=[_station(pressure_inhg=28.5)])
+
+
+# -- Revision 5: per-station ages -------------------------------------------
+
+
+def test_obs_ages_roundtrip_and_pack_two_stations_to_a_byte():
+    data = v5.encode_obs(
+        29, BOT, ts_min=NOW,
+        stations=[
+            _station(station=202, age_min=0),
+            _station(station=860, age_min=20),
+            _station(station=976, age_min=110),
+        ],
+    )
+    out = roundtrip(data)
+    assert out["flags"] == v5.FLAG_OBS_AGES
+    assert [s["age_min"] for s in out["stations"]] == [0, 20, 110]
+    # Station 0 in the low nibble of the first byte, station 1 in its high
+    # nibble, station 2 in the low nibble of the second; the pad stays 0.
+    assert data[9 + 11 * 3:] == bytes([0x20, 0x0B])
+    assert len(data) == 9 + 11 * 3 + 2
+
+
+def test_obs_newest_station_has_age_zero():
+    """`ts` is the newest report in the batch, so one station always reads 0
+    and the line under it is the batch time itself."""
+    data = v5.encode_obs(
+        1, BOT, ts_min=NOW,
+        stations=[_station(age_min=35), _station(station=860, age_min=0)],
+    )
+    ages = [s["age_min"] for s in v5.decode(data)["stations"]]
+    assert 0 in ages and ages == [40, 0]
+
+
+def test_obs_age_rounds_to_ten_minutes_and_saturates():
+    ages = [0, 4, 5, 14, 119, 120, 400]
+    data = v5.encode_obs(
+        1, BOT, ts_min=NOW,
+        stations=[_station(station=200 + i, age_min=a) for i, a in enumerate(ages)],
+    )
+    # Half up, so a report is never shown as more than 4 minutes fresher than
+    # it is; 150 is the nibble's ceiling, read as "150 minutes or more".
+    assert [s["age_min"] for s in v5.decode(data)["stations"]] == [
+        0, 0, 10, 10, 120, 120, v5.OBS_AGE_MAX_MIN
+    ]
+
+
+def test_obs_ages_are_all_or_nothing():
+    with pytest.raises(ValueError, match="every station in the batch or none"):
+        v5.encode_obs(
+            1, BOT, ts_min=NOW,
+            stations=[_station(age_min=0), _station(station=860)],
+        )
+
+
+def test_obs_without_the_age_flag_is_the_old_form_byte_for_byte():
+    """A revision 4 decoder stops after the station records, and the bytes it
+    reads are the same ones it always read."""
+    stations = [_station(station=202), _station(station=860)]
+    old = v5.encode_obs(21, BOT, ts_min=NOW, stations=stations)
+    new = v5.encode_obs(
+        21, BOT, ts_min=NOW,
+        stations=[dict(s, age_min=a) for s, a in zip(stations, (0, 30))],
+    )
+    assert new[:3] == old[:3] and new[4:-1] == old[4:]
+    assert old[3] & 0x0F == 0 and new[3] & 0x0F == v5.FLAG_OBS_AGES
+    assert all(s["age_min"] is None for s in v5.decode(old)["stations"])
+
+
+def test_obs_ages_cost_the_fourteenth_station():
+    """A full batch is 163 bytes already: the ages do not fit beside it, and
+    the encoder says so rather than sending a packet the radio will refuse."""
+    full = [_station(station=200 + i, age_min=0) for i in range(v5.MAX_STATIONS)]
+    with pytest.raises(ValueError, match="over the 165-byte limit"):
+        v5.encode_obs(1, BOT, ts_min=NOW, stations=full)
+    fits = v5.encode_obs(1, BOT, ts_min=NOW, stations=full[:v5.MAX_STATIONS_WITH_AGES])
+    assert v5.MAX_STATIONS_WITH_AGES == 13
+    assert len(fits) == 9 + 11 * 13 + 7 == 159 <= v5.MAX_DATA
+
+
+def test_obs_truncated_age_block_raises():
+    data = v5.encode_obs(
+        1, BOT, ts_min=NOW,
+        stations=[_station(age_min=0), _station(station=860, age_min=10)],
+    )
+    with pytest.raises(ValueError, match="observation ages"):
+        v5.decode(data[:-1])
 
 
 # ---------------------------------------------------------------------------
@@ -694,7 +855,7 @@ def test_index_json_matches_the_source_tables():
 def test_protocol_json_v5_block():
     with open(PROTOCOL_PATH, encoding="utf-8") as fh:
         proto = json.load(fh)
-    assert proto["version"] == 9
+    assert proto["version"] == 10
     assert proto["index_file"] == "index.json"
     # Legacy keys other code still reads are untouched.
     for key in ("messages", "events", "event_names", "sky_codes", "data_types"):
@@ -720,6 +881,19 @@ def test_protocol_json_v5_block():
     assert block["flood_source"]["radar_and_gauge"] == v5.FLOOD_SOURCE_RADAR_AND_GAUGE
     assert block["flood_damage"]["catastrophic"] == v5.FLOOD_DAMAGE_CATASTROPHIC
     assert block["flags"]["warning"]["update"] == v5.FLAG_WARNING_UPDATE
+    # Revision 5: the two added times and what they cost.
+    assert block["flags"]["warning"]["issued"] == v5.FLAG_WARNING_ISSUED
+    assert block["flags"]["observations"] == {"ages": v5.FLAG_OBS_AGES}
+    assert block["limits"]["stations_with_ages"] == [1, v5.MAX_STATIONS_WITH_AGES]
+    assert block["limits"]["observation_age_minutes"] == [0, v5.OBS_AGE_MAX_MIN]
+    assert block["limits"]["warning_issued_before_expiry_minutes"] == [
+        0, v5.MAX_ISSUED_BEFORE_EXPIRY
+    ]
+    assert block["record_sizes"]["warning_issued"] == 2
+    assert block["record_sizes"]["observation_ages_stations_per_byte"] == 2
+    assert block["record_sizes"]["observation_age_step_minutes"] == v5.OBS_AGE_STEP_MIN
+    assert block["sentinels"]["observation_age_saturated"] == v5.OBS_AGE_MAX_MIN
+    assert block["sentinels"]["warning_issued_saturated"] == v5.MAX_ISSUED_BEFORE_EXPIRY
     assert block["notes"]
 
 

@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "messages": {
     "refresh_request": 1,
     "data_request": 2,
@@ -559,7 +559,11 @@
     },
     "flags": {
       "warning": {
-        "update": 1
+        "update": 1,
+        "issued": 2
+      },
+      "observations": {
+        "ages": 1
       },
       "cancel": {
         "cancelled": 0,
@@ -623,6 +627,18 @@
         1,
         14
       ],
+      "stations_with_ages": [
+        1,
+        13
+      ],
+      "observation_age_minutes": [
+        0,
+        150
+      ],
+      "warning_issued_before_expiry_minutes": [
+        0,
+        65535
+      ],
       "forecast_periods": [
         1,
         14
@@ -648,6 +664,9 @@
       "digest_entry": 6,
       "observations_fixed": 9,
       "observation_station": 11,
+      "observation_ages_stations_per_byte": 2,
+      "observation_age_step_minutes": 10,
+      "warning_issued": 2,
       "forecast_fixed": 12,
       "forecast_period": 5,
       "text_fixed": 8,
@@ -663,8 +682,10 @@
       "gust_none": 0,
       "feels_same": 0,
       "sky_other": 15,
-      "point_unbundled": 65535
+      "point_unbundled": 65535,
+      "observation_age_saturated": 150,
+      "warning_issued_saturated": 65535
     },
-    "notes": "MeshWX v5 (spec 5.0). Every message is the data field of one MeshCore GRP_DATA packet on #meshwx with data_type 0xFF10, at most 165 bytes. All multi-byte integers are little-endian; times are Unix minutes as u32. The type byte is (type << 4) | flags. Warnings are keyed by (event, office, etn), not by seq. Coverage (type 8, spec 7A) is the bot's own statement of what it carries: centre, radius in km, office indices, and its zones as the same UGC runs a warning's area list uses; a set flag means that list was cut, so a code missing from it means 'not stated', never 'not covered'. Never infer a bot's coverage from the stations or warnings you happen to have received. Indices into offices/stations/states come from index.json; event codes from 'events' and sky codes from 'sky_codes' in this file. The v3/v4 keys above are retained for legacy clients and are unrelated to v5."
+    "notes": "MeshWX v5 (spec 5.0). Every message is the data field of one MeshCore GRP_DATA packet on #meshwx with data_type 0xFF10, at most 165 bytes. All multi-byte integers are little-endian; times are Unix minutes as u32. The type byte is (type << 4) | flags. Warnings are keyed by (event, office, etn), not by seq. Coverage (type 8, spec 7A) is the bot's own statement of what it carries: centre, radius in km, office indices, and its zones as the same UGC runs a warning's area list uses; a set flag means that list was cut, so a code missing from it means 'not stated', never 'not covered'. Never infer a bot's coverage from the stations or warnings you happen to have received. Revision 5 adds two times, both appended after everything a revision 4 decoder reads, both announced by a flags-nibble bit. Warning flag 2: two more bytes, a u16 of the minutes between the product's issuance and 'expires', so issued = expires - that; show it as 'issued', never as when the packet arrived. Observations flag 1: ceil(n / 2) more bytes, one nibble per station in 10-minute steps (station i in the low nibble of byte i div 2 when i is even, the high nibble when odd, 15 = 150 minutes or more), saying how much older than 'ts' that station's own METAR is; show 'as of ts - age' per station, and stale is measured from that, not from 'ts'. A batch with ages carries at most 13 stations. Indices into offices/stations/states come from index.json; event codes from 'events' and sky codes from 'sky_codes' in this file. The v3/v4 keys above are retained for legacy clients and are unrelated to v5."
   }
 }

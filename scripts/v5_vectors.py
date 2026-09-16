@@ -128,6 +128,36 @@ def build_vectors(index: dict) -> list:
         "SV.W.EWX.42 over Travis and Hays counties; expires 01:45 UTC",
     )
 
+    # 1b. The same warning as this bot sends it from revision 5 on: flags
+    #     nibble bit 1 set and the issue time appended after the area list, as
+    #     minutes before `expires`. Issued 01:24 UTC, expires 01:45.
+    add(
+        "severe_thunderstorm_warning_issued",
+        v5.encode_warning(
+            28,
+            BOT,
+            event=EV_SV_W,
+            office=ewx,
+            etn=42,
+            expires_min=NOW_MIN + 45,
+            tornado=v5.TAG_TORNADO_RADAR_INDICATED,
+            hail_qin=4,
+            wind_mph=60,
+            polygon=[
+                (30.52, -97.98),
+                (30.61, -97.62),
+                (30.38, -97.41),
+                (30.15, -97.50),
+                (30.09, -97.85),
+                (30.28, -98.04),
+            ],
+            areas=v5.areas_from_ugcs(["TXC453", "TXC209"], states),
+            issued_min=NOW_MIN + 24,
+        ),
+        "SV.W.EWX.42 again, with the revision 5 issue time: 53 bytes, the two "
+        "trailing bytes hold 21 = minutes between the issuance and the expiry",
+    )
+
     # 2. Winter storm warning: zone list only (TXZ191-194 and TXZ200).
     add(
         "winter_storm_warning_zones",
@@ -224,6 +254,66 @@ def build_vectors(index: dict) -> list:
             ],
         ),
         "KGTU is calm, KHYI has only wind direction and sky",
+    )
+
+    # 5b. The same batch as this bot sends it from revision 5 on: flags nibble
+    #     bit 0 set and a trailing nibble per station saying how far behind
+    #     `ts` that station's own METAR is, in 10-minute steps. KAUS is the
+    #     newest report, so its age is 0; KHYI filed 110 minutes earlier and
+    #     must not be drawn as "as of" the batch time.
+    add(
+        "observations_three_stations_ages",
+        v5.encode_obs(
+            29,
+            BOT,
+            ts_min=NOW_MIN - 7,
+            stations=[
+                {
+                    "station": kaus,
+                    "temp_f": 88,
+                    "dewpoint_f": 72,
+                    "wind_dir_deg": 160,
+                    "sky": 3,
+                    "wind_mph": 12,
+                    "gust_mph": 21,
+                    "visibility_mi": 10,
+                    "pressure_inhg": 29.92,
+                    "humidity_pct": 59,
+                    "feels_delta_f": 7,
+                    "age_min": 0,
+                },
+                {
+                    "station": kgtu,
+                    "temp_f": 84,
+                    "dewpoint_f": 70,
+                    "wind_dir_deg": None,  # calm
+                    "sky": 1,
+                    "wind_mph": 0,
+                    "gust_mph": 0,
+                    "visibility_mi": 10,
+                    "pressure_inhg": 29.95,
+                    "humidity_pct": None,
+                    "feels_delta_f": 0,
+                    "age_min": 20,
+                },
+                {
+                    "station": khyi,
+                    "temp_f": None,
+                    "dewpoint_f": None,
+                    "wind_dir_deg": 290,
+                    "sky": 10,
+                    "wind_mph": None,
+                    "gust_mph": 0,
+                    "visibility_mi": None,
+                    "pressure_inhg": None,
+                    "humidity_pct": None,
+                    "feels_delta_f": 0,
+                    "age_min": 110,
+                },
+            ],
+        ),
+        "the revision 5 form: 44 bytes, ages 0 / 20 / 110 minutes packed as "
+        "nibbles 0, 2 and 11 in two trailing bytes (0x20, 0x0b)",
     )
 
     # 6. Forecast: point 102 (Austin Bergstrom), 7 periods from tonight.
@@ -341,7 +431,7 @@ def build_vectors(index: dict) -> list:
             lat=30.2672,
             lon=-97.7431,
             radius_km=120,
-            stations=14,
+            stations=13,
             offices=[offices.index(c) for c in ("EWX", "FWD", "HGX", "SJT")],
             areas=v5.areas_from_ugcs(
                 [

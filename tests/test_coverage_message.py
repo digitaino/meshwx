@@ -124,7 +124,7 @@ def test_wx_aus_real_coverage_is_five_runs_in_one_thirty_nine_byte_packet():
     assert f["office_idx"] == [35, 40, 51, 113]
     assert f["areas"] == [(tx, False, 155, 6), (tx, False, 170, 6), (tx, False, 186, 12),
                           (tx, False, 205, 7), (tx, False, 221, 5)]
-    assert f["radius_km"] == 120 and f["stations"] == 14
+    assert f["radius_km"] == 120 and f["stations"] == 13
     assert not f["zones_cut"] and not f["offices_cut"]
 
     msg = b.coverage_message(17, BOT, _wx_aus(), None, 120)
@@ -323,7 +323,7 @@ def test_cov_says_the_area_the_offices_the_stations_and_the_alert_list():
     reply = bot._process_command("cov", "")
     assert reply == (
         "Coverage: 36 NWS zones within 120 km of Austin, TX; "
-        "offices EWX, FWD, HGX, SJT; up to 14 stations hourly; alert list every 3 h"
+        "offices EWX, FWD, HGX, SJT; up to 13 stations hourly; alert list every 3 h"
     )
     assert len(reply) <= render_text.MAX_DM               # one message, no paging needed
     assert "| cov |" in HELP_TEXT_DM and len(HELP_TEXT) <= render_text.MAX_DM

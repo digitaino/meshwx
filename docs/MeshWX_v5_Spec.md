@@ -1,8 +1,16 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, revision 4, 2026-09-15. This is the document an app developer
+Version 5.0, revision 5, 2026-09-16. This is the document an app developer
 builds against. It replaces the v3/v4 protocol documents, the April 2026
 iOS brief and the v4 client guide, all of which are now superseded.
+
+Revision 5 adds two times, so that a phone can say *when* a number is true
+instead of implying it is true now: a **per-station age** in Observations
+(section 6) and an **issue time** on Warnings (section 3). Both are
+appended after everything a revision 4 decoder reads and both are
+announced by a bit in the flags nibble, so a revision 4 client keeps
+decoding every message exactly as before and simply never learns the two
+times. If you hold revision 4, read section 16.
 
 Revision 4 adds one message: **Coverage** (type 8, section 7A), the bot's
 own statement of what it carries — centre, radius, NWS offices, and the
@@ -10,7 +18,7 @@ zones it covers as UGC runs. It is broadcast every 3 hours, answers the new
 request `>cov`, and reads as the text command `cov`. Nothing already on the
 wire changed and unknown types are ignored, so a revision 3 client keeps
 working untouched; it simply never learns what the bot covers. If you hold
-revision 3, read section 16.
+revision 3, read section 16.1.
 
 Revision 3 fixes bot behaviour that disagreed with revision 2 and states
 rules revision 2 left out: when `seq` is assigned, how a full digest may be
@@ -18,7 +26,7 @@ cut, unknown observation fields, what `first` counts from, the request
 limits, named-station METAR and TAF replies, `>f <index>`, and two offices
 appended to the bundle. It also adds `>sat`, and US ZIP codes as places
 with the bundle file `zips.json`. The wire layout did not change. If you
-hold revision 2, read section 16.1 first.
+hold revision 2, read section 16.2 first.
 
 Revision 2 corrected statements in sections 1, 6, 7, 8.2, 8.3, 12 and 13
 that described behaviour this bot does not have. If you hold revision 1,
@@ -174,7 +182,8 @@ invent (a product in force until further notice is given one 12 hours
 ahead): that counts only when it moves by 30 minutes.
 
 Flags nibble: bit 0 = update of an identity already sent (informational;
-the app replaces by identity either way).
+the app replaces by identity either way). Bit 1 = the issue time is present
+(below, new in revision 5).
 
 A new tornado (`TO.W`), severe thunderstorm (`SV.W`), flash flood (`FF.W`)
 or extreme wind (`EW.W`) warning is sent once more about two minutes after
@@ -206,6 +215,46 @@ Then, if `tags` bit 0 is set, an area list:
 | 1 | `k` | Number of runs, 1 to 30 |
 | 4 × k | runs | Each: `state` u8 (bit 7 = 1 for a county, 0 for a forecast zone; bits 6-0 = index into `index.json` `states`), `start` u16 LE, `run` u8. The run covers UGC numbers `start` … `start + run − 1`. Example: `TXZ191` to `TXZ194` = state TX, zone, start 191, run 4 |
 
+Then, if the **flags nibble** bit 1 is set, the issue time, as the last two
+bytes of the message (new in revision 5):
+
+| Size | Field | Meaning |
+|---|---|---|
+| 2 | `issued_before` | u16 LE, minutes between the issuance and `expires`. The issue time is `expires − issued_before`. 65535 means 65535 minutes or more (45.5 days): saturated, so read it as "at least that long ago" |
+
+Three things about that layout, because each is deliberate:
+
+- **The presence bit is in the flags nibble, not in `tags`.** The tag byte
+  has no spare bit: 7-6 tornado, 5-4 flood source, 3-2 flood damage, 1
+  polygon, 0 areas. The flags nibble had three.
+- **It is relative to `expires`, not absolute.** Two bytes instead of four,
+  on the one message that is regularly near the packet limit. Unlike a
+  time relative to "now" it cannot drift: both ends of the subtraction ride
+  in the same packet, so a message drained from an offline queue three
+  hours later still decodes to the same instant. A warning is always
+  issued before it expires, and no NWS product runs 45 days from issuance
+  to expiry — a river flood warning, the longest-lived product, is
+  re-issued long before that — so the u16 is enough in practice and
+  saturates rather than wrapping when it is not.
+- **It comes last.** A decoder written for revision 4 stops after the area
+  list and never reads it.
+
+**The issue time is never what gets truncated.** A warning with a large
+polygon can reach the packet limit, and the bot then sheds detail in the
+order a phone can best do without: 30 vertices and 30 runs, then the
+polygon thinned to 16 vertices, then 12 runs, then 10 vertices and 6 runs,
+then 8 vertices and no runs, and last the runs alone with no polygon. The
+two issue-time bytes are not in that list. They cost less than one vertex
+(4 bytes), and the line the phone draws — *issued 1:29 PM* — is worth more
+than the shape of the eighteenth corner.
+
+The time is the **product's own issuance** — the header time of the NWS
+product that created the event, kept across continuations, so an SVS
+update does not restamp a warning as newly issued. It is not when the bot
+received the file and not when your phone heard the packet. That is the
+whole point: a radio out of range for three hours must still say *issued
+1:29 PM*.
+
 Storm-based warnings (tornado, severe thunderstorm, flash flood) carry the
 polygon and usually a county list. Zone-based products (winter, heat,
 wind, fire) carry the zone list only. Draw the polygon when present and
@@ -213,7 +262,7 @@ name the counties under it; otherwise fill the listed zones or counties
 from `zones.geojson` / `counties.geojson`.
 
 Typical size: a severe thunderstorm warning with 6 vertices and 2
-counties is 15 + 27 + 9 = 51 bytes.
+counties is 15 + 27 + 9 = 51 bytes, or 53 with the issue time.
 
 ## 4. Cancel (type 2)
 
@@ -271,15 +320,18 @@ does not speed observations up during severe weather.
 
 The station list is not fixed either. It is recomputed for every batch:
 stations inside the coverage radius that have filed a METAR in the last
-120 minutes, nearest first, at most 14. Stations drop out when they stop
-reporting, so do not treat the batch as a stable description of what the
-bot covers.
+120 minutes, nearest first, at most 14 (13 when the batch carries the ages
+below). Stations drop out when they stop reporting, so do not treat the
+batch as a stable description of what the bot covers.
+
+Flags nibble: bit 0 = per-station ages present (new in revision 5).
 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
-| 4 | 4 | `ts` | u32 Unix minutes of the newest report in the batch (when the bot's feed received it). Each station's report may be up to 120 minutes older than `ts` |
-| 8 | 1 | `n` | Station count, 1 to 14 |
+| 4 | 4 | `ts` | u32 Unix minutes of the newest report in the batch (when the bot's feed received it). Each station's report may be up to 120 minutes older than `ts`; with flag bit 0 set, each station says by how much |
+| 8 | 1 | `n` | Station count, 1 to 14 (1 to 13 with the ages) |
 | 9 | 11 × n | stations | Below |
+| 9 + 11 × n | ceil(n / 2) | ages | Only when flags bit 0 is set. Below |
 
 Per station (11 bytes):
 
@@ -301,6 +353,46 @@ bot never fills in a default. A station whose report still cannot be
 encoded is left out, and the rest of the batch is sent.
 
 A single-station request (`>o KAUS`) is the same message with `n = 1`.
+
+### 6.1 Per-station ages (flags bit 0, new in revision 5)
+
+`ts` is one time for the whole batch — the newest report in it — while a
+station in the same batch may have filed its METAR up to 120 minutes
+earlier. A phone drawing "as of 8:24 PM" under every temperature was
+therefore wrong about most of them, and a station whose reading was two
+hours stale did not even look stale until two hours after 8:24. The ages
+fix that: each station says how far behind `ts` its **own** report is.
+
+The block is `ceil(n / 2)` bytes, one nibble per station, in station
+order:
+
+| Station index `i` | Nibble |
+|---|---|
+| even | low nibble of byte `i / 2` |
+| odd | high nibble of byte `i / 2` |
+
+A nibble is the age in **10-minute steps**: 0 to 15, meaning 0 to 150
+minutes, which covers the 120-minute admission window with room to spare.
+15 means 150 minutes or more. With an odd `n` the last byte's high nibble
+is 0 padding. A station's report time is `ts − age`.
+
+The step is a rounding, half up, so a reading is never presented as more
+than 4 minutes fresher than it is, and never more than 5 minutes older.
+The newest station in the batch always reads 0, because `ts` is its own
+time.
+
+**Why a nibble, and why 13 stations.** A batch of 14 stations is already
+9 + 11 × 14 = **163 bytes**, two under the limit. A byte of minutes per
+station would need 14 more (177); nibbles need 7 (170). Neither fits, so
+the ages cost the fourteenth station: a full batch with ages is
+9 + 11 × 13 + 7 = **159 bytes**. The bot drops the *farthest* station,
+since the list is nearest first, and never the ages — a batch that told
+the truth about some stations and left the rest to be guessed at would be
+worse than one that says nothing.
+
+The ages are all or nothing: flag bit 0 set means every station in the
+batch has one. A decoder written for revision 4 stops after the station
+records and never sees the block, which is why it is at the end.
 
 ## 7. Forecast (type 5)
 
@@ -375,7 +467,7 @@ cut (see **Truncation** below).
 | 4 | 3 | `lat` | i24 LE, degrees × 10000. The centre of the coverage circle, which is the bot's home point |
 | 7 | 3 | `lon` | i24 LE, degrees × 10000 |
 | 10 | 2 | `radius` | u16 LE kilometres. 0 = no circle stated; the area is then whatever the runs list |
-| 12 | 1 | `stations` | The most stations one hourly Observations packet can carry (14 for this bot). 0 = this bot broadcasts no observations for its area. A cap, not a count: the batch is rebuilt every hour (section 6), so a count would describe this hour, not the coverage |
+| 12 | 1 | `stations` | The most stations one hourly Observations packet can carry (13 for this bot: 14 fit without the per-station ages of revision 5, 13 with them, section 6.1). 0 = this bot broadcasts no observations for its area. A cap, not a count: the batch is rebuilt every hour (section 6), so a count would describe this hour, not the coverage |
 | 13 | 1 | `n` | Office count, 0 to 24 |
 | 14 | `n` | offices | One u8 each, index into `index.json` `offices`, ascending. Every office whose zones the bot covers, plus any the operator named outright. An office the bundle does not list is left out rather than sent as 0 |
 | 14+`n` | 1 | `k` | Zone-run count, 0 to 30 |
@@ -384,7 +476,7 @@ cut (see **Truncation** below).
 WX-AUS is **39 bytes**: 14 fixed, 4 offices (EWX, FWD, HGX, SJT), then 36
 zones that sort into 5 runs — TXZ155-160, TXZ170-175, TXZ186-197,
 TXZ205-211, TXZ221-225 — inside 120 km of 30.2672, -97.7431, with the
-hourly cap of 14 stations. The vector `coverage_wx_aus` in
+hourly cap of 13 stations. The vector `coverage_wx_aus` in
 `meshwx_v5_vectors.json` is that exact packet.
 
 This bot covers public forecast zones, so every run it sends has the county
@@ -561,8 +653,11 @@ then `C` or `Z`, then the 3-digit number. `TXC453` is in `counties.json`,
 Louisiana parishes, Alaska boroughs and Virginia's independent cities are
 all "counties" here, as in the NWS products.
 
-Bundle versioning: `protocol.json` `version` (9 since revision 4) and
-`index.json` `version` (2 since revision 3). Revision 4 changed one bundle
+Bundle versioning: `protocol.json` `version` (10 since revision 5) and
+`index.json` `version` (2 since revision 3). Revision 5 changed one bundle
+file, `protocol.json`, which gained the two new flag bits, the 13-station
+limit with ages, the age step and range, the issue-time range, and the two
+record sizes. No index moved. Revision 4 changed one bundle
 file, `protocol.json`, which gained the Coverage type, its flags, its two
 limits and its record sizes. No index moved, so `index.json`, `wfos.json`
 and every other file are untouched and a revision 3 bundle still decodes
@@ -672,13 +767,30 @@ radar indicated", "Flash flood damage: considerable". Show "expires in
 42 min" from `expires` and the phone's clock. Sort by severity then
 expiry.
 
+When the issue time is present (flags bit 1, section 3), label it
+**issued**: "issued 1:29 PM". Never label the arrival of the packet that
+way — the mesh may have taken hours to reach the phone, and "received
+1:28 AM" presented as the start of a warning is simply false. With the bit
+clear the bot did not state an issue time, so say nothing: the phone's own
+receipt time is a fact about the radio, not about the weather, and belongs
+in a diagnostics screen if anywhere.
+
 ### 10.3 Observations and forecasts
 
 Temperatures are whole °F; show feels-like when `feels` is non-zero.
 Wind: "WNW 15 gusting 26". Pressure: `29.00 + pressure/100` inHg. Leave
 out a field sent as unknown rather than showing its sentinel, and show
-visibility 0 as "under 1 mi". A station is "stale" when `ts` is older
-than 2 hours. A forecast is stale after 12 hours from `issued`.
+visibility 0 as "under 1 mi". A forecast is stale after 12 hours from
+`issued`.
+
+Time a station by its own report, not by the batch. With the ages present
+(flags bit 0, section 6.1) the line under a station's temperature is **as
+of `ts − age`**, and that station is stale when *that* time is more than
+2 hours old — a batch arriving now can hold a two-hour-old reading, and
+the age is the only thing that says so. Without the ages, the most an app
+honestly knows is that every reading is somewhere in the two hours before
+`ts`; say "as of" no more precisely than that, and fall back to the old
+rule, stale when `ts` itself is over 2 hours old.
 
 ### 10.4 Text fallback for people
 
@@ -731,6 +843,19 @@ help                  the command list
 
 An app can expose this as a "message the bot" screen for anything the
 binary path does not cover.
+
+### 10.5 Which time to show
+
+Two words carry the honesty of the whole screen, and they are not
+interchangeable:
+
+- **as of** — an observation, from `ts − age` (section 6.1). What that
+  station measured, when it measured it.
+- **issued** — a warning, from `expires − issued_before` (section 3), and
+  a forecast, from `issued` (section 7). When NWS published it.
+
+Neither is ever the time the packet arrived. A phone that has been out of
+range shows old data; saying so is the feature.
 
 ## 11. Search and place resolution
 
@@ -802,7 +927,10 @@ binary path does not cover.
 4. Warnings keyed by `(event, office, etn)`; apply Cancel and Digest (mind a full digest, section 5).
 5. Render from the bundle tables; never from strings on the wire. Hide unknown fields.
 6. Requests with `>`, by DM to pick one bot or as channel text; 15 s timeout, one retry.
-7. Stale badges from `ts`, `issued`, `expires`, `feed_health`.
+7. Stale badges from `ts` and the station's own age, `issued`, `expires`,
+   `feed_health`. "As of" is per station (section 6.1); "issued" on a
+   warning comes from its issue time (section 3), never from when the
+   packet arrived (section 10.5).
 8. Text fallback screen with the human commands and `more`.
 9. Take the bot's area from Coverage (7A), never from the stations or
    warnings you have seen; read a cut list as incomplete, not as a denial.
@@ -818,7 +946,37 @@ event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
 
-## 16. Changes in revision 4
+## 16. Changes in revision 5
+
+Revision 5 adds two times and nothing else. Both are appended after
+everything revision 4 reads, both are announced by a flags-nibble bit, and
+no field moved.
+
+| Section | Revision 4 | Revision 5 |
+|---|---|---|
+| 3 | A warning carried `expires` and nothing about when it began, so an app had only its own receipt time and showed "received 1:28 AM" as if the warning had started then — hours wrong whenever the radio had been out of range | Flags nibble bit 1 says the issue time follows, as the last two bytes: `issued_before`, a u16 of the minutes between the issuance and `expires`. It is the product's own issuance, kept from the NEW segment across continuations, never when the bot received the file. Two bytes rather than four because this is the message that reaches the packet limit; it saturates at 65535 minutes instead of wrapping |
+| 3 | (silent about what gives way first) | The truncation order is stated, and the issue time is not in it: vertices, then runs, then the polygon entirely. Two bytes never cost a warning its shape, and the shape never costs it its time |
+| 6 | A batch carried one `ts`, the newest report in it, while the builder admitted stations up to 120 minutes older. "As of 8:24 PM" under a 6:25 PM reading was the usual case, not the edge case, and that station did not read as stale until 10:24 | Flags nibble bit 0 says per-station ages follow the station records: `ceil(n / 2)` bytes, one nibble each, in 10-minute steps to 150 minutes, station *i* in the low nibble of byte *i* / 2 when *i* is even and the high nibble when odd. A station's report time is `ts − age`, and staleness is measured from that. See 6.1 |
+| 6 | Up to 14 stations in a batch, 163 bytes | Still 14 without the ages; **13** with them, because 163 + 7 does not fit in 165. A full batch drops its farthest station — the list is nearest first — and never drops the ages for some stations only |
+| 9 | `protocol.json` `version` 9 | `version` 10: `v5.flags.warning.issued`, `v5.flags.observations.ages`, the station limit with ages, the age step and range, the issue-time range and the two record sizes. `index.json` stays at version 2 and no office, station or state index moved |
+| 10.2, 10.3, 10.5 | (silent) | What the two words mean and when to use them: **as of** for an observation, from `ts − age`; **issued** for a warning and a forecast, from the product's own time. Neither is ever when the packet arrived |
+| 14 | Stale badges from `ts`, `issued`, `expires`, `feed_health` | The same, plus each station's own age |
+
+A revision 4 decoder is unaffected. It stops after the area list of a
+warning and after the station records of an observations batch, ignores
+flag bits it does not know, and so reads every revision 5 packet exactly
+as it read a revision 4 one — it simply never learns the two times. The
+vectors show both forms: `severe_thunderstorm_warning_polygon` and
+`observations_three_stations` are the old bytes, unchanged to the byte,
+and `severe_thunderstorm_warning_issued` (53 bytes) and
+`observations_three_stations_ages` (44 bytes) are the same messages as
+this bot sends them from revision 5 on.
+
+To adopt revision 5: read the two flag bits, decode the two blocks, and
+replace every screen that timestamps weather with the arrival of its
+packet. Nothing else needs touching.
+
+### 16.1 Changes in revision 4
 
 Revision 4 adds one message and the two ways to ask for it. Nothing that
 was already on the wire changed, and no bundle index moved.
@@ -839,7 +997,7 @@ learns what the bot covers. To adopt revision 4, decode section 7A and
 replace whatever your app currently guesses about a bot's area with what
 the bot states.
 
-### 16.1 Changes in revision 3
+### 16.2 Changes in revision 3
 
 Revision 2 described behaviour the bot did not have in several places,
 and left some rules unstated. Revision 3 fixes the bot and states the

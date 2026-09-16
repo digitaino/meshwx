@@ -66,6 +66,8 @@ __all__ = [
     "FLOOD_DAMAGE_CONSIDERABLE",
     "FLOOD_DAMAGE_CATASTROPHIC",
     "FLAG_WARNING_UPDATE",
+    "FLAG_WARNING_ISSUED",
+    "FLAG_OBS_AGES",
     "FLAG_COVERAGE_ZONES_CUT",
     "FLAG_COVERAGE_OFFICES_CUT",
     "MAX_TEXT_BYTES",
@@ -74,6 +76,10 @@ __all__ = [
     "MAX_AREA_RUNS",
     "MAX_DIGEST_ENTRIES",
     "MAX_STATIONS",
+    "MAX_STATIONS_WITH_AGES",
+    "MAX_ISSUED_BEFORE_EXPIRY",
+    "OBS_AGE_STEP_MIN",
+    "OBS_AGE_MAX_MIN",
     "MAX_PERIODS",
     "MAX_COVERAGE_OFFICES",
     "MAX_COVERAGE_RUNS",
@@ -175,6 +181,16 @@ _TAG_AREAS = 0x01
 #: Warning flags nibble, bit 0: this identity was already sent.
 FLAG_WARNING_UPDATE = 0x1
 
+# Warning flags nibble, bit 1: the issue time follows the polygon and the area
+# list (spec 3, revision 5).  The bit lives in the flags nibble and not in the
+# tag byte because that byte has no spare bit: 7-6 tornado, 5-4 flood source,
+# 3-2 flood damage, 1 polygon, 0 areas.
+FLAG_WARNING_ISSUED = 0x2
+
+#: Observations flags nibble, bit 0: per-station ages follow the station
+#: records (spec 6, revision 5).
+FLAG_OBS_AGES = 0x1
+
 # Coverage flags nibble (spec 7A).  A set bit means the list on the wire is
 # shorter than what the bot really covers, so absence proves nothing.
 FLAG_COVERAGE_ZONES_CUT = 0x1
@@ -188,6 +204,16 @@ MAX_POLYGON_VERTICES = 30
 MAX_AREA_RUNS = 30
 MAX_DIGEST_ENTRIES = 25
 MAX_STATIONS = 14
+# A batch of 14 stations is already 163 bytes, so the age nibbles (one per
+# station, packed two to a byte) do not fit beside a full one: 9 + 11 x 14 + 7
+# is 170.  Thirteen stations with their ages are 159 (spec 6, revision 5).
+MAX_STATIONS_WITH_AGES = 13
+#: One age nibble step, in minutes.
+OBS_AGE_STEP_MIN = 10
+#: The largest age a nibble carries: 15 steps, read as "150 minutes or more".
+OBS_AGE_MAX_MIN = 15 * OBS_AGE_STEP_MIN
+#: The largest issue-to-expiry gap the u16 carries (45.5 days), saturating.
+MAX_ISSUED_BEFORE_EXPIRY = 0xFFFF
 MAX_PERIODS = 14
 # Coverage: both maxima at once are 14 + 24 + 1 + 120 = 159 bytes, inside
 # one packet, so a full office list never costs a zone run or the reverse.
@@ -347,6 +373,7 @@ def encode_warning(
     polygon: "list[tuple[float, float]] | None" = None,
     areas: "list[tuple[int, bool, int, int]] | None" = None,
     update: bool = False,
+    issued_min: "int | None" = None,
 ) -> bytes:
     """Encode a Warning.
 
@@ -354,6 +381,14 @@ def encode_warning(
     absolute at 0.0001 deg and the rest are deltas at 0.001 deg.  ``areas`` is
     a list of ``(state_index, is_county, start, run)`` runs of UGC numbers.
     ``hail_qin`` is the hail tag in quarter inches (4 = 1.00 in).
+
+    ``issued_min`` is when the product was issued, in Unix minutes.  It goes
+    on the wire as the minutes between the issue time and ``expires_min``
+    (u16, two bytes rather than four), saturating at
+    ``MAX_ISSUED_BEFORE_EXPIRY``; a warning issued after its own expiry, which
+    no real product is, encodes as 0 rather than failing.  The two bytes are
+    appended last so that a decoder written before revision 5 stops after the
+    area list and never sees them.
     """
     if not (0 <= tornado <= 3):
         raise ValueError(f"tornado tag must be 0..3, got {tornado}")
@@ -368,11 +403,11 @@ def encode_warning(
     if areas:
         tags |= _TAG_AREAS
 
-    out = bytearray(
-        encode_header(
-            seq, bot, TYPE_WARNING, FLAG_WARNING_UPDATE if update else 0
-        )
-    )
+    flags = FLAG_WARNING_UPDATE if update else 0
+    if issued_min is not None:
+        flags |= FLAG_WARNING_ISSUED
+
+    out = bytearray(encode_header(seq, bot, TYPE_WARNING, flags))
     out += struct.pack(
         "<BBHIBBB",
         _u8(event, "event"),
@@ -388,6 +423,9 @@ def encode_warning(
         out += _encode_polygon(polygon)
     if areas:
         out += _encode_areas(areas)
+    if issued_min is not None:
+        before = _u32(expires_min, "expires_min") - _u32(issued_min, "issued_min")
+        out += struct.pack("<H", max(0, min(MAX_ISSUED_BEFORE_EXPIRY, before)))
 
     return _check_size(bytes(out), "warning")
 
@@ -474,6 +512,7 @@ def _decode_warning(data: bytes, hdr: Header) -> dict:
         update=bool(hdr.flags & FLAG_WARNING_UPDATE),
         polygon=None,
         areas=None,
+        issued_min=None,
     )
 
     off = 15
@@ -496,6 +535,13 @@ def _decode_warning(data: bytes, hdr: Header) -> dict:
 
     if tags & _TAG_AREAS:
         out["areas"], off = _decode_areas(data, off)
+
+    # Revision 5: the issue time, as minutes before `expires`, after the
+    # variable blocks.  A decoder that does not know the flag stops above.
+    if hdr.flags & FLAG_WARNING_ISSUED:
+        _need(data, off + 2, "warning issue time")
+        out["issued_min"] = expires - struct.unpack_from("<H", data, off)[0]
+        off += 2
 
     return out
 
@@ -640,14 +686,52 @@ def _u8_or(value, sentinel: int, name: str) -> int:
     return v
 
 
+def _age_nibble(age_min) -> int:
+    """One station's age as a 10-minute step, 0..15, rounding half up.
+
+    Rounding to the nearest step rather than down keeps the error symmetric:
+    a report is never shown as more than 4 minutes fresher than it is.
+    """
+    steps = (int(round(float(age_min))) + OBS_AGE_STEP_MIN // 2) // OBS_AGE_STEP_MIN
+    return max(0, min(15, steps))
+
+
+def _encode_ages(ages) -> bytes:
+    """The per-station age block: one nibble each, two stations to a byte,
+    station i in the low nibble of byte i // 2 when i is even and the high
+    nibble when it is odd.  An odd station count leaves the last high nibble 0.
+    """
+    block = bytearray((len(ages) + 1) // 2)
+    for i, age in enumerate(ages):
+        nib = _age_nibble(age)
+        block[i // 2] |= (nib << 4) if i % 2 else nib
+    return bytes(block)
+
+
 def encode_obs(
     seq: int, bot: int, *, ts_min: int, stations: "list[dict]"
 ) -> bytes:
-    """Encode an Observations batch (1..14 stations, 11 bytes each)."""
+    """Encode an Observations batch (1..14 stations, 11 bytes each).
+
+    A station carrying ``age_min`` — how many minutes older than ``ts_min``
+    its own report is — puts the batch into the revision 5 form: flags nibble
+    bit 0 set and a trailing block of age nibbles.  The ages are all or
+    nothing, so a batch where only some stations know their age is refused
+    rather than sent with the rest guessed at; and because the block costs
+    ``ceil(n / 2)`` bytes on top of an already 163-byte full batch, 14
+    stations with ages do not fit in one packet (see ``MAX_STATIONS_WITH_AGES``).
+    """
     n = len(stations)
     if not (1 <= n <= MAX_STATIONS):
         raise ValueError(f"observations need 1..{MAX_STATIONS} stations, got {n}")
-    out = bytearray(encode_header(seq, bot, TYPE_OBS))
+    ages = [s.get("age_min") for s in stations]
+    known = [a is not None for a in ages]
+    if any(known) and not all(known):
+        raise ValueError(
+            "per-station ages must cover every station in the batch or none: "
+            f"{sum(known)} of {n} carry age_min"
+        )
+    out = bytearray(encode_header(seq, bot, TYPE_OBS, FLAG_OBS_AGES if all(known) else 0))
     out += struct.pack("<IB", _u32(ts_min, "ts_min"), n)
     for s in stations:
         pressure = s.get("pressure_inhg")
@@ -673,6 +757,8 @@ def encode_obs(
             _u8_or(s.get("humidity_pct"), _U8_UNKNOWN, "humidity_pct"),
             _i8_or(s.get("feels_delta_f"), 0, "feels_delta_f"),
         )
+    if all(known):
+        out += _encode_ages(ages)
     return _check_size(bytes(out), "observations")
 
 
@@ -680,9 +766,20 @@ def _decode_obs(data: bytes, hdr: Header) -> dict:
     _need(data, 9, "observations")
     ts, n = struct.unpack_from("<IB", data, 4)
     _need(data, 9 + 11 * n, "observation stations")
+
+    # Revision 5: the age nibbles sit after the station records, so a decoder
+    # that does not know the flag reads the batch exactly as it always did.
+    ages: "list[int | None]" = [None] * n
+    if hdr.flags & FLAG_OBS_AGES:
+        base = 9 + 11 * n
+        _need(data, base + (n + 1) // 2, "observation ages")
+        for i in range(n):
+            byte = data[base + i // 2]
+            ages[i] = ((byte >> 4) if i % 2 else (byte & 0x0F)) * OBS_AGE_STEP_MIN
+
     stations = []
     off = 9
-    for _ in range(n):
+    for i in range(n):
         (
             station,
             temp,
@@ -715,6 +812,9 @@ def _decode_obs(data: bytes, hdr: Header) -> dict:
                 ),
                 "humidity_pct": None if humidity == _U8_UNKNOWN else humidity,
                 "feels_delta_f": feels,
+                # Minutes this station's own report is older than `ts_min`;
+                # None when the batch predates revision 5 and does not say.
+                "age_min": ages[i],
             }
         )
     out = hdr.as_dict()

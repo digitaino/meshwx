@@ -57,9 +57,73 @@
           "start": 453,
           "run": 1
         }
-      ]
+      ],
+      "issued_min": null
     },
     "note": "SV.W.EWX.42 over Travis and Hays counties; expires 01:45 UTC"
+  },
+  {
+    "name": "severe_thunderstorm_warning_issued",
+    "hex": "1c7a4c1203232a00c913c70183043c0630a804a80cf15a0068011affd2001affa6ffc4ffa2febe0042ff02aad10001aac501011500",
+    "decoded": {
+      "seq": 28,
+      "bot": 19578,
+      "type": 1,
+      "name": "warning",
+      "flags": 2,
+      "event": 3,
+      "office": 35,
+      "etn": 42,
+      "expires_min": 29823945,
+      "tornado": 2,
+      "flood_source": 0,
+      "flood_damage": 0,
+      "hail_qin": 4,
+      "wind_mph": 60,
+      "update": false,
+      "polygon": [
+        [
+          30.52,
+          -97.98
+        ],
+        [
+          30.61,
+          -97.62
+        ],
+        [
+          30.38,
+          -97.41
+        ],
+        [
+          30.15,
+          -97.5
+        ],
+        [
+          30.09,
+          -97.85
+        ],
+        [
+          30.28,
+          -98.04
+        ]
+      ],
+      "areas": [
+        {
+          "state": 42,
+          "county": true,
+          "start": 209,
+          "run": 1
+        },
+        {
+          "state": 42,
+          "county": true,
+          "start": 453,
+          "run": 1
+        }
+      ],
+      "issued_min": 29823924
+    },
+    "note": "SV.W.EWX.42 again, with the revision 5 issue time: 53 bytes, the two trailing bytes hold 21 = minutes between the issuance and the expiry"
   },
   {
     "name": "winter_storm_warning_zones",
@@ -94,7 +158,8 @@
           "start": 200,
           "run": 1
         }
-      ]
+      ],
+      "issued_min": null
     },
     "note": "WS.W.EWX.7, two runs: zones 191-194 and zone 200"
   },
@@ -172,7 +237,8 @@
           "visibility_mi": 10,
           "pressure_inhg": 29.92,
           "humidity_pct": 59,
-          "feels_delta_f": 7
+          "feels_delta_f": 7,
+          "age_min": null
         },
         {
           "station": 860,
@@ -186,7 +252,8 @@
           "visibility_mi": 10,
           "pressure_inhg": 29.95,
           "humidity_pct": null,
-          "feels_delta_f": 0
+          "feels_delta_f": 0,
+          "age_min": null
         },
         {
           "station": 976,
@@ -200,11 +267,72 @@
           "visibility_mi": null,
           "pressure_inhg": null,
           "humidity_pct": null,
-          "feels_delta_f": 0
+          "feels_delta_f": 0,
+          "age_min": null
         }
       ]
     },
     "note": "KGTU is calm, KHYI has only wind direction and sky"
+  },
+  {
+    "name": "observations_three_stations_ages",
+    "hex": "1d7a4c419513c70103ca005848730c150a5c3b075c0354460100000a5fff00d0038080daff00ffffff00200b",
+    "decoded": {
+      "seq": 29,
+      "bot": 19578,
+      "type": 4,
+      "name": "observations",
+      "flags": 1,
+      "ts_min": 29823893,
+      "stations": [
+        {
+          "station": 202,
+          "temp_f": 88,
+          "dewpoint_f": 72,
+          "wind_dir_deg": 157.5,
+          "wind_dir": "SSE",
+          "sky": 3,
+          "wind_mph": 12,
+          "gust_mph": 21,
+          "visibility_mi": 10,
+          "pressure_inhg": 29.92,
+          "humidity_pct": 59,
+          "feels_delta_f": 7,
+          "age_min": 0
+        },
+        {
+          "station": 860,
+          "temp_f": 84,
+          "dewpoint_f": 70,
+          "wind_dir_deg": 0.0,
+          "wind_dir": "N",
+          "sky": 1,
+          "wind_mph": 0,
+          "gust_mph": 0,
+          "visibility_mi": 10,
+          "pressure_inhg": 29.95,
+          "humidity_pct": null,
+          "feels_delta_f": 0,
+          "age_min": 20
+        },
+        {
+          "station": 976,
+          "temp_f": null,
+          "dewpoint_f": null,
+          "wind_dir_deg": 292.5,
+          "wind_dir": "WNW",
+          "sky": 10,
+          "wind_mph": null,
+          "gust_mph": 0,
+          "visibility_mi": null,
+          "pressure_inhg": null,
+          "humidity_pct": null,
+          "feels_delta_f": 0,
+          "age_min": 110
+        }
+      ]
+    },
+    "note": "the revision 5 form: 44 bytes, ages 0 / 20 / 110 minutes packed as nibbles 0, 2 and 11 in two trailing bytes (0x20, 0x0b)"
   },
   {
     "name": "forecast_seven_periods",
@@ -424,7 +552,7 @@
   },
   {
     "name": "coverage_wx_aus",
-    "hex": "1b7a4c80509e04e915f178000e0423283371052a9b00062aaa00062aba000c2acd00072add0005",
+    "hex": "1b7a4c80509e04e915f178000d0423283371052a9b00062aaa00062aba000c2acd00072add0005",
     "decoded": {
       "seq": 27,
       "bot": 19578,
@@ -434,7 +562,7 @@
       "lat": 30.2672,
       "lon": -97.7431,
       "radius_km": 120,
-      "stations": 14,
+      "stations": 13,
       "offices": [
         35,
         40,

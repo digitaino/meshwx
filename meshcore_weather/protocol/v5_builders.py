@@ -30,6 +30,9 @@ LIFE_SAFETY = {"TO.W", "SV.W", "FF.W", "EW.W"}
 
 OBS_MAX_AGE_MIN = 120
 MAX_OBS_STATIONS = 14
+# What an hourly batch really carries since revision 5: the per-station ages (spec 6.1)
+# do not fit beside 14 stations, so the builder drops the farthest. Coverage states this one.
+OBS_STATIONS_WITH_AGES = 13
 MAX_DIGEST = 25
 POINT_MATCH_KM = 1.5
 
@@ -187,12 +190,33 @@ def expires_min(w: dict) -> int:
     return now_min() + int(w.get("expiry_minutes") or 60)
 
 
+def issued_min(w: dict) -> int | None:
+    """When the product was issued, in Unix minutes, or None when the extractor
+    could not tell.
+
+    This is the EMWIN product's own issuance — pyIEM's `valid`, the MND/WMO
+    time in the product text, carried through the VTEC lifecycle replay as
+    `EventState.issued_at` (protocol/vtec_events.py) — never the time the bot
+    received the file. A phone that was out of range for three hours must still
+    be able to say when the warning began.
+    """
+    issued = w.get("issued_at")
+    if isinstance(issued, datetime):
+        return int(issued.timestamp() // 60)
+    return None
+
+
 def warning_fingerprint(w: dict) -> tuple:
     """What counts as a material change: expiry changed, tags changed, area
     changed. Wording changes do not. A real expiry counts to the minute (a
     21:00 warning extended to 21:25 must reach the app); an invented one
     (no expiry, or until further notice) moves with the clock, so it only
-    counts in 30-minute steps."""
+    counts in 30-minute steps.
+
+    The issue time is deliberately not here. It is a property of the identity,
+    not of the current state, and after a restart it is read from whichever
+    products are still in the store, so counting it would resend warnings for
+    no reason a phone could see."""
     exact = isinstance(w.get("expires_at"), datetime) and not w.get("expires_estimated")
     return (expires_min(w) if exact else expires_min(w) // 30, int(w.get("hail_qin") or 0),
             int(w.get("wind_mph") or 0),
@@ -220,8 +244,12 @@ def warning_message(seq: int, bot: int, w: dict, update: bool = False) -> bytes 
     kwargs = dict(event=event, office=office, etn=etn, expires_min=expires_min(w),
                   tornado=int(w.get("tornado_tag") or 0), flood_source=int(w.get("flood_source") or 0),
                   flood_damage=int(w.get("flood_damage") or 0), hail_qin=int(w.get("hail_qin") or 0),
-                  wind_mph=int(w.get("wind_mph") or 0), update=update)
+                  wind_mph=int(w.get("wind_mph") or 0), update=update,
+                  issued_min=issued_min(w))
     # Fit into one packet: shed detail in the order a phone can best do without.
+    # The issue time is not in this list: it is two bytes, it is what lets the
+    # phone say when the warning began rather than when the radio heard it, and
+    # a vertex costs twice as much (spec 3, revision 5).
     attempts = [
         (polygon[:30], areas[:30]),
         (_decimate(polygon, 16), areas[:30]),
@@ -322,8 +350,20 @@ def _feels_delta(temp_f: int | None, rh: int | None, wind_mph: int | None) -> in
 
 
 def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str]) -> bytes | None:
+    """One Observations batch, with every station's own age (spec 6).
+
+    The batch's `ts` is the newest METAR in it and each station says how far
+    behind that its own report is, so a phone can write "as of 8:24 PM" under
+    the right temperature instead of stamping the whole batch with one time
+    that is true of one station.
+
+    The ages are all or nothing, and they do not fit beside fourteen stations
+    (163 bytes already). A full batch therefore drops its farthest station —
+    the list arrives nearest first — rather than leave the phone to guess which
+    readings the timestamp describes.
+    """
     now = datetime.now(timezone.utc)
-    rows, newest = [], None
+    rows = []
     for icao in stations[:MAX_OBS_STATIONS]:
         idx = tables.station(icao)
         raw = store._find_metar_raw(icao)
@@ -356,12 +396,23 @@ def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str]) ->
         except ValueError as e:
             logger.warning("Observation %s left out: %s", icao, e)
             continue
-        rows.append(row)
-        if newest is None or ts > newest:
-            newest = ts
+        rows.append((row, ts))
     if not rows:
         return None
-    return v5.encode_obs(seq, bot, ts_min=int(newest.timestamp() // 60), stations=rows)
+    while True:
+        newest = max(ts for _, ts in rows)
+        batch = [dict(row, age_min=(newest - ts).total_seconds() / 60) for row, ts in rows]
+        try:
+            return v5.encode_obs(seq, bot, ts_min=int(newest.timestamp() // 60), stations=batch)
+        except ValueError:
+            if len(rows) == 1:
+                raise
+            # Only the size can fail here: every row encoded on its own above.
+            # The farthest station goes, and `ts` is recomputed in case it was
+            # the one holding the newest report.
+            rows.pop()
+            logger.info("Observations: dropped the farthest station to carry the per-station ages "
+                        "(%d stations left)", len(rows))
 
 
 # -- Forecast ---------------------------------------------------------------------------
@@ -418,7 +469,7 @@ def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: f
 
 
 def coverage_facts(coverage, home: tuple[float, float] | None = None, radius_km: float = 0,
-                   station_cap: int = MAX_OBS_STATIONS) -> dict:
+                   station_cap: int = OBS_STATIONS_WITH_AGES) -> dict:
     """What the bot covers, as the numbers both the Coverage message and the
     `cov` text reply are built from: the centre, the radius, the NWS offices
     and the covered zones as UGC runs.
@@ -484,7 +535,7 @@ def coverage_facts(coverage, home: tuple[float, float] | None = None, radius_km:
 
 
 def coverage_message(seq: int, bot: int, coverage, home: tuple[float, float] | None = None,
-                     radius_km: float = 0, station_cap: int = MAX_OBS_STATIONS) -> bytes | None:
+                     radius_km: float = 0, station_cap: int = OBS_STATIONS_WITH_AGES) -> bytes | None:
     """One Coverage packet, or None when the bot knows neither a centre nor a
     zone and so has nothing to state."""
     f = coverage_facts(coverage, home, radius_km, station_cap)

@@ -208,6 +208,89 @@ def test_out_of_range_pressure_is_unknown_not_a_lost_batch():
     assert stations == [None, 30.01, None]
 
 
+# -- Revision 5: per-station observation ages and the warning issue time ------------
+
+
+def _aged_metar_store(pairs):
+    """One hourly product per station, so each METAR carries its own time.
+    `pairs` is (minutes before now, METAR line)."""
+    from meshcore_weather.parser.weather import WeatherStore
+    now = datetime.now(timezone.utc)
+    store = WeatherStore()
+    store.ingest([
+        {"filename": f"A_SAUS70KWBC{ts:%d%H%M}_C_KWIN_{ts:%Y%m%d%H%M%S}_{i:06d}-2-SAHOURLY.TXT",
+         "raw_text": "SAUS70 KWBC\nMETAR\n" + line}
+        for i, (ts, line) in enumerate(
+            ((now - timedelta(minutes=m), line) for m, line in pairs), 1)
+    ])
+    return store
+
+
+def _clear(icao):
+    return f"{icao} 151153Z 18005KT 10SM CLR 20/10 A3001"
+
+
+def test_each_station_says_how_far_behind_the_batch_time_its_own_report_is():
+    """The batch timestamp is the newest METAR in it, so one station reads 0
+    and the others say how much older they are: "as of 8:24 PM" then belongs
+    to a station, not to the packet (spec 6, revision 5)."""
+    store = _aged_metar_store([(4, _clear("KAUS")), (25, _clear("KGTU")), (118, _clear("KHYI"))])
+    d = v5.decode(b.obs_message(1, 1, store, ["KAUS", "KGTU", "KHYI"]))
+    assert d["flags"] == v5.FLAG_OBS_AGES
+    assert [s["age_min"] for s in d["stations"]] == [0, 20, 110]
+    # ts is the newest report's minute, not "now".
+    newest = store._find_metar_raw("KAUS")[1]
+    assert d["ts_min"] == int(newest.timestamp() // 60)
+
+
+def test_a_full_batch_drops_its_farthest_station_to_carry_the_ages():
+    """Fourteen stations are 163 bytes on their own, so the ages cost the
+    fourteenth — the farthest, since the list arrives nearest first — rather
+    than being sent for some stations and not others."""
+    icaos = ["KAUS", "KATT", "KGTU", "KHYI", "KEDC", "KBAZ", "KRYW",
+             "KDZB", "KSSF", "KSAT", "KTPL", "KILE", "KGRK", "KLZZ"]
+    store = _aged_metar_store([(5 + i, _clear(c)) for i, c in enumerate(icaos)])
+    msg = b.obs_message(1, 1, store, icaos)
+    assert len(msg) == 159 <= v5.MAX_DATA
+    d = v5.decode(msg)
+    assert d["flags"] == v5.FLAG_OBS_AGES
+    assert len(d["stations"]) == v5.MAX_STATIONS_WITH_AGES == 13
+    dropped = b.tables.station("KLZZ")                 # the farthest, last in the list
+    assert dropped not in {s["station"] for s in d["stations"]}
+    assert all(s["age_min"] is not None for s in d["stations"])
+
+
+def test_thirteen_stations_keep_every_age():
+    icaos = ["KAUS", "KATT", "KGTU", "KHYI", "KEDC", "KBAZ", "KRYW",
+             "KDZB", "KSSF", "KSAT", "KTPL", "KILE", "KGRK"]
+    store = _aged_metar_store([(5, _clear(c)) for c in icaos])
+    d = v5.decode(b.obs_message(1, 1, store, icaos))
+    assert len(d["stations"]) == 13 and all(s["age_min"] == 0 for s in d["stations"])
+
+
+def test_a_warning_carries_the_issue_time_and_keeps_it_when_the_polygon_goes():
+    issued = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=37)
+    w = {**_warning(), "issued_at": issued}
+    d = v5.decode(b.warning_message(7, 0x041D, w))
+    assert d["flags"] & v5.FLAG_WARNING_ISSUED
+    assert d["issued_min"] == int(issued.timestamp() // 60) == b.issued_min(w)
+
+    big = {**w, "vertices": [(30.0 + i * 0.01, -97.0 - i * 0.01) for i in range(60)],
+           "ugcs": [f"TXC{n}" for n in range(1, 120, 2)]}
+    msg = b.warning_message(1, 1, big)
+    assert msg is not None and len(msg) <= v5.MAX_DATA
+    d = v5.decode(msg)
+    assert 3 <= len(d["polygon"]) <= 16                      # the polygon is what gives way
+    assert d["issued_min"] == int(issued.timestamp() // 60)   # the issue time never does
+
+
+def test_a_warning_with_no_known_issue_time_sends_the_old_form():
+    w = _warning()
+    assert w.get("issued_at") is None and b.issued_min(w) is None
+    d = v5.decode(b.warning_message(1, 1, w))
+    assert not d["flags"] & v5.FLAG_WARNING_ISSUED and d["issued_min"] is None
+
+
 def _austin_point(**changes):
     from meshcore_weather.parser.pfm import parse_pfm
     from tests.test_pfm import SAMPLE_PFM

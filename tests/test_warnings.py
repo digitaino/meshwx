@@ -104,3 +104,39 @@ def test_cancelled_event_is_not_resurrected_by_the_older_product():
     store2 = WeatherStore()
     store2.ingest([prod(t_new, f"/O.NEW.KCYS.HW.W.0038.{t_new:%y%m%dT%H%MZ}-{exp}/", 1)])
     assert len([w for w in extract_active_warnings(store2, coverage=None) if w.get("vtec_etn") == 38]) == 1
+
+
+def test_a_warning_carries_the_products_own_issue_time_not_the_arrival_time():
+    """Revision 5: the warning's `issued_at` is the issuance in the product's
+    own header, kept from the NEW segment by the lifecycle replay. A phone
+    that was out of range for hours must still read "issued 1:29 PM", not the
+    moment the bot finally received the file."""
+    from datetime import datetime, timedelta, timezone
+    from meshcore_weather.parser.weather import WeatherStore
+    from meshcore_weather.protocol import v5, v5_builders as b
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    t_new, t_con = now - timedelta(hours=3), now - timedelta(minutes=20)
+    exp = (now + timedelta(hours=6)).strftime("%y%m%dT%H%MZ")
+
+    def prod(t, vtec, seq, received):
+        local = t - timedelta(hours=6)          # MDT, the time the product prints
+        text = (f"WWUS75 KCYS {t:%d%H%M}\r\r\nNPWCYS\r\r\n\r\r\nURGENT - WEATHER MESSAGE\r\r\n"
+                f"National Weather Service Cheyenne WY\r\r\n"
+                f"{local.strftime('%I%M %p').lstrip('0')} MDT {local.strftime('%a %b %d %Y')}\r\r\n\r\r\n"
+                f"WYZ101-102-{t:%d%H%M}-\r\r\n{vtec}\r\r\nLaramie Range-\r\r\n"
+                "...HIGH WIND WARNING...\r\r\n\r\r\n$$\r\r\n")
+        # The filename's time is when the bot received the product, which here
+        # is much later than the issuance: the wire must carry the issuance.
+        return {"filename": f"A_WWUS75KCYS{t:%d%H%M}_C_KWIN_{received:%Y%m%d%H%M%S}_{seq:06d}-1-NPWCYSWY.TXT",
+                "raw_text": text}
+
+    store = WeatherStore()
+    store.ingest([prod(t_new, f"/O.NEW.KCYS.HW.W.0039.{t_new:%y%m%dT%H%MZ}-{exp}/", 1, now),
+                  prod(t_con, f"/O.CON.KCYS.HW.W.0039.000000T0000Z-{exp}/", 2, now)])
+    w = next(w for w in extract_active_warnings(store, coverage=None) if w.get("vtec_etn") == 39)
+
+    assert w["issued_at"] == t_new                     # the NEW, not the CON, not `now`
+    assert b.issued_min(w) == int(t_new.timestamp() // 60)
+    d = v5.decode(b.warning_message(1, 1, w))
+    assert d["issued_min"] == int(t_new.timestamp() // 60)
+    assert d["expires_min"] - d["issued_min"] == 9 * 60      # issued 3 h ago, expires in 6 h
