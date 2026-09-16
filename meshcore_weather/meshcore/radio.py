@@ -14,6 +14,7 @@ from typing import Any
 
 from meshcore import MeshCore, EventType
 
+from meshcore_weather.bridge import datagram_feed
 from meshcore_weather.config import settings
 from meshcore_weather.meshcore import profile
 from meshcore_weather.meshcore.delivery import (
@@ -723,6 +724,10 @@ class MeshcoreRadio:
                 logger.warning("Data send failed on ch %d: %s", idx, result.payload)
                 return False
         logger.info("Sent data on ch %d: %d bytes (type 0x%04X)", idx, len(data), data_type)
+        # The debug bridge's feed: the stamped bytes, once per transmission
+        # (see bridge.py). This is the only place they are published, so a
+        # builder can never put something on the feed that never went out.
+        datagram_feed.publish(data, data_type)
 
         async def resend(attempt: int) -> bool:
             if not settings.tx_enabled or not self._mc:
@@ -733,6 +738,7 @@ class MeshcoreRadio:
                 return False
             logger.info("No echo heard: sent data again on ch %d (attempt %d, %d bytes)",
                         idx, attempt + 1, len(data))
+            datagram_feed.publish(data, data_type, resend=True, attempt=attempt + 1)
             return True
 
         delivery_tracker.track(Outbound(kind="channel_data", hash=h, resend=resend, ev=ev,

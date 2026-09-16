@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     portal_host: str = "0.0.0.0"
     portal_port: int = 8080
 
+    # Debug bridge: a development client (the iOS app in the simulator, over
+    # an SSH tunnel) reads the datagrams this bot transmits and posts `>`
+    # requests through the same path a DM takes. Off unless the portal is on
+    # AND a token is set here; every call must carry the token. Not a feature
+    # for users: it is how the app is developed without a radio.
+    bridge_token: str = ""
+
     # Admin: pubkey prefix of admin user (can run admin DM commands)
     admin_key: str = ""
 

@@ -62,10 +62,12 @@ def create_app(bot: Any) -> FastAPI:
     )
 
     # Register routes
-    from meshcore_weather.portal.routes import admin, api, pages
+    from meshcore_weather.portal.routes import admin, api, bridge, pages
     app.include_router(pages.router)
     app.include_router(api.router, prefix="/api")
     app.include_router(admin.router, prefix="/api")
+    # The debug bridge answers only when MCW_BRIDGE_TOKEN is set (bridge.py).
+    app.include_router(bridge.router, prefix="/api")
 
     return app
 

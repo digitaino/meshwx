@@ -118,6 +118,58 @@ the request rules.
 never edit them by hand. The v3/v4 documents are gone; nothing from them
 decodes as v5.
 
+### The debug bridge: an app client with no radio
+
+A development client (the iOS app in a simulator, a script, a web page on
+your laptop) can be a live client of a **real** bot without a radio: it
+reads the datagrams the bot transmits and asks for one through the same
+path a DM takes. Requests are not simulated — `AppResponder.handle_request`
+runs, the per-sender spacing and the hourly budget apply, and the answer
+goes on the air to everybody as usual, which is why the client sees it.
+
+Off unless **both** `MCW_PORTAL_ENABLED=true` and `MCW_BRIDGE_TOKEN` are
+set. Every call carries the token in `X-Bridge-Token` (or
+`Authorization: Bearer …`); a bridge that is off answers 404. Bind the
+portal to localhost and reach it through an SSH tunnel — nothing here is
+meant to face a network.
+
+| Call | What it does |
+|---|---|
+| `GET /api/bridge/stream?since=<cursor>` | SSE. One JSON frame per datagram transmitted — `cursor`, `ts`, `ts_iso`, `data_type`, `hex`, `length`, `resend`, `attempt` — after the stream's `{"hello": true}`. The last 200 datagrams are kept, so `since` resumes where you left off |
+| `GET /api/bridge/datagrams?since=&limit=` | The same ring as one JSON page: `datagrams`, `cursor`, `latest`, `gap` (`true` when what you missed has already left the ring) |
+| `POST /api/bridge/request` | `{"text": ">o KAUS", "client": "sim"}`. Always 200 with `outcome`: `sent` (with `packets`, `bytes`), `rate_limited` (with `retry_after`) or `budget_spent`. The client id is the sender, so two clients are two senders. Like every portal POST it also needs `X-Requested-With: meshcore-portal` |
+| `GET /api/bridge/info` | The bot's name, public key, bot id, channel and data type |
+
+The feed is hooked at the one choke point every datagram passes through
+(`MeshcoreRadio.send_channel_data`), so its bytes are exactly what went on
+the air, sequence number already stamped, and an echo resend shows up as its
+own frame with `resend: true`.
+
+On the bot (the Pi's `.env`):
+
+```bash
+MCW_PORTAL_ENABLED=true
+MCW_PORTAL_HOST=127.0.0.1      # the tunnel's far end; never 0.0.0.0 for this
+MCW_BRIDGE_TOKEN=<a long random string>
+```
+
+From your laptop — the remote port is whatever `MCW_PORTAL_PORT` says (the
+receiver Pi runs the portal on 8081, because 8080 there is the goestools
+dashboard):
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 digitaino@mesh-wx.digitaino.com   # Pi: …:127.0.0.1:8081
+curl -H "X-Bridge-Token: $TOKEN" http://127.0.0.1:8080/api/bridge/info
+curl -N -H "X-Bridge-Token: $TOKEN" http://127.0.0.1:8080/api/bridge/stream
+curl -H "X-Bridge-Token: $TOKEN" -H "X-Requested-With: meshcore-portal" \
+     -H "Content-Type: application/json" -d '{"text":">cov","client":"sim"}' \
+     http://127.0.0.1:8080/api/bridge/request
+```
+
+The iOS app takes the same two values from its launch environment
+(`MESHWX_BRIDGE_URL`, `MESHWX_BRIDGE_TOKEN`) and uses them instead of the
+radio; see `RemoteBotWeatherTransport` in the app repo.
+
 ## For operators
 
 ### Configure your coverage once via `.env`
@@ -407,6 +459,7 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_PORTAL_ENABLED` | `false` | Run the admin portal (needs the `[portal]` extra) |
 | `MCW_PORTAL_HOST` | `0.0.0.0` | Portal bind address |
 | `MCW_PORTAL_PORT` | `8080` | Portal port |
+| `MCW_BRIDGE_TOKEN` | *(empty)* | Set it to turn on the debug bridge (needs the portal too): a development client reads the transmitted datagrams and posts `>` requests over HTTP. Empty = the bridge answers 404. See "The debug bridge" |
 
 **MQTT (CoreScope)**
 
