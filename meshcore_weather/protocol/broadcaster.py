@@ -98,6 +98,12 @@ class AppResponder:
             active = extract_active_warnings(self.store, coverage=self.coverage)
             return [b.digest_message(seq.next(), bot, active, b.feed_health(self.store, ctx.home_offices))]
 
+        # `>cov` describes the bot itself, not a place, so coverage never
+        # filters it and the answer is always one packet (spec 7A).
+        if cmd == "cov":
+            msg = b.coverage_message(seq.next(), bot, self.coverage, ctx.home, ctx.radius_km)
+            return [msg] if msg else []
+
         if cmd == "w":
             active = extract_active_warnings(self.store, coverage=None if arg else self.coverage)
             active = [w for w in active if b.warning_identity(w) is not None]

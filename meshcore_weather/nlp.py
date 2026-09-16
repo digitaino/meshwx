@@ -25,6 +25,10 @@ COMMAND_RE = re.compile(
 # "satellite beach fl" and "signal mountain tn" stay places.
 SAT_RE = re.compile(r"^(sat|satellite|goes|signal)[\s?!.]*$", re.IGNORECASE)
 
+# What the bot covers. No argument either, so the bare word only: "cove tx"
+# and "coverage of round rock" stay places.
+COV_RE = re.compile(r"^(cov|coverage|covers)[\s?!.]*$", re.IGNORECASE)
+
 # Normalize typos/aliases to canonical command names
 _CMD_ALIASES = {"warnings": "warn", "warning": "warn", "wanr": "warn", "storms": "storm", "swx": "space", "solar": "space"}
 
@@ -36,6 +40,9 @@ async def parse_intent(text: str) -> dict:
 
     if SAT_RE.match(text):
         return {"command": "sat", "location": ""}
+
+    if COV_RE.match(text):
+        return {"command": "cov", "location": ""}
 
     m = COMMAND_RE.match(text)
     if m:

@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "messages": {
     "refresh_request": 1,
     "data_request": 2,
@@ -554,7 +554,8 @@
       "observations": 4,
       "forecast": 5,
       "text": 6,
-      "not_available": 7
+      "not_available": 7,
+      "coverage": 8
     },
     "flags": {
       "warning": {
@@ -564,6 +565,10 @@
         "cancelled": 0,
         "expired_early": 1,
         "upgraded": 2
+      },
+      "coverage": {
+        "zones_truncated": 1,
+        "offices_truncated": 2
       }
     },
     "text_subjects": {
@@ -626,6 +631,14 @@
       "text_chunks": [
         1,
         8
+      ],
+      "coverage_offices": [
+        0,
+        24
+      ],
+      "coverage_runs": [
+        0,
+        30
       ]
     },
     "record_sizes": {
@@ -638,7 +651,10 @@
       "forecast_fixed": 12,
       "forecast_period": 5,
       "text_fixed": 8,
-      "not_available": 6
+      "not_available": 6,
+      "coverage_fixed": 14,
+      "coverage_office": 1,
+      "coverage_run": 4
     },
     "sentinels": {
       "temp_unknown": -128,
@@ -649,6 +665,6 @@
       "sky_other": 15,
       "point_unbundled": 65535
     },
-    "notes": "MeshWX v5 (spec 5.0). Every message is the data field of one MeshCore GRP_DATA packet on #meshwx with data_type 0xFF10, at most 165 bytes. All multi-byte integers are little-endian; times are Unix minutes as u32. The type byte is (type << 4) | flags. Warnings are keyed by (event, office, etn), not by seq. Indices into offices/stations/states come from index.json; event codes from 'events' and sky codes from 'sky_codes' in this file. The v3/v4 keys above are retained for legacy clients and are unrelated to v5."
+    "notes": "MeshWX v5 (spec 5.0). Every message is the data field of one MeshCore GRP_DATA packet on #meshwx with data_type 0xFF10, at most 165 bytes. All multi-byte integers are little-endian; times are Unix minutes as u32. The type byte is (type << 4) | flags. Warnings are keyed by (event, office, etn), not by seq. Coverage (type 8, spec 7A) is the bot's own statement of what it carries: centre, radius in km, office indices, and its zones as the same UGC runs a warning's area list uses; a set flag means that list was cut, so a code missing from it means 'not stated', never 'not covered'. Never infer a bot's coverage from the stations or warnings you happen to have received. Indices into offices/stations/states come from index.json; event codes from 'events' and sky codes from 'sky_codes' in this file. The v3/v4 keys above are retained for legacy clients and are unrelated to v5."
   }
 }

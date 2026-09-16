@@ -85,8 +85,9 @@ def save_config(cfg: BroadcastConfig) -> None:
 
 def default_config_for_bootstrap() -> BroadcastConfig:
     """The v5 schedule a fresh deployment gets: warnings on change (checked
-    every 2 min), the digest every 3 h, one observations packet an hour,
-    and the home forecast every 6 h. Everything else is request-only."""
+    every 2 min), the digest every 3 h, one observations packet an hour, the
+    home forecast every 6 h, and the coverage statement every 3 h. Everything
+    else is request-only."""
     cfg = BroadcastConfig(version=2, jobs=[])
     _ensure_core_jobs(cfg)
     logger.info("Bootstrap schedule: %d default jobs", len(cfg.jobs))
@@ -134,7 +135,10 @@ def _migrate_jobs(jobs: list[dict]) -> list[dict]:
 
 
 def _ensure_core_jobs(cfg: BroadcastConfig) -> bool:
-    """Add any of the four v5 jobs that are missing. Returns True if it did."""
+    """Add any of the five v5 jobs that are missing. Returns True if it did.
+
+    This is also the migration: a bot that already has a config file picks up
+    the coverage job the next time it loads one."""
     have = {j.product for j in cfg.jobs}
     added = False
     home_cities = _split_csv(settings.home_cities)
@@ -148,6 +152,8 @@ def _ensure_core_jobs(cfg: BroadcastConfig) -> bool:
         BroadcastJob(id="forecast", name=f"Forecast: {home_cities[0]}" if home_cities else "Forecast: home",
                      product="forecast", location_type="city" if home_cities else "coverage",
                      location_id=home_cities[0] if home_cities else "", interval_minutes=360),
+        BroadcastJob(id="coverage", name="Coverage statement", product="coverage",
+                     location_type="coverage", interval_minutes=180),
     ]
     for job in defaults:
         if job.product not in have and cfg.get_job(job.id) is None:

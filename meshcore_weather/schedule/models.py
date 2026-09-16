@@ -19,6 +19,7 @@ PRODUCT_TYPES = {
     "digest",         # the list of active warning identities (loss recovery)
     "observations",   # one batched packet of the coverage stations' current conditions
     "forecast",       # 7-day point forecast for a place or PFM point
+    "coverage",       # what this bot covers: centre, radius, NWS offices, zone runs
 }
 
 # Location types: how the job's `location_id` is read.

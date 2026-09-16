@@ -35,6 +35,7 @@ __all__ = [
     "TYPE_FORECAST",
     "TYPE_TEXT",
     "TYPE_NOT_AVAILABLE",
+    "TYPE_COVERAGE",
     "TYPE_NAMES",
     "SUBJECT_WARNING",
     "SUBJECT_AFD",
@@ -65,6 +66,8 @@ __all__ = [
     "FLOOD_DAMAGE_CONSIDERABLE",
     "FLOOD_DAMAGE_CATASTROPHIC",
     "FLAG_WARNING_UPDATE",
+    "FLAG_COVERAGE_ZONES_CUT",
+    "FLAG_COVERAGE_OFFICES_CUT",
     "MAX_TEXT_BYTES",
     "MAX_TEXT_CHUNKS",
     "MAX_POLYGON_VERTICES",
@@ -72,6 +75,8 @@ __all__ = [
     "MAX_DIGEST_ENTRIES",
     "MAX_STATIONS",
     "MAX_PERIODS",
+    "MAX_COVERAGE_OFFICES",
+    "MAX_COVERAGE_RUNS",
     "Header",
     "encode_header",
     "encode_warning",
@@ -79,6 +84,7 @@ __all__ = [
     "encode_digest",
     "encode_obs",
     "encode_forecast",
+    "encode_coverage",
     "encode_text",
     "text_chunks",
     "encode_not_available",
@@ -109,6 +115,7 @@ TYPE_OBS = 4
 TYPE_FORECAST = 5
 TYPE_TEXT = 6
 TYPE_NOT_AVAILABLE = 7
+TYPE_COVERAGE = 8
 
 TYPE_NAMES = {
     TYPE_WARNING: "warning",
@@ -118,6 +125,7 @@ TYPE_NAMES = {
     TYPE_FORECAST: "forecast",
     TYPE_TEXT: "text",
     TYPE_NOT_AVAILABLE: "not_available",
+    TYPE_COVERAGE: "coverage",
 }
 
 # Text subjects (spec 8.1).
@@ -167,6 +175,11 @@ _TAG_AREAS = 0x01
 #: Warning flags nibble, bit 0: this identity was already sent.
 FLAG_WARNING_UPDATE = 0x1
 
+# Coverage flags nibble (spec 7A).  A set bit means the list on the wire is
+# shorter than what the bot really covers, so absence proves nothing.
+FLAG_COVERAGE_ZONES_CUT = 0x1
+FLAG_COVERAGE_OFFICES_CUT = 0x2
+
 # Counts and limits.
 MAX_TEXT_BYTES = MAX_DATA - 8  # 157
 MAX_TEXT_CHUNKS = 8
@@ -176,6 +189,10 @@ MAX_AREA_RUNS = 30
 MAX_DIGEST_ENTRIES = 25
 MAX_STATIONS = 14
 MAX_PERIODS = 14
+# Coverage: both maxima at once are 14 + 24 + 1 + 120 = 159 bytes, inside
+# one packet, so a full office list never costs a zone run or the reverse.
+MAX_COVERAGE_OFFICES = 24
+MAX_COVERAGE_RUNS = 30
 
 # Sentinels.
 _TEMP_UNKNOWN = -128
@@ -410,10 +427,18 @@ def _encode_polygon(polygon) -> bytes:
     return bytes(out)
 
 
-def _encode_areas(areas) -> bytes:
+def _encode_areas(
+    areas, minimum: int = 1, maximum: int = MAX_AREA_RUNS
+) -> bytes:
+    """A counted list of UGC runs: ``k``, then 4 bytes per run (spec 3).
+
+    Shared by the Warning's area list, which must carry at least one run when
+    the tag bit says it is there, and by Coverage, where an empty list is a
+    legitimate answer (spec 7A).
+    """
     k = len(areas)
-    if not (1 <= k <= MAX_AREA_RUNS):
-        raise ValueError(f"area list needs 1..{MAX_AREA_RUNS} runs, got {k}")
+    if not (minimum <= k <= maximum):
+        raise ValueError(f"area list needs {minimum}..{maximum} runs, got {k}")
     out = bytearray()
     out.append(k)
     for state, is_county, start, run in areas:
@@ -470,25 +495,30 @@ def _decode_warning(data: bytes, hdr: Header) -> dict:
         out["polygon"] = points
 
     if tags & _TAG_AREAS:
-        _need(data, off + 1, "area count")
-        k = data[off]
-        off += 1
-        _need(data, off + 4 * k, "area runs")
-        runs = []
-        for _ in range(k):
-            state, start, run = struct.unpack_from("<BHB", data, off)
-            off += 4
-            runs.append(
-                {
-                    "state": state & 0x7F,
-                    "county": bool(state & 0x80),
-                    "start": start,
-                    "run": run,
-                }
-            )
-        out["areas"] = runs
+        out["areas"], off = _decode_areas(data, off)
 
     return out
+
+
+def _decode_areas(data: bytes, off: int) -> "tuple[list[dict], int]":
+    """Read a counted list of UGC runs, returning it and the new offset."""
+    _need(data, off + 1, "area count")
+    k = data[off]
+    off += 1
+    _need(data, off + 4 * k, "area runs")
+    runs = []
+    for _ in range(k):
+        state, start, run = struct.unpack_from("<BHB", data, off)
+        off += 4
+        runs.append(
+            {
+                "state": state & 0x7F,
+                "county": bool(state & 0x80),
+                "start": start,
+                "run": run,
+            }
+        )
+    return runs, off
 
 
 # --------------------------------------------------------------------------
@@ -777,6 +807,81 @@ def _decode_forecast(data: bytes, hdr: Header) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Coverage (type 8, spec 7A)
+# --------------------------------------------------------------------------
+
+
+def encode_coverage(
+    seq: int,
+    bot: int,
+    *,
+    lat: float,
+    lon: float,
+    radius_km: int = 0,
+    stations: int = 0,
+    offices: "list[int] | None" = None,
+    areas: "list[tuple[int, bool, int, int]] | None" = None,
+    zones_cut: bool = False,
+    offices_cut: bool = False,
+) -> bytes:
+    """Encode a Coverage message: what the bot carries, stated by the bot.
+
+    ``lat`` and ``lon`` are the coverage centre in degrees, ``radius_km`` the
+    circle around it (0 = no circle), ``stations`` the most stations one
+    hourly Observations packet may carry (0 = none).  ``offices`` are indices
+    into ``index.json`` ``offices``; ``areas`` are the same ``(state_index,
+    is_county, start, run)`` runs a Warning's area list uses.  A cut flag says
+    that list is shorter than what the bot really covers, so a code missing
+    from it means "not stated", never "not covered".
+    """
+    offices = list(offices or [])
+    areas = list(areas or [])
+    if len(offices) > MAX_COVERAGE_OFFICES:
+        raise ValueError(
+            f"coverage holds at most {MAX_COVERAGE_OFFICES} offices, "
+            f"got {len(offices)}"
+        )
+    flags = (FLAG_COVERAGE_ZONES_CUT if zones_cut else 0) | (
+        FLAG_COVERAGE_OFFICES_CUT if offices_cut else 0
+    )
+    out = bytearray(encode_header(seq, bot, TYPE_COVERAGE, flags))
+    out += _pack_i24(int(round(float(lat) * 10000)), "coverage lat")
+    out += _pack_i24(int(round(float(lon) * 10000)), "coverage lon")
+    out += struct.pack(
+        "<HBB",
+        _u16(int(radius_km), "radius_km"),
+        _u8(int(stations), "stations"),
+        len(offices),
+    )
+    for office in offices:
+        out.append(_u8(int(office), "office"))
+    out += _encode_areas(areas, minimum=0, maximum=MAX_COVERAGE_RUNS)
+    return _check_size(bytes(out), "coverage")
+
+
+def _decode_coverage(data: bytes, hdr: Header) -> dict:
+    _need(data, 14, "coverage")
+    lat = _unpack_i24(data, 4) / 10000.0
+    lon = _unpack_i24(data, 7) / 10000.0
+    radius, stations, n = struct.unpack_from("<HBB", data, 10)
+    _need(data, 14 + n, "coverage offices")
+    offices = list(data[14:14 + n])
+    areas, _end = _decode_areas(data, 14 + n)
+    out = hdr.as_dict()
+    out.update(
+        lat=round(lat, 4),
+        lon=round(lon, 4),
+        radius_km=radius,
+        stations=stations,
+        offices=offices,
+        areas=areas,
+        zones_cut=bool(hdr.flags & FLAG_COVERAGE_ZONES_CUT),
+        offices_cut=bool(hdr.flags & FLAG_COVERAGE_OFFICES_CUT),
+    )
+    return out
+
+
+# --------------------------------------------------------------------------
 # Text (type 6, spec 8.1)
 # --------------------------------------------------------------------------
 
@@ -916,6 +1021,7 @@ _DECODERS = {
     TYPE_FORECAST: _decode_forecast,
     TYPE_TEXT: _decode_text,
     TYPE_NOT_AVAILABLE: _decode_not_available,
+    TYPE_COVERAGE: _decode_coverage,
 }
 
 

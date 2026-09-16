@@ -30,7 +30,7 @@ LOC_PREFIX = re.compile(r"^@(-?\d+\.?\d*),(-?\d+\.?\d*)\s+(.*)")
 # A DM already is the private reply, so it does not say "DM me".
 HELP_TEXT_DM = (
     "Weather bot: wx/forecast/warn <city ST|ZIP> | warn/storm/rain <ST> | "
-    "metar <ICAO|ZIP> | space | sat | more"
+    "metar <ICAO|ZIP> | space | sat | cov | more"
 )
 HELP_TEXT = HELP_TEXT_DM + ". DM me for private replies"
 
@@ -87,6 +87,7 @@ class WeatherBot:
         self._radio_last_error: str | None = None
         self._started_at: float = time.time()
         self._broadcaster = None  # MeshWXBroadcaster, created if data channel configured
+        self._coverage_cache = None  # built from the env config when no broadcaster runs
         self._portal = None  # PortalServer, created if portal enabled
         self._paging: dict[str, dict] = {}  # sender_key -> {full, offset, ts}
         self._rate_limit: dict[str, float] = {}
@@ -1088,6 +1089,38 @@ class WeatherBot:
             return render_text.rain(label, services.rain_for(self.store, state=state))
         return render_text.storm_reports(label, services.storm_reports_for(self.store, state=state), state=state)
 
+    def _coverage(self):
+        """What this bot covers. The scheduler's Coverage when one is running
+        (already built), else built once from the env config and kept:
+        resolving it walks the zone polygons, which no DM should pay for
+        twice."""
+        if self._broadcaster is not None:
+            return self._broadcaster.coverage
+        if self._coverage_cache is None:
+            from meshcore_weather.protocol.coverage import Coverage
+            self._coverage_cache = Coverage.from_config()
+        return self._coverage_cache
+
+    def _digest_interval_minutes(self) -> int:
+        """How often the active-warning list goes out, from the live schedule
+        when there is one. 0 = the digest job is switched off."""
+        try:
+            job = self._broadcaster.scheduler.current_config().get_job("digest")
+        except Exception:
+            return 180
+        if job is None:
+            return 180
+        return job.interval_minutes if job.enabled else 0
+
+    def _coverage_reply(self) -> str:
+        """The `cov` reply: the facts the Coverage message carries (spec 7A),
+        in words."""
+        from meshcore_weather.core import render_text
+        from meshcore_weather.protocol import v5_builders as b
+        facts = b.coverage_facts(self._coverage(), resolver.home(),
+                                 float(settings.home_radius_km or 0))
+        return render_text.coverage(facts, self._digest_interval_minutes())
+
     def _process_command(self, command: str, location: str) -> str | None:
         if command == "help":
             return HELP_TEXT
@@ -1096,6 +1129,9 @@ class WeatherBot:
             if self._sdr_monitor is None:
                 return "No satellite receiver on this bot: its EMWIN comes over the internet"
             return self._sdr_monitor.report(emwin_mtime=getattr(self.emwin, "newest_mtime", None))
+
+        if command == "cov":
+            return self._coverage_reply()
 
         from meshcore_weather.core import overview
 

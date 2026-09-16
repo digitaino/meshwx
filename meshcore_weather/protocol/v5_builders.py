@@ -414,6 +414,88 @@ def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: f
                               issued_min=int(issued.timestamp() // 60), first_period=first, periods=periods[:14])
 
 
+# -- Coverage ---------------------------------------------------------------------------
+
+
+def coverage_facts(coverage, home: tuple[float, float] | None = None, radius_km: float = 0,
+                   station_cap: int = MAX_OBS_STATIONS) -> dict:
+    """What the bot covers, as the numbers both the Coverage message and the
+    `cov` text reply are built from: the centre, the radius, the NWS offices
+    and the covered zones as UGC runs.
+
+    A set too big for one packet is cut to the runs that account for the most
+    zones and the cut is flagged, so a zone missing from the wire means "not
+    stated", never "not covered" (spec 7A).
+    """
+    tables.load()
+    resolver.load()
+    zones = sorted(coverage.zones) if coverage is not None else []
+    sources = (coverage.sources if coverage is not None else None) or {}
+    center = (coverage.center if coverage is not None else None) or home
+    configured = (coverage.radius_km if coverage is not None else 0) or radius_km or 0
+    radius = int(round(float(configured)))
+    # A circle is only claimed when there is a centre and zones fell inside it.
+    # Without them the runs are the whole statement, and a bot with no centre
+    # sends 0,0 — "not stated", the same reading this spec gives an advert.
+    if center is None or not zones:
+        radius = 0
+
+    # The offices are the ones serving the covered zones, plus any the
+    # operator named outright. An office index.json does not list is left out:
+    # sent as 0 it would read as ABQ.
+    codes = {resolver._zones[z]["w"] for z in zones if z in resolver._zones}
+    codes |= {str(w).upper() for w in (sources.get("wfos") or [])}
+    all_idx = sorted({i for c in codes if (i := tables.office(c)) is not None})
+    offices_cut = len(all_idx) > v5.MAX_COVERAGE_OFFICES
+    office_idx = all_idx[:v5.MAX_COVERAGE_OFFICES]
+
+    runs = v5.areas_from_ugcs(zones, tables.states)
+    zones_cut = len(runs) > v5.MAX_COVERAGE_RUNS
+    if zones_cut:
+        # Keep the runs that cover the most zones, then put them back in wire
+        # order: the largest true picture the packet can hold.
+        runs = sorted(sorted(runs, key=lambda r: -r[3])[:v5.MAX_COVERAGE_RUNS])
+
+    place = None
+    for city in (sources.get("cities") or []):
+        loc = resolver.resolve(city)
+        if loc and loc.get("name"):
+            place = loc["name"]
+            break
+    if place is None and center is not None:
+        place = (resolver.resolve_by_coords(center[0], center[1]) or {}).get("name")
+
+    return {
+        "center": center,
+        "radius_km": min(radius, 0xFFFF),
+        "place": place,
+        "zones": zones,
+        # `offices` is every office, for the text reply, which has no packet to
+        # fit; `office_idx` is what the wire carries, cut when it has to be.
+        "offices": [tables.office_code(i) for i in all_idx],
+        "office_idx": office_idx,
+        "areas": runs,
+        # The cap, not a live count: the station list is recomputed per batch
+        # (spec 6), so a count would describe this hour, not the coverage.
+        "stations": station_cap if (center is not None and radius) else 0,
+        "zones_cut": zones_cut,
+        "offices_cut": offices_cut,
+    }
+
+
+def coverage_message(seq: int, bot: int, coverage, home: tuple[float, float] | None = None,
+                     radius_km: float = 0, station_cap: int = MAX_OBS_STATIONS) -> bytes | None:
+    """One Coverage packet, or None when the bot knows neither a centre nor a
+    zone and so has nothing to state."""
+    f = coverage_facts(coverage, home, radius_km, station_cap)
+    if f["center"] is None and not f["areas"]:
+        return None
+    lat, lon = f["center"] or (0.0, 0.0)
+    return v5.encode_coverage(seq, bot, lat=lat, lon=lon, radius_km=f["radius_km"],
+                              stations=f["stations"], offices=f["office_idx"], areas=f["areas"],
+                              zones_cut=f["zones_cut"], offices_cut=f["offices_cut"])
+
+
 # -- Text and errors -------------------------------------------------------------------
 
 

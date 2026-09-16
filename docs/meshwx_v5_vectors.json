@@ -423,6 +423,62 @@
     "note": "point 103 = Austin Camp Mabry-Travis TX; the daily form this bot sends"
   },
   {
+    "name": "coverage_wx_aus",
+    "hex": "1b7a4c80509e04e915f178000e0423283371052a9b00062aaa00062aba000c2acd00072add0005",
+    "decoded": {
+      "seq": 27,
+      "bot": 19578,
+      "type": 8,
+      "name": "coverage",
+      "flags": 0,
+      "lat": 30.2672,
+      "lon": -97.7431,
+      "radius_km": 120,
+      "stations": 14,
+      "offices": [
+        35,
+        40,
+        51,
+        113
+      ],
+      "areas": [
+        {
+          "state": 42,
+          "county": false,
+          "start": 155,
+          "run": 6
+        },
+        {
+          "state": 42,
+          "county": false,
+          "start": 170,
+          "run": 6
+        },
+        {
+          "state": 42,
+          "county": false,
+          "start": 186,
+          "run": 12
+        },
+        {
+          "state": 42,
+          "county": false,
+          "start": 205,
+          "run": 7
+        },
+        {
+          "state": 42,
+          "county": false,
+          "start": 221,
+          "run": 5
+        }
+      ],
+      "zones_cut": false,
+      "offices_cut": false
+    },
+    "note": "the live WX-AUS coverage: 36 zones as 5 runs, offices EWX/FWD/HGX/SJT, neither list cut"
+  },
+  {
     "name": "text_warning_narrative_chunk0",
     "hex": "177a4c6000170002534556455245205448554e44455253544f524d205741524e494e4720464f52204e4f5254484541535445524e204841595320414e4420534f5554485745535445524e2054524156495320434f554e5449455320554e54494c2031343520414d204344542e204174203132353720414d206120736576657265207468756e64657273746f726d20776173206e656172204472697070696e6720537072696e",
     "decoded": {

@@ -201,6 +201,7 @@ PRODUCT_INFO = {
     "digest":       {"label": "Digest",        "desc": "The list of active warning identities and their expiry, so apps can recover what they missed", "locations": ["coverage"]},
     "observations": {"label": "Observations",  "desc": "Current conditions for the coverage stations in one packet, or one station", "locations": ["coverage", "station"]},
     "forecast":     {"label": "Forecast",      "desc": "7-day point forecast (PFM) for a place, a PFM point, or the coverage centre", "locations": ["city", "pfm_point", "coverage"]},
+    "coverage":     {"label": "Coverage",      "desc": "What this bot covers: centre, radius, NWS offices and zone runs, so an app never has to guess the area from what it happens to have heard", "locations": ["coverage"]},
 }
 
 LOCATION_INFO = {

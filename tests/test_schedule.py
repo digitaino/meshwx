@@ -229,7 +229,7 @@ class TestStorePersistence:
         store_module.save_config(cfg)
         assert tmp_cfg.exists()
         loaded = store_module.load_config()
-        assert len(loaded.jobs) == 4          # the saved job plus the three missing core jobs
+        assert len(loaded.jobs) == 5          # the saved job plus the four missing core jobs
         assert loaded.jobs[0].id == "round-trip"
         assert loaded.jobs[0].location_id == "Austin TX"
 
@@ -269,21 +269,24 @@ class TestStorePersistence:
 
 
 class TestBootstrap:
-    def test_bootstrap_has_the_four_v5_jobs(self, monkeypatch):
+    def test_bootstrap_has_the_five_v5_jobs(self, monkeypatch):
         from meshcore_weather.config import settings
         monkeypatch.setattr(settings, "home_cities", "Austin TX,Dallas TX")
         cfg = store_module.default_config_for_bootstrap()
         by_id = {j.id: j for j in cfg.jobs}
-        assert set(by_id) == {"warnings", "digest", "observations", "forecast"}
+        assert set(by_id) == {"warnings", "digest", "observations", "forecast", "coverage"}
         assert by_id["warnings"].interval_minutes == 2 and by_id["digest"].interval_minutes == 180
         assert by_id["observations"].location_type == "coverage"
         assert by_id["forecast"].location_type == "city" and by_id["forecast"].location_id == "Austin TX"
+        # The coverage statement rides with the digest: one packet every 3 h.
+        assert by_id["coverage"].product == "coverage" and by_id["coverage"].interval_minutes == 180
+        assert by_id["coverage"].location_type == "coverage" and by_id["coverage"].enabled
 
     def test_bootstrap_with_no_home_cities_forecasts_the_coverage_centre(self, monkeypatch):
         from meshcore_weather.config import settings
         monkeypatch.setattr(settings, "home_cities", "")
         cfg = store_module.default_config_for_bootstrap()
-        assert len(cfg.jobs) == 4 and cfg.get_job("forecast").location_type == "coverage"
+        assert len(cfg.jobs) == 5 and cfg.get_job("forecast").location_type == "coverage"
 
     def test_v4_config_migrates_to_v5_jobs(self, tmp_path, monkeypatch):
         """The Pi's old file: delta -> warnings, full -> digest, per-city obs -> one batch."""
@@ -309,7 +312,9 @@ class TestBootstrap:
         monkeypatch.setattr(store_module, "CONFIG_PATH", cfg_path)
         cfg = store_module.load_config()
         by_id = {j.id: j for j in cfg.jobs}
-        assert set(by_id) == {"warnings", "digest", "observations", "forecast-austin-tx"}
+        # The coverage job is added on load, so an old file picks it up too.
+        assert set(by_id) == {"warnings", "digest", "observations",
+                              "forecast-austin-tx", "coverage"}
         assert by_id["warnings"].product == "warnings" and by_id["warnings"].enabled is False
         assert by_id["digest"].product == "digest" and by_id["digest"].interval_minutes == 180
         assert by_id["observations"].location_type == "coverage"

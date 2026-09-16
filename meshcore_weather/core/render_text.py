@@ -281,6 +281,42 @@ def taf(loc: dict, tf) -> str:
     return _cap(head + tf.text)
 
 
+def _every(minutes: int) -> str:
+    """'3 h', '90 min'."""
+    return f"{minutes // 60} h" if minutes and minutes % 60 == 0 else f"{minutes} min"
+
+
+def coverage(facts: dict, digest_minutes: int = 180) -> str:
+    """What the bot covers, in words: the area and how far it reaches, the
+    NWS offices in it, how many stations the hourly batch carries, and how
+    often the active-warning list goes out.
+
+    `facts` is v5_builders.coverage_facts(), the same numbers the Coverage
+    message puts on the wire (spec 7A). The bot states this itself because an
+    app that infers it from the stations and warnings it happens to have heard
+    gets it wrong: one phone was told WX-AUS might not carry alerts for Travis
+    County, the bot's own home, because the only warning active at that moment
+    came from a neighbouring office.
+    """
+    zones = facts.get("zones") or []
+    centre = facts.get("center")
+    radius = int(facts.get("radius_km") or 0)
+    where = facts.get("place") or (f"{centre[0]:.2f},{centre[1]:.2f}" if centre else "")
+    if zones and radius and where:
+        parts = [f"Coverage: {len(zones)} NWS zones within {radius} km of {where}"]
+    elif zones:
+        parts = [f"Coverage: {len(zones)} NWS zones" + (f" around {where}" if where else "")]
+    else:
+        parts = ["Coverage: no area filter, so this bot carries everything its feed brings"]
+    if facts.get("offices"):
+        parts.append("offices " + ", ".join(facts["offices"]))
+    cap = int(facts.get("stations") or 0)
+    parts.append(f"up to {cap} stations hourly" if cap else "no station observations")
+    parts.append(f"alert list every {_every(digest_minutes)}" if digest_minutes
+                 else "alert list off")
+    return "; ".join(parts)
+
+
 def rain(label: str, ro) -> str:
     if ro is None or not ro.cities:
         return _cap(f"No rain reported {label}")

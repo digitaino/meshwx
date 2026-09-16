@@ -104,6 +104,21 @@ def reencode(d: dict) -> bytes:
         return v5.encode_not_available(
             seq, bot, request=d["request"], reason=d["reason"]
         )
+    if name == "coverage":
+        return v5.encode_coverage(
+            seq,
+            bot,
+            lat=d["lat"],
+            lon=d["lon"],
+            radius_km=d["radius_km"],
+            stations=d["stations"],
+            offices=d["offices"],
+            areas=[
+                (a["state"], a["county"], a["start"], a["run"]) for a in d["areas"]
+            ],
+            zones_cut=d["zones_cut"],
+            offices_cut=d["offices_cut"],
+        )
     raise AssertionError(f"no re-encoder for {name!r}")
 
 
@@ -130,7 +145,8 @@ def test_transport_constants():
         v5.TYPE_FORECAST,
         v5.TYPE_TEXT,
         v5.TYPE_NOT_AVAILABLE,
-    ) == (1, 2, 3, 4, 5, 6, 7)
+        v5.TYPE_COVERAGE,
+    ) == (1, 2, 3, 4, 5, 6, 7, 8)
     assert v5.SUBJECT_WARNING == 0 and v5.SUBJECT_GENERAL == 8
     assert v5.REASON_NO_DATA == 0 and v5.REASON_RATE_LIMITED == 4
     assert v5.TAG_TORNADO_OBSERVED == 3
@@ -678,7 +694,7 @@ def test_index_json_matches_the_source_tables():
 def test_protocol_json_v5_block():
     with open(PROTOCOL_PATH, encoding="utf-8") as fh:
         proto = json.load(fh)
-    assert proto["version"] == 8
+    assert proto["version"] == 9
     assert proto["index_file"] == "index.json"
     # Legacy keys other code still reads are untouched.
     for key in ("messages", "events", "event_names", "sky_codes", "data_types"):
@@ -688,8 +704,15 @@ def test_protocol_json_v5_block():
     assert block["max_data"] == v5.MAX_DATA
     assert block["types"] == {
         "warning": 1, "cancel": 2, "digest": 3, "observations": 4,
-        "forecast": 5, "text": 6, "not_available": 7,
+        "forecast": 5, "text": 6, "not_available": 7, "coverage": 8,
     }
+    assert block["flags"]["coverage"] == {
+        "zones_truncated": v5.FLAG_COVERAGE_ZONES_CUT,
+        "offices_truncated": v5.FLAG_COVERAGE_OFFICES_CUT,
+    }
+    assert block["limits"]["coverage_offices"] == [0, v5.MAX_COVERAGE_OFFICES]
+    assert block["limits"]["coverage_runs"] == [0, v5.MAX_COVERAGE_RUNS]
+    assert block["record_sizes"]["coverage_fixed"] == 14
     assert block["header"]["bot"]["offset"] == 1
     assert block["not_available_reasons"]["rate_limited"] == v5.REASON_RATE_LIMITED
     assert block["text_subjects"]["general"] == v5.SUBJECT_GENERAL
@@ -714,7 +737,7 @@ def test_vectors_cover_every_message_type():
     names = {v5.decode(bytes.fromhex(v["hex"]))["name"] for v in _vectors()}
     assert names == {
         "warning", "cancel", "digest", "observations", "forecast", "text",
-        "not_available",
+        "not_available", "coverage",
     }
 
 
@@ -787,4 +810,6 @@ def test_vector_sizes_are_within_budget():
     assert sizes["winter_storm_warning_zones"] == 24
     assert sizes["cancel_expired_early"] == 8
     assert sizes["not_available_unknown_location"] == 6
+    # WX-AUS's real coverage: 14 fixed + 4 offices + 1 + 5 runs of 4.
+    assert sizes["coverage_wx_aus"] == 39
     assert all(n <= v5.MAX_DATA for n in sizes.values())

@@ -330,6 +330,37 @@ def build_vectors(index: dict) -> list:
         "point 103 = Austin Camp Mabry-Travis TX; the daily form this bot sends",
     )
 
+    # 6c. Coverage: WX-AUS as it really is. 36 public zones inside 120 km of
+    #     Austin, which sort into five consecutive runs, four offices, and the
+    #     hourly observations cap.
+    add(
+        "coverage_wx_aus",
+        v5.encode_coverage(
+            27,
+            BOT,
+            lat=30.2672,
+            lon=-97.7431,
+            radius_km=120,
+            stations=14,
+            offices=[offices.index(c) for c in ("EWX", "FWD", "HGX", "SJT")],
+            areas=v5.areas_from_ugcs(
+                [
+                    f"TXZ{n:03d}"
+                    for n in (
+                        list(range(155, 161))
+                        + list(range(170, 176))
+                        + list(range(186, 198))
+                        + list(range(205, 212))
+                        + list(range(221, 226))
+                    )
+                ],
+                states,
+            ),
+        ),
+        "the live WX-AUS coverage: 36 zones as 5 runs, offices EWX/FWD/HGX/SJT, "
+        "neither list cut",
+    )
+
     # 7. Text: a warning narrative that needs two chunks.
     narrative = (
         "SEVERE THUNDERSTORM WARNING FOR NORTHEASTERN HAYS AND SOUTHWESTERN "

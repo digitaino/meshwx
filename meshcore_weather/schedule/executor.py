@@ -128,11 +128,21 @@ def _build_forecast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     return [msg] if msg else []
 
 
+def _build_coverage(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
+    """One packet stating what this bot carries. Broadcast so an app never has
+    to guess the bot's area from the stations and warnings it happens to have
+    heard: that guess told a real phone WX-AUS might not carry alerts for its
+    own home county (spec 7A)."""
+    msg = b.coverage_message(ctx.seq.next(), ctx.bot, ctx.coverage, ctx.home, ctx.radius_km)
+    return [msg] if msg else []
+
+
 PRODUCT_BUILDERS = {
     "warnings": _build_warnings,
     "digest": _build_digest,
     "observations": _build_observations,
     "forecast": _build_forecast,
+    "coverage": _build_coverage,
 }
 
 

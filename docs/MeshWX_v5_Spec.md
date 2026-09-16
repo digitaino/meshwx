@@ -1,8 +1,16 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, revision 3, 2026-09-15. This is the document an app developer
+Version 5.0, revision 4, 2026-09-15. This is the document an app developer
 builds against. It replaces the v3/v4 protocol documents, the April 2026
 iOS brief and the v4 client guide, all of which are now superseded.
+
+Revision 4 adds one message: **Coverage** (type 8, section 7A), the bot's
+own statement of what it carries — centre, radius, NWS offices, and the
+zones it covers as UGC runs. It is broadcast every 3 hours, answers the new
+request `>cov`, and reads as the text command `cov`. Nothing already on the
+wire changed and unknown types are ignored, so a revision 3 client keeps
+working untouched; it simply never learns what the bot covers. If you hold
+revision 3, read section 16.
 
 Revision 3 fixes bot behaviour that disagreed with revision 2 and states
 rules revision 2 left out: when `seq` is assigned, how a full digest may be
@@ -10,7 +18,7 @@ cut, unknown observation fields, what `first` counts from, the request
 limits, named-station METAR and TAF replies, `>f <index>`, and two offices
 appended to the bundle. It also adds `>sat`, and US ZIP codes as places
 with the bundle file `zips.json`. The wire layout did not change. If you
-hold revision 2, read section 16 first.
+hold revision 2, read section 16.1 first.
 
 Revision 2 corrected statements in sections 1, 6, 7, 8.2, 8.3, 12 and 13
 that described behaviour this bot does not have. If you hold revision 1,
@@ -115,7 +123,8 @@ Message types:
 | 5 | Forecast | 7 |
 | 6 | Text | 8 |
 | 7 | Not available | 8.3 |
-| 8 to 11 | Reserved for future structured products | |
+| 8 | Coverage | 7A |
+| 9 to 11 | Reserved for future structured products | |
 | 12 to 15 | Free for third-party experiments; the bot never sends them | |
 
 Receivers ignore unknown types.
@@ -341,6 +350,75 @@ days, even `first`, every entry carrying a high and a low.
 `forecast_seven_periods` is the reserved half-day form: odd `first`, with
 the temperatures alternating between 127 and a value.
 
+## 7A. Coverage (type 8)
+
+What this bot carries, stated by the bot: the centre of its area, how far
+it reaches, the NWS offices inside it, and the public forecast zones as UGC
+runs. Broadcast every 3 hours and answered on request (`>cov`). New in
+revision 4; it is numbered 7A so that no section already referenced by a
+client moved.
+
+**Do not infer a bot's coverage from anything else.** An app that guessed
+it from the positions of the stations in the hourly Observations and from
+the offices of whatever warnings happened to be active told a real phone
+that "WX-AUS may not carry alerts for Travis County (NWS Austin/San
+Antonio)" — the bot's own home county — because the one warning active at
+that moment came from a neighbouring office. The station list is recomputed
+for every batch (section 6) and warnings come and go; neither describes
+coverage. This message does.
+
+Flags nibble: bit 0 = the zone runs were cut, bit 1 = the office list was
+cut (see **Truncation** below).
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 4 | 3 | `lat` | i24 LE, degrees × 10000. The centre of the coverage circle, which is the bot's home point |
+| 7 | 3 | `lon` | i24 LE, degrees × 10000 |
+| 10 | 2 | `radius` | u16 LE kilometres. 0 = no circle stated; the area is then whatever the runs list |
+| 12 | 1 | `stations` | The most stations one hourly Observations packet can carry (14 for this bot). 0 = this bot broadcasts no observations for its area. A cap, not a count: the batch is rebuilt every hour (section 6), so a count would describe this hour, not the coverage |
+| 13 | 1 | `n` | Office count, 0 to 24 |
+| 14 | `n` | offices | One u8 each, index into `index.json` `offices`, ascending. Every office whose zones the bot covers, plus any the operator named outright. An office the bundle does not list is left out rather than sent as 0 |
+| 14+`n` | 1 | `k` | Zone-run count, 0 to 30 |
+| 15+`n` | 4 × `k` | runs | Exactly the runs a Warning's area list uses (section 3): `state` u8 (bit 7 = 1 for a county, 0 for a forecast zone; bits 6-0 = index into `index.json` `states`), `start` u16 LE, `run` u8. The run covers UGC numbers `start` … `start + run − 1` |
+
+WX-AUS is **39 bytes**: 14 fixed, 4 offices (EWX, FWD, HGX, SJT), then 36
+zones that sort into 5 runs — TXZ155-160, TXZ170-175, TXZ186-197,
+TXZ205-211, TXZ221-225 — inside 120 km of 30.2672, -97.7431, with the
+hourly cap of 14 stations. The vector `coverage_wx_aus` in
+`meshwx_v5_vectors.json` is that exact packet.
+
+This bot covers public forecast zones, so every run it sends has the county
+bit clear. The bit is there because the encoding is the warning's; a bot
+configured by county may use it, and a client must read it either way.
+
+**Truncation.** The two caps are chosen so a full list never costs the
+other one: 24 offices and 30 runs together are 159 bytes, inside the
+packet. A coverage set larger than that is cut, in the spirit of the
+warning area truncation in section 3. The bot keeps the runs that account
+for the most zones (then puts them back in ascending order) and sets flag
+bit 0; it keeps the 24 lowest office indices and sets flag bit 1.
+
+**Read a cut list as incomplete, never as a denial.** With flag bit 0 set,
+a zone absent from the runs may still be covered: say "not listed" or
+"unknown", never "not covered". With both flags clear the lists are
+complete, and a zone that is absent really is outside the bot's area. This
+is the whole point of the message: an app may state what a bot covers, and
+must not state what it does not.
+
+`n` = 0 and `k` = 0 together mean the operator set no area filter at all:
+the bot broadcasts every product its feed carries and no place is outside
+it. That is an answer, not an empty message.
+
+`lat` and `lon` 0,0 with `radius` 0 mean the bot did not state a centre
+(its area came from states or offices, not a circle); use the runs alone,
+exactly as section 1 says to ignore an advert's 0,0 position. A bot that
+knows neither a centre nor a single zone does not send this message at all,
+and answers `>cov` with Not available, reason 0.
+
+What coverage governs is unchanged (section 8.2): the scheduled broadcasts
+and the three argument-free requests `>d`, `>w` and `>o`. A request that
+names a place is served nationwide whatever this message says.
+
 ## 8. Text (type 6) and Not available (type 7)
 
 ### 8.1 Text
@@ -389,6 +467,7 @@ type and get a text DM back.
 | `>metar round rock tx`, `>taf round rock tx`, bare `>metar` / `>taf` | The nearest station with a report (the bot's home without an argument), Text subject 5, labelled with that station and its distance, e.g. `METAR (KGTU 15km) KGTU 151155Z ...` |
 | `>storm TX` `>rain TX` `>hwo` | Text, subjects 3, 4, 6 |
 | `>sat` | The bot's GOES receiver now, one line, Text subject 8: lock, signal good/fair/poor, packets dropped in the last minute, age of the newest EMWIN file. A receiver that is not reporting is answered as Text saying so. A Not available for it would carry `s`, the letter `>space` and `>storm` use |
+| `>cov` | Coverage (section 7A), one packet: the bot's centre, radius, offices and zone runs. It describes the bot, not a place, so coverage never filters it and it is answerable at any time. A bot that knows neither a centre nor a zone answers Not available reason 0, request `c` |
 
 A request "names a station" when its argument is a 4-character ICAO code
 the bot knows; anything else is resolved as a place. For `>f`, 5 digits (or
@@ -423,7 +502,9 @@ then tell the user the bot may be out of range.
 **Coverage and place arguments.** A request that names a place is served
 nationwide. Coverage filters only the scheduled broadcasts and the three
 argument-free requests `>d`, `>w` and `>o`. What limits a distant answer is what
-the EMWIN satellite feed carries, not policy.
+the EMWIN satellite feed carries, not policy. Ask `>cov` for what the bot's
+coverage actually is, and take the answer from section 7A: never work it
+out from the broadcasts you happen to have received.
 
 **A Digest follows the bare `>w` only.** `>w TXC453` and
 `>w SV.W.EWX.42` answer with warnings alone, so do not wait for a Digest
@@ -440,7 +521,7 @@ the zone.
 
 | Offset | Size | Field |
 |---|---|---|
-| 4 | 1 | `request`: ASCII code of the request's first letter (`w`, `o`, `f`, `a`, `s`, `r`, `m`, `t`, `h`, `d`) |
+| 4 | 1 | `request`: ASCII code of the request's first letter (`w`, `o`, `f`, `a`, `s`, `r`, `m`, `t`, `h`, `d`, `c`) |
 | 5 | 1 | `reason`: 0 no data yet, 1 unknown location, 2 unsupported, 3 bot error, 4 rate limited (try later) |
 
 `reason` 0 is ambiguous in this bot. It is sent when nothing is active for
@@ -480,8 +561,12 @@ then `C` or `Z`, then the 3-digit number. `TXC453` is in `counties.json`,
 Louisiana parishes, Alaska boroughs and Virginia's independent cities are
 all "counties" here, as in the NWS products.
 
-Bundle versioning: `protocol.json` `version` (8 for v5.0) and `index.json`
-`version` (2 since revision 3). Revision 3 changed two bundle files:
+Bundle versioning: `protocol.json` `version` (9 since revision 4) and
+`index.json` `version` (2 since revision 3). Revision 4 changed one bundle
+file, `protocol.json`, which gained the Coverage type, its flags, its two
+limits and its record sizes. No index moved, so `index.json`, `wfos.json`
+and every other file are untouched and a revision 3 bundle still decodes
+everything except the new message. Revision 3 changed two bundle files:
 `index.json` (`NHC` and `WNS` appended to `offices`, `version` 1 to 2) and
 `wfos.json` (the two matching entries). The bot's advert does not carry a
 version; a bump is announced in the repository.
@@ -639,6 +724,7 @@ taf <ICAO|city ST|ZIP>    terminal aerodrome forecast
 outlook <city ST|ZIP>     hazardous weather outlook
 space                 space weather
 sat                   satellite receiver: lock, signal, drops, newest EMWIN
+cov                   what this bot covers: area, offices, stations, alert list
 more                  next page of the last long reply
 help                  the command list
 ```
@@ -674,6 +760,10 @@ binary path does not cover.
   heard and let the user pick. The advert is meant to carry the bot's
   position, but this bot never sets the firmware's advert location policy,
   so positions arrive as 0,0 and cannot be used to rank bots by distance.
+- What a bot covers comes from its Coverage message (section 7A), which it
+  broadcasts every 3 hours and answers to `>cov`. That is the only sound
+  source for it: two bots' areas may overlap, and what you have happened to
+  hear from one says nothing about where it stops.
 - Every message carries `bot` (two bytes of the public key). Keep
   separate state per bot; when two bots cover the same place you may
   hear the same warning identity from both, and it is the same warning.
@@ -701,8 +791,8 @@ binary path does not cover.
   rebuilds and re-transmits the whole answer, spending airtime for
   everyone on the mesh.
 - Listen passively: the scheduled broadcasts (warnings on change, digest
-  every 3 h, observations hourly, home forecast every 6 h) cover the
-  common case without any request.
+  every 3 h, observations hourly, home forecast every 6 h, coverage every
+  3 h) cover the common case without any request.
 
 ## 14. Build checklist
 
@@ -714,6 +804,8 @@ binary path does not cover.
 6. Requests with `>`, by DM to pick one bot or as channel text; 15 s timeout, one retry.
 7. Stale badges from `ts`, `issued`, `expires`, `feed_health`.
 8. Text fallback screen with the human commands and `more`.
+9. Take the bot's area from Coverage (7A), never from the stations or
+   warnings you have seen; read a cut list as incomplete, not as a denial.
 
 ## 15. What changed from v4
 
@@ -726,7 +818,28 @@ event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
 
-## 16. Changes in revision 3
+## 16. Changes in revision 4
+
+Revision 4 adds one message and the two ways to ask for it. Nothing that
+was already on the wire changed, and no bundle index moved.
+
+| Section | Revision 3 | Revision 4 |
+|---|---|---|
+| 2.2 | Types 8 to 11 were reserved for future structured products | Type 8 is **Coverage**, section 7A; 9 to 11 stay reserved |
+| 7A | (none) | New message: the bot's coverage centre, the radius in km, the NWS offices it covers, the cap on the hourly observation batch, and its public zones as the same UGC runs a warning's area list uses. 39 bytes for WX-AUS's real coverage. Each list has a cut flag, and a cut list must be read as incomplete, never as a denial |
+| 8.2 | An app had to infer the bot's area from the stations and warnings it had heard, which is wrong often enough to put a false line on a phone | `>cov` answers with one Coverage packet. It describes the bot, not a place, so coverage never filters it |
+| 8.3 | The request letters had no `c` | `c` is `>cov` |
+| 9 | `protocol.json` `version` 8 | `version` 9: `v5.types.coverage`, `v5.flags.coverage`, the two coverage limits and the coverage record sizes. `index.json` stays at version 2 and no office, station or state index moved |
+| 10.4 | (none) | The text command `cov` says the same thing in words: the area and how far it reaches, the offices, the hourly station cap, and how often the alert list goes out. It pages with `more` like any long reply |
+| 12, 13 | (silent) | A bot's coverage is what it states, not what you have heard from it; the coverage broadcast joins the passive set, one packet every 3 h |
+
+A revision 3 decoder ignores type 8 (section 2.2) and is unaffected: it
+keeps decoding every other message exactly as before and simply never
+learns what the bot covers. To adopt revision 4, decode section 7A and
+replace whatever your app currently guesses about a bot's area with what
+the bot states.
+
+### 16.1 Changes in revision 3
 
 Revision 2 described behaviour the bot did not have in several places,
 and left some rules unstated. Revision 3 fixes the bot and states the
