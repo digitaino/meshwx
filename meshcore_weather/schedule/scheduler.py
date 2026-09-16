@@ -33,15 +33,19 @@ logger = logging.getLogger(__name__)
 
 TX_SPACING = 2.0                 # seconds between consecutive packets
 TICK_INTERVAL_SECONDS = 30
+FIRST_TICK_DELAY_S = 15          # settle before the first tick (after the backlog, see _tick_loop)
 DIGEST_AFTER_CANCEL_S = 60
 
 _STATE_PATH = Path(settings.data_dir) / "warning_state.json"
 
 
 class Scheduler:
-    def __init__(self, store: WeatherStore, radio: MeshcoreRadio):
+    def __init__(self, store: WeatherStore, radio: MeshcoreRadio, ready: asyncio.Event | None = None):
         self.store = store
         self.radio = radio
+        # Set when the bot's product backlog is in; None when there is nothing
+        # to wait for (a test, the CLI). The tick loop holds until then.
+        self._ready = ready
         self.executor = BroadcastExecutor()
         self._config: BroadcastConfig = BroadcastConfig()
         self._coverage: Coverage = Coverage.empty()
@@ -175,7 +179,14 @@ class Scheduler:
     # -- the loop --
 
     async def _tick_loop(self) -> None:
-        await asyncio.sleep(15)
+        # Nothing goes out before the bot's products are in. A digest,
+        # observations or a warning list built from the empty store of a bot
+        # that restarted 20 seconds ago is wrong on air, and every app that
+        # hears it files it as current.
+        if self._ready is not None and not self._ready.is_set():
+            logger.info("Broadcasts held until the product backlog is loaded")
+            await self._ready.wait()
+        await asyncio.sleep(FIRST_TICK_DELAY_S)
         while self._running:
             try:
                 await self.tick()

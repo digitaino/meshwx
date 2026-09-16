@@ -45,6 +45,12 @@ Any exit (a crash, System › Restart in the portal, `scripts/pi_update.sh`,
 the 700 MB memory limit) brings the bot back five seconds later with the
 current `.env`.
 
+A stop or a restart is a clean one: on SIGTERM the bot cancels its tasks,
+logs `Weather bot stopped` and exits 0, so `systemctl status` after a deploy
+shows `inactive (dead)`, not `failed`. The new process is listening on the
+radio within seconds; its EMWIN products load behind it (README, *First-run
+verification*).
+
 ## How to confirm it's working
 
 ```bash
@@ -63,6 +69,10 @@ Data channel 1 (#meshwx, shared with text)
 Meshcore radio connected. Node: WX-AUS
 Weather bot is running. Listening on channel 1 (#meshwx) + DMs
 ```
+
+Two lines of the same start say how long each half took: `Meshcore radio
+connected … s after start` (how long the node was off the air) and `Backlog
+loaded: N products in … s` (when the answers stopped being "starting up").
 
 `Sent data on ch 1: ... bytes (type 0xFF10)` lines mean broadcasts are going
 out, and `Delivery channel_data: echoed via ...` means a repeater carried

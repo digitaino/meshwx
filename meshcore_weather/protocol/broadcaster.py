@@ -9,6 +9,7 @@ v5 messages so every app in range gets it (docs/MeshWX_v5_Spec.md 8.2).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import deque
@@ -32,11 +33,15 @@ MAX_WARNINGS_PER_REQUEST = 6
 
 class AppResponder:
     def __init__(self, store: WeatherStore, radio: MeshcoreRadio,
-                 render_text: Callable[[str, str], str | None] | None = None):
+                 render_text: Callable[[str, str], str | None] | None = None,
+                 ready: asyncio.Event | None = None):
         from meshcore_weather.schedule.scheduler import Scheduler
         self.store = store
         self.radio = radio
-        self._scheduler = Scheduler(store=store, radio=radio)
+        # Set when the bot's product backlog is in. While it is not, requests
+        # are answered Not available and the scheduler broadcasts nothing.
+        self._ready = ready
+        self._scheduler = Scheduler(store=store, radio=radio, ready=ready)
         self._render_text = render_text          # the text bot's renderer, for narrative products
         self._last_by_sender: dict[str, float] = {}
         self._sent: deque[float] = deque(maxlen=PER_HOUR * 2)
@@ -72,13 +77,23 @@ class AppResponder:
         while self._sent and now - self._sent[0] > 3600:
             self._sent.popleft()
         self._last_by_sender[sender_key] = now
+        parts = text.strip()[1:].split(None, 1)
+        cmd = (parts[0] if parts else "").lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        # A bot that has just restarted holds no products yet. Every answer
+        # would be an empty one, and an app files "nothing active here" as the
+        # truth, so it is told "no data yet" instead (reason 0, spec 8.3).
+        # One 6-byte packet, off the hourly budget: the app's own retry a
+        # minute later then still gets a real answer.
+        if self._ready is not None and not self._ready.is_set():
+            seq = b.SeqCounter()
+            msg = b.not_available(seq.next(), self._scheduler.bot_id(), cmd, v5.REASON_NO_DATA)
+            await self._scheduler.transmit([msg], f"not ready for {text.strip()[:24]!r}")
+            return "starting up"
         # Before building: an answer that will not be sent must cost nothing.
         if len(self._sent) >= PER_HOUR:
             logger.warning("App request budget spent this hour; ignoring %r", text)
             return "hourly budget spent"
-        parts = text.strip()[1:].split(None, 1)
-        cmd = (parts[0] if parts else "").lower()
-        arg = parts[1].strip() if len(parts) > 1 else ""
         # Scratch numbering: Scheduler.transmit stamps the real seq on air.
         seq, bot = b.SeqCounter(), self._scheduler.bot_id()
         try:

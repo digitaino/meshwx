@@ -7,6 +7,7 @@ has no login: keep it on the LAN or put access control at the edge.
 """
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,25 @@ def create_app(bot: Any) -> FastAPI:
     return app
 
 
+class _Server(uvicorn.Server):
+    """uvicorn with its hands off the process signals.
+
+    `Server.serve()` calls `signal.signal` for SIGINT and SIGTERM, which
+    replaces the handlers the bot installed before it (main.run). A systemd
+    stop would then shut the web server down while the radio, the scheduler
+    and the store ran on, and the bot's own shutdown would only start when
+    uvicorn re-raised the signal on its way out. The bot owns the signals;
+    the portal stops when stop() tells it to.
+    """
+
+    def install_signal_handlers(self) -> None:          # uvicorn < 0.29
+        pass
+
+    @contextlib.contextmanager
+    def capture_signals(self):                          # uvicorn >= 0.29
+        yield
+
+
 class PortalServer:
     """Manages the uvicorn lifecycle as an asyncio task."""
 
@@ -91,7 +111,7 @@ class PortalServer:
             access_log=False,
             lifespan="off",
         )
-        self._server = uvicorn.Server(config)
+        self._server = _Server(config)
         self._task = asyncio.create_task(self._server.serve())
         logger.info(
             "Portal running at http://%s:%d",

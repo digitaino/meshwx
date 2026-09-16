@@ -89,18 +89,28 @@ async def _open_serial(port: str, baud: int) -> MeshCore | None:
     cx = SerialConnection(port, baud)
     mc = MeshCore(cx)
     await mc.dispatcher.start()
-    if await mc.connection_manager.connect() is None:
-        await mc.dispatcher.stop()
-        raise ConnectionError(f"could not open {port}")
-    for delay in SERIAL_BOOT_DELAYS:
-        await asyncio.sleep(delay)
+    try:
+        if await mc.connection_manager.connect() is None:
+            raise ConnectionError(f"could not open {port}")
+        for delay in SERIAL_BOOT_DELAYS:
+            await asyncio.sleep(delay)
+            try:
+                res = await mc.commands.send_appstart()
+            except Exception as e:
+                logger.debug("APP_START attempt failed: %s", e)
+                res = None
+            if res is not None and res.type != EventType.ERROR:
+                return mc
+    except BaseException:
+        # A port that has gone (a radio unplugged, a swapped board) raises out
+        # of connect(). Without this the dispatcher's task would be left
+        # running for every port tried, and turn up at the next shutdown as
+        # "Task was destroyed but it is pending".
         try:
-            res = await mc.commands.send_appstart()
-        except Exception as e:
-            logger.debug("APP_START attempt failed: %s", e)
-            res = None
-        if res is not None and res.type != EventType.ERROR:
-            return mc
+            await mc.dispatcher.stop()
+        except Exception:
+            logger.debug("Dispatcher would not stop after a failed open", exc_info=True)
+        raise
     await mc.disconnect()
     return None
 

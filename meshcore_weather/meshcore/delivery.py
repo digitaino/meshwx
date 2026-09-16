@@ -974,7 +974,7 @@ class DmRequest:
     timestamps: set = field(default_factory=set)
     copies: int = 1                                    # DMs received carrying it, the first included
     last_copy_at: float = 0.0
-    state: str = "building"                            # building | limited | done | replied | app | app_unanswered
+    state: str = "building"     # building | limited | not_ready | done | replied | app | app_unanswered
     reply: DmReply | None = field(default=None, repr=False)
     app_done_at: float | None = None
     ev: dict | None = field(default=None, repr=False)

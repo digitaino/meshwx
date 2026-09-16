@@ -34,6 +34,9 @@ HELP_TEXT_DM = (
 )
 HELP_TEXT = HELP_TEXT_DM + ". DM me for private replies"
 
+# What a restart says while its products are still loading (see _load_backlog).
+NOT_READY_TEXT = "Starting up: my weather products are still loading. Ask again in a minute."
+
 
 STATE_NAMES = {
     "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
@@ -72,6 +75,20 @@ def channel_fit(text: str, budget: int) -> str:
     return cut.rstrip(" ;|,") + note
 
 
+async def _cancel(task: asyncio.Task | None) -> None:
+    """Cancel one of our tasks and wait for it to end, so nothing of ours is
+    still pending when the loop closes."""
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.debug("Task ended with an error while shutting down", exc_info=True)
+
+
 class WeatherBot:
     """Main application: bridges EMWIN weather data to Meshcore radio."""
 
@@ -84,8 +101,19 @@ class WeatherBot:
         self._running = False
         self._refresh_task: asyncio.Task | None = None
         self._radio_task: asyncio.Task | None = None
+        self._backlog_task: asyncio.Task | None = None
+        self._restart_task: asyncio.Task | None = None
         self._radio_last_error: str | None = None
         self._started_at: float = time.time()
+        # Set until start() clears it: a bot built by a test, the CLI or the
+        # portal owns whatever is in its store from the first call. On a real
+        # start the on-disk backlog sets it again when it is in (_load_backlog),
+        # and until then requests get NOT_READY_TEXT and the scheduler holds.
+        self._store_ready = asyncio.Event()
+        self._store_ready.set()
+        # The one way out: a signal or the portal's restart sets it and the
+        # run loop below stops the bot (see run()). Nothing calls loop.stop().
+        self._exit = asyncio.Event()
         self._broadcaster = None  # MeshWXBroadcaster, created if data channel configured
         self._coverage_cache = None  # built from the env config when no broadcaster runs
         self._portal = None  # PortalServer, created if portal enabled
@@ -109,7 +137,14 @@ class WeatherBot:
         # Track consecutive channel msgs from known contacts (DM may not be working)
         self._load_known_contacts()
 
+    @property
+    def store_ready(self) -> bool:
+        """Is the on-disk product backlog in the store? False only between the
+        start of a restart and the end of its first ingest."""
+        return self._store_ready.is_set()
+
     async def start(self) -> None:
+        t0 = time.monotonic()
         logger.info("Starting Meshcore Weather Bot")
         logger.info("  Serial port: %s", settings.serial_port)
         logger.info("  EMWIN source: %s", settings.emwin_source)
@@ -117,13 +152,18 @@ class WeatherBot:
 
         from meshcore_weather.meshcore.delivery import loop_lag
         from meshcore_weather.portal import logbuf
-        logbuf.install(asyncio.get_running_loop())   # console buffer catches everything from here on
-        traffic_log.install(asyncio.get_running_loop())
+        loop = asyncio.get_running_loop()
+        logbuf.install(loop)   # console buffer catches everything from here on
+        traffic_log.install(loop)
         # Watch how late our own event loop runs: a stalled loop delays the
         # echo handler and would otherwise read as a radio that cannot
         # transmit (see meshcore/delivery.py LoopLag).
         loop_lag.start()
-        resolver.load()   # also sets the resolver home from MCW_HOME_CITIES
+        self._running = True
+        # Geodata before the radio: every command that arrives is parsed
+        # against it, and it is seconds, not minutes. In a thread so the
+        # loop keeps running while the JSON is read.
+        await loop.run_in_executor(None, resolver.load)   # also sets home from MCW_HOME_CITIES
         if settings.emwin_source == "sdr":
             from meshcore_weather.sdr_monitor import SdrMonitor
             self._sdr_monitor = SdrMonitor()
@@ -133,11 +173,15 @@ class WeatherBot:
         self.radio.on_advert(self._handle_advert)
         self.radio.on_disconnect(self._handle_radio_lost)
 
-        await self.emwin.start()
-        await self._refresh_store()
-
-        self._running = True
-        self._refresh_task = asyncio.create_task(self._refresh_loop())
+        # The radio comes up before the products. Reading a Pi's 14k EMWIN
+        # files off the card and parsing them takes a minute or two, and the
+        # node used to be deaf for all of it: every deploy cost ~100 s of
+        # silence, DMs included. The backlog now loads behind the radio, and
+        # until it is in, requests get an honest not-ready answer
+        # (NOT_READY_TEXT / Not available reason 0) and the scheduler holds
+        # its broadcasts.
+        self._store_ready.clear()
+        self._backlog_task = asyncio.create_task(self._load_backlog())
 
         # The radio may not be plugged in yet (a Pi whose Heltec arrives
         # later, a USB cable pulled). Keep serving the store, portal and
@@ -149,6 +193,7 @@ class WeatherBot:
             logger.warning("Radio not available (%s); retrying every %ds", e, RADIO_RETRY_SECONDS)
             self._radio_task = asyncio.create_task(self._radio_retry_loop())
         else:
+            logger.info("Meshcore radio connected %.1f s after start", time.monotonic() - t0)
             await self._after_radio_connected()
 
         # Start local operator web portal if enabled
@@ -170,10 +215,13 @@ class WeatherBot:
             logger.info("Weather bot is running without a radio (store, portal and CLI only)")
 
     async def _after_radio_connected(self) -> None:
-        """Start the data-channel broadcaster once a radio with a data channel is up."""
+        """Start the data-channel broadcaster once a radio with a data channel
+        is up. It answers `>` requests straight away; `ready` keeps its
+        scheduled broadcasts back until the product backlog is in."""
         if self.radio.data_channel_idx is not None:
             from meshcore_weather.protocol.broadcaster import AppResponder
-            self._broadcaster = AppResponder(self.store, self.radio, render_text=self._process_command)
+            self._broadcaster = AppResponder(self.store, self.radio, ready=self._store_ready,
+                                             render_text=self._process_command)
             await self._broadcaster.start()
 
     async def _handle_radio_lost(self, reason: str) -> None:
@@ -214,20 +262,30 @@ class WeatherBot:
         self._radio_last_error = None
         await self._after_radio_connected()
 
+    # -- Shutdown ------------------------------------------------------------
+    #
+    # A signal and the portal's restart button take the same road: set the
+    # exit event, let main()'s run loop stop the bot and return. Nothing
+    # stops the loop under a coroutine that is still running, which is what
+    # used to end every systemd stop with "Event loop stopped before Future
+    # completed" and status=1/FAILURE.
+
+    def request_stop(self) -> None:
+        """Ask the run loop to shut the bot down. The only way out."""
+        self._exit.set()
+
+    async def wait_for_exit(self) -> None:
+        await self._exit.wait()
+
     def request_restart(self, delay: float = 0.5) -> None:
         """Exit cleanly a moment from now; systemd (Restart=always) brings the
         bot back with the current .env."""
-        loop = asyncio.get_running_loop()
-
         async def _go():
             await asyncio.sleep(delay)
             logger.info("Restart requested from the portal; exiting")
-            try:
-                await self.stop()
-            finally:
-                loop.stop()
+            self.request_stop()
 
-        loop.create_task(_go())
+        self._restart_task = asyncio.get_running_loop().create_task(_go())
 
     async def _radio_retry_loop(self) -> None:
         while self._running:
@@ -245,44 +303,79 @@ class WeatherBot:
             return
 
     async def stop(self) -> None:
+        """Stop everything this bot started, in the reverse order, and wait for
+        each of it. Called once, from main()'s run loop: when it returns, no
+        task of ours is left running and the process can exit 0."""
         logger.info("Shutting down Weather Bot")
         self._running = False
-        if self._radio_task:
-            self._radio_task.cancel()
+        await _cancel(self._backlog_task)        # first: it is what starts the refresh loop
+        for task in (self._restart_task, self._radio_task, self._refresh_task):
+            await _cancel(task)
+        for what, part in (("portal", self._portal), ("receiver monitor", self._sdr_monitor),
+                           ("broadcaster", self._broadcaster), ("radio", self.radio),
+                           ("EMWIN source", self.emwin)):
+            if part is None:
+                continue
             try:
-                await self._radio_task
-            except asyncio.CancelledError:
-                pass
-        if self._portal:
-            await self._portal.stop()
-        if self._sdr_monitor:
-            await self._sdr_monitor.stop()
-        if self._broadcaster:
-            await self._broadcaster.stop()
-        if self._refresh_task:
-            self._refresh_task.cancel()
-            try:
-                await self._refresh_task
-            except asyncio.CancelledError:
-                pass
-        await self.radio.stop()
-        await self.emwin.stop()
+                await part.stop()
+            except Exception:
+                # A start cut short by a signal leaves things half-built; one
+                # that cannot be stopped must not strand the rest.
+                logger.warning("Could not stop the %s cleanly", what, exc_info=True)
         from meshcore_weather.meshcore.delivery import delivery_tracker, loop_lag
         await loop_lag.stop()
         traffic_log.flush(force=True)
         delivery_tracker.flush_outcomes()
         logger.info("Weather bot stopped")
 
+    # -- The product backlog --------------------------------------------------
+
+    # The store's parse is CPU-bound, so it runs in a worker thread, and in
+    # chunks: the loop gets the thread back between them, which keeps the
+    # radio's serial reads (and the echo matching in meshcore/delivery.py)
+    # flowing while a restart loads thousands of products.
+    INGEST_CHUNK = 500
+
+    async def _load_backlog(self) -> None:
+        """Everything already on disk, loaded behind the radio. Nothing here
+        touches the air. When it finishes the store is ready: requests are
+        answered for real and the scheduler may broadcast."""
+        t0 = time.monotonic()
+        try:
+            await self.emwin.start()
+            await self._refresh_store(quiet=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("The product backlog could not be loaded; the bot serves what it has")
+        finally:
+            self._store_ready.set()
+        logger.info("Backlog loaded: %d products in %.1f s",
+                    len(self.store._products), time.monotonic() - t0)
+        self._refresh_task = asyncio.create_task(self._refresh_loop())
+
     async def _refresh_loop(self) -> None:
         while self._running:
             await asyncio.sleep(settings.emwin_poll_interval)
             await self._refresh_store()
 
-    async def _refresh_store(self) -> None:
+    async def _refresh_store(self, quiet: bool = False) -> None:
         products = await self.emwin.fetch_products()
         if products:
-            self.store.ingest(products)
+            new = await self._ingest(products)
+            if new and not quiet:
+                logger.info("Ingested %d new product(s) (%d held)", new, len(self.store._products))
             await self._warm_warnings()
+
+    async def _ingest(self, products: list[dict]) -> int:
+        """Parse products into the store off the event loop. Returns how many
+        were new (the sources hand back their whole cache every poll)."""
+        loop = asyncio.get_running_loop()
+        new = 0
+        for i in range(0, len(products), self.INGEST_CHUNK):
+            new += await loop.run_in_executor(None, self.store.ingest,
+                                              products[i:i + self.INGEST_CHUNK], False)
+        return new
 
     async def _warm_warnings(self) -> None:
         """Parse new warning products now, off the event loop, so the first
@@ -487,7 +580,9 @@ class WeatherBot:
         lock: "answer" (it was never answered: answer it now), "redeliver"
         (the same reply again), or the reason it gets nothing."""
         state = dreq.state
-        if state in ("limited", "app_unanswered"):
+        # "not_ready": the first copy got the starting-up note, which spent no
+        # budget; this one is answered again, by now perhaps for real.
+        if state in ("limited", "app_unanswered", "not_ready"):
             dreq.state = "building"
             return "answer"
         if state == "app":
@@ -564,6 +659,19 @@ class WeatherBot:
         # Every DM meets the people's limiter, `>` app requests included (spec 8.2).
         command, location = await self._parse(text)
         traffic_log.update(req, command=command, location=location)
+
+        # A restart answers honestly and for free until its products are in.
+        # Answering now rather than queueing the request is deliberate: the
+        # sender's app is already resending (meshcore/delivery.py), and a held
+        # request would be answered twice, minutes late, against a budget the
+        # sender never meant to spend. So the note is sent at once and costs
+        # nothing, and the real reply they ask for a minute later is still
+        # within their hour. A copy of this request is answered again, by
+        # which time the store may well be ready.
+        if not self.store_ready and self._needs_store(text, command):
+            await self._not_ready_reply(dreq, prefix, sender_name, text, req, arrived)
+            return
+
         if not self._rate_check(prefix, follow_up=(command == "more"), copy=copy):
             logger.debug("DM rate-limited from %s", sender_name)
             traffic_log.record("dropped", reason="rate limit", req=req)
@@ -596,6 +704,42 @@ class WeatherBot:
                 return
 
         await self._respond_dm(prefix, sender_name, command, location, req=req, arrived_at=arrived, dreq=dreq)
+
+    # Commands that answer out of the product store. help, cov and sat do not:
+    # a bot that has just come up can still say what it is and what it covers.
+    _STORE_COMMANDS = {"wx", "warn", "forecast", "outlook", "rain", "storm",
+                       "metar", "taf", "space", "nowcast"}
+
+    def _needs_store(self, text: str, command: str) -> bool:
+        """Would this request be answered out of the products? A `>` request
+        always is: the app side answers every one of them from the store."""
+        return text.lstrip().startswith(">") or command in self._STORE_COMMANDS
+
+    async def _not_ready_reply(self, dreq, prefix: str, sender_name: str, text: str,
+                               req: dict | None, arrived: float) -> None:
+        """The answer while the backlog is still loading: for an app, Not
+        available reason 0 ("no data yet", spec 8.3); for a person, one line
+        saying so. Neither spends the sender's hourly budget, and the request
+        is left unanswered, so a copy of it gets the real reply once the
+        products are in."""
+        if text.lstrip().startswith(">"):
+            traffic_log.update(req, kind="data_request")
+            await self._handle_app_request(text, sender_name, prefix, "dm", None,
+                                           req=req, dreq=dreq)
+            return
+
+        def prepare(r: DmReply) -> None:
+            r.ev = traffic_log.record("reply_dm", text=r.text, chars=len(r.text), req=req,
+                                      sender=sender_name, key=prefix, command="starting up",
+                                      ok=settings.tx_enabled)
+
+        logger.info("DM from %s while the backlog loads: answering 'starting up'", sender_name)
+        reply = DmReply(key=prefix, text=NOT_READY_TEXT, kind="note", prepare=prepare)
+        reply.request = dreq
+        if dreq is not None:
+            dreq.reply, dreq.state = reply, "not_ready"
+        await self.dm_outbox.submit(reply, lambda: self.radio,
+                                    not_before=arrived + settings.dm_reply_delay_s)
 
     async def _handle_advert(self, contact_name: str, pubkey_prefix: str) -> None:
         """Handle a new advert — only greet users who were using the channel."""
@@ -637,6 +781,12 @@ class WeatherBot:
             traffic_log.record("dropped", reason=outcome, req=req, sender=sender_name)
             if dreq is not None:
                 dreq.state = "app_unanswered"
+        elif outcome == "starting up":
+            # Answered with Not available, on nobody's budget: a copy of the
+            # request is answered again, by then perhaps with the real data.
+            traffic_log.update(req, kind="data_request")
+            if dreq is not None:
+                dreq.state = "not_ready"
         elif dreq is not None:
             dreq.app_done_at = self._clock()
 
@@ -1133,6 +1283,13 @@ class WeatherBot:
         if command == "cov":
             return self._coverage_reply()
 
+        # Nothing is read out of a store that is still loading: an empty one
+        # would answer "no warnings" and "no data for that place", which the
+        # asker would take for the truth. Every transport passes through here
+        # (DM, channel, the portal console and the CLI), so they all say it.
+        if command in self._STORE_COMMANDS and not self.store_ready:
+            return NOT_READY_TEXT
+
         from meshcore_weather.core import overview
 
         if command == "wx":
@@ -1184,6 +1341,38 @@ class WeatherBot:
         return None
 
 
+async def run(bot: WeatherBot) -> None:
+    """Start the bot, wait for a signal, stop it.
+
+    SIGTERM lands here whenever it arrives — during the start-up, which now
+    ends in seconds but used to take a minute and a half, or years into a
+    run. The bot is then stopped from a coroutine that is allowed to finish,
+    and this returns: no loop.stop() under a pending future (the
+    "RuntimeError: Event loop stopped before Future completed" every systemd
+    stop used to end with), and nothing of ours left pending.
+    """
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _signalled, bot, sig)
+    started = asyncio.ensure_future(bot.start())
+    exiting = asyncio.ensure_future(bot.wait_for_exit())
+    try:
+        await asyncio.wait({started, exiting}, return_when=asyncio.FIRST_COMPLETED)
+        if started.done():
+            started.result()             # a start-up that failed is still an error
+            await exiting
+        else:
+            await _cancel(started)       # signalled mid-start: stop() clears up what was built
+    finally:
+        await _cancel(exiting)
+        await bot.stop()
+
+
+def _signalled(bot: WeatherBot, sig: signal.Signals) -> None:
+    logger.info("Received signal %s, shutting down...", sig.name)
+    bot.request_stop()
+
+
 def main():
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper()),
@@ -1194,32 +1383,16 @@ def main():
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     bot = WeatherBot()
-    loop = asyncio.new_event_loop()
-
-    def shutdown(sig):
-        logger.info("Received signal %s, shutting down...", sig.name)
-
-        async def _stop_then_exit():
-            try:
-                await bot.stop()
-            finally:
-                loop.stop()          # without this run_forever() never returns
-
-        loop.create_task(_stop_then_exit())
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, shutdown, sig)
-
     try:
-        loop.run_until_complete(bot.start())
-        loop.run_forever()
+        # asyncio.run and not a loop of our own: it cancels and awaits
+        # whatever is still running when run() returns (a DM reply waiting on
+        # an ACK, a repeater echo window), so no task is destroyed pending.
+        asyncio.run(run(bot))
     except KeyboardInterrupt:
         pass
-    finally:
-        if bot._running:
-            loop.run_until_complete(bot.stop())
-        loop.close()
-
+    except Exception:
+        logger.exception("Weather bot stopped on an error")
+        return 1
     return 0
 
 

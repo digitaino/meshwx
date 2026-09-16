@@ -118,7 +118,10 @@ class WeatherStore:
     def __init__(self):
         self._products: dict[str, EMWINProduct] = {}  # keyed by filename
 
-    def ingest(self, raw_products: list[dict]) -> int:
+    def ingest(self, raw_products: list[dict], log: bool = True) -> int:
+        """Parse products into the store; returns how many were new. `log` is
+        off when the caller ingests in chunks (main.WeatherBot._ingest) and
+        says the total itself."""
         count = known = 0
         for raw in raw_products:
             # The sources hand back their whole cache every poll, so this
@@ -144,10 +147,11 @@ class WeatherStore:
             if not is_expired(v.product_type, v.timestamp, now)
         }
         expired = before - len(self._products)
-        logger.info("Ingested %d/%d products%s%s",
-                     count, len(raw_products),
-                     f", {known} already held" if known else "",
-                     f" (expired {expired})" if expired else "")
+        if log:
+            logger.info("Ingested %d/%d products%s%s",
+                        count, len(raw_products),
+                        f", {known} already held" if known else "",
+                        f" (expired {expired})" if expired else "")
         return count
 
     def _parse(self, raw: dict) -> EMWINProduct | None:

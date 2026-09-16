@@ -106,8 +106,10 @@ class InternetSource(EMWINSource):
         self._client = httpx.AsyncClient(timeout=60.0)
         self._running = True
 
-        # Restore cached products from disk
-        self._load_cache()
+        # Restore cached products from disk. In a thread: it is thousands of
+        # JSON lines, and the radio is already listening by now (main.py
+        # loads the backlog behind the radio).
+        await asyncio.get_running_loop().run_in_executor(None, self._load_cache)
 
         # Initial load: 3-hour bundle for broad coverage
         logger.info("Initial load from 3-hour bundle...")
@@ -128,9 +130,10 @@ class InternetSource(EMWINSource):
                 await self._poll_task
             except asyncio.CancelledError:
                 pass
+        if self._client is None:
+            return          # a start cut short: saving now would empty the cache file
         self._save_cache()
-        if self._client:
-            await self._client.aclose()
+        await self._client.aclose()
         logger.info("EMWIN source stopped (%d products in store)", len(self._products))
 
     async def _poll_loop(self) -> None:
@@ -159,7 +162,9 @@ class InternetSource(EMWINSource):
             logger.warning("HTTP error: %s", e)
             return 0
 
-        extracted = self._extract_zip(resp.content)
+        # Unzipping and splitting a bundle is CPU work; off the event loop it
+        # cannot stall the radio's serial reads.
+        extracted = await asyncio.get_running_loop().run_in_executor(None, self._extract_zip, resp.content)
         new_count = 0
         for prod in extracted:
             fname = prod.get("filename", "")

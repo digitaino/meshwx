@@ -259,24 +259,48 @@ cp .env.example .env
 meshcore-weather
 ```
 
-On start the bot loads EMWIN (`internet`: NOAA's 1-hour bundle, then the
-2-minute bundle every `MCW_EMWIN_POLL_INTERVAL` seconds; `sdr`: the goesproc
-directory), connects to the radio (or retries every minute until one
-answers), starts the scheduler once a data channel is up, and starts the
-portal if enabled.
+On start the bot loads its geodata, connects to the radio (or retries every
+minute until one answers), starts the scheduler once a data channel is up,
+and starts the portal if enabled. The EMWIN products come in **behind** the
+radio: the node is listening within seconds of a restart, and the backlog
+already on disk (`internet`: NOAA's 1-hour bundle, then the 2-minute bundle
+every `MCW_EMWIN_POLL_INTERVAL` seconds; `sdr`: the goesproc directory) is
+read and parsed in a worker thread while it listens.
+
+Until that backlog is in — a few seconds for the internet source, up to a
+couple of minutes for a Pi with tens of thousands of files:
+
+- a DM that needs products is answered "Starting up: my weather products
+  are still loading. Ask again in a minute." without spending any of that
+  sender's hourly reply budget (a command on the channel gets the same
+  sentence, and is rate-limited as a channel reply always is);
+- a `>` request is answered Not available, reason 0 (no data yet), off the
+  hourly packet budget, so the app's own retry still gets a real answer;
+- `help`, `cov` and `sat` are answered normally: none of them reads a product;
+- the scheduler broadcasts nothing, so no digest, observation or coverage
+  message is ever built from an empty store.
 
 ### First-run verification
 
 On the first start you should see log lines like these (slot numbers vary):
 
 ```
+[INFO] meshcore_weather.geodata: Location data loaded: 4029 zones, 34937 places, 2237 stations
 [INFO] meshcore_weather.meshcore.radio: Listening on channel 1 (#meshwx)
 [INFO] meshcore_weather.meshcore.radio: Data channel 1 (#meshwx, shared with text)
+[INFO] meshcore_weather.main: Meshcore radio connected 10.4 s after start
 [INFO] meshcore_weather.schedule.store: Bootstrap schedule: 4 default jobs
 [INFO] meshcore_weather.schedule.scheduler: Broadcast scheduler started: 4 jobs, tick every 30s
+[INFO] meshcore_weather.schedule.scheduler: Broadcasts held until the product backlog is loaded
 [INFO] meshcore_weather.portal.server: Portal running at http://0.0.0.0:8080
 [INFO] meshcore_weather.main: Weather bot is running. Listening on channel 1 (#meshwx) + DMs
+[INFO] meshcore_weather.main: Backlog loaded: 14508 products in 39.3 s
 ```
+
+`Meshcore radio connected … after start` is how long the node was off the
+air, and `Backlog loaded` is when the answers became real ones. A stop
+(`systemctl stop`, Ctrl-C, or Restart from the portal) cancels every task,
+logs `Weather bot stopped` and exits 0.
 
 Open `http://localhost:8080/#broadcasts` to see the four jobs, and type
 `help` or `wx austin tx` into Text Bot > Try a command.
@@ -362,6 +386,11 @@ checks that the code imports (and goes back to the old commit if it does
 not), and starts the bot again. It prints the commit to roll back to
 (`pi_update.sh <commit>`). Files git ignores stay as they are: `.env`,
 `data/`, `.venv`, CoreScope's config, passwords and bundles.
+
+The node is deaf only between the stop and the radio connect of the new
+process — seconds, not the time the product backlog takes (see *First-run
+verification*). `journalctl -u meshcore-weather` shows the two numbers that
+matter, `Meshcore radio connected … after start` and `Backlog loaded`.
 
 ### The public page (port 8080)
 
@@ -593,7 +622,7 @@ DM only, from a public key that starts with `MCW_ADMIN_KEY`:
 
 ```
 meshcore_weather/
-├── main.py                # Entry point: store, radio, portal; channel/DM routing, text commands, paging, limits, admin commands
+├── main.py                # Entry point: startup order (radio first, products behind it), shutdown; channel/DM routing, text commands, paging, limits, admin commands
 ├── config.py              # Settings from MCW_ environment variables and .env (pydantic-settings)
 ├── nlp.py                 # Text command parser: command words, aliases, bare-word sat
 ├── cli.py                 # meshcore-weather-cli

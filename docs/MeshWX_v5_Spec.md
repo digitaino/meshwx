@@ -621,6 +621,13 @@ a place, when the bot holds no data for it, and when a named station has
 no current METAR or TAF. Treat it as "no answer available right now", not
 as "try again shortly".
 
+One case of `reason` 0 does pass on its own: a bot that has just restarted
+answers every request with it, whatever was asked, until its products are
+loaded (seconds to a couple of minutes, and its scheduled broadcasts are
+held back for the same stretch). An app cannot tell that case from the
+others, so it should do what it would do anyway — show "no data", and ask
+again when the user does.
+
 `reason` 4 is defined but never sent. None of the bot's limits replies, so
 silence means either out of range or throttled, and the app cannot tell
 which.
