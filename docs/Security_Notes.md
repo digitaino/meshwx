@@ -37,12 +37,18 @@ Every reply costs the mesh. Budgets, all enforced before a reply is built:
 - DM replies go one at a time per contact, at most 5 waiting, each message
   tried at most 3 times (attempts 0 and 1, then 2 by flood). A failed reply
   goes again only when a resend of its request arrives;
-- a `>` request resent by DM is answered again only 12 s after the last
-  answer went out;
+- a `>` request sent again, by datagram or by DM, is answered again only
+  12 s after the last answer went out;
 - app `>` requests: one per sender per 5 s, and 60 answer packets per hour
   across all senders (packets, not requests). A `>` request sent as a DM
-  first passes the text limits above and counts against them; a `>` line on
-  the channel does not;
+  first passes the text limits above and counts against them; a Request
+  datagram (spec 7B) and a `>` line on the channel do not;
+- a Request datagram names its sender by six bytes of a public key, which
+  the node decrypted with the channel key: it proves membership of
+  `#meshwx`, not identity, exactly as a channel line does. The prefix is
+  the same one a DM from that phone carries, so one phone is one sender to
+  every budget above however it asks, and a spoofed prefix can only spend
+  the budget of the phone it names, never raise the bot's;
 - a stranger (no DM path) gets a channel reply only if the request arrived
   within 2 hops, at most one per 10 minutes per sender and 12 per hour;
 - a channel packet no repeater echoed is sent again at most 30 times per

@@ -653,5 +653,20 @@
       "request_code": 102,
       "reason": 1
     }
+  },
+  {
+    "name": "request_digest",
+    "hex": "011d0490010203040506600bac6a3e64",
+    "decoded": {
+      "seq": 1,
+      "bot": 1053,
+      "type": 9,
+      "name": "request",
+      "flags": 0,
+      "sender": "010203040506",
+      "ts": 1789660000,
+      "text": ">d"
+    },
+    "note": "app -> bot: 16 bytes, sender prefix 01..06, ts 1789660000 (2026-09-17 15:46:40 UTC); a resend repeats these bytes exactly"
   }
 ]

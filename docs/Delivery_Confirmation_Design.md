@@ -205,11 +205,15 @@ node's own ACK, and one of the pair was often lost. A copy of `more` got
   page whose ACK was lost; it never skips one. A page sent on the channel
   counts as delivered. "That was the whole reply" comes only after the last
   page is confirmed.
-- **`>` requests by DM.** Their answer is channel datagrams, which carry no
-  ACK. A copy is answered again only when the last answer finished going
-  out at least 12 s before (apps resend automatically 5 to 6 s apart; the
-  iOS weather tool asks again after 15 s of silence). The app request
-  limits still apply.
+- **`>` requests, by datagram or by DM.** Their answer is channel datagrams,
+  which carry no ACK. A copy is answered again only when the last answer
+  finished going out at least 12 s before (apps resend automatically 5 to
+  6 s apart; the iOS weather tool asks again after 15 s of silence). The app
+  request limits still apply. Since spec revision 6 the request itself
+  normally arrives as a datagram too (spec 7B): it carries the sender's own
+  key prefix and timestamp, so it lands on the same copy record a DM from
+  that phone would, and the app's one resend is recognised as a copy
+  whichever road each of the two took.
 - **156 bytes.** Every DM reply, page marker included, fits in 156 UTF-8
   bytes (the limit is 160; v1.15 phones receive at most 156). Pages are cut
   on bytes as well as characters, never inside a character. Channel

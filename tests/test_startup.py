@@ -429,6 +429,7 @@ from meshcore_weather import main as m
 class Radio:
     channel_idx, data_channel_idx = 1, None
     def on_channel_message(self, h): pass
+    def on_channel_request(self, h): pass
     def on_dm(self, h): pass
     def on_advert(self, h): pass
     def on_disconnect(self, h): pass

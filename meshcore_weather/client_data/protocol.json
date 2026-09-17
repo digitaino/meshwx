@@ -555,7 +555,8 @@
       "forecast": 5,
       "text": 6,
       "not_available": 7,
-      "coverage": 8
+      "coverage": 8,
+      "request": 9
     },
     "flags": {
       "warning": {
@@ -655,6 +656,10 @@
       "coverage_runs": [
         0,
         30
+      ],
+      "request_text_bytes": [
+        1,
+        40
       ]
     },
     "record_sizes": {
@@ -673,7 +678,9 @@
       "not_available": 6,
       "coverage_fixed": 14,
       "coverage_office": 1,
-      "coverage_run": 4
+      "coverage_run": 4,
+      "request_fixed": 14,
+      "request_sender": 6
     },
     "sentinels": {
       "temp_unknown": -128,
@@ -684,8 +691,9 @@
       "sky_other": 15,
       "point_unbundled": 65535,
       "observation_age_saturated": 150,
-      "warning_issued_saturated": 65535
+      "warning_issued_saturated": 65535,
+      "request_bot_any": 65535
     },
-    "notes": "MeshWX v5 (spec 5.0). Every message is the data field of one MeshCore GRP_DATA packet on #meshwx with data_type 0xFF10, at most 165 bytes. All multi-byte integers are little-endian; times are Unix minutes as u32. The type byte is (type << 4) | flags. Warnings are keyed by (event, office, etn), not by seq. Coverage (type 8, spec 7A) is the bot's own statement of what it carries: centre, radius in km, office indices, and its zones as the same UGC runs a warning's area list uses; a set flag means that list was cut, so a code missing from it means 'not stated', never 'not covered'. Never infer a bot's coverage from the stations or warnings you happen to have received. Revision 5 adds two times, both appended after everything a revision 4 decoder reads, both announced by a flags-nibble bit. Warning flag 2: two more bytes, a u16 of the minutes between the product's issuance and 'expires', so issued = expires - that; show it as 'issued', never as when the packet arrived. Observations flag 1: ceil(n / 2) more bytes, one nibble per station in 10-minute steps (station i in the low nibble of byte i div 2 when i is even, the high nibble when odd, 15 = 150 minutes or more), saying how much older than 'ts' that station's own METAR is; show 'as of ts - age' per station, and stale is measured from that, not from 'ts'. A batch with ages carries at most 13 stations. Indices into offices/stations/states come from index.json; event codes from 'events' and sky codes from 'sky_codes' in this file. The v3/v4 keys above are retained for legacy clients and are unrelated to v5."
+    "notes": "MeshWX v5 (spec 5.0). Every message is the data field of one MeshCore GRP_DATA packet on #meshwx with data_type 0xFF10, at most 165 bytes. All multi-byte integers are little-endian; times are Unix minutes as u32. The type byte is (type << 4) | flags. Warnings are keyed by (event, office, etn), not by seq. Coverage (type 8, spec 7A) is the bot's own statement of what it carries: centre, radius in km, office indices, and its zones as the same UGC runs a warning's area list uses; a set flag means that list was cut, so a code missing from it means 'not stated', never 'not covered'. Never infer a bot's coverage from the stations or warnings you happen to have received. Revision 5 adds two times, both appended after everything a revision 4 decoder reads, both announced by a flags-nibble bit. Warning flag 2: two more bytes, a u16 of the minutes between the product's issuance and 'expires', so issued = expires - that; show it as 'issued', never as when the packet arrived. Observations flag 1: ceil(n / 2) more bytes, one nibble per station in 10-minute steps (station i in the low nibble of byte i div 2 when i is even, the high nibble when odd, 15 = 150 minutes or more), saying how much older than 'ts' that station's own METAR is; show 'as of ts - age' per station, and stale is measured from that, not from 'ts'. A batch with ages carries at most 13 stations. Indices into offices/stations/states come from index.json; event codes from 'events' and sky codes from 'sky_codes' in this file. The v3/v4 keys above are retained for legacy clients and are unrelated to v5. Revision 6 adds Request (type 9, spec 7B), the one message that travels app -> bot: a `>` request flooded on the same channel as a GRP_DATA datagram. Body: 6 bytes of the sender's public key (the prefix a DM identifies the same phone by), a u32 LE of the sender's own Unix SECONDS (not minutes), then the `>` text, UTF-8, at most 40 bytes, ending the packet. `bot` names the bot asked; 65535 asks them all, and a bot ignores a request naming another bot. The answer is unchanged: the bot's normal flooded v5 messages, to everyone."
   }
 }

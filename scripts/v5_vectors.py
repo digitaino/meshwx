@@ -476,6 +476,23 @@ def build_vectors(index: dict) -> list:
         ),
     )
 
+    # 9. Request (revision 6): the one message that travels app -> bot, a `>d`
+    #    flooded on #meshwx.  Its `bot` is 0x041D, not this bot's BOT, because
+    #    the vector is the spec's own (section 7B) and an app must be able to
+    #    check the bytes it sends without knowing which bot it is talking to.
+    add(
+        "request_digest",
+        v5.encode_request(
+            1,
+            0x041D,
+            bytes.fromhex("010203040506"),
+            1789660000,
+            ">d",
+        ),
+        "app -> bot: 16 bytes, sender prefix 01..06, ts 1789660000 "
+        "(2026-09-17 15:46:40 UTC); a resend repeats these bytes exactly",
+    )
+
     return vectors
 
 

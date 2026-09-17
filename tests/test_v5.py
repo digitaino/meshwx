@@ -105,6 +105,10 @@ def reencode(d: dict) -> bytes:
         return v5.encode_not_available(
             seq, bot, request=d["request"], reason=d["reason"]
         )
+    if name == "request":
+        return v5.encode_request(
+            seq, bot, d["sender"], d["ts"], d["text"]
+        )
     if name == "coverage":
         return v5.encode_coverage(
             seq,
@@ -147,7 +151,8 @@ def test_transport_constants():
         v5.TYPE_TEXT,
         v5.TYPE_NOT_AVAILABLE,
         v5.TYPE_COVERAGE,
-    ) == (1, 2, 3, 4, 5, 6, 7, 8)
+        v5.TYPE_REQUEST,
+    ) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert v5.SUBJECT_WARNING == 0 and v5.SUBJECT_GENERAL == 8
     assert v5.REASON_NO_DATA == 0 and v5.REASON_RATE_LIMITED == 4
     assert v5.TAG_TORNADO_OBSERVED == 3
@@ -770,6 +775,114 @@ def test_not_available_strips_the_request_prefix():
 
 
 # ---------------------------------------------------------------------------
+# Request (type 9, spec 7B) — the one message that travels app -> bot
+# ---------------------------------------------------------------------------
+
+SENDER = bytes.fromhex("010203040506")
+REQ_TS = 1789660000
+
+
+def test_request_roundtrip():
+    data = v5.encode_request(1, 0x041D, SENDER, REQ_TS, ">d")
+    assert len(data) == 16
+    out = roundtrip(data)
+    assert out["name"] == "request" and out["type"] == v5.TYPE_REQUEST
+    assert out["seq"] == 1 and out["bot"] == 0x041D and out["flags"] == 0
+    assert out["sender"] == "010203040506"
+    assert out["ts"] == REQ_TS and out["text"] == ">d"
+
+    req = v5.decode_request(data)
+    assert (req.seq, req.bot, req.sender_prefix, req.ts, req.text) == (
+        1, 0x041D, "010203040506", REQ_TS, ">d"
+    )
+    assert req.as_dict() == out
+    assert not req.for_any_bot
+
+
+def test_request_layout_is_header_sender_ts_text():
+    """Byte for byte, spec 7B: 4 header, 6 sender, 4 ts LE, then the text."""
+    data = v5.encode_request(7, 0x4C7A, SENDER, REQ_TS, ">o KAUS")
+    assert data[:4] == v5.encode_header(7, 0x4C7A, v5.TYPE_REQUEST)
+    assert data[3] == 0x90                                   # type 9, flags 0
+    assert data[4:10] == SENDER
+    assert int.from_bytes(data[10:14], "little") == REQ_TS   # seconds, not minutes
+    assert data[14:] == b">o KAUS"                           # the text ends the packet
+    assert len(data) == 14 + len(">o KAUS")
+
+
+def test_request_any_bot_is_ffff():
+    req = v5.decode_request(
+        v5.encode_request(3, v5.REQUEST_BOT_ANY, SENDER, REQ_TS, ">cov")
+    )
+    assert req.bot == 0xFFFF and req.for_any_bot
+
+
+def test_request_accepts_a_hex_sender_and_rejects_a_wrong_length():
+    assert v5.encode_request(1, BOT, "010203040506", REQ_TS, ">d") == v5.encode_request(
+        1, BOT, SENDER, REQ_TS, ">d"
+    )
+    for bad in (b"\x01\x02\x03\x04\x05", b"\x01" * 7, "0102030405", "zz" * 6):
+        with pytest.raises(ValueError):
+            v5.encode_request(1, BOT, bad, REQ_TS, ">d")
+
+
+def test_request_text_must_start_with_the_prefix_and_fit_forty_bytes():
+    assert len(v5.encode_request(1, BOT, SENDER, REQ_TS, ">f " + "x" * 37)) == 54
+    with pytest.raises(ValueError):
+        v5.encode_request(1, BOT, SENDER, REQ_TS, "d")              # no '>'
+    with pytest.raises(ValueError):
+        v5.encode_request(1, BOT, SENDER, REQ_TS, "")
+    with pytest.raises(ValueError):
+        v5.encode_request(1, BOT, SENDER, REQ_TS, ">f " + "x" * 38)  # 41 bytes
+    with pytest.raises(ValueError):
+        v5.encode_request(1, BOT, SENDER, -1, ">d")
+
+
+def test_request_carries_utf8_text():
+    data = v5.encode_request(1, BOT, SENDER, REQ_TS, ">f Peñitas TX")
+    assert v5.decode_request(data).text == ">f Peñitas TX"
+
+
+@pytest.mark.parametrize(
+    "data,why",
+    [
+        (b"", "empty"),
+        (bytes.fromhex("011d0490010203040506600bac6a"), "no text at all, 14 bytes"),
+        (bytes.fromhex("011d0480010203040506600bac6a3e64"), "type 8, not 9"),
+        (bytes.fromhex("011d0490010203040506600bac6a6464"), "text does not start with '>'"),
+        (bytes.fromhex("011d0490010203040506600bac6a3eff"), "text is not UTF-8"),
+        (v5.encode_header(1, BOT, v5.TYPE_REQUEST) + SENDER
+         + REQ_TS.to_bytes(4, "little") + b">f " + b"x" * 38, "41 bytes of text"),
+    ],
+)
+def test_malformed_requests_are_refused(data, why):
+    with pytest.raises(ValueError):
+        v5.decode_request(data)
+    if len(data) >= 4 and data[3] >> 4 == v5.TYPE_REQUEST:
+        with pytest.raises(ValueError):
+            v5.decode(data)          # the generic dispatch refuses them too
+
+
+def test_request_flags_nibble_is_reserved_and_ignored():
+    data = bytearray(v5.encode_request(1, BOT, SENDER, REQ_TS, ">d"))
+    data[3] |= 0x0F                                   # a future app sets flags
+    req = v5.decode_request(bytes(data))
+    assert req.flags == 0x0F and req.text == ">d"     # still read as a request
+
+
+def test_the_spec_vector_is_these_exact_bytes():
+    """docs/MeshWX_v5_Spec.md 7B quotes these sixteen bytes; an app checks
+    itself against them, so they may never move."""
+    assert v5.encode_request(1, 0x041D, SENDER, 1789660000, ">d") == bytes.fromhex(
+        "011d0490010203040506600bac6a3e64"
+    )
+    vector = next(v for v in _vectors() if v["name"] == "request_digest")
+    assert vector["hex"] == "011d0490010203040506600bac6a3e64"
+    assert vector["decoded"]["sender"] == "010203040506"
+    assert vector["decoded"]["ts"] == 1789660000 and vector["decoded"]["text"] == ">d"
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -866,6 +979,7 @@ def test_protocol_json_v5_block():
     assert block["types"] == {
         "warning": 1, "cancel": 2, "digest": 3, "observations": 4,
         "forecast": 5, "text": 6, "not_available": 7, "coverage": 8,
+        "request": 9,
     }
     assert block["flags"]["coverage"] == {
         "zones_truncated": v5.FLAG_COVERAGE_ZONES_CUT,
@@ -874,6 +988,11 @@ def test_protocol_json_v5_block():
     assert block["limits"]["coverage_offices"] == [0, v5.MAX_COVERAGE_OFFICES]
     assert block["limits"]["coverage_runs"] == [0, v5.MAX_COVERAGE_RUNS]
     assert block["record_sizes"]["coverage_fixed"] == 14
+    # Revision 6: the app's Request datagram (spec 7B).
+    assert block["record_sizes"]["request_fixed"] == v5.MIN_REQUEST_SIZE - 1 == 14
+    assert block["record_sizes"]["request_sender"] == v5.REQUEST_SENDER_BYTES
+    assert block["limits"]["request_text_bytes"] == [1, v5.MAX_REQUEST_TEXT]
+    assert block["sentinels"]["request_bot_any"] == v5.REQUEST_BOT_ANY
     assert block["header"]["bot"]["offset"] == 1
     assert block["not_available_reasons"]["rate_limited"] == v5.REASON_RATE_LIMITED
     assert block["text_subjects"]["general"] == v5.SUBJECT_GENERAL
@@ -911,7 +1030,7 @@ def test_vectors_cover_every_message_type():
     names = {v5.decode(bytes.fromhex(v["hex"]))["name"] for v in _vectors()}
     assert names == {
         "warning", "cancel", "digest", "observations", "forecast", "text",
-        "not_available", "coverage",
+        "not_available", "coverage", "request",
     }
 
 

@@ -10,6 +10,7 @@ import logging
 import os
 import time
 from collections.abc import Callable, Coroutine
+from dataclasses import replace
 from typing import Any
 
 from meshcore import MeshCore, EventType
@@ -28,6 +29,7 @@ from meshcore_weather.meshcore.delivery import (
     packet_hash,
 )
 from meshcore_weather.mqtt import MqttPublisher
+from meshcore_weather.protocol import v5
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +181,7 @@ class MeshcoreRadio:
         self._channel_idx: int | None = None
         self._data_channel_idx: int | None = None
         self._channel_handler: Callable | None = None
+        self._channel_request_handler: Callable | None = None
         self._dm_handler: Callable | None = None
         self._advert_handler: Callable | None = None
         self._advert_task: asyncio.Task | None = None
@@ -209,6 +212,12 @@ class MeshcoreRadio:
     # Keep old name for backwards compat during transition
     def on_message(self, handler: Callable) -> None:
         self._channel_handler = handler
+
+    def on_channel_request(self, handler: Callable) -> None:
+        """Register handler: async def handler(request, hops, snr), where
+        `request` is a decoded `v5.Request` (spec 7B) that arrived as a
+        datagram on our own channel."""
+        self._channel_request_handler = handler
 
     def on_advert(self, handler: Callable) -> None:
         """Register handler: async def handler(contact_name, pubkey_prefix)"""
@@ -495,6 +504,9 @@ class MeshcoreRadio:
 
         # Subscribe to channel messages, DMs, and new adverts
         self._mc.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_msg)
+        # GRP_DATA on a channel (RESP_CODE_CHANNEL_DATA_RECV, 0x1B): an app's
+        # Request datagram arrives here (spec 7B).
+        self._mc.subscribe(EventType.CHANNEL_DATA_RECV, self._on_channel_data)
         self._mc.subscribe(EventType.CONTACT_MSG_RECV, self._on_dm)
         self._mc.subscribe(EventType.ADVERTISEMENT, self._on_advert)       # a node we know adverted again
         self._mc.subscribe(EventType.NEW_CONTACT, self._on_new_contact)     # a node we did not know
@@ -867,6 +879,56 @@ class MeshcoreRadio:
                 await self._channel_handler(str(channel_idx), sender, text, hops)
             except Exception:
                 logger.exception("Error in channel message handler")
+
+    async def _on_channel_data(self, event) -> None:
+        """A GRP_DATA datagram on a channel (spec 2.1, 7B).
+
+        Only one kind of datagram is addressed to the bot: an app's Request
+        (type 9) on our own channel. Everything else — the link-test type
+        0xFF1E, a v5 message of ours a repeater echoed back, a third party's
+        experiment — is left alone, exactly as it was before type 9 existed.
+        A malformed request is dropped here and never reaches the bot.
+        """
+        payload = event.payload or {}
+        channel_idx = payload.get("channel_idx")
+        if channel_idx is None or channel_idx == 0 or channel_idx != self._data_channel_idx:
+            return
+        if payload.get("data_type") != v5.DATA_TYPE:
+            return
+        raw = payload.get("payload") or b""
+        try:
+            data = bytes.fromhex(raw) if isinstance(raw, str) else bytes(raw)
+        except ValueError:
+            logger.debug("Unparseable channel datagram on ch %s", channel_idx)
+            return
+        # The type nibble decides. Types 1-8 on this channel are ours (or
+        # another bot's) going the other way; the bot is not their audience.
+        if len(data) < 4 or data[3] >> 4 != v5.TYPE_REQUEST:
+            return
+        try:
+            request = v5.decode_request(data)
+        except ValueError as e:
+            logger.info("Dropped a malformed Request datagram on ch %d (%d B): %s",
+                        channel_idx, len(data), e)
+            return
+        text = clean_text(request.text, v5.MAX_REQUEST_TEXT)
+        if text != request.text:
+            request = replace(request, text=text)
+
+        plen = payload.get("path_len")
+        hops = int(plen) if isinstance(plen, int) and 0 <= plen < PATH_FLOOD else None
+        snr = payload.get("SNR")
+        snr = float(snr) if isinstance(snr, (int, float)) else None
+        logger.info("Request datagram from %s on ch %d (%s, bot %04X, ts %d): %s",
+                    request.sender_prefix, channel_idx,
+                    f"{hops} hops" if hops is not None else "hops ?",
+                    request.bot, request.ts, request.text)
+
+        if self._channel_request_handler:
+            try:
+                await self._channel_request_handler(request, hops, snr)
+            except Exception:
+                logger.exception("Error in channel request handler")
 
     async def _on_dm(self, event) -> None:
         payload = event.payload

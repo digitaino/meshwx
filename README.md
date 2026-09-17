@@ -18,7 +18,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 - **An operator node.** In production: a Raspberry Pi 4 (2 GB) running goestools for the dish and this bot for the mesh, with a MeshCore companion radio on USB, under systemd. Any Linux or macOS box with internet EMWIN works for development.
 - **MeshWX v5 for apps.** Warnings with storm tags, polygons and county/zone runs, cancels, an active-warning digest for loss recovery, batched observations, point forecasts, text and "not available", each one MeshCore `GRP_DATA` packet on `#meshwx`. The mesh carries identifiers and numbers; the phone carries the tables. Spec: [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md).
 - **Text replies for people.** Anyone on `#meshwx` can send `wx austin tx`, `warn TX` or `sat`, on the channel or by DM, and get a text reply, by DM where the bot can reach them. Long replies are paged with `more`. This is how people without the app use the bot.
-- **One request grammar for apps and people.** An app sends `>f 102` and gets a binary answer on the channel for every listener; a person sends `forecast austin tx` and gets text.
+- **One request grammar for apps and people.** An app sends `>f 102` and gets a binary answer on the channel for every listener; a person sends `forecast austin tx` and gets text. An app's `>` arrives as a flooded Request datagram (v5 type 9), by DM, or as channel text; the answer is the same either way.
 - **Delivery confirmation.** The radio hears a repeater's copy of each channel packet the bot sends. When none comes back within the echo window, the packet goes out once more, byte for byte the same, so nobody sees it twice. DM replies wait for the recipient's ACK instead: about 2 s after the request, one at a time per person, one timestamp for all tries (attempts 0 and 1 on the route, then one by flood). A phone's resend of a request is not answered twice.
 - **Discovery by advert.** The node is named `WX-<city>` (e.g. `WX-AUS`); apps list adverts whose name starts with `WX-`. No discovery channel, no beacon.
 - **A broadcast schedule** of four v5 jobs (warnings on change, digest, observations, home forecast), edited in the portal and kept in `data/broadcast_config.json`.
@@ -69,9 +69,23 @@ the same number.
 | 5 | Forecast: up to 7 whole days for a PFM point | 12 B + 5 per day | every 6 h for the home point, on request |
 | 6 | Text: warning narrative, forecast discussion, space weather, storm reports, rainfall, METAR/TAF, outlook, receiver status | up to 8 chunks of 157 B of text | on request only |
 | 7 | Not available | 6 B | answer to a request the bot cannot serve |
+| 8 | Coverage: centre, radius, NWS offices and the zone runs this bot carries | 14 B + 1 per office + 4 per run | every 3 h, on request |
+| 9 | Request: an app's `>` request, the one message that travels app -> bot | 14 B + the text (a `>d` is 16 B) | sent by the app, flooded on `#meshwx` |
 
-Requests start with `>` and reach the bot as a DM or as text on `#meshwx`;
-the answer always comes back on `#meshwx` as v5 messages.
+Requests start with `>` and reach the bot three ways: as a **Request
+datagram** (type 9, the normal path since spec revision 6), as a DM, or as
+text on `#meshwx`. Whichever road a request took, the answer is the same:
+v5 messages flooded on `#meshwx`, to everyone, never as a DM.
+
+A Request datagram carries six bytes of the sender's public key, the
+sender's own Unix seconds and the `>` text (at most 40 bytes). It names the
+bot it is asking in the header's `bot` field — `0xFFFF` asks every bot on
+the channel — and a bot ignores one that names another bot. It replaced the
+DM because a flood needs no route: a DM rides one stored route and is lost
+silently once that route goes stale, which is what happened to seven
+requests in six minutes on 16 September while the bot was answering
+everyone else. The DM form still works, for an app whose firmware cannot
+send channel datagrams (`CMD_SEND_CHANNEL_DATA`, 0x3E).
 
 | Request | Answer |
 |---|---|
@@ -88,12 +102,16 @@ the answer always comes back on `#meshwx` as v5 messages.
 | `>cov` | What this bot covers: centre, radius, NWS offices, zone runs. One packet, also broadcast every 3 h |
 
 Limits: one request per sender every 5 s and 60 answer packets per hour
-across all senders; a `>` sent as a DM also counts against the text-command
-limits. A throttled request gets no reply.
+across all senders. A `>` sent as a DM also counts against the text-command
+limits; a Request datagram and a `>` line on the channel do not. One phone
+is one sender however it asks: the six key bytes in a datagram are the same
+prefix its DMs carry. A resend (the same sender, text and timestamp) is
+answered again only once the previous answer finished going out at least
+12 s earlier. A throttled request gets no reply.
 
 The full byte layouts, the preload bundle, rendering guidance and these
 rules in detail: **[`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md)**
-(revision 5) and [`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json).
+(revision 6) and [`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json).
 Reference codec: [`meshcore_weather/protocol/v5.py`](meshcore_weather/protocol/v5.py).
 
 ## For client developers (iOS, web, embedded)
@@ -102,6 +120,14 @@ Start and finish with **`docs/MeshWX_v5_Spec.md`**. If you built against
 revision 2, read its section 16 first: the wire layout did not change, the
 bundle did. Decode the test vectors, ship the `client_data/` bundle, follow
 the request rules.
+
+Revision 6 adds one message, and it is the only one an app sends: the
+Request datagram of section 7B. Send `>` requests that way — same channel,
+same `data_type`, type nibble 9 — and keep the DM form only for a radio
+whose firmware has no `CMD_SEND_CHANNEL_DATA` (0x3E). Ask once, and if
+nothing has come back after 10 s send the same bytes once more, same
+timestamp; never a third time. The `request_digest` vector is those sixteen
+bytes.
 
 | Bundle file | Contents (spec section 9) |
 |---|---|
@@ -274,8 +300,9 @@ couple of minutes for a Pi with tens of thousands of files:
   are still loading. Ask again in a minute." without spending any of that
   sender's hourly reply budget (a command on the channel gets the same
   sentence, and is rate-limited as a channel reply always is);
-- a `>` request is answered Not available, reason 0 (no data yet), off the
-  hourly packet budget, so the app's own retry still gets a real answer;
+- a `>` request — by datagram, by DM or as channel text — is answered Not
+  available, reason 0 (no data yet), off the hourly packet budget, so the
+  app's own retry still gets a real answer;
 - `help`, `cov` and `sat` are answered normally: none of them reads a product;
 - the scheduler broadcasts nothing, so no digest, observation or coverage
   message is ever built from an empty store.
@@ -597,10 +624,12 @@ started on the channel continues by DM. A paging session lasts 15 minutes.
 
 Limits: one reply per sender every 5 seconds (2 seconds for `more`), at most
 40 per sender and 400 in total per hour; a `>` request sent by DM counts
-too. Anything over a limit gets no reply. A resend of a DM request is never
+too. A `>` request that arrives as a Request datagram or as channel text does
+not: it meets only the app limits (5 s per sender, 60 answer packets an
+hour). Anything over a limit gets no reply. A resend of a request is never
 held to the 5 seconds and costs nothing unless something is sent for it; a
-`>` request resent by DM is answered again only 12 seconds after the last
-answer went out.
+`>` request sent again, by datagram or by DM, is answered again only 12
+seconds after the last answer went out.
 
 ### Admin commands
 
@@ -647,7 +676,7 @@ meshcore_weather/
 │   └── pfm.py             # PFM column-position parser + daily downsampler
 │
 ├── protocol/
-│   ├── v5.py              # MeshWX v5 codec (stdlib only; the reference encoder and decoder)
+│   ├── v5.py              # MeshWX v5 codec (stdlib only; the reference encoder and decoder, Request included)
 │   ├── v5_builders.py     # Store data -> v5 messages (one implementation for jobs and requests)
 │   ├── broadcaster.py     # AppResponder: answers `>` requests, owns the Scheduler
 │   ├── warnings.py        # pyIEM-backed warning extraction with storm tags
@@ -662,7 +691,7 @@ meshcore_weather/
 │   └── scheduler.py       # Tick loop and the one transmit path: spacing, seq stamping, state saved across restarts
 │
 ├── meshcore/
-│   ├── radio.py           # MeshCore companion: port discovery, channels, DMs, adverts, GRP_DATA, contacts
+│   ├── radio.py           # MeshCore companion: port discovery, channels, DMs, adverts, GRP_DATA in and out, contacts
 │   ├── delivery.py        # Echo and ACK tracking, the single resend, CoreScope lookups
 │   ├── health.py          # Radio health verdict (tx_suspect, rx_silent, idle, tx_off)
 │   └── profile.py         # Node profile and its adoption onto a replacement radio
@@ -701,7 +730,7 @@ docs/        below
 
 ## Docs
 
-- [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md) — the protocol and the app developer's guide (wire, requests, bundle, rendering), revision 5. The current contract.
+- [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md) — the protocol and the app developer's guide (wire, requests, bundle, rendering), revision 6. The current contract.
 - [`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json) — test vectors every client must pass, generated by `scripts/v5_vectors.py`
 - [`docs/Radio_Swap.md`](docs/Radio_Swap.md) — replacing the radio (same or different board): the node profile, adoption, the udev rule, the Health card
 - [`docs/Delivery_Confirmation_Design.md`](docs/Delivery_Confirmation_Design.md) — echo tracking and the single resend: the design and the firmware facts it rests on
@@ -741,6 +770,7 @@ Shipped:
 - [x] pyIEM canonical NWS product parsing (VTEC, UGC, polygons) and a VTEC event lifecycle tracker
 - [x] PFM forecast source, sent as whole days
 - [x] MeshWX v5 revision 5: GRP_DATA on `#meshwx`, warning/cancel/digest/observations/forecast/text/not available/coverage, `>` request grammar, per-station observation ages and warning issue times
+- [x] MeshWX v5 revision 6: the Request datagram (type 9) — an app's `>` flooded on `#meshwx` instead of DMed down a route that may have gone stale
 - [x] App requests answered on the channel so one request serves every listener
 - [x] Discovery by advert (`WX-<city>` chat node)
 - [x] Echo tracking and one byte-identical resend; DM ACKs; optional CoreScope check

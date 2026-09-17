@@ -73,6 +73,9 @@ class ChannelFakeRadio:
     def find_contact_by_key(self, prefix):
         return None
 
+    def on_channel_request(self, h):
+        self._req = h
+
     async def send_channel_message(self, ch, text, ev=None):
         self.channel_sent.append((ch, text))
 

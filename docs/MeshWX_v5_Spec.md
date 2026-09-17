@@ -1,6 +1,6 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, revision 5, 2026-09-16. This is the document an app developer
+Version 5.0, revision 6, 2026-09-17. This is the document an app developer
 builds against. It replaces the v3/v4 protocol documents, the April 2026
 iOS brief and the v4 client guide, all of which are now superseded.
 
@@ -132,7 +132,8 @@ Message types:
 | 6 | Text | 8 |
 | 7 | Not available | 8.3 |
 | 8 | Coverage | 7A |
-| 9 to 11 | Reserved for future structured products | |
+| 9 | Request (app → bot, new in revision 6) | 7B |
+| 10 to 11 | Reserved for future structured products | |
 | 12 to 15 | Free for third-party experiments; the bot never sends them | |
 
 Receivers ignore unknown types.
@@ -511,6 +512,69 @@ What coverage governs is unchanged (section 8.2): the scheduled broadcasts
 and the three argument-free requests `>d`, `>w` and `>o`. A request that
 names a place is served nationwide whatever this message says.
 
+## 7B. Request (type 9)
+
+An app's request, **flooded on `#meshwx` as a datagram** instead of sent
+as a DM. New in revision 6. It carries the same `>` text as section 8.2;
+what changes is the transport, and the reason is in the field record of
+16 September (docs/MESHWX_UI.md §3.1.2 in the app repository): a DM rides
+one stored route hop by hop and fails silently when that route has gone
+stale, so seven requests in six minutes never reached a bot that was on
+the air and answering everyone else, while every answer — a flood — got
+through. A flood needs no route. It costs one transmission per repeater
+in reach, about what a DM costs by its second try, and it arrives in the
+one to three seconds a text request takes.
+
+The answer is unchanged: the same messages, flooded on `#meshwx`, to
+everyone (section 8.2). Nothing is addressed back to the phone.
+
+Common header (section 2.2), read for a request:
+
+| Field | Meaning in a Request |
+|---|---|
+| `seq` | The **sender's** counter, one more per new request, repeated on a resend. Informational; the bot keys copies on `ts` below |
+| `bot` | The bot asked, as in every message (two bytes of its public key). `0xFFFF` = any bot. A bot ignores a request that names another bot, which is how an app chooses its bot on a shared channel (section 12) |
+| `type` | 9; flags nibble 0 (reserved, a bot ignores it) |
+
+Body:
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 4 | 6 | `sender` | The first six bytes of the sender's public key, in key order — the prefix a DM identifies the same phone by, so a request by datagram and one by DM from one phone are one sender to the bot's limits and its copy rule |
+| 10 | 4 | `ts` | u32 LE, Unix seconds: the request's own time, the app's clock. A resend repeats it; that is what makes it a copy |
+| 14 | ≤ 40 | `text` | The request, exactly as section 8.2 writes it, UTF-8, starting with `>`, no terminator. The packet ends where the text ends |
+
+`request_digest` in `meshwx_v5_vectors.json` is `>d` to bot `0x041D` from
+sender `01 02 03 04 05 06` at `ts` 1789660000, `seq` 1 — **16 bytes**:
+
+```
+01 1D 04 90 01 02 03 04 05 06 60 0B AC 6A 3E 64
+```
+
+**Copies.** The bot treats the same `sender` + `ts` + `text` as one
+request for 30 minutes, and the same `sender` + `text` within 2 minutes as
+one request whatever the `ts` (the DM rule, section 13). A copy is answered
+again, from the bot's cache, only once its previous answer finished going
+out at least 12 s earlier; a quicker copy gets nothing, so a resend can
+never double the airtime of an answer.
+
+**Limits.** A Request datagram meets the app limits of section 8.2 — one
+request per sender every 5 s, 60 answer packets an hour across all senders
+— and not the limiter for people's text commands, exactly like a `>` line
+sent as channel text.
+
+**What the app does (section 13).** Send once. If no answer arrived after
+10 s, send the same bytes once more (same `ts`, same `seq`). Never a third
+time. There is no acknowledgement for a datagram; the answer is the
+acknowledgement. An app whose radio cannot send channel datagrams
+(companion firmware before `CMD_SEND_CHANNEL_DATA`, 0x3E) keeps using the
+DM of section 8.2.
+
+**A bot that does not implement type 9** ignores it, as section 2.2 says
+of every unknown type. Such a bot still answers the DM form, so an app may
+fall back to a DM after the second datagram goes unanswered; this bot
+implements type 9 and an app talking to it need not.
+
 ## 8. Text (type 6) and Not available (type 7)
 
 ### 8.1 Text
@@ -534,9 +598,10 @@ at most once).
 
 ### 8.2 Request grammar (app side)
 
-An app request starts with `>` and may be sent either as a DM to the bot
-or as text on `#meshwx`. Either way the answer comes back on `#meshwx` as
-v5 messages, never as a DM. The same commands without `>` are what people
+An app request starts with `>` and may be sent as a **Request datagram**
+on `#meshwx` (section 7B, the normal path since revision 6), as a DM to
+the bot, or as text on `#meshwx`. Every way the answer comes back on
+`#meshwx` as v5 messages, never as a DM. The same commands without `>` are what people
 type and get a text DM back.
 
 | Request | Answer |
@@ -901,9 +966,13 @@ range shows old data; saying so is the feature.
   hear the same warning identity from both, and it is the same warning.
 - Send requests to the bot you selected. How many bots answer depends on
   how the request was sent, not on what it names:
+  - **As a Request datagram (section 7B)**: every bot on the channel
+    decrypts it, and only the one its `bot` field names answers (`0xFFFF`
+    asks them all). This is the normal path for an app since revision 6,
+    and it is how you choose which bot serves you.
   - **As a DM**: only the addressed bot can decrypt it, so only that bot
-    answers. This is the normal path for an app, and it is how you choose
-    which bot serves you.
+    answers. Still supported; a route that has gone stale loses it
+    silently, which is why the datagram replaced it.
   - **As channel text on `#meshwx`**: every bot on the channel decrypts
     it, and each one that can serve it answers. Expect duplicates where
     coverage overlaps.
@@ -914,10 +983,12 @@ range shows old data; saying so is the feature.
 ## 13. Airtime etiquette
 
 - Never poll. Request on user action, and at most once per 5 seconds.
-- Wait 15 s for an answer before you ask again. A `>` request sent again
-  by DM (same text within 2 minutes, or same timestamp within 30 minutes)
-  is answered again only when the last answer finished going out at least
-  12 s earlier; a quicker repeat gets nothing.
+- Wait for an answer before you ask again: 10 s for a Request datagram,
+  15 s for a DM. Ask a datagram at most twice, with the same `ts`. A `>`
+  request sent again (same text within 2 minutes, or same `ts` within 30
+  minutes, by datagram or by DM) is answered again only when the last
+  answer finished going out at least 12 s earlier; a quicker repeat gets
+  nothing.
 - Prefer the digest over `>w` when you only need to know what is active.
 - Do not re-request something you already hold. The bot has no cache: it
   rebuilds and re-transmits the whole answer, spending airtime for
@@ -953,7 +1024,15 @@ event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
 
-## 16. Changes in revision 5
+## 16. Changes in revision 6
+
+Revision 6 adds one message and changes no existing byte: **Request
+(type 9, section 7B)**, an app's `>` request flooded on `#meshwx` as a
+datagram. The DM and channel-text forms of section 8.2 still work; a
+revision 5 bot ignores type 9 and a revision 5 app never sends it.
+Sections 8.2, 12 and 13 say where the datagram fits.
+
+## 16A. Changes in revision 5
 
 Revision 5 adds two times and nothing else. Both are appended after
 everything revision 4 reads, both are announced by a flags-nibble bit, and

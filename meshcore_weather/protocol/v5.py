@@ -9,6 +9,10 @@ Every v5 message is the ``data`` field of one MeshCore ``GRP_DATA`` packet on
 the ``#meshwx`` channel with ``data_type = 0xFF10``.  ``data`` is at most 165
 bytes and every message fits in one packet; only Text carries chunk numbers.
 
+Every type but one travels bot -> app.  Request (type 9, spec 7B, new in
+revision 6) is the app's `>` request flooded on the same channel: the bot
+decodes it and never sends one.
+
 Layout of the 4-byte common header::
 
     offset 0  u8   seq    per-bot sequence number, wraps 255 -> 0
@@ -36,6 +40,7 @@ __all__ = [
     "TYPE_TEXT",
     "TYPE_NOT_AVAILABLE",
     "TYPE_COVERAGE",
+    "TYPE_REQUEST",
     "TYPE_NAMES",
     "SUBJECT_WARNING",
     "SUBJECT_AFD",
@@ -83,7 +88,12 @@ __all__ = [
     "MAX_PERIODS",
     "MAX_COVERAGE_OFFICES",
     "MAX_COVERAGE_RUNS",
+    "REQUEST_SENDER_BYTES",
+    "REQUEST_BOT_ANY",
+    "MAX_REQUEST_TEXT",
+    "MIN_REQUEST_SIZE",
     "Header",
+    "Request",
     "encode_header",
     "encode_warning",
     "encode_cancel",
@@ -94,6 +104,8 @@ __all__ = [
     "encode_text",
     "text_chunks",
     "encode_not_available",
+    "encode_request",
+    "decode_request",
     "decode",
     "areas_from_ugcs",
     "wind_dir_nibble",
@@ -122,6 +134,9 @@ TYPE_FORECAST = 5
 TYPE_TEXT = 6
 TYPE_NOT_AVAILABLE = 7
 TYPE_COVERAGE = 8
+#: App -> bot: a `>` request flooded on #meshwx (spec 7B, revision 6).  It is
+#: the only type an app sends; the bot never transmits one.
+TYPE_REQUEST = 9
 
 TYPE_NAMES = {
     TYPE_WARNING: "warning",
@@ -132,6 +147,7 @@ TYPE_NAMES = {
     TYPE_TEXT: "text",
     TYPE_NOT_AVAILABLE: "not_available",
     TYPE_COVERAGE: "coverage",
+    TYPE_REQUEST: "request",
 }
 
 # Text subjects (spec 8.1).
@@ -219,6 +235,15 @@ MAX_PERIODS = 14
 # one packet, so a full office list never costs a zone run or the reverse.
 MAX_COVERAGE_OFFICES = 24
 MAX_COVERAGE_RUNS = 30
+# Request (spec 7B): six bytes of the sender's public key — the prefix a DM
+# identifies the same phone by — then the sender's own Unix seconds, then the
+# `>` text, which ends the packet.
+REQUEST_SENDER_BYTES = 6
+#: `bot` in a Request: every bot on the channel answers it.
+REQUEST_BOT_ANY = 0xFFFF
+MAX_REQUEST_TEXT = 40
+#: Header + sender + ts + the one `>` byte a request cannot do without.
+MIN_REQUEST_SIZE = HEADER_SIZE + REQUEST_SENDER_BYTES + 4 + 1   # 15
 
 # Sentinels.
 _TEMP_UNKNOWN = -128
@@ -1110,6 +1135,132 @@ def _decode_not_available(data: bytes, hdr: Header) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Request (type 9, spec 7B) — app -> bot, the only message a bot receives
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Request:
+    """One decoded Request datagram.
+
+    ``sender_prefix`` is the first six bytes of the sender's public key as 12
+    lower-case hex characters: exactly the prefix a DM from the same phone
+    carries, so a request by datagram and one by DM are one sender to the
+    bot's limits and its copy rule (spec 7B).
+    """
+
+    seq: int
+    bot: int
+    sender_prefix: str
+    ts: int
+    text: str
+    flags: int = 0
+
+    def as_dict(self) -> dict:
+        return {
+            "seq": self.seq,
+            "bot": self.bot,
+            "type": TYPE_REQUEST,
+            "name": TYPE_NAMES[TYPE_REQUEST],
+            "flags": self.flags,
+            "sender": self.sender_prefix,
+            "ts": self.ts,
+            "text": self.text,
+        }
+
+    @property
+    def for_any_bot(self) -> bool:
+        return self.bot == REQUEST_BOT_ANY
+
+
+def _sender_bytes(sender_prefix) -> bytes:
+    """The six sender bytes, from raw bytes or from 12 hex characters."""
+    if isinstance(sender_prefix, str):
+        try:
+            sender_prefix = bytes.fromhex(sender_prefix)
+        except ValueError as exc:
+            raise ValueError(f"sender is not hex: {sender_prefix!r}") from exc
+    sender_prefix = bytes(sender_prefix)
+    if len(sender_prefix) != REQUEST_SENDER_BYTES:
+        raise ValueError(
+            f"sender must be {REQUEST_SENDER_BYTES} bytes, got {len(sender_prefix)}"
+        )
+    return sender_prefix
+
+
+def encode_request(
+    seq: int,
+    bot: int,
+    sender_prefix,
+    ts: int,
+    text: str,
+) -> bytes:
+    """Encode an app's Request datagram (spec 7B).
+
+    ``sender_prefix`` is six bytes of the sender's public key (or the same
+    twelve hex characters), ``ts`` the sender's own Unix seconds — repeated on
+    a resend, which is what makes it a copy — and ``text`` the `>` request of
+    section 8.2.  Nothing here is ever sent by the bot; it exists so the
+    decoder has a matching encoder and the test vectors can be built.
+    """
+    sender = _sender_bytes(sender_prefix)
+    body = text.encode("utf-8")
+    if not body.startswith(b">"):
+        raise ValueError(f"a request must start with '>', got {text!r}")
+    if len(body) > MAX_REQUEST_TEXT:
+        raise ValueError(
+            f"request text is {len(body)} bytes, over the {MAX_REQUEST_TEXT}-byte limit"
+        )
+    out = (
+        encode_header(seq, bot, TYPE_REQUEST)
+        + sender
+        + struct.pack("<I", _u32(ts, "ts"))
+        + body
+    )
+    return _check_size(out, "request")
+
+
+def decode_request(data: bytes) -> Request:
+    """Decode a Request datagram, or raise ``ValueError``.
+
+    Everything the spec calls a shape is checked here, because this is the one
+    message the bot takes from strangers: the length, the type nibble, the
+    sender's six bytes, and a text that is valid UTF-8, starts with `>` and is
+    at most 40 bytes.  The flags nibble is reserved and ignored.
+    """
+    if isinstance(data, str):
+        data = bytes.fromhex(data)
+    data = bytes(data)
+    if len(data) < MIN_REQUEST_SIZE:
+        raise ValueError(
+            f"truncated request: need {MIN_REQUEST_SIZE} bytes, have {len(data)}"
+        )
+    hdr = _decode_header(data)
+    if hdr.type != TYPE_REQUEST:
+        raise ValueError(f"not a request: type {hdr.type}")
+    sender = data[HEADER_SIZE:HEADER_SIZE + REQUEST_SENDER_BYTES]
+    off = HEADER_SIZE + REQUEST_SENDER_BYTES
+    (ts,) = struct.unpack_from("<I", data, off)
+    raw = data[off + 4:]
+    if len(raw) > MAX_REQUEST_TEXT:
+        raise ValueError(
+            f"request text is {len(raw)} bytes, over the {MAX_REQUEST_TEXT}-byte limit"
+        )
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"request text is not UTF-8: {exc}") from exc
+    if not text.startswith(">"):
+        raise ValueError(f"a request must start with '>', got {text[:8]!r}")
+    return Request(seq=hdr.seq, bot=hdr.bot, sender_prefix=sender.hex(), ts=ts,
+                   text=text, flags=hdr.flags)
+
+
+def _decode_request(data: bytes, hdr: Header) -> dict:
+    return decode_request(data).as_dict()
+
+
+# --------------------------------------------------------------------------
 # Dispatch
 # --------------------------------------------------------------------------
 
@@ -1122,6 +1273,7 @@ _DECODERS = {
     TYPE_TEXT: _decode_text,
     TYPE_NOT_AVAILABLE: _decode_not_available,
     TYPE_COVERAGE: _decode_coverage,
+    TYPE_REQUEST: _decode_request,
 }
 
 

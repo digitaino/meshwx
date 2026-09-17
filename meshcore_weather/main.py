@@ -169,6 +169,7 @@ class WeatherBot:
             self._sdr_monitor = SdrMonitor()
             self._sdr_monitor.start()
         self.radio.on_channel_message(self._handle_channel_message)
+        self.radio.on_channel_request(self._handle_channel_request)
         self.radio.on_dm(self._handle_dm)
         self.radio.on_advert(self._handle_advert)
         self.radio.on_disconnect(self._handle_radio_lost)
@@ -249,6 +250,7 @@ class WeatherBot:
             self._broadcaster = None
         self.radio = MeshcoreRadio()
         self.radio.on_channel_message(self._handle_channel_message)
+        self.radio.on_channel_request(self._handle_channel_request)
         self.radio.on_dm(self._handle_dm)
         self.radio.on_advert(self._handle_advert)
         self.radio.on_disconnect(self._handle_radio_lost)
@@ -528,6 +530,88 @@ class WeatherBot:
         if not forced and await self.radio.advert_if_stale():
             logger.info("Adverted so %s can DM us next time", sender)
 
+    # -- Request datagrams (spec 7B) -----------------------------------------
+    #
+    # Since revision 6 an app's `>` request normally arrives as a GRP_DATA
+    # datagram flooded on #meshwx, not as a DM: a flood needs no route, and a
+    # stale route is what used to lose the DMs silently. Nothing about the
+    # answer changes, and nothing about the limits: a datagram meets the app
+    # limiter inside the broadcaster (5 s per sender, 60 packets an hour) and
+    # not the limiter for people's text commands, exactly like a `>` line sent
+    # as channel text. The sender is the six key bytes in the datagram, which
+    # is the prefix a DM from the same phone carries, so one phone is one
+    # sender to the limits and to the copy rule however it asks.
+
+    def bot_id(self) -> int:
+        """The `bot` field of our own v5 headers: the first two bytes of our
+        public key, little-endian. The scheduler owns it when broadcasts are
+        on, so an answer and this check can never disagree."""
+        sched = getattr(self._broadcaster, "scheduler", None)
+        if sched is not None:
+            return sched.bot_id()
+        from meshcore_weather.protocol import v5_builders as b
+        return b.bot_id(getattr(self.radio, "public_key", "") or None)
+
+    def _name_for_key(self, prefix: str) -> str | None:
+        """The name we know a public-key prefix by, if we know one at all."""
+        for name, key in self._known_contacts.items():
+            if key == prefix:
+                return name
+        try:
+            contact = self.radio.find_contact_by_key(prefix)
+        except Exception:
+            contact = None
+        name = str((contact or {}).get("adv_name") or "").strip()
+        return name or None
+
+    async def _handle_channel_request(self, request, hops: int | None = None,
+                                      snr: float | None = None) -> None:
+        """An app's Request datagram on our own channel (spec 7B). `request`
+        is a decoded `v5.Request`; the radio has already checked its shape."""
+        from meshcore_weather.protocol import v5
+
+        mine = self.bot_id()
+        if request.bot != v5.REQUEST_BOT_ANY and request.bot != mine:
+            logger.debug("Request datagram for bot %04X, not us (%04X) — ignoring",
+                         request.bot, mine)
+            return
+        text = request.text.strip()
+        if not text.startswith(">"):
+            return
+
+        prefix = self._normalize_key(request.sender_prefix)
+        sender_name = self._name_for_key(prefix) or f"app:{prefix}"
+        now = self._clock()
+        # An app sends the same bytes again when no answer arrives (spec 13).
+        # Copies are recognised on the same record a DM copy is, so a phone
+        # that falls back to a DM does not get the answer twice.
+        async with self._dm_requests.lock(prefix):
+            dreq, how = self._dm_requests.match(prefix, request.ts, text, now)
+            action = self._copy_action(dreq, now) if how else None
+        if how:
+            await self._handle_dm_copy(dreq, how, action, prefix, sender_name, text,
+                                       request.ts, now, transport="channel_data",
+                                       answer=lambda d: self._answer_channel_request(
+                                           d, prefix, sender_name, text, hops))
+            return
+        dreq.ev = traffic_log.record("data_request", sender=sender_name, key=prefix,
+                                     text=text[:40], transport="channel_data", hops=hops)
+        await self._answer_channel_request(dreq, prefix, sender_name, text, hops)
+
+    async def _answer_channel_request(self, dreq, prefix: str, sender_name: str, text: str,
+                                      hops: int | None) -> None:
+        """Answer one Request datagram. A request that ends in an error is
+        left unanswered, so its next copy is answered again (as a DM is)."""
+        try:
+            await self._handle_app_request(text, sender_name, prefix, "channel_data", hops,
+                                           req=dreq.ev, dreq=dreq)
+        except Exception:
+            if dreq.state == "building" or (dreq.state == "app" and dreq.app_done_at is None):
+                dreq.state = "limited"
+            logger.warning("Request datagram from %s ended in an error; its next copy "
+                           "is answered again", sender_name)
+            raise
+
     async def _handle_dm(self, pubkey_prefix: str, sender_name: str, text: str,
                          sender_ts: int | None = None, path_len: int | None = None) -> None:
         """Handle a direct message. With the text, `sender_ts` (the sender's
@@ -605,16 +689,28 @@ class WeatherBot:
         return "request not answered"
 
     async def _handle_dm_copy(self, dreq, how: str, action: str, prefix: str, sender_name: str, text: str,
-                              sender_ts: int | None, now: float) -> None:
+                              sender_ts: int | None, now: float, transport: str = "dm",
+                              answer=None) -> None:
+        """A copy of a request already on record. `transport` and `answer` are
+        for the Request datagram (spec 7B), which shares every rule here and
+        only differs in how the answer is built: `answer(dreq)` builds it, and
+        a datagram answer is never a queued reply that could be redelivered."""
         gap = now - dreq.first_at
-        logger.info("DM copy %d of a request from %s (%s, ts %s, %.1f s after the first): %s",
+        logger.info("%s copy %d of a request from %s (%s, ts %s, %.1f s after the first): %s",
+                    "DM" if transport == "dm" else "Datagram",
                     dreq.copies, sender_name, how, sender_ts, gap, action)
         traffic_log.record("dm_copy", sender=sender_name, key=prefix, text=text, req=dreq.ev,
+                           transport=transport,
                            reason=f"copy {dreq.copies}, {how}, +{gap:.0f} s: {action}")
         self.dm_outbox.note_copy(dreq.reply)
         if action == "answer":
+            if answer is not None:
+                await answer(dreq)
+                return
             await self._answer_dm(dreq, prefix, sender_name, text, now, copy=True)
-        elif action == "redeliver":
+        elif action == "redeliver" and answer is None:
+            # A queued DM reply to send again. A datagram answer is never one:
+            # it was flooded, unacknowledged, and is rebuilt, never redelivered.
             r = dreq.reply
             if not self._rate_check(prefix, copy=True):
                 r.state = "failed" if r.tries else "dropped"

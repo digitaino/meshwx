@@ -366,7 +366,7 @@ var Portal = {
     fmt: function (ev) {
       var ts = hhmmss(ev.t);
       var arrow = ev.dir === "in" ? '<span class="in">← in </span>' : '<span class="out">→ out</span>';
-      var tr = ev.transport === "channel" ? "CH" : ev.transport === "dm" ? "DM" : ev.transport === "console" ? "WEB" : (ev.kind || "").indexOf("advert") === 0 ? "ADV" : "";
+      var tr = ev.transport === "channel" ? "CH" : ev.transport === "channel_data" ? "DGM" : ev.transport === "dm" ? "DM" : ev.transport === "console" ? "WEB" : (ev.kind || "").indexOf("advert") === 0 ? "ADV" : "";
       var who = ev.sender ? esc(ev.sender) : (ev.key ? '<span class="text-muted">' + esc(ev.key) + "</span>" : "");
       var body = "", cls = "badge-muted";
       var cmd = ev.command ? ' <span class="text-muted">[' + esc(ev.command) + (ev.location ? " · " + esc(ev.location) : "") + "]</span>" : "";
@@ -387,7 +387,10 @@ var Portal = {
         case "advert": body = '<span class="text-muted">advert heard</span>'; break;
         case "advert_out": body = '<span class="text-muted">our advert (flood)</span>'; break;
         case "link_test": body = '<span class="text-muted">link test datagram (6 B)</span>' + deliveryBadge(ev.delivery); break;
-        case "data_request": body = '<span class="text-muted">app data request</span> ' + esc(ev.text); break;
+        case "data_request":
+          body = '<span class="text-muted">app data request</span> ' + esc(ev.text) +
+            (ev.transport === "channel_data" ? ' <span class="text-muted">datagram' + (ev.hops != null ? " · " + ev.hops + " hops" : "") + "</span>" : "");
+          break;
         case "admin": body = '<span class="text-muted">admin command:</span> ' + esc(ev.command); break;
         case "console": body = esc(ev.text) + ' <span class="text-muted">[' + esc(ev.command) + (ev.location ? " · " + esc(ev.location) : "") + " · " + (ev.chars || 0) + " ch]</span>"; break;
         default: body = esc(ev.text || ev.reason || "");
