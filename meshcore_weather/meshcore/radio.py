@@ -182,6 +182,13 @@ class MeshcoreRadio:
         self._data_channel_idx: int | None = None
         self._channel_handler: Callable | None = None
         self._channel_request_handler: Callable | None = None
+        # The node's message queue (see _drain_queue): one drain at a time, a
+        # tickle during a drain asks for one more pass, and a slow poll
+        # catches a tickle the serial link lost.
+        self._draining = False
+        self._drain_again = False
+        self._drain_task: asyncio.Task | None = None
+        self._queue_poll_task: asyncio.Task | None = None
         self._dm_handler: Callable | None = None
         self._advert_handler: Callable | None = None
         self._advert_task: asyncio.Task | None = None
@@ -520,8 +527,13 @@ class MeshcoreRadio:
         self._mc.subscribe(EventType.DISCONNECTED, self._on_disconnected)
         self._channel_secrets = {}
 
-        # Start auto-fetching messages from the device
-        await self._mc.start_auto_message_fetching()
+        # Drain the node's message queue ourselves (see _drain_queue): the
+        # library's auto-fetch does not accept a channel datagram as the
+        # reply to its fetch, and a Request datagram in the queue stalled it.
+        self._mc.subscribe(EventType.MESSAGES_WAITING, self._on_messages_waiting)
+        await self._drain_queue()
+        if self._queue_poll_task is None or self._queue_poll_task.done():
+            self._queue_poll_task = asyncio.create_task(self._queue_poll_loop())
 
         # Node clock: GRP_TXT carries a sender timestamp that repeaters use to
         # dedupe, so a node with a dead clock repeats hashes. Sync it from us.
@@ -990,6 +1002,77 @@ class MeshcoreRadio:
 
     LINK_CHECK_S = 15
     SILENT_COMMANDS = 3
+
+    # -- The node's message queue ------------------------------------------
+    #
+    # The node queues every message for the app and sends one MSG_WAITING
+    # push per arrival; the app drains the queue with CMD_SYNC_NEXT_MESSAGE
+    # (0x0A) until NO_MORE_MSGS. meshcore-py's own auto-fetch waits for a DM
+    # or a channel text as the reply to each fetch and nothing else, so a
+    # Request datagram (RESP_CODE_CHANNEL_DATA_RECV, 0x1B) in the queue left
+    # its fetch waiting for a reply that had already been dispatched, the
+    # loop stuck until the command timeout, and every tickle in that window
+    # ignored: each datagram surfaced only when the next one arrived — 24 s to
+    # three minutes late on 17 September, against a phone that waits 20 s.
+    # This drain takes the datagram as the reply it is, a tickle that lands
+    # during a drain schedules one more pass instead of being dropped, and a
+    # slow poll covers a tickle the serial link lost.
+
+    _QUEUE_REPLIES = (EventType.CONTACT_MSG_RECV, EventType.CHANNEL_MSG_RECV,
+                      EventType.CHANNEL_DATA_RECV, EventType.NO_MORE_MSGS, EventType.ERROR)
+    #: Seconds between unprompted drains. One CMD_SYNC_NEXT_MESSAGE answered
+    #: by NO_MORE_MSGS, which costs no airtime.
+    QUEUE_POLL_S = 30.0
+    #: How long one fetch may wait for the node's reply.
+    QUEUE_FETCH_TIMEOUT_S = 8.0
+
+    async def _on_messages_waiting(self, event) -> None:
+        """MSG_WAITING push: drain now, or once more after the drain under way."""
+        if self._draining:
+            self._drain_again = True
+            return
+        self._drain_task = asyncio.create_task(self._drain_queue())
+
+    async def _drain_queue(self) -> None:
+        """Fetch queued messages until the node says there are none. Every
+        fetched message is dispatched to the subscribers by the library as
+        it arrives; this loop only keeps the fetches coming."""
+        if self._draining:
+            self._drain_again = True
+            return
+        self._draining = True
+        try:
+            while self._mc is not None:
+                self._drain_again = False
+                try:
+                    ev = await self._mc.commands.send(b"\x0a", list(self._QUEUE_REPLIES),
+                                                      timeout=self.QUEUE_FETCH_TIMEOUT_S)
+                except Exception:
+                    logger.exception("Fetching from the node's message queue failed")
+                    break
+                kind = getattr(ev, "type", None)
+                if kind is None or kind in (EventType.NO_MORE_MSGS, EventType.ERROR):
+                    if kind == EventType.ERROR and (getattr(ev, "payload", None) or {}).get("reason") != "no_event_received":
+                        logger.warning("Node answered the queue fetch with an error: %s", getattr(ev, "payload", None))
+                    if self._drain_again:
+                        continue      # a tickle landed while we waited: look again
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            self._draining = False
+            if self._drain_again and self._mc is not None:
+                self._drain_again = False
+                self._drain_task = asyncio.create_task(self._drain_queue())
+
+    async def _queue_poll_loop(self) -> None:
+        """A drain every QUEUE_POLL_S whatever the pushes said, while connected."""
+        try:
+            while self._running and self._mc is not None:
+                await asyncio.sleep(self.QUEUE_POLL_S)
+                if self._running and self._mc is not None and not self._draining:
+                    await self._drain_queue()
+        except asyncio.CancelledError:
+            pass
 
     async def _on_disconnected(self, event) -> None:
         await self._link_lost("serial port closed: " + str((event.payload or {}).get("reason") or "unknown"))
