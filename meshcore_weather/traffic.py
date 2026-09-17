@@ -35,6 +35,7 @@ KINDS = {
     "advert": ("in", True),          # a node adverted (we learned/refreshed a contact)
     "reply_dm": ("out", True),       # our DM reply
     "reply_channel": ("out", True),  # our reply on the channel (flood)
+    "reply_data": ("out", True),     # our answer to an app request: v5 datagrams on the channel (flood)
     "advert_out": ("out", True),     # our own advert
     "dropped": ("out", True),        # a request we did not answer, with reason
     "dm_failed": ("out", True),      # DM send failed
@@ -44,7 +45,7 @@ KINDS = {
 }
 
 REQUEST_KINDS = ("channel_in", "dm_in")
-REPLY_KINDS = ("reply_dm", "reply_channel")
+REPLY_KINDS = ("reply_dm", "reply_channel", "reply_data")
 
 _FLUSH_EVERY_S = 60
 # Saved beside the counters so the rolling windows, the reply latency and the
@@ -170,6 +171,7 @@ class TrafficLog:
         direction, public = KINDS[kind]
         if transport is None:
             transport = {"channel_in": "channel", "reply_channel": "channel", "peer": "channel",
+                         "reply_data": "channel_data",
                          "dm_in": "dm", "dm_copy": "dm", "reply_dm": "dm", "dm_failed": "dm",
                          "admin": "dm"}.get(kind)
         now = time.time()

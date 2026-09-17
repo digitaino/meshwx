@@ -69,7 +69,7 @@ class AppResponder:
     def is_request(text: str) -> bool:
         return text.strip().startswith(">")
 
-    async def handle_request(self, text: str, sender_key: str) -> str:
+    async def handle_request(self, text: str, sender_key: str, ev: dict | None = None) -> str:
         """Answer one `>` request. Returns a short outcome for the log."""
         now = time.time()
         if now - self._last_by_sender.get(sender_key, 0.0) < PER_SENDER_S:
@@ -103,7 +103,7 @@ class AppResponder:
             msgs = [b.not_available(seq.next(), bot, cmd, v5.REASON_BOT_ERROR)]
         if not msgs:
             msgs = [b.not_available(seq.next(), bot, cmd, v5.REASON_NO_DATA)]
-        n, nbytes = await self._scheduler.transmit(msgs, f"app request {text.strip()[:24]!r}")
+        n, nbytes = await self._scheduler.transmit(msgs, f"app request {text.strip()[:24]!r}", ev=ev)
         self._sent.extend([now] * n)
         return f"{n} packet(s), {nbytes} B"
 

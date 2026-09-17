@@ -210,6 +210,7 @@ function botLine(ev){const ts=new Date(ev.t*1000).toLocaleTimeString([],{hour:'2
   case 'advert':body='<span class="t">advert heard</span>';break;
   case 'advert_out':cls='out';body='<span class="t">bot advert (flood)</span>';break;
   case 'data_request':body='<span class="t">app data request</span>';break;
+  case 'reply_data':cls='out';body=`<span class="t">app answer</span> ${esc(ev.text||'')}${ev.ms!=null?` <span class="t">· ${ev.ms} ms</span>`:''}`+dlv(ev.delivery);break;
   default:body=esc(ev.text||ev.reason||ev.kind)}
  return `<div data-id="${ev.id}" data-dv="${dvKey(ev)}"><span class="t">${ts}</span> <span class="${cls}">${ev.dir==='in'?'←':'→'}</span> <span class="tag">${tr||ev.kind}</span> ${who}${body}</div>`}
 function renderBot(d){const b=$('botBadge');

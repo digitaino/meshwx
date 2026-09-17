@@ -56,7 +56,7 @@ class Responder:
         self.calls: list[tuple[str, str]] = []
         self.outcome = outcome
 
-    async def handle_request(self, text, sender_key):
+    async def handle_request(self, text, sender_key, ev=None):
         self.calls.append((text, sender_key))
         return self.outcome(text) if callable(self.outcome) else self.outcome
 
@@ -319,6 +319,21 @@ def test_the_request_is_logged_with_its_transport_and_hops(bot):
     # Channel traffic is public by nature: the text stays, the key never shows.
     public = traffic_log.recent(5, public=True, kinds=("data_request",))[-1]
     assert public["text"] == ">o KAUS" and "key" not in public
+
+
+def test_the_answer_is_logged_as_a_reply_row_of_its_own(bot):
+    """The feed used to show only the request, as if the bot had never answered
+    (Rafael, 17 September): every answer now has its own outgoing row, after
+    the request it answers, with what went out."""
+    asyncio.run(ask(bot, ">o KAUS", hops=3))
+    req = traffic_log.recent(5, kinds=("data_request",))[-1]
+    reply = traffic_log.recent(5, kinds=("reply_data",))[-1]
+    assert reply["dir"] == "out" and reply["transport"] == "channel_data"
+    assert reply["req_id"] == req["id"] and reply["sender"] == req["sender"]
+    assert reply["ok"] is True and reply["text"].endswith(" B") and reply["chars"] > 0
+    assert reply["t"] >= req["t"]
+    # Public by nature, like the request it answers.
+    assert traffic_log.recent(5, public=True, kinds=("reply_data",))[-1]["text"] == reply["text"]
 
 
 # -- While the products are still loading (spec 8.3) --------------------------

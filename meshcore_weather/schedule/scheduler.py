@@ -244,7 +244,7 @@ class Scheduler:
                             {"job_id": job.id, "product": job.product, "messages": n, "bytes": nbytes})
         return n
 
-    async def transmit(self, msgs: list[bytes], label: str) -> tuple[int, int]:
+    async def transmit(self, msgs: list[bytes], label: str, ev: dict | None = None) -> tuple[int, int]:
         """Send v5 messages on the data channel with spacing. Returns
         (packets sent, bytes).
 
@@ -267,7 +267,7 @@ class Scheduler:
                     await asyncio.sleep(wait)
                 msg = self._stamp(msg, groups)
                 try:
-                    ok = await self.radio.send_channel_data(msg)
+                    ok = await self.radio.send_channel_data(msg, ev=ev)
                 except Exception:
                     logger.exception("%s: send failed", label)
                     ok = False

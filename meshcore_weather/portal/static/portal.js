@@ -301,7 +301,7 @@ var Portal = {
       dm: ["dm_in", "reply_dm", "dm_failed", "admin"],
       dropped: ["dropped", "dm_failed"],
       adverts: ["advert", "advert_out", "link_test"],
-      apps: ["data_request"],
+      apps: ["data_request", "reply_data"],
     },
 
     start: function () {
@@ -387,6 +387,12 @@ var Portal = {
         case "advert": body = '<span class="text-muted">advert heard</span>'; break;
         case "advert_out": body = '<span class="text-muted">our advert (flood)</span>'; break;
         case "link_test": body = '<span class="text-muted">link test datagram (6 B)</span>' + deliveryBadge(ev.delivery); break;
+        case "reply_data":
+          cls = "badge-success";
+          body = '<span class="text-muted">app answer</span> ' + esc(ev.text || "") +
+            (ev.ms != null ? ' <span class="text-muted">· ' + ev.ms + " ms</span>" : "") +
+            (ev.ok === false ? ' <span class="text-muted">· TX off</span>' : "") + deliveryBadge(ev.delivery);
+          break;
         case "data_request":
           body = '<span class="text-muted">app data request</span> ' + esc(ev.text) +
             (ev.transport === "channel_data" ? ' <span class="text-muted">datagram' + (ev.hops != null ? " · " + ev.hops + " hops" : "") + "</span>" : "");

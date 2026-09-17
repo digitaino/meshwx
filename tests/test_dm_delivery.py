@@ -327,7 +327,7 @@ def test_app_request_copies_are_skipped_at_6_s_and_answered_again_at_15_s(w):
     calls = []
 
     class Responder:
-        async def handle_request(self, text, key):
+        async def handle_request(self, text, key, ev=None):
             calls.append(w.vc.t - w.vc.t0)
             await w.vc.sleep(1.0)                                         # the datagrams go out
             return "1 packet(s), 20 B"
@@ -457,7 +457,7 @@ def test_a_request_that_ended_in_an_error_is_answered_by_its_next_copy(w, monkey
         return "wx austin: fine"
 
     class Responder:
-        async def handle_request(self, text, key):
+        async def handle_request(self, text, key, ev=None):
             answers.append(w.vc.t - w.vc.t0)
             if len(answers) == 1:
                 raise RuntimeError("answer build failed")

@@ -871,20 +871,29 @@ class WeatherBot:
             return
         if dreq is not None:
             dreq.state, dreq.app_done_at = "app", None
-        outcome = await self._broadcaster.handle_request(text, sender_key)
+        # The answer's own row in the feed, recorded before it goes out so the radio's delivery
+        # outcome (echo, observers) lands on it; the feed used to show only the request, as if
+        # the bot had never answered. A refusal turns the row into the dropped it is.
+        rev = traffic_log.record("reply_data", req=req, sender=sender_name, transport="channel_data")
+        outcome = await self._broadcaster.handle_request(text, sender_key, ev=rev)
         logger.info("App request from %s: %s -> %s", sender_name, text[:40], outcome)
         if outcome in ("rate limited", "hourly budget spent"):
-            traffic_log.record("dropped", reason=outcome, req=req, sender=sender_name)
+            traffic_log.update(rev, kind="dropped", dir="out", reason=outcome, ok=False, push=True)
             if dreq is not None:
                 dreq.state = "app_unanswered"
         elif outcome == "starting up":
             # Answered with Not available, on nobody's budget: a copy of the
             # request is answered again, by then perhaps with the real data.
             traffic_log.update(req, kind="data_request")
+            traffic_log.update(rev, text="Not available: starting up", chars=6, ok=True, push=True)
             if dreq is not None:
                 dreq.state = "not_ready"
-        elif dreq is not None:
-            dreq.app_done_at = self._clock()
+        else:
+            m = re.match(r"(\d+) packet\(s\), (\d+) B", outcome)
+            traffic_log.update(rev, text=outcome, chars=int(m.group(2)) if m else None,
+                               ok=m is not None, push=True)
+            if dreq is not None:
+                dreq.app_done_at = self._clock()
 
     def _is_admin(self, pubkey_prefix: str) -> bool:
         admin = settings.admin_key.lower().strip()
