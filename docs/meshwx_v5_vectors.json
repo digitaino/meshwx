@@ -18,6 +18,7 @@
       "hail_qin": 4,
       "wind_mph": 60,
       "update": false,
+      "source": 0,
       "polygon": [
         [
           30.52,
@@ -81,6 +82,7 @@
       "hail_qin": 4,
       "wind_mph": 60,
       "update": false,
+      "source": 0,
       "polygon": [
         [
           30.52,
@@ -126,6 +128,70 @@
     "note": "SV.W.EWX.42 again, with the revision 5 issue time: 53 bytes, the two trailing bytes hold 21 = minutes between the issuance and the expiry"
   },
   {
+    "name": "severe_thunderstorm_warning_from_goes",
+    "hex": "1f7a4c1603232a00c913c70183043c0630a804a80cf15a0068011affd2001affa6ffc4ffa2febe0042ff02aad10001aac501011500",
+    "decoded": {
+      "seq": 31,
+      "bot": 19578,
+      "type": 1,
+      "name": "warning",
+      "flags": 6,
+      "event": 3,
+      "office": 35,
+      "etn": 42,
+      "expires_min": 29823945,
+      "tornado": 2,
+      "flood_source": 0,
+      "flood_damage": 0,
+      "hail_qin": 4,
+      "wind_mph": 60,
+      "update": false,
+      "source": 1,
+      "polygon": [
+        [
+          30.52,
+          -97.98
+        ],
+        [
+          30.61,
+          -97.62
+        ],
+        [
+          30.38,
+          -97.41
+        ],
+        [
+          30.15,
+          -97.5
+        ],
+        [
+          30.09,
+          -97.85
+        ],
+        [
+          30.28,
+          -98.04
+        ]
+      ],
+      "areas": [
+        {
+          "state": 42,
+          "county": true,
+          "start": 209,
+          "run": 1
+        },
+        {
+          "state": 42,
+          "county": true,
+          "start": 453,
+          "run": 1
+        }
+      ],
+      "issued_min": 29823924
+    },
+    "note": "type byte 0x16: warning, flags 0x6 = issued (bit 1) + source 1 GOES (bits 2-3); otherwise byte for byte the issued vector"
+  },
+  {
     "name": "winter_storm_warning_zones",
     "hex": "127a4c1018230700d417c701010000022abf00042ac80001",
     "decoded": {
@@ -144,6 +210,7 @@
       "hail_qin": 0,
       "wind_mph": 0,
       "update": false,
+      "source": 0,
       "polygon": null,
       "areas": [
         {
@@ -211,7 +278,8 @@
           "expires_rel": 20,
           "expires_min": 29823920
         }
-      ]
+      ],
+      "source": 0
     }
   },
   {
@@ -270,7 +338,8 @@
           "feels_delta_f": 0,
           "age_min": null
         }
-      ]
+      ],
+      "source": 0
     },
     "note": "KGTU is calm, KHYI has only wind direction and sky"
   },
@@ -330,7 +399,8 @@
           "feels_delta_f": 0,
           "age_min": 110
         }
-      ]
+      ],
+      "source": 0
     },
     "note": "the revision 5 form: 44 bytes, ages 0 / 20 / 110 minutes packed as nibbles 0, 2 and 11 in two trailing bytes (0x20, 0x0b)"
   },
@@ -438,7 +508,8 @@
           "wind_dir": "N",
           "wind_mph": 0
         }
-      ]
+      ],
+      "source": 0
     },
     "note": "point 102 = Austin Bergstrom-Travis TX; the reserved half-day form, odd first_period with alternating temperatures"
   },
@@ -546,7 +617,8 @@
           "wind_dir": "SSE",
           "wind_mph": 10
         }
-      ]
+      ],
+      "source": 0
     },
     "note": "point 103 = Austin Camp Mabry-Travis TX; the daily form this bot sends"
   },
@@ -619,7 +691,9 @@
       "group": 23,
       "idx": 0,
       "total": 2,
-      "text": "SEVERE THUNDERSTORM WARNING FOR NORTHEASTERN HAYS AND SOUTHWESTERN TRAVIS COUNTIES UNTIL 145 AM CDT. At 1257 AM a severe thunderstorm was near Dripping Sprin"
+      "text": "SEVERE THUNDERSTORM WARNING FOR NORTHEASTERN HAYS AND SOUTHWESTERN TRAVIS COUNTIES UNTIL 145 AM CDT. At 1257 AM a severe thunderstorm was near Dripping Sprin",
+      "cut": false,
+      "source": 0
     },
     "note": "group 23, reassemble by (bot, group) in idx order"
   },
@@ -636,9 +710,30 @@
       "group": 23,
       "idx": 1,
       "total": 2,
-      "text": "gs, moving east at 40 mph. HAZARD: 60 mph gusts and quarter size hail. SOURCE: Radar indicated."
+      "text": "gs, moving east at 40 mph. HAZARD: 60 mph gusts and quarter size hail. SOURCE: Radar indicated.",
+      "cut": false,
+      "source": 0
     },
     "note": "group 23, reassemble by (bot, group) in idx order"
+  },
+  {
+    "name": "text_afd_cut_from_goes",
+    "hex": "1e7a4c65011e000853484f5254205445524d2e2049736f6c6174656420746f207363617474657265642073686f7765727320616e642073746f726d732077696c6c20646576656c6f7020616c6f6e672074686520736561627265657a6520746869732061667465726e6f6f6e20616e6420647269667420696e6c616e64207468726f75676820746865206576656e696e672e",
+    "decoded": {
+      "seq": 30,
+      "bot": 19578,
+      "type": 6,
+      "name": "text",
+      "flags": 5,
+      "subject": 1,
+      "group": 30,
+      "idx": 0,
+      "total": 8,
+      "text": "SHORT TERM. Isolated to scattered showers and storms will develop along the seabreeze this afternoon and drift inland through the evening.",
+      "cut": true,
+      "source": 1
+    },
+    "note": "type byte 0x65: text, flags 0x5 = cut (bit 0) + source 1 GOES (bits 2-3); the tail of the discussion did not fit in eight chunks"
   },
   {
     "name": "not_available_unknown_location",

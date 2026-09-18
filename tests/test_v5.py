@@ -57,6 +57,7 @@ def reencode(d: dict) -> bytes:
             areas=areas,
             update=d["update"],
             issued_min=d["issued_min"],
+            source=d["source"],
         )
     if name == "cancel":
         return v5.encode_cancel(
@@ -77,10 +78,12 @@ def reencode(d: dict) -> bytes:
                 (e["event"], e["office"], e["etn"], e["expires_min"])
                 for e in d["entries"]
             ],
+            source=d["source"],
         )
     if name == "observations":
         return v5.encode_obs(
-            seq, bot, ts_min=d["ts_min"], stations=d["stations"]
+            seq, bot, ts_min=d["ts_min"], stations=d["stations"],
+            source=d["source"],
         )
     if name == "forecast":
         return v5.encode_forecast(
@@ -90,6 +93,7 @@ def reencode(d: dict) -> bytes:
             issued_min=d["issued_min"],
             first_period=d["first_period"],
             periods=d["periods"],
+            source=d["source"],
         )
     if name == "text":
         return v5.encode_text(
@@ -100,6 +104,8 @@ def reencode(d: dict) -> bytes:
             idx=d["idx"],
             total=d["total"],
             text=d["text"],
+            source=d["source"],
+            cut=d["cut"],
         )
     if name == "not_available":
         return v5.encode_not_available(
@@ -883,6 +889,174 @@ def test_the_spec_vector_is_these_exact_bytes():
 
 
 # ---------------------------------------------------------------------------
+# Data source (flags nibble bits 2-3, revision 7)
+# ---------------------------------------------------------------------------
+
+
+def test_source_constants_and_nibble_arithmetic():
+    assert (v5.SOURCE_MASK, v5.SOURCE_SHIFT) == (0x0C, 2)
+    assert (
+        v5.SOURCE_UNSTATED, v5.SOURCE_GOES, v5.SOURCE_INTERNET, v5.SOURCE_MIXED
+    ) == (0, 1, 2, 3)
+    # Packing keeps the type's own bits and never spills outside the nibble.
+    assert v5.pack_source(v5.SOURCE_INTERNET, v5.FLAG_WARNING_ISSUED) == 0xA
+    assert v5.pack_source(v5.SOURCE_MIXED) == 0xC
+    assert v5.pack_source(v5.SOURCE_UNSTATED, 0x3) == 0x3
+    # Packing twice is packing once: the old source is replaced, not ORed.
+    assert v5.pack_source(v5.SOURCE_GOES, 0xC) == 0x4
+    for nib in range(16):
+        assert v5.unpack_source(nib) == (nib & 0x0C) >> 2
+        assert v5.pack_source(v5.unpack_source(nib), nib) == nib
+    for bad in (-1, 4, 99):
+        with pytest.raises(ValueError):
+            v5.pack_source(bad)
+
+
+@pytest.mark.parametrize(
+    "source", [v5.SOURCE_UNSTATED, v5.SOURCE_GOES, v5.SOURCE_INTERNET, v5.SOURCE_MIXED]
+)
+def test_source_roundtrips_on_every_type_that_carries_it(source):
+    """Warning, Digest, Observations, Forecast and Text all read the same two
+    bits back, and encode -> decode -> encode stays byte-identical."""
+    made = {
+        "warning": v5.encode_warning(
+            1, BOT, event=3, office=35, etn=42, expires_min=NOW + 45,
+            areas=[(42, False, 192, 1)],       # TXZ192
+            issued_min=NOW, update=True, source=source,
+        ),
+        "digest": v5.encode_digest(
+            2, BOT, now_min=NOW, feed_health=7,
+            entries=[(3, 35, 42, NOW + 45)], source=source,
+        ),
+        "observations": v5.encode_obs(
+            3, BOT, ts_min=NOW, source=source,
+            stations=[{"station": 1, "temp_f": 70, "age_min": 20}],
+        ),
+        "forecast": v5.encode_forecast(
+            4, BOT, point=102, issued_min=NOW, first_period=0,
+            periods=[{"high_f": 90, "low_f": 70, "pop_pct": 10, "sky": 1}],
+            source=source,
+        ),
+        "text": v5.encode_text(
+            5, BOT, subject=v5.SUBJECT_AFD, group=5, idx=0, total=1,
+            text="hello", source=source,
+        ),
+    }
+    for name, data in made.items():
+        out = roundtrip(data)            # re-encodes to the same bytes
+        assert out["name"] == name
+        assert out["source"] == source, name
+        assert v5.unpack_source(data[3] & 0x0F) == source, name
+
+
+def test_source_leaves_the_other_flag_bits_alone():
+    """A source never eats the update, issued, ages or cut bits."""
+    warn = v5.decode(v5.encode_warning(
+        1, BOT, event=3, office=35, etn=42, expires_min=NOW + 45,
+        areas=[(42, False, 192, 1)], issued_min=NOW, update=True,
+        source=v5.SOURCE_INTERNET,
+    ))
+    assert warn["update"] and warn["issued_min"] == NOW
+    assert warn["source"] == v5.SOURCE_INTERNET and warn["flags"] == 0xB
+
+    obs = v5.decode(v5.encode_obs(
+        3, BOT, ts_min=NOW, source=v5.SOURCE_GOES,
+        stations=[{"station": 1, "temp_f": 70, "age_min": 20}],
+    ))
+    assert obs["stations"][0]["age_min"] == 20
+    assert obs["source"] == v5.SOURCE_GOES and obs["flags"] == 0x5
+
+
+def test_source_defaults_to_unstated_and_matches_the_old_bytes():
+    """A message built without a source is the byte-for-byte revision 6 one:
+    an app upgrading reads every old packet as 'unstated'."""
+    kwargs = dict(event=3, office=35, etn=42, expires_min=NOW + 45,
+                  areas=[(42, False, 192, 1)])
+    assert v5.encode_warning(1, BOT, **kwargs) == v5.encode_warning(
+        1, BOT, source=v5.SOURCE_UNSTATED, **kwargs
+    )
+    assert v5.decode(v5.encode_warning(1, BOT, **kwargs))["source"] == v5.SOURCE_UNSTATED
+    text = v5.encode_text(5, BOT, subject=0, group=5, idx=0, total=1, text="x")
+    assert text[3] & 0x0F == 0
+    assert v5.decode(text)["source"] == v5.SOURCE_UNSTATED
+
+
+def test_cancel_never_carries_a_source():
+    """Type 2 spends its whole nibble on a reason code (spec 4), so bits 2-3
+    of a Cancel are part of that number and must never be read as a source.
+    An app already reads reason 4 as reason 4, not as 'cancelled, internet'."""
+    import inspect
+
+    # There is no way to put one in: the encoder takes no `source` at all.
+    assert "source" not in inspect.signature(v5.encode_cancel).parameters
+    with pytest.raises(TypeError):
+        v5.encode_cancel(1, BOT, event=3, office=35, etn=42, source=v5.SOURCE_GOES)
+
+    # And nothing takes one out: every reason 0..15 decodes as itself, whole.
+    for reason in range(16):
+        data = v5.encode_cancel(1, BOT, event=3, office=35, etn=42, reason=reason)
+        out = roundtrip(data)
+        assert out["reason"] == reason == out["flags"]
+        assert "source" not in out
+    # Reason 4 (0b0100) is exactly the bit pattern SOURCE_GOES would occupy.
+    assert v5.encode_cancel(1, BOT, event=3, office=35, etn=42, reason=4)[3] == 0x24
+    assert v5.decode(v5.encode_cancel(1, BOT, event=3, office=35, etn=42,
+                                      reason=4))["reason"] == 4
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        v5.encode_not_available(1, BOT, request="f", reason=1),
+        v5.encode_request(1, BOT, b"\x01\x02\x03\x04\x05\x06", 1789660000, ">d"),
+        v5.encode_coverage(1, BOT, lat=30.2672, lon=-97.7431, radius_km=120,
+                           stations=13, offices=[35], areas=[(42, False, 192, 1)],
+                           zones_cut=True, offices_cut=True),
+    ],
+)
+def test_types_without_a_weather_product_state_no_source(data):
+    """Request, Not available and Coverage are not built from a weather
+    product — Coverage describes the bot's own configuration — so their
+    source bits stay 0, whatever else is in the nibble."""
+    assert v5.unpack_source(data[3] & 0x0F) == v5.SOURCE_UNSTATED
+
+
+# ---------------------------------------------------------------------------
+# Text cut flag (revision 7)
+# ---------------------------------------------------------------------------
+
+
+def test_text_cut_flag_roundtrips_beside_the_source():
+    data = v5.encode_text(
+        30, BOT, subject=v5.SUBJECT_AFD, group=30, idx=3, total=8,
+        text="the discussion so far.", source=v5.SOURCE_GOES, cut=True,
+    )
+    assert data[3] == (v5.TYPE_TEXT << 4) | 0x5     # cut bit 0 + source 1
+    out = roundtrip(data)
+    assert out["cut"] is True and out["source"] == v5.SOURCE_GOES
+    assert out["idx"] == 3 and out["total"] == 8
+
+
+def test_text_is_not_cut_unless_it_says_so():
+    out = v5.decode(v5.encode_text(
+        30, BOT, subject=0, group=30, idx=0, total=1, text="all of it"
+    ))
+    assert out["cut"] is False and out["flags"] == 0
+
+
+def test_text_chunks_put_the_cut_flag_on_every_chunk():
+    """Losing the last packet must not lose the fact that the tail is gone."""
+    chunks = v5.text_chunks(
+        23, BOT, subject=v5.SUBJECT_AFD, text="A" * 400,
+        source=v5.SOURCE_INTERNET, cut=True,
+    )
+    assert len(chunks) == 3
+    for c in chunks:
+        d = roundtrip(c)
+        assert d["cut"] is True and d["source"] == v5.SOURCE_INTERNET
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -968,7 +1142,7 @@ def test_index_json_matches_the_source_tables():
 def test_protocol_json_v5_block():
     with open(PROTOCOL_PATH, encoding="utf-8") as fh:
         proto = json.load(fh)
-    assert proto["version"] == 10
+    assert proto["version"] == 11
     assert proto["index_file"] == "index.json"
     # Legacy keys other code still reads are untouched.
     for key in ("messages", "events", "event_names", "sky_codes", "data_types"):
@@ -1013,6 +1187,19 @@ def test_protocol_json_v5_block():
     assert block["record_sizes"]["observation_age_step_minutes"] == v5.OBS_AGE_STEP_MIN
     assert block["sentinels"]["observation_age_saturated"] == v5.OBS_AGE_MAX_MIN
     assert block["sentinels"]["warning_issued_saturated"] == v5.MAX_ISSUED_BEFORE_EXPIRY
+    # Revision 7: the data source and the text cut flag.
+    assert block["source"]["mask"] == v5.SOURCE_MASK
+    assert block["source"]["shift"] == v5.SOURCE_SHIFT
+    assert block["source"]["values"] == {
+        "unstated": v5.SOURCE_UNSTATED,
+        "goes": v5.SOURCE_GOES,
+        "internet": v5.SOURCE_INTERNET,
+        "mixed": v5.SOURCE_MIXED,
+    }
+    assert block["flags"]["text"] == {"cut": v5.FLAG_TEXT_CUT}
+    # Cancel's nibble is a reason code and keeps no room for a source.
+    assert "source" not in block["flags"]["cancel"]
+    assert "cancel" in block["notes"].lower() and "source" in block["notes"]
     assert block["notes"]
 
 

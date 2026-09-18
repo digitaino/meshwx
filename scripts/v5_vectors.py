@@ -158,6 +158,37 @@ def build_vectors(index: dict) -> list:
         "trailing bytes hold 21 = minutes between the issuance and the expiry",
     )
 
+    # 1c. The same warning again, as a bot fed by its own GOES dish sends it
+    #     from revision 7 on: source 1 in bits 2-3 of the flags nibble, beside
+    #     the revision 5 issue-time bit. Not one byte of the body moved.
+    add(
+        "severe_thunderstorm_warning_from_goes",
+        v5.encode_warning(
+            31,
+            BOT,
+            event=EV_SV_W,
+            office=ewx,
+            etn=42,
+            expires_min=NOW_MIN + 45,
+            tornado=v5.TAG_TORNADO_RADAR_INDICATED,
+            hail_qin=4,
+            wind_mph=60,
+            polygon=[
+                (30.52, -97.98),
+                (30.61, -97.62),
+                (30.38, -97.41),
+                (30.15, -97.50),
+                (30.09, -97.85),
+                (30.28, -98.04),
+            ],
+            areas=v5.areas_from_ugcs(["TXC453", "TXC209"], states),
+            issued_min=NOW_MIN + 24,
+            source=v5.SOURCE_GOES,
+        ),
+        "type byte 0x16: warning, flags 0x6 = issued (bit 1) + source 1 GOES "
+        "(bits 2-3); otherwise byte for byte the issued vector",
+    )
+
     # 2. Winter storm warning: zone list only (TXZ191-194 and TXZ200).
     add(
         "winter_storm_warning_zones",
@@ -467,6 +498,31 @@ def build_vectors(index: dict) -> list:
             data,
             "group 23, reassemble by (bot, group) in idx order",
         )
+
+    # 7b. Text (revision 7): a forecast discussion longer than the air allows.
+    #     Source 1 (off the bot's own GOES dish) in bits 2-3 and the cut flag
+    #     in bit 0 make the flags nibble 0x5, on this chunk and on every other
+    #     chunk of the same reply.
+    add(
+        "text_afd_cut_from_goes",
+        v5.encode_text(
+            30,
+            BOT,
+            subject=v5.SUBJECT_AFD,
+            group=30,
+            idx=0,
+            total=8,
+            text=(
+                "SHORT TERM. Isolated to scattered showers and storms will "
+                "develop along the seabreeze this afternoon and drift inland "
+                "through the evening."
+            ),
+            source=v5.SOURCE_GOES,
+            cut=True,
+        ),
+        "type byte 0x65: text, flags 0x5 = cut (bit 0) + source 1 GOES "
+        "(bits 2-3); the tail of the discussion did not fit in eight chunks",
+    )
 
     # 8. Not available: a forecast for a place the bot could not resolve.
     add(

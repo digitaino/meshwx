@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from meshcore_weather.emwin.fetcher import SDRSource, parse_emwin_file
+from meshcore_weather.emwin.fetcher import InternetSource, SDRSource, parse_emwin_file
 
 FIX = Path(__file__).parent / "fixtures" / "swpc"
 
@@ -65,3 +65,20 @@ def test_parse_emwin_file_is_shared_with_zip_path():
     p = parse_emwin_file("A_WOXX20KWNP141551_C_KWIN_20260914155132_374891-1-WATA20US.TXT", "WOXX20 KWNP 141551\r\r\nWATA20")
     assert p["product_id"] == "WOXX20" and p["station"] == "KWNP" and p["awips_id"] == "WATA20US"
     assert p["timestamp"] == datetime(2026, 9, 14, 15, 51, 32, tzinfo=timezone.utc)
+    assert p["source"] == ""                    # a caller that does not say
+
+
+def test_each_source_stamps_its_own_products(tmp_path):
+    """The wire's source field is only as honest as this stamp (spec 2.2.1)."""
+    now = datetime.now(timezone.utc)
+    body = (FIX / "WATA20US_20260914_1551Z.txt").read_bytes()
+    _write(tmp_path, now - timedelta(minutes=5), "WATA20US", body)
+    src = SDRSource(root=tmp_path)
+    src.scan()
+    assert [p["source"] for p in asyncio.run(src.fetch_products())] == ["sdr"]
+
+    net = InternetSource()
+    p = net._parse_emwin_file(
+        "A_WOXX20KWNP141551_C_KWIN_20260914155132_374891-1-WATA20US.TXT", "WOXX20 KWNP"
+    )
+    assert p["source"] == "internet"

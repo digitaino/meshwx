@@ -111,7 +111,7 @@ answered again only once the previous answer finished going out at least
 
 The full byte layouts, the preload bundle, rendering guidance and these
 rules in detail: **[`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md)**
-(revision 6) and [`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json).
+(revision 7) and [`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json).
 Reference codec: [`meshcore_weather/protocol/v5.py`](meshcore_weather/protocol/v5.py).
 
 ## For client developers (iOS, web, embedded)
@@ -771,6 +771,7 @@ Shipped:
 - [x] PFM forecast source, sent as whole days
 - [x] MeshWX v5 revision 5: GRP_DATA on `#meshwx`, warning/cancel/digest/observations/forecast/text/not available/coverage, `>` request grammar, per-station observation ages and warning issue times
 - [x] MeshWX v5 revision 6: the Request datagram (type 9) — an app's `>` flooded on `#meshwx` instead of DMed down a route that may have gone stale
+- [x] MeshWX v5 revision 7: the data source in the flags nibble (GOES dish / internet / both), and a cut flag on Text replies trimmed at a sentence instead of mid-word
 - [x] App requests answered on the channel so one request serves every listener
 - [x] Discovery by advert (`WX-<city>` chat node)
 - [x] Echo tracking and one byte-identical resend; DM ACKs; optional CoreScope check

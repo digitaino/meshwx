@@ -91,7 +91,11 @@ def _build_warnings(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
 def _build_digest(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     active = extract_active_warnings(ctx.store, coverage=ctx.coverage)
     health = b.feed_health(ctx.store, ctx.home_offices)
-    return [b.digest_message(ctx.seq.next(), ctx.bot, active, health)]
+    # Aggregated from many products, so it states the store-wide source
+    # (spec 2.2.1). Warnings, observations and forecasts take theirs from the
+    # products they were built from, inside the builders.
+    return [b.digest_message(ctx.seq.next(), ctx.bot, active, health,
+                             source=ctx.store.products_source())]
 
 
 def _build_observations(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:

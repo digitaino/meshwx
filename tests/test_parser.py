@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from meshcore_weather.geodata import resolver
 from meshcore_weather.parser.weather import WeatherStore
+from meshcore_weather.protocol import v5
 
 
 def _make_emwin(emwin_id: str, text: str, ts: str = "") -> dict:
@@ -114,3 +115,56 @@ def test_ingest_skips_products_already_held():
     fresh = _make_emwin("AFDEWXTX", "...SHORT TERM...\nHot.")
     assert store.ingest(batch + [fresh]) == 1
     assert parsed == [fresh["filename"]]          # the 2 known ones never reached the parser
+
+
+# -- Where the products came from (spec 2.2.1, revision 7) --------------------
+
+
+def _sourced(emwin_id: str, source: str) -> dict:
+    return {**_make_emwin(emwin_id, "body"), "source": source}
+
+
+def test_a_product_keeps_the_source_the_fetcher_stamped_on_it():
+    store = WeatherStore()
+    store.ingest([_sourced("ZFPEWXTX", "sdr"), _sourced("RWREWXTX", "internet"),
+                  _make_emwin("AFDEWXTX", "unstamped")])
+    by_id = {p.emwin_id: p for p in store._products.values()}
+    assert by_id["ZFPEWXTX"].source == "sdr"
+    assert by_id["RWREWXTX"].source == "internet"
+    assert by_id["AFDEWXTX"].source == ""       # a source that did not say
+
+
+def test_product_source_maps_one_product_to_a_wire_constant():
+    store = WeatherStore()
+    store.ingest([_sourced("ZFPEWXTX", "sdr"), _sourced("RWREWXTX", "internet"),
+                  _make_emwin("AFDEWXTX", "unstamped")])
+    by_id = {p.emwin_id: p for p in store._products.values()}
+    assert store.product_source(by_id["ZFPEWXTX"]) == v5.SOURCE_GOES
+    assert store.product_source(by_id["RWREWXTX"]) == v5.SOURCE_INTERNET
+    assert store.product_source(by_id["AFDEWXTX"]) == v5.SOURCE_UNSTATED
+    # A warning entry carries the source of the product it came out of, so it
+    # answers the same way.
+    assert store.product_source({"source": "sdr"}) == v5.SOURCE_GOES
+    assert store.product_source({}) == v5.SOURCE_UNSTATED
+    assert store.product_source(None) == v5.SOURCE_UNSTATED
+
+
+def test_products_source_says_mixed_only_when_the_store_really_disagrees():
+    store = WeatherStore()
+    assert store.products_source() == v5.SOURCE_UNSTATED      # nothing held yet
+
+    store.ingest([_sourced("ZFPEWXTX", "sdr"), _sourced("RWREWXTX", "sdr")])
+    assert store.products_source() == v5.SOURCE_GOES
+
+    # An unstamped product is not counted: one old cache line does not turn a
+    # dish-fed bot into a mixed one.
+    store.ingest([_make_emwin("AFDEWXTX", "unstamped")])
+    assert store.products_source() == v5.SOURCE_GOES
+
+    store.ingest([_sourced("HWOEWXTX", "internet")])
+    assert store.products_source() == v5.SOURCE_MIXED
+
+    # And it answers about a named subset, not only the whole store.
+    goes = [p for p in store._products.values() if p.source == "sdr"]
+    assert store.products_source(goes) == v5.SOURCE_GOES
+    assert store.products_source([]) == v5.SOURCE_UNSTATED

@@ -19,6 +19,11 @@ Layout of the 4-byte common header::
     offset 1  u16  bot    first two bytes of the bot's public key, LE
     offset 3  u8   type   high nibble = message type, low nibble = flags
 
+Since revision 7 bits 2-3 of the flags nibble are the same field in every
+type but Cancel: the data source (``SOURCE_*``), where the weather in this
+message came from.  Cancel spends its whole nibble on a reason code and is
+the one exception.
+
 All multi-byte integers are little-endian.  Times are Unix minutes
 (``seconds // 60``) as u32.
 """
@@ -75,6 +80,13 @@ __all__ = [
     "FLAG_OBS_AGES",
     "FLAG_COVERAGE_ZONES_CUT",
     "FLAG_COVERAGE_OFFICES_CUT",
+    "FLAG_TEXT_CUT",
+    "SOURCE_MASK",
+    "SOURCE_SHIFT",
+    "SOURCE_UNSTATED",
+    "SOURCE_GOES",
+    "SOURCE_INTERNET",
+    "SOURCE_MIXED",
     "MAX_TEXT_BYTES",
     "MAX_TEXT_CHUNKS",
     "MAX_POLYGON_VERTICES",
@@ -110,6 +122,8 @@ __all__ = [
     "areas_from_ugcs",
     "wind_dir_nibble",
     "nibble_to_compass",
+    "pack_source",
+    "unpack_source",
 ]
 
 # --------------------------------------------------------------------------
@@ -211,6 +225,36 @@ FLAG_OBS_AGES = 0x1
 # shorter than what the bot really covers, so absence proves nothing.
 FLAG_COVERAGE_ZONES_CUT = 0x1
 FLAG_COVERAGE_OFFICES_CUT = 0x2
+
+#: Text flags nibble, bit 0 (spec 8.1, revision 7): the product was longer
+#: than eight chunks and the tail was dropped.  It is set on *every* chunk of
+#: a cut reply, so losing the last packet does not lose the fact.
+FLAG_TEXT_CUT = 0x1
+
+# --------------------------------------------------------------------------
+# Data source (flags nibble bits 2-3, spec 2.2.1, new in revision 7)
+# --------------------------------------------------------------------------
+#
+# Where the weather data in this message came from.  The two bits are free in
+# every type except Cancel (type 2), whose whole nibble is a reason code
+# (spec 4) — a Cancel never carries a source and a reader must never take one
+# out of it.  A bot older than revision 7 sends 0 in these bits, which reads
+# as "unstated": the absence of a claim, never a claim of absence.
+
+#: The two bits of the flags nibble that carry the source.
+SOURCE_MASK = 0x0C
+#: How far to shift the source into the flags nibble.
+SOURCE_SHIFT = 2
+
+#: Not stated: a pre-revision-7 bot, or a message not built from a weather
+#: product (Request, Not available, Coverage).
+SOURCE_UNSTATED = 0
+#: Received off the GOES satellite by the bot's own dish.
+SOURCE_GOES = 1
+#: Fetched from NOAA over the internet.
+SOURCE_INTERNET = 2
+#: Built from products of both kinds.
+SOURCE_MIXED = 3
 
 # Counts and limits.
 MAX_TEXT_BYTES = MAX_DATA - 8  # 157
@@ -353,6 +397,30 @@ def nibble_to_compass(n: int) -> str:
     return _COMPASS[int(n) & 0x0F]
 
 
+def pack_source(source: int, flags: int = 0) -> int:
+    """Put a data source into a flags nibble, keeping the other bits.
+
+    ``flags`` is the type's own nibble (the Warning's update bit, the Text
+    cut bit, ...); the result is the nibble that goes on the wire.  Never
+    call this for a Cancel: type 2 spends its whole nibble on a reason code
+    (spec 4).
+    """
+    if not (0 <= source <= 3):
+        raise ValueError(f"source must be 0..3, got {source}")
+    if not (0 <= flags <= 15):
+        raise ValueError(f"flags must be 0..15, got {flags}")
+    return (flags & ~SOURCE_MASK & 0x0F) | (source << SOURCE_SHIFT)
+
+
+def unpack_source(flags: int) -> int:
+    """Read the data source back out of a flags nibble.
+
+    A nibble from a Cancel is a reason code and this must not be applied to
+    it.
+    """
+    return (int(flags) & SOURCE_MASK) >> SOURCE_SHIFT
+
+
 def _sky(value) -> int:
     """Sky code, ``None`` -> 15 (other)."""
     if value is None:
@@ -399,6 +467,7 @@ def encode_warning(
     areas: "list[tuple[int, bool, int, int]] | None" = None,
     update: bool = False,
     issued_min: "int | None" = None,
+    source: int = SOURCE_UNSTATED,
 ) -> bytes:
     """Encode a Warning.
 
@@ -406,6 +475,9 @@ def encode_warning(
     absolute at 0.0001 deg and the rest are deltas at 0.001 deg.  ``areas`` is
     a list of ``(state_index, is_county, start, run)`` runs of UGC numbers.
     ``hail_qin`` is the hail tag in quarter inches (4 = 1.00 in).
+
+    ``source`` says where the product came from (spec 2.2.1); it rides in
+    bits 2-3 of the flags nibble.
 
     ``issued_min`` is when the product was issued, in Unix minutes.  It goes
     on the wire as the minutes between the issue time and ``expires_min``
@@ -431,6 +503,7 @@ def encode_warning(
     flags = FLAG_WARNING_UPDATE if update else 0
     if issued_min is not None:
         flags |= FLAG_WARNING_ISSUED
+    flags = pack_source(source, flags)
 
     out = bytearray(encode_header(seq, bot, TYPE_WARNING, flags))
     out += struct.pack(
@@ -535,6 +608,7 @@ def _decode_warning(data: bytes, hdr: Header) -> dict:
         hail_qin=hail,
         wind_mph=wind,
         update=bool(hdr.flags & FLAG_WARNING_UPDATE),
+        source=unpack_source(hdr.flags),
         polygon=None,
         areas=None,
         issued_min=None,
@@ -601,7 +675,13 @@ def encode_cancel(
     seq: int, bot: int, *, event: int, office: int, etn: int, reason: int = 0
 ) -> bytes:
     """Encode a Cancel.  ``reason`` rides in the flags nibble (spec 4:
-    0 cancelled, 1 expired early, 2 upgraded)."""
+    0 cancelled, 1 expired early, 2 upgraded).
+
+    A Cancel takes no ``source``, and this is the one type that never will:
+    the *whole* nibble is the reason code, so bits 2-3 of a Cancel are part
+    of a number an app already reads (spec 4).  Reason 4 is not "cancelled,
+    from the internet"; it is reason 4.
+    """
     if not (0 <= reason <= 15):
         raise ValueError(f"cancel reason must be 0..15, got {reason}")
     out = encode_header(seq, bot, TYPE_CANCEL, reason) + struct.pack(
@@ -633,19 +713,24 @@ def encode_digest(
     now_min: int,
     feed_health: int,
     entries: "list[tuple[int, int, int, int]]",
+    source: int = SOURCE_UNSTATED,
 ) -> bytes:
     """Encode a Digest.
 
     ``entries`` are ``(event, office, etn, expires_min)`` with an *absolute*
     expiry; the wire carries ``expires_rel = expires_min - now_min`` clamped
     into a u16.
+
+    ``source`` describes the whole list, which is aggregated from many
+    products: ``SOURCE_MIXED`` when they did not all arrive the same way
+    (spec 2.2.1).
     """
     if len(entries) > MAX_DIGEST_ENTRIES:
         raise ValueError(
             f"digest holds at most {MAX_DIGEST_ENTRIES} entries, "
             f"got {len(entries)}"
         )
-    out = bytearray(encode_header(seq, bot, TYPE_DIGEST))
+    out = bytearray(encode_header(seq, bot, TYPE_DIGEST, pack_source(source)))
     out += struct.pack(
         "<IBB",
         _u32(now_min, "now_min"),
@@ -684,7 +769,12 @@ def _decode_digest(data: bytes, hdr: Header) -> dict:
             }
         )
     out = hdr.as_dict()
-    out.update(now_min=now, feed_health=feed_health, entries=entries)
+    out.update(
+        now_min=now,
+        feed_health=feed_health,
+        entries=entries,
+        source=unpack_source(hdr.flags),
+    )
     return out
 
 
@@ -734,7 +824,12 @@ def _encode_ages(ages) -> bytes:
 
 
 def encode_obs(
-    seq: int, bot: int, *, ts_min: int, stations: "list[dict]"
+    seq: int,
+    bot: int,
+    *,
+    ts_min: int,
+    stations: "list[dict]",
+    source: int = SOURCE_UNSTATED,
 ) -> bytes:
     """Encode an Observations batch (1..14 stations, 11 bytes each).
 
@@ -745,6 +840,9 @@ def encode_obs(
     rather than sent with the rest guessed at; and because the block costs
     ``ceil(n / 2)`` bytes on top of an already 163-byte full batch, 14
     stations with ages do not fit in one packet (see ``MAX_STATIONS_WITH_AGES``).
+
+    ``source`` describes the batch, which is aggregated from many products:
+    ``SOURCE_MIXED`` when they did not all arrive the same way (spec 2.2.1).
     """
     n = len(stations)
     if not (1 <= n <= MAX_STATIONS):
@@ -756,7 +854,14 @@ def encode_obs(
             "per-station ages must cover every station in the batch or none: "
             f"{sum(known)} of {n} carry age_min"
         )
-    out = bytearray(encode_header(seq, bot, TYPE_OBS, FLAG_OBS_AGES if all(known) else 0))
+    out = bytearray(
+        encode_header(
+            seq,
+            bot,
+            TYPE_OBS,
+            pack_source(source, FLAG_OBS_AGES if all(known) else 0),
+        )
+    )
     out += struct.pack("<IB", _u32(ts_min, "ts_min"), n)
     for s in stations:
         pressure = s.get("pressure_inhg")
@@ -843,7 +948,7 @@ def _decode_obs(data: bytes, hdr: Header) -> dict:
             }
         )
     out = hdr.as_dict()
-    out.update(ts_min=ts, stations=stations)
+    out.update(ts_min=ts, stations=stations, source=unpack_source(hdr.flags))
     return out
 
 
@@ -860,12 +965,17 @@ def encode_forecast(
     issued_min: int,
     first_period: int,
     periods: "list[dict]",
+    source: int = SOURCE_UNSTATED,
 ) -> bytes:
-    """Encode a point Forecast (1..14 periods, 5 bytes each)."""
+    """Encode a point Forecast (1..14 periods, 5 bytes each).
+
+    ``source`` is where the PFM or ZFP this was rendered from came from
+    (spec 2.2.1).
+    """
     n = len(periods)
     if not (1 <= n <= MAX_PERIODS):
         raise ValueError(f"forecast needs 1..{MAX_PERIODS} periods, got {n}")
-    out = bytearray(encode_header(seq, bot, TYPE_FORECAST))
+    out = bytearray(encode_header(seq, bot, TYPE_FORECAST, pack_source(source)))
     out += struct.pack(
         "<HIBB",
         _u16(point, "point"),
@@ -927,6 +1037,7 @@ def _decode_forecast(data: bytes, hdr: Header) -> dict:
         issued_min=issued,
         first_period=first,
         periods=periods,
+        source=unpack_source(hdr.flags),
     )
     return out
 
@@ -958,6 +1069,9 @@ def encode_coverage(
     is_county, start, run)`` runs a Warning's area list uses.  A cut flag says
     that list is shorter than what the bot really covers, so a code missing
     from it means "not stated", never "not covered".
+
+    Coverage takes no ``source``: it describes the bot's own configuration,
+    not a weather product, so its source bits stay ``SOURCE_UNSTATED``.
     """
     offices = list(offices or [])
     areas = list(areas or [])
@@ -1020,8 +1134,16 @@ def encode_text(
     idx: int,
     total: int,
     text: str,
+    source: int = SOURCE_UNSTATED,
+    cut: bool = False,
 ) -> bytes:
-    """Encode one Text chunk."""
+    """Encode one Text chunk.
+
+    ``cut`` says the product was longer than eight chunks and the tail was
+    dropped (spec 8.1, revision 7).  It belongs on *every* chunk of the
+    reply, not just the last one: a phone that loses the last packet must
+    still know it is not holding the whole product.
+    """
     if not (1 <= total <= MAX_TEXT_CHUNKS):
         raise ValueError(f"total must be 1..{MAX_TEXT_CHUNKS}, got {total}")
     if not (0 <= idx < total):
@@ -1032,7 +1154,8 @@ def encode_text(
             f"text chunk is {len(body)} bytes, over the "
             f"{MAX_TEXT_BYTES}-byte limit"
         )
-    out = encode_header(seq, bot, TYPE_TEXT) + struct.pack(
+    flags = pack_source(source, FLAG_TEXT_CUT if cut else 0)
+    out = encode_header(seq, bot, TYPE_TEXT, flags) + struct.pack(
         "<BBBB",
         _u8(subject, "subject"),
         _u8(group, "group"),
@@ -1043,13 +1166,24 @@ def encode_text(
 
 
 def text_chunks(
-    seq_start: int, bot: int, *, subject: int, text: str
+    seq_start: int,
+    bot: int,
+    *,
+    subject: int,
+    text: str,
+    source: int = SOURCE_UNSTATED,
+    cut: bool = False,
 ) -> "list[bytes]":
     """Split ``text`` into Text messages.
 
     Chunks never split a UTF-8 code point, carry at most 157 text bytes,
     share ``group = seq_start & 0xFF``, and use consecutive sequence numbers
     starting at ``seq_start`` (wrapping 255 -> 0).
+
+    ``text`` must already fit in ``MAX_TEXT_CHUNKS`` chunks; this function
+    refuses to guess where to cut, because only the caller knows where a
+    sentence ends (see ``v5_builders.text_messages``).  ``cut`` records that
+    the caller did the cutting, and goes on every chunk.
     """
     _check_header(seq_start, bot, TYPE_TEXT, 0)
     body = text.encode("utf-8")
@@ -1082,6 +1216,8 @@ def text_chunks(
             idx=i,
             total=total,
             text=part.decode("utf-8"),
+            source=source,
+            cut=cut,
         )
         for i, part in enumerate(parts)
     ]
@@ -1097,6 +1233,9 @@ def _decode_text(data: bytes, hdr: Header) -> dict:
         idx=idx,
         total=total,
         text=data[8:].decode("utf-8"),
+        # Revision 7: set on every chunk of a reply whose tail was dropped.
+        cut=bool(hdr.flags & FLAG_TEXT_CUT),
+        source=unpack_source(hdr.flags),
     )
     return out
 
@@ -1111,6 +1250,9 @@ def encode_not_available(seq: int, bot: int, *, request: str, reason: int) -> by
 
     ``request`` is the request string (or just its first letter); the wire
     carries the ASCII code of that first letter.
+
+    No ``source``: there is no weather product behind a Not available, so
+    its source bits stay ``SOURCE_UNSTATED``.
     """
     if not request:
         raise ValueError("request must not be empty")
@@ -1202,6 +1344,9 @@ def encode_request(
     a resend, which is what makes it a copy — and ``text`` the `>` request of
     section 8.2.  Nothing here is ever sent by the bot; it exists so the
     decoder has a matching encoder and the test vectors can be built.
+
+    No ``source``: a request carries no weather, so its source bits stay
+    ``SOURCE_UNSTATED``.
     """
     sender = _sender_bytes(sender_prefix)
     body = text.encode("utf-8")

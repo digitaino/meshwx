@@ -109,9 +109,15 @@ class AppResponder:
 
     def _answer(self, cmd: str, arg: str, seq: b.SeqCounter, bot: int) -> list[bytes]:
         ctx = self._scheduler.context()
+        # Every message aggregated from many products states the store-wide
+        # source; the ones built from a single product take that product's
+        # own (spec 2.2.1).
+        store_source = self.store.products_source()
         if cmd == "d":
             active = extract_active_warnings(self.store, coverage=self.coverage)
-            return [b.digest_message(seq.next(), bot, active, b.feed_health(self.store, ctx.home_offices))]
+            return [b.digest_message(seq.next(), bot, active,
+                                     b.feed_health(self.store, ctx.home_offices),
+                                     source=store_source)]
 
         # `>cov` describes the bot itself, not a place, so coverage never
         # filters it and the answer is always one packet (spec 7A).
@@ -137,7 +143,9 @@ class AppResponder:
             out = [m for w in active[:MAX_WARNINGS_PER_REQUEST]
                    if (m := b.warning_message(seq.next(), bot, w, update=True))]
             if not arg:
-                out.append(b.digest_message(seq.next(), bot, active, b.feed_health(self.store, ctx.home_offices)))
+                out.append(b.digest_message(seq.next(), bot, active,
+                                            b.feed_health(self.store, ctx.home_offices),
+                                            source=store_source))
             return out
 
         if cmd == "wt":
@@ -147,7 +155,9 @@ class AppResponder:
             for w in extract_active_warnings(self.store, coverage=None):
                 if b.warning_identity(w) == ident:
                     text = " ".join(x for x in (w.get("headline"), w.get("description")) if x)
-                    return b.text_messages(seq, bot, v5.SUBJECT_WARNING, text or "No narrative available.")
+                    return b.text_messages(seq, bot, v5.SUBJECT_WARNING,
+                                           text or "No narrative available.",
+                                           source=WeatherStore.product_source(w))
             return [b.not_available(seq.next(), bot, "w", v5.REASON_NO_DATA)]
 
         if cmd == "o":
@@ -191,10 +201,11 @@ class AppResponder:
                     break
             if prod is None:
                 return [b.not_available(seq.next(), bot, "a", v5.REASON_NO_DATA)]
-            return b.text_messages(seq, bot, v5.SUBJECT_AFD, _afd_body(prod.raw_text))
+            return b.text_messages(seq, bot, v5.SUBJECT_AFD, _afd_body(prod.raw_text),
+                                   source=self.store.product_source(prod))
 
         if cmd in ("metar", "taf"):
-            return self._station_report(cmd, arg, seq, bot, ctx.home)
+            return self._station_report(cmd, arg, seq, bot, ctx.home, store_source)
 
         if cmd == "hwo":
             from meshcore_weather.core import services
@@ -202,25 +213,40 @@ class AppResponder:
             if not loc:
                 return [b.not_available(seq.next(), bot, cmd, v5.REASON_UNKNOWN_LOCATION)]
             ol = services.outlook_for(self.store, loc)
-            text = services.hwo_summary(ol.raw_text) if ol and getattr(ol, "raw_text", None) else None
-            return b.text_messages(seq, bot, v5.SUBJECT_HWO, text) if text else []
+            # `Outlook` holds the product, not its text: reading `ol.raw_text`
+            # here meant every `>hwo` fell through to Not available, however
+            # many outlooks the store held.
+            text = ol.summary_text() if ol else None
+            if not text:
+                return [b.not_available(seq.next(), bot, cmd, v5.REASON_NO_DATA)]
+            return b.text_messages(seq, bot, v5.SUBJECT_HWO, text,
+                                   source=self.store.product_source(ol.product))
 
         # `>sat` is always Text, "not reporting" included: that is the answer.
         if cmd in ("space", "storm", "rain", "sat"):
             subject = {"space": v5.SUBJECT_SPACE, "storm": v5.SUBJECT_STORM_REPORTS,
                        "rain": v5.SUBJECT_RAINFALL, "sat": v5.SUBJECT_GENERAL}[cmd]
             text = self._render_text(cmd, arg) if self._render_text else None
-            return b.text_messages(seq, bot, subject, text) if text else []
+            # `>sat` describes the bot's own receiver, not a weather product,
+            # so it states no source (spec 2.2.1).
+            source = v5.SOURCE_UNSTATED if cmd == "sat" else store_source
+            return b.text_messages(seq, bot, subject, text, source=source) if text else []
 
         return [b.not_available(seq.next(), bot, cmd, v5.REASON_UNSUPPORTED)]
 
     def _station_report(self, cmd: str, arg: str, seq: b.SeqCounter, bot: int,
-                        home: tuple[float, float] | None) -> list[bytes]:
+                        home: tuple[float, float] | None,
+                        source: int = v5.SOURCE_UNSTATED) -> list[bytes]:
         """`>metar` / `>taf`. A request that names a station gets that
         station's own report, starting `METAR <ICAO>` / `TAF <ICAO>`, or Not
         available: the app files the text under the ICAO it asked for, so a
         neighbour's report would land on the wrong airport. A place or ZIP gets
-        the nearest reporting station, labelled with its ICAO and distance."""
+        the nearest reporting station, labelled with its ICAO and distance.
+
+        `source` is the store-wide one: a METAR line is pulled out of a
+        collective by text and the record does not carry its product back
+        here, so the honest statement is the one about the bot's feed
+        (spec 2.2.1)."""
         from meshcore_weather.core import render_text, services
         icao = arg.upper()
         resolver.load()
@@ -233,7 +259,7 @@ class AppResponder:
                 text = services.station_taf(self.store, icao)
             if not text:
                 return [b.not_available(seq.next(), bot, cmd, v5.REASON_NO_DATA)]
-            return b.text_messages(seq, bot, v5.SUBJECT_METAR, text)
+            return b.text_messages(seq, bot, v5.SUBJECT_METAR, text, source=source)
         loc = resolver.resolve(arg) if arg else (resolver.resolve_by_coords(*home) if home else None)
         if not loc:
             return [b.not_available(seq.next(), bot, cmd, v5.REASON_UNKNOWN_LOCATION)]
@@ -243,11 +269,19 @@ class AppResponder:
         else:
             tf = services.taf_for(self.store, loc)
             text = render_text.taf(loc, tf) if tf else None
-        return b.text_messages(seq, bot, v5.SUBJECT_METAR, text) if text else []
+            if tf is not None:
+                source = self.store.product_source(tf.product)   # this one does carry it
+        return b.text_messages(seq, bot, v5.SUBJECT_METAR, text, source=source) if text else []
 
 
-def _afd_body(raw: str, limit: int = 1200) -> str:
-    """The forecast discussion without its product header, cut for the air."""
+def _afd_body(raw: str, limit: int = 4000) -> str:
+    """The forecast discussion without its product header.
+
+    This does not cut for the air. It used to stop at 1200 characters, which
+    landed mid-word as often as not; `v5_builders.text_messages` now trims at
+    a sentence and flags the reply as cut, which is the honest version of the
+    same thing. `limit` only bounds the work for a runaway product.
+    """
     lines = raw.splitlines()
     start = 0
     for i, line in enumerate(lines[:30]):

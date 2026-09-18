@@ -490,6 +490,9 @@ def _segment_to_entry(
         "ugcs": sorted(ugcs),
         "product_type": prod.product_type,
         "filename": prod.filename,
+        # How the bot got the product this warning was read out of, for the
+        # wire's source field (spec 2.2.1, revision 7).
+        "source": getattr(prod, "source", ""),
         "_dedup_key": dedup_key,
         **vtec_meta,
     }
@@ -586,6 +589,7 @@ def _extract_warnings_fallback(store: WeatherStore) -> list[dict]:
             "ugcs": sorted(zones),
             "product_type": prod.product_type,
             "filename": prod.filename,
+            "source": getattr(prod, "source", ""),
             "vtec_action": (vtec or {}).get("action"),
             "vtec_phenomenon": (vtec or {}).get("phenomenon"),
             "vtec_significance": (vtec or {}).get("significance"),

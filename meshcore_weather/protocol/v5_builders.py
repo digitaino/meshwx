@@ -231,10 +231,15 @@ def _decimate(points: list, n: int) -> list:
     return [points[round(i * step)] for i in range(n)]
 
 
-def warning_message(seq: int, bot: int, w: dict, update: bool = False) -> bytes | None:
+def warning_message(seq: int, bot: int, w: dict, update: bool = False,
+                    source: int | None = None) -> bytes | None:
+    """One Warning packet. `source` defaults to the source of the product this
+    warning was extracted from, which the entry carries (spec 2.2.1)."""
     ident = warning_identity(w)
     if ident is None:
         return None
+    if source is None:
+        source = WeatherStore.product_source(w)
     event, office, etn = ident
     polygon = [(float(la), float(lo)) for la, lo in (w.get("vertices") or [])]
     if len(polygon) < 3:
@@ -245,7 +250,7 @@ def warning_message(seq: int, bot: int, w: dict, update: bool = False) -> bytes 
                   tornado=int(w.get("tornado_tag") or 0), flood_source=int(w.get("flood_source") or 0),
                   flood_damage=int(w.get("flood_damage") or 0), hail_qin=int(w.get("hail_qin") or 0),
                   wind_mph=int(w.get("wind_mph") or 0), update=update,
-                  issued_min=issued_min(w))
+                  issued_min=issued_min(w), source=source)
     # Fit into one packet: shed detail in the order a phone can best do without.
     # The issue time is not in this list: it is two bytes, it is what lets the
     # phone say when the warning began rather than when the radio heard it, and
@@ -274,7 +279,11 @@ def cancel_message(seq: int, bot: int, identity: tuple[int, int, int], reason: i
     return v5.encode_cancel(seq, bot, event=event, office=office, etn=etn, reason=reason)
 
 
-def digest_message(seq: int, bot: int, active: list[dict], feed_health: int) -> bytes:
+def digest_message(seq: int, bot: int, active: list[dict], feed_health: int,
+                   source: int = v5.SOURCE_UNSTATED) -> bytes:
+    """The active-warning digest. It is aggregated from many products, so
+    `source` is the store-wide answer its caller got from
+    `WeatherStore.products_source()` (spec 2.2.1)."""
     entries = []
     for w in sorted(active, key=expires_min):
         ident = warning_identity(w)
@@ -283,7 +292,8 @@ def digest_message(seq: int, bot: int, active: list[dict], feed_health: int) -> 
         entries.append((ident[0], ident[1], ident[2], expires_min(w)))
         if len(entries) >= MAX_DIGEST:
             break
-    return v5.encode_digest(seq, bot, now_min=now_min(), feed_health=feed_health, entries=entries)
+    return v5.encode_digest(seq, bot, now_min=now_min(), feed_health=feed_health, entries=entries,
+                            source=source)
 
 
 def feed_health(store: WeatherStore, offices: set[str]) -> int:
@@ -349,7 +359,8 @@ def _feels_delta(temp_f: int | None, rh: int | None, wind_mph: int | None) -> in
     return 0
 
 
-def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str]) -> bytes | None:
+def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str],
+                source: int | None = None) -> bytes | None:
     """One Observations batch, with every station's own age (spec 6).
 
     The batch's `ts` is the newest METAR in it and each station says how far
@@ -361,7 +372,13 @@ def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str]) ->
     (163 bytes already). A full batch therefore drops its farthest station —
     the list arrives nearest first — rather than leave the phone to guess which
     readings the timestamp describes.
+
+    A batch is aggregated from many products, so `source` defaults to the
+    store-wide answer: `mixed` whenever the store holds both kinds (spec
+    2.2.1).
     """
+    if source is None:
+        source = store.products_source()
     now = datetime.now(timezone.utc)
     rows = []
     for icao in stations[:MAX_OBS_STATIONS]:
@@ -406,7 +423,8 @@ def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str]) ->
         newest = max(ts for _, ts in rows)
         batch = [dict(row, age_min=(newest - ts).total_seconds() / 60) for row, ts in rows]
         try:
-            return v5.encode_obs(seq, bot, ts_min=int(newest.timestamp() // 60), stations=batch)
+            return v5.encode_obs(seq, bot, ts_min=int(newest.timestamp() // 60), stations=batch,
+                                 source=source)
         except ValueError:
             if len(rows) == 1:
                 raise
@@ -425,16 +443,21 @@ _COND_FREEZING_RAIN, _COND_HEAVY_SNOW = 0x10, 0x40
 
 
 def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: float,
-                     point: int | None = None) -> bytes | None:
+                     point: int | None = None, source: int | None = None) -> bytes | None:
     """`point` is the bundle index a request or job named. The answer carries
     it when the forecast found is at that point's coordinates; a substitute
-    point carries its own index, or 0xFFFF."""
+    point carries its own index, or 0xFFFF.
+
+    `source` defaults to the source of the PFM product this was rendered from
+    (spec 2.2.1)."""
     from meshcore_weather.core import services
     from meshcore_weather.parser.pfm import downsample_to_daily
     found = services.nearest_pfm_point(store, lat, lon)
     if found is None:
         return None
     pt, prod, _km = found
+    if source is None:
+        source = store.product_source(prod)
     daily = downsample_to_daily(pt, max_days=7)
     # Entries are consecutive days: anything after a missing date is dropped.
     daily = [d for i, d in enumerate(daily) if (d.local_date - daily[0].local_date).days == i]
@@ -465,7 +488,8 @@ def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: f
         if _haversine_km(pt.lat, pt.lon, p[2], p[3]) < POINT_MATCH_KM:
             idx = point               # shared coordinates: answer under the index asked for
     return v5.encode_forecast(seq, bot, point=idx,
-                              issued_min=int(issued.timestamp() // 60), first_period=first, periods=periods[:14])
+                              issued_min=int(issued.timestamp() // 60), first_period=first,
+                              periods=periods[:14], source=source)
 
 
 # -- Coverage ---------------------------------------------------------------------------
@@ -553,18 +577,77 @@ def coverage_message(seq: int, bot: int, coverage, home: tuple[float, float] | N
 # -- Text and errors -------------------------------------------------------------------
 
 
-def text_messages(seq: SeqCounter, bot: int, subject: int, text: str) -> list[bytes]:
+_SENTENCE_ENDS = (".", "!", "?")
+
+
+def _fits(text: str) -> bool:
+    """Does this text go out as at most MAX_TEXT_CHUNKS chunks?
+
+    Asked of v5 itself rather than computed here: the chunker backs off to
+    UTF-8 code point boundaries, so the answer is not simply the byte count
+    over 157.
+    """
+    try:
+        v5.text_chunks(0, 0, subject=0, text=text)
+        return True
+    except ValueError:
+        return False
+
+
+def fit_text(text: str) -> tuple[str, bool]:
+    """Trim `text` to what eight chunks hold, and say whether it was cut.
+
+    The ceiling is real — 8 x 157 bytes — so the only question is where to
+    stop. A forecast discussion cut mid-word reads as a transmission fault;
+    cut after a full stop it reads as an excerpt, which is what it is. So:
+    the last sentence boundary (a `.`, `!` or `?` followed by a space) that
+    fits, else the last word boundary, and the cut flag carries the rest of
+    the meaning (spec 8.1). No ellipsis: the flag is the signal and every
+    byte is airtime.
+    """
+    if _fits(text):
+        return text, False
+
+    # The longest prefix that fits. The chunker is greedy, so a shorter
+    # prefix never needs more chunks and this bisects cleanly.
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _fits(text[:mid]):
+            lo = mid
+        else:
+            hi = mid - 1
+    end = lo
+
+    # `end` is short of the whole text (it did not fit), so text[end] exists:
+    # it is the first character the cut drops. A boundary sitting exactly
+    # there counts, which is why the sentence scan starts at end - 1 and the
+    # word scan at end.
+    for i in range(end - 1, -1, -1):
+        if text[i] in _SENTENCE_ENDS and text[i + 1] == " ":
+            return text[:i + 1].rstrip(), True
+    for i in range(end, -1, -1):
+        if text[i] == " ":
+            return text[:i].rstrip(), True
+    # One word longer than the whole budget. Nothing to cut on cleanly, and
+    # an empty reply helps nobody, so the hard prefix goes out flagged.
+    return text[:end].rstrip(), True
+
+
+def text_messages(seq: SeqCounter, bot: int, subject: int, text: str,
+                  source: int = v5.SOURCE_UNSTATED) -> list[bytes]:
+    """One reply as Text chunks, numbered from the counter.
+
+    The counter advances exactly once per chunk transmitted, so the caller's
+    seq accounting is unchanged whether or not the text had to be cut.
+    """
     text = " ".join(text.split())
+    body, cut = fit_text(text)
     start = seq.next()
-    for cut in (len(text), 1200, 1000, 800, 600, 400, 150):
-        try:
-            msgs = v5.text_chunks(start, bot, subject=subject, text=text[:cut])
-        except ValueError:
-            continue
-        for _ in msgs[1:]:
-            seq.next()
-        return msgs
-    return []
+    msgs = v5.text_chunks(start, bot, subject=subject, text=body, source=source, cut=cut)
+    for _ in msgs[1:]:
+        seq.next()
+    return msgs
 
 
 def not_available(seq: int, bot: int, request: str, reason: int) -> bytes:

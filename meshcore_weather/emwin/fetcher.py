@@ -54,8 +54,14 @@ class EMWINSource(ABC):
 CACHE_FILE = Path(settings.data_dir) / "emwin_cache" / "products.jsonl"
 
 
-def parse_emwin_file(filename: str, raw_text: str) -> dict | None:
-    """Filename + body -> product dict. Shared by the zip and directory sources."""
+def parse_emwin_file(filename: str, raw_text: str, source: str = "") -> dict | None:
+    """Filename + body -> product dict. Shared by the zip and directory sources.
+
+    `source` is how the bot got the file — "sdr" off its own GOES dish,
+    "internet" from NOAA — and rides through the store onto the wire
+    (spec 2.2.1, revision 7). Each source stamps its own products; a caller
+    that does not say leaves it unstated.
+    """
     product_id = "UNKNOWN"
     station = "UNKNOWN"
     awips_id = ""
@@ -90,6 +96,7 @@ def parse_emwin_file(filename: str, raw_text: str) -> dict | None:
         "timestamp": ts,
         "raw_text": raw_text,
         "filename": filename,
+        "source": source,
     }
 
 
@@ -199,6 +206,9 @@ class InternetSource(EMWINSource):
                         continue
                     rec = json.loads(line)
                     rec["timestamp"] = datetime.fromisoformat(rec["timestamp"])
+                    # This cache is only ever this source's own products, so a
+                    # line written before revision 7 is still an internet one.
+                    rec.setdefault("source", "internet")
                     if is_expired((rec.get("awips_id") or "")[:3], rec["timestamp"], now):
                         continue
                     fname = rec.get("filename", "")
@@ -247,7 +257,7 @@ class InternetSource(EMWINSource):
         return products
 
     def _parse_emwin_file(self, filename: str, raw_text: str) -> dict | None:
-        return parse_emwin_file(filename, raw_text)
+        return parse_emwin_file(filename, raw_text, source="internet")
 
     async def fetch_products(self) -> list[dict]:
         return list(self._products.values())
@@ -361,7 +371,7 @@ class SDRSource(EMWINSource):
                     self._seen.add(name)
                     if not raw:
                         continue
-                    prod = parse_emwin_file(name, raw)
+                    prod = parse_emwin_file(name, raw, source="sdr")
                     if prod:
                         self._products[name] = prod
                         added += 1

@@ -20,8 +20,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from meshcore_weather.geodata import resolver
+from meshcore_weather.protocol import v5
 
 logger = logging.getLogger(__name__)
+
+#: EMWIN source name -> v5 source constant (spec 2.2.1, revision 7).
+_V5_SOURCE = {"sdr": v5.SOURCE_GOES, "internet": v5.SOURCE_INTERNET}
 
 def _expand_zone_ranges(text: str) -> set[str]:
     """Expand NWS zone range notation like 'TXZ021>044' into individual zones.
@@ -110,6 +114,9 @@ class EMWINProduct:
     state: str          # chars 6-7 e.g. "TX"
     timestamp: datetime
     raw_text: str
+    # How the bot got this product: "sdr" off its own GOES dish, "internet"
+    # from NOAA, "" when the source did not say (spec 2.2.1, revision 7).
+    source: str = ""
 
 
 class WeatherStore:
@@ -189,7 +196,41 @@ class WeatherStore:
             state=state,
             timestamp=ts,
             raw_text=raw_text,
+            source=str(raw.get("source") or ""),
         )
+
+    # -- Where the products came from (spec 2.2.1, revision 7) --
+
+    @staticmethod
+    def product_source(prod) -> int:
+        """One product's origin as a v5 source constant.
+
+        `prod` is an EMWINProduct, or any dict carrying the same `source` key:
+        a raw product from a fetcher, or a warning entry, which keeps the
+        source of the product it was extracted from.
+
+        A product from a source that did not stamp itself is `unstated`: the
+        absence of a claim, never a claim of absence.
+        """
+        name = prod.get("source") if isinstance(prod, dict) else getattr(prod, "source", "")
+        return _V5_SOURCE.get(name or "", v5.SOURCE_UNSTATED)
+
+    def products_source(self, products: "list[EMWINProduct] | None" = None) -> int:
+        """The v5 source constant for a set of products, the whole live store
+        by default: what every message aggregated from many products says.
+
+        Products that disagree give `mixed`; products that none of them know
+        give `unstated`. A product with no stamp is simply not counted, so one
+        unstamped file does not turn a dish-fed bot into a mixed one.
+        """
+        kinds = {
+            self.product_source(p)
+            for p in (self._products.values() if products is None else products)
+        }
+        kinds.discard(v5.SOURCE_UNSTATED)
+        if not kinds:
+            return v5.SOURCE_UNSTATED
+        return kinds.pop() if len(kinds) == 1 else v5.SOURCE_MIXED
 
     # -- Finding products by type + orig --
 

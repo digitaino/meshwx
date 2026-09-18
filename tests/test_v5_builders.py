@@ -120,6 +120,129 @@ def test_text_messages_chunk_and_share_a_group():
     assert "".join(d["text"] for d in ds).split() == ["word"] * 80
 
 
+# -- Revision 7: the data source ---------------------------------------------------
+
+
+def test_a_warning_states_the_source_of_the_product_it_came_out_of():
+    """The extractor stamps each entry with its product's source; the builder
+    puts that on the wire without being told (spec 2.2.1)."""
+    assert v5.decode(b.warning_message(1, 9, _warning()))["source"] == v5.SOURCE_UNSTATED
+    dish = v5.decode(b.warning_message(1, 9, {**_warning(), "source": "sdr"}))
+    assert dish["source"] == v5.SOURCE_GOES
+    net = v5.decode(b.warning_message(1, 9, {**_warning(), "source": "internet"}))
+    assert net["source"] == v5.SOURCE_INTERNET
+    # An explicit value still wins, for a caller that knows better.
+    told = b.warning_message(1, 9, {**_warning(), "source": "sdr"}, source=v5.SOURCE_MIXED)
+    assert v5.decode(told)["source"] == v5.SOURCE_MIXED
+
+
+def test_a_digest_states_the_store_wide_source_it_is_given():
+    ws = [_warning(etn=1), _warning(etn=2)]
+    assert v5.decode(b.digest_message(3, 9, ws, feed_health=7))["source"] == v5.SOURCE_UNSTATED
+    mixed = b.digest_message(3, 9, ws, feed_health=7, source=v5.SOURCE_MIXED)
+    assert v5.decode(mixed)["source"] == v5.SOURCE_MIXED
+
+
+def test_a_cancel_carries_no_source_only_its_reason():
+    """Whatever else revision 7 does, type 2's nibble stays a reason code."""
+    for reason in range(3):
+        d = v5.decode(b.cancel_message(1, 9, (3, 35, 42), reason=reason))
+        assert d["reason"] == reason == d["flags"] and "source" not in d
+
+
+# -- Revision 7: the cut text reply ------------------------------------------------
+
+
+MAX_TEXT = v5.MAX_TEXT_CHUNKS * v5.MAX_TEXT_BYTES        # 1256 bytes of UTF-8
+
+
+def _sentences(n: int, word: str = "word") -> str:
+    """n sentences of ~50 characters each."""
+    return " ".join(f"{word.capitalize()} {' '.join([word] * 8)} number {i}." for i in range(n))
+
+
+def test_a_reply_that_fits_is_not_flagged_as_cut():
+    seq = b.SeqCounter(10)
+    msgs = b.text_messages(seq, 5, v5.SUBJECT_AFD, "word " * 80)
+    ds = [v5.decode(m) for m in msgs]
+    assert len(ds) == 3 and not any(d["cut"] for d in ds)
+
+
+def test_an_eight_chunk_reply_that_exactly_fits_is_not_flagged():
+    """The boundary case: 1256 bytes is eight full chunks and nothing was
+    dropped, so the flag must stay clear."""
+    text = "a" * MAX_TEXT
+    body, cut = b.fit_text(text)
+    assert body == text and cut is False
+    msgs = b.text_messages(b.SeqCounter(0), 5, v5.SUBJECT_AFD, text)
+    ds = [v5.decode(m) for m in msgs]
+    assert len(ds) == v5.MAX_TEXT_CHUNKS
+    assert not any(d["cut"] for d in ds)
+    assert "".join(d["text"] for d in ds) == text
+    # One byte more and it no longer fits.
+    assert b.fit_text("a" * (MAX_TEXT + 1))[1] is True
+
+
+def test_a_long_reply_is_cut_at_a_sentence_and_flagged_on_every_chunk():
+    text = _sentences(60)                     # comfortably over 1256 bytes
+    assert len(text.encode()) > MAX_TEXT
+    seq = b.SeqCounter(100)
+    msgs = b.text_messages(seq, 5, v5.SUBJECT_AFD, text)
+    ds = [v5.decode(m) for m in msgs]
+    assert len(ds) == v5.MAX_TEXT_CHUNKS
+    # The flag is on EVERY chunk: losing the last packet must not lose it.
+    assert all(d["cut"] for d in ds)
+    body = "".join(d["text"] for d in ds)
+    assert body.endswith(".") and not body.endswith("..")     # no ellipsis
+    assert text.startswith(body)                              # a clean prefix
+    assert len(body.encode()) <= MAX_TEXT
+    # Cut at a sentence: the next character in the source is the space that
+    # followed the full stop.
+    assert text[len(body)] == " "
+
+
+def test_the_cut_never_lands_inside_a_word():
+    # One long sentence, no full stop anywhere near the limit: the fallback
+    # is the last word boundary.
+    text = "alpha bravo charlie delta echo foxtrot " * 60
+    body, cut = b.fit_text(" ".join(text.split()))
+    assert cut is True
+    assert not body.endswith(" ") and body.split()[-1] in (
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot"
+    )
+    assert " ".join(text.split()).startswith(body + " ")
+
+
+def test_the_cut_prefers_a_sentence_to_a_word_boundary():
+    # A full stop early enough to fit, then a very long unpunctuated tail.
+    head = _sentences(20)
+    text = head + " " + "tail " * 400
+    body, cut = b.fit_text(" ".join(text.split()))
+    assert cut is True and body == head          # stops at the last full stop
+
+
+def test_a_cut_reply_still_advances_the_counter_once_per_chunk():
+    seq = b.SeqCounter(250)
+    msgs = b.text_messages(seq, 5, v5.SUBJECT_AFD, _sentences(60))
+    ds = [v5.decode(m) for m in msgs]
+    assert [d["seq"] for d in ds] == [(250 + i) & 0xFF for i in range(len(ds))]
+    assert {d["group"] for d in ds} == {250}
+    assert seq.next() == (250 + len(ds)) & 0xFF   # exactly one number per chunk
+
+
+def test_text_messages_carries_the_source():
+    msgs = b.text_messages(b.SeqCounter(0), 5, v5.SUBJECT_AFD, _sentences(60),
+                           source=v5.SOURCE_GOES)
+    assert all(v5.decode(m)["source"] == v5.SOURCE_GOES for m in msgs)
+    assert all(v5.decode(m)["cut"] for m in msgs)
+
+
+def test_a_question_or_exclamation_ends_a_sentence_too():
+    text = "Is this the end? " + "tail " * 400
+    body, cut = b.fit_text(" ".join(text.split()))
+    assert cut is True and body == "Is this the end?"
+
+
 def test_humidity_and_feels_like():
     assert b._humidity(95, 75) in range(50, 56)
     assert b._feels_delta(95, 52, 5) >= 8            # heat index above 100

@@ -1,8 +1,17 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, revision 6, 2026-09-17. This is the document an app developer
+Version 5.0, revision 7, 2026-09-17. This is the document an app developer
 builds against. It replaces the v3/v4 protocol documents, the April 2026
 iOS brief and the v4 client guide, all of which are now superseded.
+
+Revision 7 adds two small things and moves no byte. A **data source** in
+the flags nibble (section 2.2.1) says where the weather in a message came
+from — the bot's own GOES dish, the internet, or both — so a phone can
+stop guessing whether it is reading satellite data. And a **cut flag** on
+Text (section 8.1) says a narrative was longer than the air allows and the
+tail was dropped; the text now ends at a sentence rather than mid-word.
+A revision 6 client ignores both bits and reads every packet exactly as
+before. If you hold revision 6, read section 16.
 
 Revision 5 adds two times, so that a phone can say *when* a number is true
 instead of implying it is true now: a **per-station age** in Observations
@@ -10,7 +19,7 @@ instead of implying it is true now: a **per-station age** in Observations
 appended after everything a revision 4 decoder reads and both are
 announced by a bit in the flags nibble, so a revision 4 client keeps
 decoding every message exactly as before and simply never learns the two
-times. If you hold revision 4, read section 16.
+times. If you hold revision 4, read section 16B.
 
 Revision 4 adds one message: **Coverage** (type 8, section 7A), the bot's
 own statement of what it carries — centre, radius, NWS offices, and the
@@ -118,7 +127,7 @@ its own chunk numbers.
 |---|---|---|---|
 | 0 | 1 | `seq` | Per-bot sequence number, one more for every packet the bot transmits, wraps 255 to 0 (section 2.3) |
 | 1 | 2 | `bot` | First two bytes of the bot's public key, little-endian u16 (from its advert) |
-| 3 | 1 | `type` | High nibble: message type. Low nibble: type-specific flags |
+| 3 | 1 | `type` | High nibble: message type. Low nibble: flags — bits 0 and 1 are type-specific, bits 2 and 3 are the data source (section 2.2.1) in every type but Cancel |
 
 Message types:
 
@@ -137,6 +146,42 @@ Message types:
 | 12 to 15 | Free for third-party experiments; the bot never sends them | |
 
 Receivers ignore unknown types.
+
+### 2.2.1 Data source (flags bits 2 to 3, new in revision 7)
+
+Where the weather in this message came from. Two bits, `flags & 0x0C`
+shifted right by 2, and they mean the same thing in every type that
+carries them.
+
+| Value | Name | Meaning |
+|---|---|---|
+| 0 | unstated | The bot did not say. Every pre-revision-7 bot sends this, and so does any message not built from a weather product |
+| 1 | GOES | Received off the GOES satellite by the bot's own dish |
+| 2 | internet | Fetched from NOAA over the internet |
+| 3 | mixed | Built from products of both kinds |
+
+Which value a message carries depends on what it was built from. A
+message rendered from one product — a Warning, a Forecast, a narrative —
+states that product's source. A message aggregated from many — a Digest,
+an Observations batch — states `mixed` when they did not all arrive the
+same way.
+
+Three types always send 0 because there is no weather product behind
+them: **Request** (type 9, which the app sends), **Not available**
+(type 7), and **Coverage** (type 8, which describes the bot's own
+configuration).
+
+**Cancel (type 2) is the exception and always will be.** Its whole flags
+nibble is a reason code (section 4), so bits 2 and 3 of a Cancel are part
+of a number an app already reads. Never take a source out of a Cancel and
+never put one in: reason 4 is reason 4, not "cancelled, from the internet".
+
+Read 0 as the absence of a claim, never as a claim of absence. A bot that
+has not been upgraded sends 0 for everything, so "unstated" is not
+evidence that the bot lacks a dish. Do not put it on screen as a
+provenance badge on its own; it is useful for telling a user why an
+answer is thin, and for a bot operator checking that a dish is actually
+feeding the bot.
 
 ### 2.3 Sequence numbers, duplicates and ordering
 
@@ -272,6 +317,12 @@ CAN, EXP or UPG) more than 5 minutes before its stored expiry. Flags
 nibble: 0 cancelled, 1 expired early, 2 upgraded (a new warning with the
 replacement follows). This bot always sends 0, whatever the reason, so do
 not wait for a replacement.
+
+The reason is the **whole** nibble, all four bits, and that is why Cancel
+is the one type with no data source (section 2.2.1): bits 2 and 3 here
+are part of the reason code, not a source. Reason 4 is reason 4. Values 3
+to 15 are undefined today; treat any of them as "ended", which is the
+part of a Cancel that matters.
 
 | Offset | Size | Field |
 |---|---|---|
@@ -592,9 +643,31 @@ on a schedule.
 | 7 | 1 | `total` | Chunks in this reply, 1 to 8 |
 | 8 | ≤157 | `text` | UTF-8, never split inside a code point |
 
+Flags nibble bit 0 (**cut**, new in revision 7): the product was longer
+than the air allows and the tail was dropped. Bits 2 and 3 are the data
+source (section 2.2.1).
+
 Reassemble by `(bot, group)` in `idx` order; show partial text with a
 "missing part" marker if a chunk never arrives (ask again after 20 s,
 at most once).
+
+**The cut flag.** A reply holds at most 8 chunks of 157 bytes, so 1256
+bytes of UTF-8 is the ceiling, and a forecast discussion is routinely
+longer. When the bot has to drop the tail it trims at the last sentence
+boundary that fits — a `.`, `!` or `?` followed by a space — or, failing
+that, at the last word boundary. The text is never cut inside a word and
+there is no ellipsis: the flag is the signal, and the bytes it would cost
+are airtime.
+
+The flag is set on **every chunk** of a cut reply, not only the last one.
+A phone that loses the last packet has still been told that what it holds
+is an excerpt.
+
+Show a cut reply as an excerpt — the text, then a quiet line saying the
+rest did not fit, and a way to ask the bot again for the parts that
+matter. Do not show it as a transmission fault or a missing chunk: every
+chunk arrived, and asking again gets the same 1256 bytes. `cut` and a
+missing `idx` are different things and should not share a marker.
 
 ### 8.2 Request grammar (app side)
 
@@ -725,8 +798,11 @@ then `C` or `Z`, then the 3-digit number. `TXC453` is in `counties.json`,
 Louisiana parishes, Alaska boroughs and Virginia's independent cities are
 all "counties" here, as in the NWS products.
 
-Bundle versioning: `protocol.json` `version` (10 since revision 5) and
-`index.json` `version` (2 since revision 3). Revision 5 changed one bundle
+Bundle versioning: `protocol.json` `version` (11 since revision 7) and
+`index.json` `version` (2 since revision 3). Revision 7 changed one bundle
+file, `protocol.json`, which gained `v5.source` (the mask, the shift and
+the four values), `v5.flags.text.cut`, and a note on the header's flags
+nibble. No index moved. Revision 5 changed one bundle
 file, `protocol.json`, which gained the two new flag bits, the 13-station
 limit with ages, the age step and range, the issue-time range, and the two
 record sizes. No index moved. Revision 4 changed one bundle
@@ -1024,7 +1100,34 @@ event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
 
-## 16. Changes in revision 6
+## 16. Changes in revision 7
+
+Revision 7 adds two flag bits and moves no byte. Nothing in any body
+changed, no field grew, and no index moved.
+
+| Section | Revision 6 | Revision 7 |
+|---|---|---|
+| 2.2 | The flags nibble was entirely type-specific, and bits 2 and 3 were unused in every type but Cancel | Bits 2 and 3 are the **data source**, the same field in every type but Cancel: 0 unstated, 1 the bot's own GOES dish, 2 the internet, 3 both. See 2.2.1 |
+| 2.2.1 | (none) | Which value a message carries: a message rendered from one product states that product's source; one aggregated from many states `mixed` when they disagree. Request, Not available and Coverage state 0 — there is no weather product behind them |
+| 4 | The Cancel flags nibble was a reason code | Unchanged, and now stated as the one exception: the reason is all four bits, so a Cancel never carries a source and none may be read out of one. Reason 4 is reason 4 |
+| 8.1 | A reply longer than eight chunks was cut at a byte count, landing mid-word, and said nothing about it. A phone could not tell an excerpt from a corrupt one | Flags bit 0 (**cut**) says the tail was dropped. The text is trimmed at the last sentence boundary that fits, or the last word boundary, never inside a word, and carries no ellipsis. The bit is on **every** chunk, so losing the last packet does not lose the fact |
+| 8.1 | (silent) | What a receiver shows: an excerpt with a way to ask again, not a transmission fault. `cut` and a missing `idx` are different things |
+| 9 | `protocol.json` `version` 10 | `version` 11: `v5.source` (mask, shift, values), `v5.flags.text.cut`, and the header note. `index.json` stays at version 2 |
+
+A revision 6 decoder is unaffected. It masks the flag bits it knows and
+ignores the rest, so it reads every revision 7 packet exactly as it read a
+revision 6 one — it simply never learns where the data came from, and a
+cut reply looks to it like any other reply, as it did before. The vectors
+show both: `severe_thunderstorm_warning_issued` is the revision 6 bytes,
+unchanged, and `severe_thunderstorm_warning_from_goes` is the same warning
+with source 1 in the nibble. `text_afd_cut_from_goes` carries both new
+bits at once (flags `0x5`).
+
+To adopt revision 7: read two bits out of the flags nibble everywhere but
+Cancel, read bit 0 of a Text chunk, and stop drawing a cut narrative as
+damage. Nothing else needs touching.
+
+## 16A. Changes in revision 6
 
 Revision 6 adds one message and changes no existing byte: **Request
 (type 9, section 7B)**, an app's `>` request flooded on `#meshwx` as a
@@ -1032,7 +1135,7 @@ datagram. The DM and channel-text forms of section 8.2 still work; a
 revision 5 bot ignores type 9 and a revision 5 app never sends it.
 Sections 8.2, 12 and 13 say where the datagram fits.
 
-## 16A. Changes in revision 5
+## 16B. Changes in revision 5
 
 Revision 5 adds two times and nothing else. Both are appended after
 everything revision 4 reads, both are announced by a flags-nibble bit, and
