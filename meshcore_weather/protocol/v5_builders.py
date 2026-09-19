@@ -29,6 +29,10 @@ _CLIENT_DATA = Path(__file__).resolve().parent.parent / "client_data"
 LIFE_SAFETY = {"TO.W", "SV.W", "FF.W", "EW.W"}
 
 OBS_MAX_AGE_MIN = 120
+# `>o ICAO` for a station with nothing fresh answers with the nearest station
+# within this distance of it that has a report (spec 8.2, revision 8). The same
+# 40 km the app will still show a reading from, attributed to its station.
+OBS_SUBSTITUTE_KM = 40.0
 MAX_OBS_STATIONS = 14
 # What an hourly batch really carries since revision 5: the per-station ages (spec 6.1)
 # do not fit beside 14 stations, so the builder drops the farthest. Coverage states this one.
@@ -333,6 +337,53 @@ def coverage_stations(center: tuple[float, float] | None, radius_km: float, stor
             continue
         out.append((km, icao))
     return [icao for _, icao in sorted(out)[:limit]]
+
+
+def station_obs_message(seq: int, bot: int, store: WeatherStore, icao: str,
+                        source: int | None = None,
+                        max_km: float = OBS_SUBSTITUTE_KM) -> bytes | None:
+    """`>o ICAO`: that station's own report, or, when it has nothing fresh,
+    the nearest station within `max_km` of it that has one (spec 8.2,
+    revision 8). Always a batch of one, under the index of the station that
+    actually reported, so the phone files it under the right airport.
+
+    This is what the text path has always done for a place ("the nearest
+    station THAT ACTUALLY REPORTS", services.observation_for). The app names
+    the station nearest the place from its own bundled list, which cannot
+    know that 309 of those 2,237 stations send nothing on the feed: Dayton's
+    nearest, Wright-Patterson AFB, never reports, so every `>o KFFO` came back
+    Not available while Dayton International, 16.6 km away, reported hourly.
+    None only when nothing within `max_km` has a fresh report.
+    """
+    icao = icao.upper()
+    msg = obs_message(seq, bot, store, [icao], source=source)
+    if msg is not None:
+        return msg
+    resolver.load()
+    here = resolver._stations.get(icao)
+    try:
+        lat, lon = here["la"], here["lo"]
+    except (KeyError, TypeError):
+        return None
+    near: list[tuple[float, str]] = []
+    for other, st in resolver._stations.items():
+        if other == icao or tables.station(other) is None:
+            continue
+        try:
+            km = _haversine_km(lat, lon, st["la"], st["lo"])
+        except (KeyError, TypeError):
+            continue
+        if km <= max_km:
+            near.append((km, other))
+    # Nearest first, stopping at the first that answers: each look is a scan
+    # of the store, and a dense metro can put a dozen stations in range.
+    for km, other in sorted(near):
+        msg = obs_message(seq, bot, store, [other], source=source)
+        if msg is not None:
+            logger.info("Observations: %s has nothing fresh; answered with %s, %.0f km from it",
+                        icao, other, km)
+            return msg
+    return None
 
 
 def _humidity(temp_f: int | None, dew_f: int | None) -> int | None:

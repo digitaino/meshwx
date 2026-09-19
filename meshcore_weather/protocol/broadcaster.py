@@ -162,11 +162,12 @@ class AppResponder:
 
         if cmd == "o":
             if arg:
-                stations = [arg.upper()]
-                if b.tables.station(stations[0]) is None:
+                if b.tables.station(arg) is None:
                     return [b.not_available(seq.next(), bot, "o", v5.REASON_UNKNOWN_LOCATION)]
-            else:
-                stations = b.coverage_stations(ctx.home, ctx.radius_km, self.store)
+                # That station, or the nearest one within 40 km that reports.
+                msg = b.station_obs_message(seq.next(), bot, self.store, arg)
+                return [msg] if msg else []
+            stations = b.coverage_stations(ctx.home, ctx.radius_km, self.store)
             msg = b.obs_message(seq.next(), bot, self.store, stations) if stations else None
             return [msg] if msg else []
 

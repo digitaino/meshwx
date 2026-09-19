@@ -1,8 +1,14 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, revision 7, 2026-09-17. This is the document an app developer
+Version 5.0, revision 8, 2026-09-18. This is the document an app developer
 builds against. It replaces the v3/v4 protocol documents, the April 2026
 iOS brief and the v4 client guide, all of which are now superseded.
+
+Revision 8 changes one answer and no byte. `>o KAUS` for a station with
+no fresh report now answers with the nearest station within 40 km of it
+that has one, under that station's own index (section 6), the way a typed
+`wx` request always has. An app names the station nearest a place from
+its bundled list, which cannot know which stations actually report.
 
 Revision 7 adds two small things and moves no byte. A **data source** in
 the flags nibble (section 2.2.1) says where the weather in a message came
@@ -19,7 +25,7 @@ instead of implying it is true now: a **per-station age** in Observations
 appended after everything a revision 4 decoder reads and both are
 announced by a bit in the flags nibble, so a revision 4 client keeps
 decoding every message exactly as before and simply never learns the two
-times. If you hold revision 4, read section 16B.
+times. If you hold revision 4, read section 16C.
 
 Revision 4 adds one message: **Coverage** (type 8, section 7A), the bot's
 own statement of what it carries — centre, radius, NWS offices, and the
@@ -405,6 +411,15 @@ bot never fills in a default. A station whose report still cannot be
 encoded is left out, and the rest of the batch is sent.
 
 A single-station request (`>o KAUS`) is the same message with `n = 1`.
+When the named station has no report fresh enough to send (120 minutes),
+the bot answers with the **nearest station within 40 km of it that has
+one**: still `n = 1`, under the index of the station that reported, never
+the one asked for (revision 8). A phone that asked for Wright-Patterson
+AFB (KFFO), which never reports on the feed, gets Dayton International
+(KDAY, 16.6 km away) and files it under KDAY. Not available (reason 0)
+only when nothing within 40 km reports. A phone matching the answer to
+its request accepts a single station within 40 km of the one it named
+from the bot it asked.
 
 ### 6.1 Per-station ages (flags bit 0, new in revision 5)
 
@@ -685,7 +700,7 @@ type and get a text DM back.
 | `>w TXC453` or `>w TXZ192` | Every active warning touching that county or zone (at most 6) |
 | `>wt SV.W.EWX.42` | The warning's narrative as Text, subject 0 |
 | `>o` | Observations for the coverage stations |
-| `>o KAUS` | Observations, one station |
+| `>o KAUS` | Observations, one station: that one, or the nearest within 40 km that reports (section 6, revision 8) |
 | `>f` | Forecast for the bot's home point |
 | `>f 102` | Forecast for point index 102; `point` is 102 whenever the forecast is at that point's coordinates (section 7) |
 | `>f round rock tx` | Forecast for a place the bot resolves (nearest point; `point` may be 0xFFFF) |
@@ -798,8 +813,9 @@ then `C` or `Z`, then the 3-digit number. `TXC453` is in `counties.json`,
 Louisiana parishes, Alaska boroughs and Virginia's independent cities are
 all "counties" here, as in the NWS products.
 
-Bundle versioning: `protocol.json` `version` (11 since revision 7) and
-`index.json` `version` (2 since revision 3). Revision 7 changed one bundle
+Bundle versioning: `protocol.json` `version` (12 since revision 8) and
+`index.json` `version` (2 since revision 3). Revision 8 changed only
+`protocol.json`'s notes. Revision 7 changed one bundle
 file, `protocol.json`, which gained `v5.source` (the mask, the shift and
 the four values), `v5.flags.text.cut`, and a note on the header's flags
 nibble. No index moved. Revision 5 changed one bundle
@@ -1100,7 +1116,28 @@ event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
 
-## 16. Changes in revision 7
+## 16. Changes in revision 8
+
+Revision 8 changes what one request answers. No byte, field or index
+moved.
+
+| Section | Revision 7 | Revision 8 |
+|---|---|---|
+| 6, 8.2 | `>o KAUS` answered with that station's report or Not available | That station's report, or the nearest station within 40 km of it that has a fresh one, as a batch of one under the reporting station's own index. Not available only when nothing within 40 km reports |
+| 9 | `protocol.json` `version` 11 | `version` 12: the note on `>o` |
+
+Why: 309 of the 2,237 bundled stations sent nothing on the feed in a day
+(2026-09-18). An app that asks for the station nearest a place from its
+bundled list asks, for a place like Dayton, for one that never answers,
+while the typed `wx dayton oh` found Dayton International 16 km away. The
+bot knows which stations report; now it chooses.
+
+To adopt revision 8: when matching an answer to `>o ICAO`, accept a single
+station within 40 km of the one named, from the bot asked. A revision 7
+app already stores the reading, since every Observations message is filed
+by its own indices; it only fails to count it as the answer.
+
+## 16A. Changes in revision 7
 
 Revision 7 adds two flag bits and moves no byte. Nothing in any body
 changed, no field grew, and no index moved.
@@ -1127,7 +1164,7 @@ To adopt revision 7: read two bits out of the flags nibble everywhere but
 Cancel, read bit 0 of a Text chunk, and stop drawing a cut narrative as
 damage. Nothing else needs touching.
 
-## 16A. Changes in revision 6
+## 16B. Changes in revision 6
 
 Revision 6 adds one message and changes no existing byte: **Request
 (type 9, section 7B)**, an app's `>` request flooded on `#meshwx` as a
@@ -1135,7 +1172,7 @@ datagram. The DM and channel-text forms of section 8.2 still work; a
 revision 5 bot ignores type 9 and a revision 5 app never sends it.
 Sections 8.2, 12 and 13 say where the datagram fits.
 
-## 16B. Changes in revision 5
+## 16C. Changes in revision 5
 
 Revision 5 adds two times and nothing else. Both are appended after
 everything revision 4 reads, both are announced by a flags-nibble bit, and
