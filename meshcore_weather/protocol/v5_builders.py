@@ -44,6 +44,10 @@ POINT_MATCH_KM = 1.5
 # -- Wire tables (index.json) --------------------------------------------------------
 
 
+# VTEC office -> the office id index.json lists (see `_Tables.office`).
+_OFFICE_ALIASES = {"JSJ": "SJU"}
+
+
 class _Tables:
     def __init__(self):
         self._loaded = False
@@ -75,9 +79,19 @@ class _Tables:
         self._loaded = True
 
     def office(self, code: str | None) -> int | None:
-        """The office byte, or None for a code index.json does not list."""
+        """The office byte, or None for a code index.json does not list.
+
+        A VTEC id names the issuing station without its leading letter — KLWX
+        is LWX, the office's own id — everywhere but San Juan, which issues as
+        TJSJ while the office is SJU. Its warnings therefore had no index at
+        all and were dropped before they were ever built: `>w PRZ001` answered
+        Not available for Puerto Rico and the US Virgin Islands while a typed
+        `warn pr` listed the same heat advisory. It is the one mismatch among
+        the 77 offices the feed carried in a day and a half.
+        """
         self.load()
-        return self._office_idx.get((code or "").upper())
+        code = (code or "").upper()
+        return self._office_idx.get(_OFFICE_ALIASES.get(code, code))
 
     def office_code(self, idx: int) -> str:
         self.load()
