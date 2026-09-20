@@ -79,8 +79,16 @@ def write_index() -> dict:
 # --------------------------------------------------------------------------
 
 # Event codes come from protocol.json "events".
+EV_TO_W = 1   # tornado warning
+EV_TO_A = 2   # tornado watch
 EV_SV_W = 3   # severe thunderstorm warning
+EV_SV_A = 4   # severe thunderstorm watch
+EV_FF_W = 6   # flash flood warning
+EV_FF_A = 7   # flash flood watch
+EV_FA_W = 8   # areal flood warning
+EV_FL_W = 11  # flood warning
 EV_WS_W = 24  # winter storm warning
+EV_WS_A = 25  # winter storm watch
 
 
 def build_vectors(index: dict) -> list:
@@ -531,6 +539,88 @@ def build_vectors(index: dict) -> list:
             25, BOT, request="f round rock zz", reason=v5.REASON_UNKNOWN_LOCATION
         ),
     )
+
+    # 8b. Area sweep (revision 9): the national picture, the answer to `>wmap`.
+    #     A busy spring afternoon — a squall line from Texas to Missouri, a
+    #     winter storm over the Rockies, flooding in the Mississippi valley —
+    #     as 40 runs of UGC numbers the phone draws on its own outlines.
+    #     Warnings first, then watches; inside each, by state and then by the
+    #     run's first number. 38 entries fill the first packet and 2 go in the
+    #     second, and the cut flag is set on BOTH because the rest of the
+    #     country did not fit in eight packets.
+    def runs(event, state, kind, spans):
+        """`(event, state index, is_county, start, run)` for one state."""
+        return [
+            (event, states.index(state), kind == "C", start, run)
+            for start, run in spans
+        ]
+
+    def in_wire_order(entries):
+        """Inside one severity: by state, then by the run's first number."""
+        return sorted(entries, key=lambda e: (e[1], e[3], e[2]))
+
+    sweep_warnings = in_wire_order(
+        # The squall line: tornado, severe thunderstorm and flash flood
+        # warnings over counties, which is what storm-based products carry.
+        runs(EV_TO_W, "TX", "C", [(453, 1), (491, 1)])
+        + runs(EV_SV_W, "TX", "C", [(209, 5), (299, 3)])
+        + runs(EV_FF_W, "TX", "C", [(331, 2)])
+        + runs(EV_TO_W, "OK", "C", [(27, 2)])
+        + runs(EV_SV_W, "OK", "C", [(41, 4)])
+        + runs(EV_FF_W, "OK", "C", [(101, 1)])
+        + runs(EV_SV_W, "AR", "C", [(119, 3)])
+        + runs(EV_FF_W, "AR", "C", [(145, 1)])
+        + runs(EV_SV_W, "LA", "C", [(33, 2)])
+        + runs(EV_FA_W, "LA", "C", [(71, 1)])
+        + runs(EV_SV_W, "MS", "C", [(49, 6)])
+        + runs(EV_SV_W, "MO", "C", [(189, 2)])
+        + runs(EV_FF_W, "MO", "C", [(510, 1)])
+        + runs(EV_SV_W, "KS", "C", [(173, 3)])
+        # The winter storm and the river flooding: zone-coded products.
+        + runs(EV_WS_W, "CO", "Z", [(33, 8)])
+        + runs(EV_WS_W, "WY", "Z", [(12, 4)])
+        + runs(EV_WS_W, "NE", "Z", [(1, 2)])
+        + runs(EV_FL_W, "IA", "Z", [(20, 5)])
+        + runs(EV_FL_W, "MN", "Z", [(40, 3)])
+        + runs(EV_FL_W, "AR", "Z", [(10, 4)])
+        + runs(EV_FL_W, "MO", "Z", [(30, 6)])
+        + runs(EV_FL_W, "IL", "Z", [(20, 3)])
+    )
+    sweep_watches = in_wire_order(
+        runs(EV_TO_A, "TX", "C", [(100, 10)])
+        + runs(EV_TO_A, "OK", "C", [(200, 6)])
+        + runs(EV_TO_A, "AR", "C", [(50, 4)])
+        + runs(EV_SV_A, "KS", "C", [(300, 12)])
+        + runs(EV_SV_A, "MO", "C", [(400, 8)])
+        + runs(EV_SV_A, "IA", "C", [(500, 6)])
+        + runs(EV_SV_A, "NE", "C", [(600, 4)])
+        + runs(EV_SV_A, "AL", "C", [(70, 5)])
+        + runs(EV_SV_A, "GA", "C", [(60, 4)])
+        + runs(EV_FF_A, "LA", "C", [(90, 5)])
+        + runs(EV_FF_A, "MS", "C", [(80, 4)])
+        + runs(EV_WS_A, "CO", "Z", [(50, 6)])
+        + runs(EV_WS_A, "WY", "Z", [(30, 3)])
+        + runs(EV_WS_A, "MT", "Z", [(10, 5)])
+        + runs(EV_WS_A, "ND", "Z", [(5, 2)])
+        + runs(EV_WS_A, "SD", "Z", [(7, 3)])
+    )
+    for data in v5.sweep_packets(
+        32,
+        BOT,
+        built_min=NOW_MIN,
+        entries=sweep_warnings + sweep_watches,
+        cut=True,
+        source=v5.SOURCE_INTERNET,
+    ):
+        info = v5.decode(data)
+        add(
+            f"area_sweep_national_packet{info['idx']}",
+            data,
+            "type byte 0xA9: area sweep, flags 0x9 = cut (bit 0) + source 2 "
+            "internet (bits 2-3); advisories (bit 1) clear, so this is "
+            "warnings and watches only. Group 32, reassemble by (bot, group) "
+            "in idx order",
+        )
 
     # 9. Request (revision 6): the one message that travels app -> bot, a `>d`
     #    flooded on #meshwx.  Its `bot` is 0x041D, not this bot's BOT, because

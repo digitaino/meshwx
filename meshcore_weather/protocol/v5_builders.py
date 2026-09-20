@@ -639,6 +639,140 @@ def coverage_message(seq: int, bot: int, coverage, home: tuple[float, float] | N
                               zones_cut=f["zones_cut"], offices_cut=f["offices_cut"])
 
 
+# -- Area sweep -------------------------------------------------------------------------
+#
+# The national picture of what is active, as runs of UGC numbers (spec 7C).
+# The phone already ships every zone and county outline, so the mesh carries
+# numbers and the phone draws the map. It is never scheduled and never cheap:
+# see AppResponder for the limits that keep it off the air.
+
+#: Most severe first. The same order the bot has always ranked hazards in
+#: (`services.warnings_for_location`): warnings, then watches, then
+#: advisories and statements, which VTEC treats as one level.
+SWEEP_SIG_RANK = {"W": 0, "A": 1, "Y": 2, "S": 3}
+#: `>wmap`: warnings and watches.
+SWEEP_SIGNIFICANCE = ("W", "A")
+#: `>wmap all`: advisories and statements too.
+SWEEP_SIGNIFICANCE_ALL = ("W", "A", "Y", "S")
+
+_event_sig: dict[int, str] = {}
+
+
+def _event_significance(code: int) -> str:
+    """The VTEC significance letter behind a wire event code.
+
+    Products without one (SPS, and anything the table writes without a dot)
+    rank as advisories, which is what `severity_for` has always called them.
+    """
+    tables.load()
+    if not _event_sig:
+        for key, value in tables.events.items():
+            _event_sig[int(value)] = key.split(".")[1] if "." in str(key) else "S"
+    return _event_sig.get(int(code), "S")
+
+
+def sweep_significance(w: dict) -> str:
+    """One warning's significance letter, defaulting to a statement."""
+    sig = str(w.get("vtec_significance") or "S").upper()
+    return sig if sig in SWEEP_SIG_RANK else "S"
+
+
+def sweep_rank(w: dict) -> tuple[int, int]:
+    """How a warning competes for an area: most severe first, then the newest
+    onset. Two warnings can cover one county and only one event code fits in
+    the entry, so the one a phone must draw is the worse of them."""
+    return (SWEEP_SIG_RANK[sweep_significance(w)], -int(w.get("onset_unix_min") or 0))
+
+
+def sweep_entries(active: list[dict], advisories: bool = False) -> list[tuple]:
+    """Active warnings -> ordered sweep entries `(event, state, is_county,
+    start, run)`.
+
+    Each area keeps the most severe event covering it; each state's numbers
+    then collapse into runs of consecutive values under one event, split at
+    `MAX_SWEEP_RUN`. The result is ordered most severe first, then by state,
+    then by `start`, so a caller that has to cut keeps the worst of it.
+    """
+    tables.load()
+    known = {int(v) for v in tables.events.values()}
+    state_index = {code: i for i, code in enumerate(tables.states)}
+    allowed = set(SWEEP_SIGNIFICANCE_ALL if advisories else SWEEP_SIGNIFICANCE)
+
+    # (state, is_county, number) -> (rank, event)
+    best: dict[tuple[int, bool, int], tuple[tuple[int, int], int]] = {}
+    for w in active:
+        if sweep_significance(w) not in allowed:
+            continue
+        event = int(w.get("event_code") or 0)
+        if event not in known:
+            continue
+        rank = sweep_rank(w)
+        for raw in (w.get("ugcs") or []):
+            ugc = str(raw).strip().upper()
+            if len(ugc) != 6 or ugc[2] not in ("C", "Z") or not ugc[3:].isdigit():
+                continue
+            state = state_index.get(ugc[:2])
+            if state is None:
+                continue
+            number = int(ugc[3:])
+            if number > v5.MAX_SWEEP_START:
+                continue
+            key = (state, ugc[2] == "C", number)
+            current = best.get(key)
+            if current is None or rank < current[0]:
+                best[key] = (rank, event)
+
+    # Consecutive numbers of one state, one kind and one event become a run.
+    # The event has to match: an entry carries one code, and a run that mixed
+    # two would paint the worse hazard over an area that does not have it.
+    runs: list[list] = []
+    for state, is_county, number in sorted(best):
+        event = best[(state, is_county, number)][1]
+        if runs:
+            last = runs[-1]
+            if (last[0] == event and last[1] == state and last[2] == is_county
+                    and last[3] + last[4] == number and last[4] < v5.MAX_SWEEP_RUN):
+                last[4] += 1
+                continue
+        runs.append([event, state, is_county, number, 1])
+
+    runs.sort(key=lambda r: (SWEEP_SIG_RANK.get(_event_significance(r[0]), 3),
+                             r[1], r[3], r[2]))
+    return [(event, state, is_county, start, run) for event, state, is_county, start, run in runs]
+
+
+def area_sweep_messages(seq: SeqCounter, bot: int, store: WeatherStore,
+                        advisories: bool = False, source: int | None = None,
+                        built_min: int | None = None) -> list[bytes]:
+    """`>wmap`: every active alert in the country as an Area sweep.
+
+    Coverage never filters it — the whole point is the national picture — so
+    it reads the store with `coverage=None`. Empty when nothing the tables
+    know is active, which the caller answers as Not available.
+
+    A sweep is aggregated from every product the bot holds, so `source`
+    defaults to the store-wide answer (spec 2.2.1).
+    """
+    from meshcore_weather.protocol.warnings import extract_active_warnings
+    if source is None:
+        source = store.products_source()
+    entries = sweep_entries(extract_active_warnings(store, coverage=None),
+                            advisories=advisories)
+    if not entries:
+        return []
+    cut = len(entries) > v5.MAX_SWEEP_ENTRIES
+    start = seq.next()
+    msgs = v5.sweep_packets(start, bot, built_min=now_min() if built_min is None else built_min,
+                            entries=entries, cut=cut, advisories=advisories, source=source)
+    for _ in msgs[1:]:
+        seq.next()
+    logger.info("Area sweep: %d entries, %d packet(s), %d bytes%s",
+                min(len(entries), v5.MAX_SWEEP_ENTRIES), len(msgs),
+                sum(len(m) for m in msgs),
+                f", cut from {len(entries)}" if cut else ", not cut")
+    return msgs
+
+
 # -- Text and errors -------------------------------------------------------------------
 
 

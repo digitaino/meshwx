@@ -1,8 +1,16 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, revision 8, 2026-09-18. This is the document an app developer
+Version 5.0, revision 9, 2026-09-20. This is the document an app developer
 builds against. It replaces the v3/v4 protocol documents, the April 2026
 iOS brief and the v4 client guide, all of which are now superseded.
+
+Revision 9 adds one message: **Area sweep** (type 10, section 7C), the
+national picture of active alerts as runs of UGC numbers, which the phone
+draws on the zone and county outlines it already ships. It answers the new
+requests `>wmap` and `>wmap all`, is never broadcast on a schedule, and is
+limited to one sweep every 5 minutes across all senders. Nothing already
+on the wire changed and unknown types are ignored, so a revision 8 client
+keeps working untouched. If you hold revision 8, read section 16.
 
 Revision 8 changes one answer and no byte. `>o KAUS` for a station with
 no fresh report now answers with the nearest station within 40 km of it
@@ -17,7 +25,7 @@ stop guessing whether it is reading satellite data. And a **cut flag** on
 Text (section 8.1) says a narrative was longer than the air allows and the
 tail was dropped; the text now ends at a sentence rather than mid-word.
 A revision 6 client ignores both bits and reads every packet exactly as
-before. If you hold revision 6, read section 16.
+before. If you hold revision 6, read section 16B.
 
 Revision 5 adds two times, so that a phone can say *when* a number is true
 instead of implying it is true now: a **per-station age** in Observations
@@ -25,7 +33,7 @@ instead of implying it is true now: a **per-station age** in Observations
 appended after everything a revision 4 decoder reads and both are
 announced by a bit in the flags nibble, so a revision 4 client keeps
 decoding every message exactly as before and simply never learns the two
-times. If you hold revision 4, read section 16C.
+times. If you hold revision 4, read section 16D.
 
 Revision 4 adds one message: **Coverage** (type 8, section 7A), the bot's
 own statement of what it carries — centre, radius, NWS offices, and the
@@ -148,7 +156,8 @@ Message types:
 | 7 | Not available | 8.3 |
 | 8 | Coverage | 7A |
 | 9 | Request (app → bot, new in revision 6) | 7B |
-| 10 to 11 | Reserved for future structured products | |
+| 10 | Area sweep (new in revision 9) | 7C |
+| 11 | Reserved for a future structured product | |
 | 12 to 15 | Free for third-party experiments; the bot never sends them | |
 
 Receivers ignore unknown types.
@@ -641,6 +650,79 @@ of every unknown type. Such a bot still answers the DM form, so an app may
 fall back to a DM after the second datagram goes unanswered; this bot
 implements type 9 and an app talking to it need not.
 
+## 7C. Area sweep (type 10)
+
+The national picture of what is active, as runs of UGC numbers. New in
+revision 9; it is numbered 7C so that no section already referenced by a
+client moved.
+
+The phone already ships every zone and county outline (`zones.geojson`,
+`counties.geojson`, section 9). So the mesh does not carry a map: it
+carries numbers, four bytes for anything from a single county to 64 of
+them, and the phone fills in its own outlines. Real products run at about
+3.6 runs per alert, so the 125 alerts active on a normal afternoon are
+roughly 450 runs: `>wmap` (warnings and watches, a third of them) is
+around five packets, and `>wmap all` fills the eight-packet ceiling and
+comes back cut. The same picture as polygons would be hundreds of packets.
+
+`area_sweep_national_packet0` and `packet1` in `meshwx_v5_vectors.json`
+are one cut two-packet sweep; decode both and reassemble them.
+
+**Request only, and never scheduled.** It answers `>wmap` (warnings and
+watches) and `>wmap all` (advisories as well). Like every other answer it
+is flooded on `#meshwx`, so one request serves everyone listening — which
+is exactly why the bot limits it hard (below).
+
+Flags nibble: bit 0 **cut**, bit 1 **advisories**, bits 2 and 3 the data
+source (section 2.2.1).
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 4 | 4 | `built` | u32 LE, Unix minutes: when the bot built this sweep. Not a live feed — show it as a picture taken at `built` |
+| 8 | 1 | `group` | The same value on every packet of one sweep: the `seq` its first packet went out with, exactly as Text does it (section 8.1) |
+| 9 | 1 | `idx` | Packet number, from 0 |
+| 10 | 1 | `total` | Packets in this sweep, 1 to 8 |
+| 11 | ≤152 | `entries` | 4 bytes each, at most 38 per packet |
+
+One entry is one run of consecutive UGC numbers in one state:
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 0 | 1 | `event` | The event code Warning uses (`protocol.json` `events`, section 3): the most severe event covering this run |
+| 1 | 1 | `state << 1 \| kind` | State index (`index.json` `states`) in the high 7 bits; `kind` in bit 0: 0 = forecast zone (`Z`), 1 = county (`C`) |
+| 2 | 2 | u16 LE | bits 0-9 `start`, the UGC number (0 to 1023); bits 10-15 `run − 1`, so the run is 1 to 64 numbers |
+
+The run covers `start` … `start + run − 1`, the same way a Warning's area
+run does. **It is not the same record.** A Warning run (section 3) spends
+a whole byte on `run` and flags a county in bit 7 of the state byte; a
+sweep entry carries an event code that one does not, and pays for it by
+capping the run at 64. Decode them with different code.
+
+Reassemble by `(bot, group)` in `idx` order, as with Text. A sweep is at
+most 8 packets and so at most 304 entries.
+
+**Ordering.** Entries are sorted most severe first (warning, then watch,
+then advisory, by the significance letter of the event code), then by
+state, then by `start`. This is what makes a cut sweep useful: what
+survives is the worst of it.
+
+**The cut flag (bit 0).** More than 304 runs were active and the least
+severe were dropped. It is set on **every** packet, not only the last, so
+a phone that loses a packet still knows it is not holding the whole
+picture. Read a cut sweep as incomplete, never as a denial: an area absent
+from it may still be under something.
+
+**The advisories flag (bit 1).** The sweep includes advisories and
+statements (VTEC significance `Y` and `S`) as well as warnings and
+watches. Clear means warnings and watches only, so again an area absent
+from it may still hold an advisory — and usually does. Say which kind of
+sweep is on screen; the two are not comparable.
+
+**An entry is one event, not every event.** An area under both a tornado
+warning and a flood advisory appears once, under the tornado warning. The
+sweep is a picture of the worst thing happening in each place, not an
+index of everything: for the detail of one area, ask `>w TXC453`.
+
 ## 8. Text (type 6) and Not available (type 7)
 
 ### 8.1 Text
@@ -698,6 +780,8 @@ type and get a text DM back.
 | `>w` | One Warning message per active warning in coverage (at most 6, newest first), then a Digest |
 | `>w SV.W.EWX.42` | That one warning (identity as `event.office.etn` with the office's 3-letter code) |
 | `>w TXC453` or `>w TXZ192` | Every active warning touching that county or zone (at most 6) |
+| `>wmap` | Area sweep (section 7C): every active warning and watch in the country, as runs of UGC numbers, 1 to 8 packets. At most one sweep every 5 minutes across all senders; inside that window, and when fewer than 8 packets of the hour's budget remain, Not available reason 4. Never broadcast on a schedule |
+| `>wmap all` | The same sweep with advisories and statements included (flags bit 1 set) |
 | `>wt SV.W.EWX.42` | The warning's narrative as Text, subject 0 |
 | `>o` | Observations for the coverage stations |
 | `>o KAUS` | Observations, one station: that one, or the nearest within 40 km that reports (section 6, revision 8) |
@@ -781,9 +865,11 @@ held back for the same stretch). An app cannot tell that case from the
 others, so it should do what it would do anyway — show "no data", and ask
 again when the user does.
 
-`reason` 4 is defined but never sent. None of the bot's limits replies, so
-silence means either out of range or throttled, and the app cannot tell
-which.
+`reason` 4 is sent by one request and one only: `>wmap` (section 7C),
+which is the one answer big enough to be worth refusing out loud rather
+than silently. Every other limit in this spec replies with nothing at all,
+so silence still means either out of range or throttled, and the app
+cannot tell which.
 
 ---
 
@@ -813,8 +899,12 @@ then `C` or `Z`, then the 3-digit number. `TXC453` is in `counties.json`,
 Louisiana parishes, Alaska boroughs and Virginia's independent cities are
 all "counties" here, as in the NWS products.
 
-Bundle versioning: `protocol.json` `version` (12 since revision 8) and
-`index.json` `version` (2 since revision 3). Revision 8 changed only
+Bundle versioning: `protocol.json` `version` (13 since revision 9) and
+`index.json` `version` (2 since revision 3). Revision 9 changed one bundle
+file, `protocol.json`, which gained the Area sweep type, its two flags,
+its limits and its two record sizes. No index moved, and the outlines the
+sweep is drawn with (`zones.geojson`, `counties.geojson`) are files the
+bundle already shipped. Revision 8 changed only
 `protocol.json`'s notes. Revision 7 changed one bundle
 file, `protocol.json`, which gained `v5.source` (the mask, the shift and
 the four values), `v5.flags.text.cut`, and a note on the header's flags
@@ -1082,6 +1172,11 @@ range shows old data; saying so is the feature.
   answer finished going out at least 12 s earlier; a quicker repeat gets
   nothing.
 - Prefer the digest over `>w` when you only need to know what is active.
+- `>wmap` (section 7C) is the most expensive answer on this mesh: up to
+  eight packets, for everyone in range. Ask for it when a person opened a
+  map, never to refresh one in the background, and use a sweep another
+  phone asked for when you hear it. The bot sends at most one every ten
+  minutes whoever asks, and answers Not available reason 4 in between.
 - Do not re-request something you already hold. The bot has no cache: it
   rebuilds and re-transmits the whole answer, spending airtime for
   everyone on the mesh.
@@ -1104,6 +1199,9 @@ range shows old data; saying so is the feature.
 8. Text fallback screen with the human commands and `more`.
 9. Take the bot's area from Coverage (7A), never from the stations or
    warnings you have seen; read a cut list as incomplete, not as a denial.
+10. For a national map, `>wmap` (7C): reassemble by `(bot, group)`, draw
+    each run from your own outlines, and honour `cut` and the advisories
+    flag before telling a user an area is clear.
 
 ## 15. What changed from v4
 
@@ -1116,7 +1214,50 @@ event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
 
-## 16. Changes in revision 8
+## 16. Changes in revision 9
+
+Revision 9 adds one message: **Area sweep** (type 10, section 7C), the
+national picture of active alerts as runs of UGC numbers. Nothing already
+on the wire changed and unknown types are ignored, so a revision 8 client
+keeps working untouched; it simply never learns what is active outside its
+own area.
+
+| Section | Revision 8 | Revision 9 |
+|---|---|---|
+| 2.2 | Types 10 and 11 reserved | Type 10 is the Area sweep; 11 stays reserved |
+| 7C | — | New: Area sweep. `built`, `group`, `idx`, `total`, then 4-byte entries: an event code, `state << 1 \| kind`, and a u16 holding a 10-bit `start` and a 6-bit `run − 1`. Flags bit 0 cut, bit 1 advisories |
+| 8.2 | — | New requests `>wmap` and `>wmap all` |
+| 8.3 | `reason` 4 defined but never sent | `>wmap` answers with it when a sweep is refused |
+| 9 | `protocol.json` `version` 12 | `version` 13: the Area sweep type, its flags, limits and record sizes |
+| 13, 16A-16D | — | The revision 8 changelog is now 16A, revision 7 is 16B, revision 6 is 16C and revision 5 is 16D |
+
+Why: an app can draw the whole country from four bytes per run of
+counties, because it already ships the outlines. What it cannot do is
+carry the airtime of a map. So the sweep is the smallest thing that is
+still a national picture, and the bot spends it carefully.
+
+**The airtime rules are part of the message**, not bot policy an app may
+route around:
+
+- It is **never** scheduled. It only ever answers a request.
+- At most **one sweep every 5 minutes across all senders**, timed from
+  when a sweep actually went out. A request inside that window is answered
+  with the 6-byte Not available, reason 4.
+- It comes out of the same 60-packet hourly budget as every other answer.
+  With fewer than 8 packets of that budget left the bot does not start one
+  and answers reason 4, because half a sweep is a wrong map, not a partial
+  one.
+- The answer is flooded like every other, so **one request serves everyone
+  listening**. An app that hears a sweep it did not ask for should use it.
+
+To adopt revision 9: decode type 10, reassemble by `(bot, group)`, and
+draw each entry's run from your own zone and county outlines. Read `cut`
+and the advisories flag as section 7C says — an area missing from a sweep
+is not an area with nothing in it. An app that does not implement type 10
+ignores it, as section 2.2 says of every unknown type, and should not send
+`>wmap`.
+
+## 16A. Changes in revision 8
 
 Revision 8 changes what one request answers. No byte, field or index
 moved.
@@ -1137,7 +1278,7 @@ station within 40 km of the one named, from the bot asked. A revision 7
 app already stores the reading, since every Observations message is filed
 by its own indices; it only fails to count it as the answer.
 
-## 16A. Changes in revision 7
+## 16B. Changes in revision 7
 
 Revision 7 adds two flag bits and moves no byte. Nothing in any body
 changed, no field grew, and no index moved.
@@ -1164,7 +1305,7 @@ To adopt revision 7: read two bits out of the flags nibble everywhere but
 Cancel, read bit 0 of a Text chunk, and stop drawing a cut narrative as
 damage. Nothing else needs touching.
 
-## 16B. Changes in revision 6
+## 16C. Changes in revision 6
 
 Revision 6 adds one message and changes no existing byte: **Request
 (type 9, section 7B)**, an app's `>` request flooded on `#meshwx` as a
@@ -1172,7 +1313,7 @@ datagram. The DM and channel-text forms of section 8.2 still work; a
 revision 5 bot ignores type 9 and a revision 5 app never sends it.
 Sections 8.2, 12 and 13 say where the datagram fits.
 
-## 16C. Changes in revision 5
+## 16D. Changes in revision 5
 
 Revision 5 adds two times and nothing else. Both are appended after
 everything revision 4 reads, both are announced by a flags-nibble bit, and

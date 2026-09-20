@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 PER_SENDER_S = 5.0
 PER_HOUR = 60                    # packets, not requests: a `>w` answer can be 7
 MAX_WARNINGS_PER_REQUEST = 6
+# `>wmap` is the one answer that can take eight packets at once, so it gets a
+# limit of its own on top of everything else: one sweep every 5 minutes
+# across ALL senders (spec 7C). It is never scheduled; it only ever answers.
+# The name is the portal's: its limits panel reads this constant and
+# `_last_sweep` to show when the next sweep may go out.
+SWEEP_COOLDOWN_S = 300.0            # one national sweep per 5 minutes, whoever asks (owner, 2026-09-20)
 
 
 class AppResponder:
@@ -45,6 +51,10 @@ class AppResponder:
         self._render_text = render_text          # the text bot's renderer, for narrative products
         self._last_by_sender: dict[str, float] = {}
         self._sent: deque[float] = deque(maxlen=PER_HOUR * 2)
+        # When the last Area sweep actually went on air, not when one was
+        # asked for: a sweep that was built and never sent must not lock the
+        # next ten minutes out (spec 7C).
+        self._last_sweep = 0.0
 
     @property
     def scheduler(self):
@@ -105,6 +115,10 @@ class AppResponder:
             msgs = [b.not_available(seq.next(), bot, cmd, v5.REASON_NO_DATA)]
         n, nbytes = await self._scheduler.transmit(msgs, f"app request {text.strip()[:24]!r}", ev=ev)
         self._sent.extend([now] * n)
+        # The five-minute sweep window starts when the sweep went out, so it is
+        # stamped here and only when the radio took at least one packet.
+        if n and msgs[0][3] >> 4 == v5.TYPE_AREA_SWEEP:
+            self._last_sweep = time.time()
         return f"{n} packet(s), {nbytes} B"
 
     def _answer(self, cmd: str, arg: str, seq: b.SeqCounter, bot: int) -> list[bytes]:
@@ -147,6 +161,26 @@ class AppResponder:
                                             b.feed_health(self.store, ctx.home_offices),
                                             source=store_source))
             return out
+
+        # `>wmap`: the national picture as an Area sweep (spec 7C). Up to eight
+        # packets in one answer, so it carries limits nothing else needs: never
+        # scheduled, one sweep every 5 minutes across all senders, and only
+        # started when a whole sweep still fits in the hour's budget. A request
+        # inside either limit is answered with the 6-byte Not available rather
+        # than silence, because this is the one request an app is told to wait
+        # on. Coverage does not filter it: the point is the whole country.
+        if cmd == "wmap":
+            since = time.time() - self._last_sweep
+            if since < SWEEP_COOLDOWN_S:
+                logger.info("Area sweep asked for %.0fs after the last one; rate limited", since)
+                return [b.not_available(seq.next(), bot, cmd, v5.REASON_RATE_LIMITED)]
+            if len(self._sent) + v5.MAX_SWEEP_PACKETS > PER_HOUR:
+                logger.info("Area sweep needs %d packets and %d remain this hour; rate limited",
+                            v5.MAX_SWEEP_PACKETS, PER_HOUR - len(self._sent))
+                return [b.not_available(seq.next(), bot, cmd, v5.REASON_RATE_LIMITED)]
+            return b.area_sweep_messages(seq, bot, self.store,
+                                         advisories=arg.strip().lower() == "all",
+                                         source=store_source)
 
         if cmd == "wt":
             ident = b.parse_identity(arg)

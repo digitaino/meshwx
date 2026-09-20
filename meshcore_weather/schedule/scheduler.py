@@ -260,7 +260,7 @@ class Scheduler:
             if msgs:
                 self._save_state(next_seq=(self._next_seq + len(msgs)) & 0xFF)
             sent = nbytes = 0
-            groups: dict[int, int] = {}
+            groups: dict[tuple[int, int], int] = {}
             for msg in msgs:
                 wait = self._last_tx + TX_SPACING - time.monotonic()
                 if wait > 0:                        # spacing holds across batches too
@@ -283,15 +283,25 @@ class Scheduler:
                 logger.info("%s: %d packet(s), %d bytes", label, sent, nbytes)
             return sent, nbytes
 
-    def _stamp(self, msg: bytes, groups: dict[int, int]) -> bytes:
-        """Byte 0 = the next seq. A text reply's group is the seq its first
-        chunk goes out with (spec 8.1), so it follows the restamp."""
+    # Where a multi-packet type keeps `group` and `idx`: Text (spec 8.1) and
+    # the Area sweep (spec 7C), which numbers itself the same way from a
+    # different offset.
+    _GROUP_FIELDS = {v5.TYPE_TEXT: (5, 6, 8), v5.TYPE_AREA_SWEEP: (8, 9, 11)}
+
+    def _stamp(self, msg: bytes, groups: dict[tuple[int, int], int]) -> bytes:
+        """Byte 0 = the next seq. A multi-packet reply's group is the seq its
+        first packet goes out with (spec 8.1, 7C), so it follows the restamp."""
         out = bytearray(msg)
         out[0] = self._next_seq
-        if len(out) >= 8 and out[3] >> 4 == v5.TYPE_TEXT:
-            if out[6] == 0:
-                groups[msg[5]] = self._next_seq
-            out[5] = groups.get(msg[5], msg[5])
+        mtype = out[3] >> 4
+        where = self._GROUP_FIELDS.get(mtype)
+        if where is not None:
+            gi, ii, size = where
+            if len(out) >= size:
+                key = (mtype, msg[gi])
+                if out[ii] == 0:
+                    groups[key] = self._next_seq
+                out[gi] = groups.get(key, msg[gi])
         return bytes(out)
 
     # -- portal --

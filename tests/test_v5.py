@@ -130,6 +130,22 @@ def reencode(d: dict) -> bytes:
             zones_cut=d["zones_cut"],
             offices_cut=d["offices_cut"],
         )
+    if name == "area_sweep":
+        return v5.encode_area_sweep(
+            seq,
+            bot,
+            built_min=d["built_min"],
+            group=d["group"],
+            idx=d["idx"],
+            total=d["total"],
+            entries=[
+                (e["event"], e["state"], e["county"], e["start"], e["run"])
+                for e in d["entries"]
+            ],
+            cut=d["cut"],
+            advisories=d["advisories"],
+            source=d["source"],
+        )
     raise AssertionError(f"no re-encoder for {name!r}")
 
 
@@ -158,7 +174,8 @@ def test_transport_constants():
         v5.TYPE_NOT_AVAILABLE,
         v5.TYPE_COVERAGE,
         v5.TYPE_REQUEST,
-    ) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+        v5.TYPE_AREA_SWEEP,
+    ) == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
     assert v5.SUBJECT_WARNING == 0 and v5.SUBJECT_GENERAL == 8
     assert v5.REASON_NO_DATA == 0 and v5.REASON_RATE_LIMITED == 4
     assert v5.TAG_TORNADO_OBSERVED == 3
@@ -1142,7 +1159,7 @@ def test_index_json_matches_the_source_tables():
 def test_protocol_json_v5_block():
     with open(PROTOCOL_PATH, encoding="utf-8") as fh:
         proto = json.load(fh)
-    assert proto["version"] == 12
+    assert proto["version"] == 13
     assert proto["index_file"] == "index.json"
     # Legacy keys other code still reads are untouched.
     for key in ("messages", "events", "event_names", "sky_codes", "data_types"):
@@ -1153,7 +1170,7 @@ def test_protocol_json_v5_block():
     assert block["types"] == {
         "warning": 1, "cancel": 2, "digest": 3, "observations": 4,
         "forecast": 5, "text": 6, "not_available": 7, "coverage": 8,
-        "request": 9,
+        "request": 9, "area_sweep": 10,
     }
     assert block["flags"]["coverage"] == {
         "zones_truncated": v5.FLAG_COVERAGE_ZONES_CUT,
@@ -1200,6 +1217,19 @@ def test_protocol_json_v5_block():
     # Cancel's nibble is a reason code and keeps no room for a source.
     assert "source" not in block["flags"]["cancel"]
     assert "cancel" in block["notes"].lower() and "source" in block["notes"]
+    # Revision 9: the area sweep.
+    assert block["flags"]["area_sweep"] == {
+        "cut": v5.FLAG_SWEEP_CUT, "advisories": v5.FLAG_SWEEP_ADVISORIES,
+    }
+    assert block["limits"]["sweep_packets"] == [1, v5.MAX_SWEEP_PACKETS]
+    assert block["limits"]["sweep_entries_per_packet"] == [
+        0, v5.MAX_SWEEP_ENTRIES_PER_PACKET
+    ]
+    assert block["limits"]["sweep_entries"] == [1, v5.MAX_SWEEP_ENTRIES]
+    assert block["limits"]["sweep_run"] == [1, v5.MAX_SWEEP_RUN]
+    assert block["limits"]["sweep_start"] == [0, v5.MAX_SWEEP_START]
+    assert block["record_sizes"]["area_sweep_fixed"] == 11
+    assert block["record_sizes"]["area_sweep_entry"] == 4
     assert block["notes"]
 
 
@@ -1217,7 +1247,7 @@ def test_vectors_cover_every_message_type():
     names = {v5.decode(bytes.fromhex(v["hex"]))["name"] for v in _vectors()}
     assert names == {
         "warning", "cancel", "digest", "observations", "forecast", "text",
-        "not_available", "coverage", "request",
+        "not_available", "coverage", "request", "area_sweep",
     }
 
 

@@ -750,6 +750,328 @@
     }
   },
   {
+    "name": "area_sweep_national_packet0",
+    "hex": "207a4ca99c13c7012000020b060a0c0307770806079100180a211c0b1814080b1c1410031fad0803232104082347000b2c2808032f31140b301e140331bd040631fe011834010401471b040347290c064765000355d11003552b0906554b050155c5010155eb0118620c0c040146100207320c190a321404133c0c041df415041f2c2d07235a10072f500c0431901d19320a100435580e194205040247c81419500708",
+    "decoded": {
+      "seq": 32,
+      "bot": 19578,
+      "type": 10,
+      "name": "area_sweep",
+      "flags": 9,
+      "built_min": 29823900,
+      "group": 32,
+      "idx": 0,
+      "total": 2,
+      "entries": [
+        {
+          "event": 11,
+          "state": 3,
+          "county": false,
+          "start": 10,
+          "run": 4
+        },
+        {
+          "event": 3,
+          "state": 3,
+          "county": true,
+          "start": 119,
+          "run": 3
+        },
+        {
+          "event": 6,
+          "state": 3,
+          "county": true,
+          "start": 145,
+          "run": 1
+        },
+        {
+          "event": 24,
+          "state": 5,
+          "county": false,
+          "start": 33,
+          "run": 8
+        },
+        {
+          "event": 11,
+          "state": 12,
+          "county": false,
+          "start": 20,
+          "run": 3
+        },
+        {
+          "event": 11,
+          "state": 14,
+          "county": false,
+          "start": 20,
+          "run": 5
+        },
+        {
+          "event": 3,
+          "state": 15,
+          "county": true,
+          "start": 173,
+          "run": 3
+        },
+        {
+          "event": 3,
+          "state": 17,
+          "county": true,
+          "start": 33,
+          "run": 2
+        },
+        {
+          "event": 8,
+          "state": 17,
+          "county": true,
+          "start": 71,
+          "run": 1
+        },
+        {
+          "event": 11,
+          "state": 22,
+          "county": false,
+          "start": 40,
+          "run": 3
+        },
+        {
+          "event": 3,
+          "state": 23,
+          "county": true,
+          "start": 49,
+          "run": 6
+        },
+        {
+          "event": 11,
+          "state": 24,
+          "county": false,
+          "start": 30,
+          "run": 6
+        },
+        {
+          "event": 3,
+          "state": 24,
+          "county": true,
+          "start": 189,
+          "run": 2
+        },
+        {
+          "event": 6,
+          "state": 24,
+          "county": true,
+          "start": 510,
+          "run": 1
+        },
+        {
+          "event": 24,
+          "state": 26,
+          "county": false,
+          "start": 1,
+          "run": 2
+        },
+        {
+          "event": 1,
+          "state": 35,
+          "county": true,
+          "start": 27,
+          "run": 2
+        },
+        {
+          "event": 3,
+          "state": 35,
+          "county": true,
+          "start": 41,
+          "run": 4
+        },
+        {
+          "event": 6,
+          "state": 35,
+          "county": true,
+          "start": 101,
+          "run": 1
+        },
+        {
+          "event": 3,
+          "state": 42,
+          "county": true,
+          "start": 209,
+          "run": 5
+        },
+        {
+          "event": 3,
+          "state": 42,
+          "county": true,
+          "start": 299,
+          "run": 3
+        },
+        {
+          "event": 6,
+          "state": 42,
+          "county": true,
+          "start": 331,
+          "run": 2
+        },
+        {
+          "event": 1,
+          "state": 42,
+          "county": true,
+          "start": 453,
+          "run": 1
+        },
+        {
+          "event": 1,
+          "state": 42,
+          "county": true,
+          "start": 491,
+          "run": 1
+        },
+        {
+          "event": 24,
+          "state": 49,
+          "county": false,
+          "start": 12,
+          "run": 4
+        },
+        {
+          "event": 4,
+          "state": 0,
+          "county": true,
+          "start": 70,
+          "run": 5
+        },
+        {
+          "event": 2,
+          "state": 3,
+          "county": true,
+          "start": 50,
+          "run": 4
+        },
+        {
+          "event": 25,
+          "state": 5,
+          "county": false,
+          "start": 50,
+          "run": 6
+        },
+        {
+          "event": 4,
+          "state": 9,
+          "county": true,
+          "start": 60,
+          "run": 4
+        },
+        {
+          "event": 4,
+          "state": 14,
+          "county": true,
+          "start": 500,
+          "run": 6
+        },
+        {
+          "event": 4,
+          "state": 15,
+          "county": true,
+          "start": 300,
+          "run": 12
+        },
+        {
+          "event": 7,
+          "state": 17,
+          "county": true,
+          "start": 90,
+          "run": 5
+        },
+        {
+          "event": 7,
+          "state": 23,
+          "county": true,
+          "start": 80,
+          "run": 4
+        },
+        {
+          "event": 4,
+          "state": 24,
+          "county": true,
+          "start": 400,
+          "run": 8
+        },
+        {
+          "event": 25,
+          "state": 25,
+          "county": false,
+          "start": 10,
+          "run": 5
+        },
+        {
+          "event": 4,
+          "state": 26,
+          "county": true,
+          "start": 600,
+          "run": 4
+        },
+        {
+          "event": 25,
+          "state": 33,
+          "county": false,
+          "start": 5,
+          "run": 2
+        },
+        {
+          "event": 2,
+          "state": 35,
+          "county": true,
+          "start": 200,
+          "run": 6
+        },
+        {
+          "event": 25,
+          "state": 40,
+          "county": false,
+          "start": 7,
+          "run": 3
+        }
+      ],
+      "cut": true,
+      "advisories": false,
+      "source": 2
+    },
+    "note": "type byte 0xA9: area sweep, flags 0x9 = cut (bit 0) + source 2 internet (bits 2-3); advisories (bit 1) clear, so this is warnings and watches only. Group 32, reassemble by (bot, group) in idx order"
+  },
+  {
+    "name": "area_sweep_national_packet1",
+    "hex": "217a4ca99c13c7012001020255642419621e08",
+    "decoded": {
+      "seq": 33,
+      "bot": 19578,
+      "type": 10,
+      "name": "area_sweep",
+      "flags": 9,
+      "built_min": 29823900,
+      "group": 32,
+      "idx": 1,
+      "total": 2,
+      "entries": [
+        {
+          "event": 2,
+          "state": 42,
+          "county": true,
+          "start": 100,
+          "run": 10
+        },
+        {
+          "event": 25,
+          "state": 49,
+          "county": false,
+          "start": 30,
+          "run": 3
+        }
+      ],
+      "cut": true,
+      "advisories": false,
+      "source": 2
+    },
+    "note": "type byte 0xA9: area sweep, flags 0x9 = cut (bit 0) + source 2 internet (bits 2-3); advisories (bit 1) clear, so this is warnings and watches only. Group 32, reassemble by (bot, group) in idx order"
+  },
+  {
     "name": "request_digest",
     "hex": "011d0490010203040506600bac6a3e64",
     "decoded": {

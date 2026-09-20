@@ -46,6 +46,7 @@ __all__ = [
     "TYPE_NOT_AVAILABLE",
     "TYPE_COVERAGE",
     "TYPE_REQUEST",
+    "TYPE_AREA_SWEEP",
     "TYPE_NAMES",
     "SUBJECT_WARNING",
     "SUBJECT_AFD",
@@ -81,6 +82,8 @@ __all__ = [
     "FLAG_COVERAGE_ZONES_CUT",
     "FLAG_COVERAGE_OFFICES_CUT",
     "FLAG_TEXT_CUT",
+    "FLAG_SWEEP_CUT",
+    "FLAG_SWEEP_ADVISORIES",
     "SOURCE_MASK",
     "SOURCE_SHIFT",
     "SOURCE_UNSTATED",
@@ -104,6 +107,11 @@ __all__ = [
     "REQUEST_BOT_ANY",
     "MAX_REQUEST_TEXT",
     "MIN_REQUEST_SIZE",
+    "MAX_SWEEP_PACKETS",
+    "MAX_SWEEP_ENTRIES_PER_PACKET",
+    "MAX_SWEEP_ENTRIES",
+    "MAX_SWEEP_RUN",
+    "MAX_SWEEP_START",
     "Header",
     "Request",
     "encode_header",
@@ -118,6 +126,8 @@ __all__ = [
     "encode_not_available",
     "encode_request",
     "decode_request",
+    "encode_area_sweep",
+    "sweep_packets",
     "decode",
     "areas_from_ugcs",
     "wind_dir_nibble",
@@ -151,6 +161,9 @@ TYPE_COVERAGE = 8
 #: App -> bot: a `>` request flooded on #meshwx (spec 7B, revision 6).  It is
 #: the only type an app sends; the bot never transmits one.
 TYPE_REQUEST = 9
+#: The national picture of active alerts, as runs of UGC numbers the phone
+#: draws on its own bundled outlines (spec 7C, revision 9).  Request only.
+TYPE_AREA_SWEEP = 10
 
 TYPE_NAMES = {
     TYPE_WARNING: "warning",
@@ -162,6 +175,7 @@ TYPE_NAMES = {
     TYPE_NOT_AVAILABLE: "not_available",
     TYPE_COVERAGE: "coverage",
     TYPE_REQUEST: "request",
+    TYPE_AREA_SWEEP: "area_sweep",
 }
 
 # Text subjects (spec 8.1).
@@ -231,6 +245,15 @@ FLAG_COVERAGE_OFFICES_CUT = 0x2
 #: a cut reply, so losing the last packet does not lose the fact.
 FLAG_TEXT_CUT = 0x1
 
+# Area sweep flags nibble (spec 7C, revision 9).
+#: Bit 0: entries were dropped because the sweep did not fit in eight packets.
+#: Set on *every* packet of the sweep, for the same reason the Text cut flag is.
+FLAG_SWEEP_CUT = 0x1
+#: Bit 1: advisories (VTEC significance Y and S) are in this sweep as well as
+#: warnings and watches.  Clear means the sweep is warnings and watches only,
+#: so an area absent from it may still hold an advisory.
+FLAG_SWEEP_ADVISORIES = 0x2
+
 # --------------------------------------------------------------------------
 # Data source (flags nibble bits 2-3, spec 2.2.1, new in revision 7)
 # --------------------------------------------------------------------------
@@ -288,6 +311,18 @@ REQUEST_BOT_ANY = 0xFFFF
 MAX_REQUEST_TEXT = 40
 #: Header + sender + ts + the one `>` byte a request cannot do without.
 MIN_REQUEST_SIZE = HEADER_SIZE + REQUEST_SENDER_BYTES + 4 + 1   # 15
+
+# Area sweep (spec 7C).  Seven fixed bytes after the header, then 4-byte
+# entries: 11 + 38 x 4 = 163, inside the 165-byte packet with two to spare.
+MAX_SWEEP_PACKETS = 8
+MAX_SWEEP_ENTRIES_PER_PACKET = 38
+#: The whole sweep's ceiling, 304 runs.  Past it the least severe are dropped
+#: and the cut flag says so.
+MAX_SWEEP_ENTRIES = MAX_SWEEP_PACKETS * MAX_SWEEP_ENTRIES_PER_PACKET
+#: The longest run one entry carries: six bits hold `run - 1`.
+MAX_SWEEP_RUN = 64
+#: The largest UGC number one entry starts at: ten bits.
+MAX_SWEEP_START = 1023
 
 # Sentinels.
 _TEMP_UNKNOWN = -128
@@ -1406,6 +1441,181 @@ def _decode_request(data: bytes, hdr: Header) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Area sweep (type 10, spec 7C) — the national picture, in runs
+# --------------------------------------------------------------------------
+#
+# One entry is one run of consecutive UGC numbers in one state, under one
+# event code: four bytes for anything from a single county to 64 of them.
+# The phone already ships every outline (`zones.geojson`, `counties.geojson`),
+# so the mesh carries numbers and the phone draws the map.
+#
+#     0  event   the event code Warning uses (section 3), the most severe
+#                event covering this run
+#     1  state << 1 | kind   state index in bits 1-7, kind in bit 0:
+#                0 = forecast zone (Z), 1 = county (C)
+#     2  u16 LE  bits 0-9 `start` (the UGC number), bits 10-15 `run - 1`
+#
+# Note this is NOT the Warning area run of section 3: that one spends a whole
+# byte on `run` and flags a county in bit 7 of the state byte.  A sweep entry
+# carries an event code the Warning run does not, and pays for it by capping
+# the run at 64.
+
+
+def encode_area_sweep(
+    seq: int,
+    bot: int,
+    *,
+    built_min: int,
+    group: int,
+    idx: int,
+    total: int,
+    entries: "list[tuple[int, int, bool, int, int]]",
+    cut: bool = False,
+    advisories: bool = False,
+    source: int = SOURCE_UNSTATED,
+) -> bytes:
+    """Encode one packet of an Area sweep.
+
+    ``entries`` are ``(event, state_index, is_county, start, run)``.  ``group``
+    is the same value on every packet of one sweep — the ``seq`` its first
+    packet went out with, exactly as Text does it (spec 8.1) — so a phone
+    reassembles by ``(bot, group)`` and never mixes two sweeps.
+
+    ``cut`` says entries were dropped because the sweep did not fit in
+    ``MAX_SWEEP_PACKETS`` packets, and belongs on *every* packet: a phone that
+    loses the last one must still know it is not holding the whole picture.
+    ``advisories`` says advisories (VTEC significance Y and S) are included;
+    without it the sweep is warnings and watches only.
+    """
+    if not (1 <= total <= MAX_SWEEP_PACKETS):
+        raise ValueError(f"total must be 1..{MAX_SWEEP_PACKETS}, got {total}")
+    if not (0 <= idx < total):
+        raise ValueError(f"idx must be 0..{total - 1}, got {idx}")
+    if len(entries) > MAX_SWEEP_ENTRIES_PER_PACKET:
+        raise ValueError(
+            f"a sweep packet holds at most {MAX_SWEEP_ENTRIES_PER_PACKET} "
+            f"entries, got {len(entries)}"
+        )
+    flags = (FLAG_SWEEP_CUT if cut else 0) | (
+        FLAG_SWEEP_ADVISORIES if advisories else 0
+    )
+    out = bytearray(
+        encode_header(seq, bot, TYPE_AREA_SWEEP, pack_source(source, flags))
+    )
+    out += struct.pack(
+        "<IBBB",
+        _u32(built_min, "built_min"),
+        _u8(group, "group"),
+        idx,
+        total,
+    )
+    for event, state, is_county, start, run in entries:
+        if not (0 <= state <= 127):
+            raise ValueError(f"state index must be 0..127, got {state}")
+        if not (0 <= start <= MAX_SWEEP_START):
+            raise ValueError(
+                f"sweep start must be 0..{MAX_SWEEP_START}, got {start}"
+            )
+        if not (1 <= run <= MAX_SWEEP_RUN):
+            raise ValueError(
+                f"sweep run must be 1..{MAX_SWEEP_RUN}, got {run}"
+            )
+        out += struct.pack(
+            "<BBH",
+            _u8(event, "event"),
+            (state << 1) | (1 if is_county else 0),
+            start | ((run - 1) << 10),
+        )
+    return _check_size(bytes(out), "area_sweep")
+
+
+def sweep_packets(
+    seq_start: int,
+    bot: int,
+    *,
+    built_min: int,
+    entries: "list[tuple[int, int, bool, int, int]]",
+    cut: bool = False,
+    advisories: bool = False,
+    source: int = SOURCE_UNSTATED,
+) -> "list[bytes]":
+    """Split an ordered entry list into Area sweep packets.
+
+    Entries arrive most severe first (the caller's ordering, spec 7C), so
+    anything past ``MAX_SWEEP_ENTRIES`` is the least severe and is dropped
+    here with ``cut`` set on every packet.  Packets share
+    ``group = seq_start & 0xFF`` and take consecutive sequence numbers from
+    ``seq_start``, wrapping 255 -> 0.
+    """
+    _check_header(seq_start, bot, TYPE_AREA_SWEEP, 0)
+    entries = list(entries)
+    if len(entries) > MAX_SWEEP_ENTRIES:
+        entries = entries[:MAX_SWEEP_ENTRIES]
+        cut = True
+    if not entries:
+        return []
+    chunks = [
+        entries[i:i + MAX_SWEEP_ENTRIES_PER_PACKET]
+        for i in range(0, len(entries), MAX_SWEEP_ENTRIES_PER_PACKET)
+    ]
+    group = seq_start & 0xFF
+    total = len(chunks)
+    return [
+        encode_area_sweep(
+            (seq_start + i) & 0xFF,
+            bot,
+            built_min=built_min,
+            group=group,
+            idx=i,
+            total=total,
+            entries=chunk,
+            cut=cut,
+            advisories=advisories,
+            source=source,
+        )
+        for i, chunk in enumerate(chunks)
+    ]
+
+
+def _decode_area_sweep(data: bytes, hdr: Header) -> dict:
+    _need(data, 11, "area_sweep")
+    built, group, idx, total = struct.unpack_from("<IBBB", data, 4)
+    # The packet ends where the entries end; a trailing partial entry is a
+    # truncation, not a run of fewer bytes.
+    rest = len(data) - 11
+    if rest % 4:
+        raise ValueError(
+            f"truncated area_sweep entry: {rest} body bytes is not a multiple of 4"
+        )
+    entries = []
+    off = 11
+    for _ in range(rest // 4):
+        event, state, packed = struct.unpack_from("<BBH", data, off)
+        off += 4
+        entries.append(
+            {
+                "event": event,
+                "state": state >> 1,
+                "county": bool(state & 0x1),
+                "start": packed & 0x3FF,
+                "run": (packed >> 10) + 1,
+            }
+        )
+    out = hdr.as_dict()
+    out.update(
+        built_min=built,
+        group=group,
+        idx=idx,
+        total=total,
+        entries=entries,
+        cut=bool(hdr.flags & FLAG_SWEEP_CUT),
+        advisories=bool(hdr.flags & FLAG_SWEEP_ADVISORIES),
+        source=unpack_source(hdr.flags),
+    )
+    return out
+
+
+# --------------------------------------------------------------------------
 # Dispatch
 # --------------------------------------------------------------------------
 
@@ -1419,6 +1629,7 @@ _DECODERS = {
     TYPE_NOT_AVAILABLE: _decode_not_available,
     TYPE_COVERAGE: _decode_coverage,
     TYPE_REQUEST: _decode_request,
+    TYPE_AREA_SWEEP: _decode_area_sweep,
 }
 
 
