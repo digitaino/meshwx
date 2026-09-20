@@ -1,0 +1,283 @@
+/* MeshWX web — the radio side's own classes.
+   `styles/app.css` holds the tokens and every shared class; this file only adds what the radio
+   page, the alerts, the maps, the reports, Cached and the notifications needed on top. Same
+   rules: system fonts, nothing fetched from another origin, both colour schemes through the
+   tokens, 44 px targets, `prefers-reduced-motion` respected. */
+
+/* ---------- Quiet lines inside a card ---------- */
+
+.line {
+  padding: 2px 16px;
+  font-size: var(--text-foot);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+/* Orange is reserved for what is *not* on screen: a cut sweep, a missing part, a warning whose
+   replacement never came. A gap is not calm weather (docs/MESHWX_UI.md §17.2). */
+.line--warn { color: var(--stale); }
+.line--quiet { color: var(--text-3); }
+
+.status-line {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0 14px;
+}
+.status-line > p { padding-inline: 16px; font-size: var(--text-callout); }
+.status-line > p.line { font-size: var(--text-foot); }
+.status-line .line { padding-inline: 16px; }
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px;
+  font-size: var(--text-foot);
+  color: var(--text-2);
+}
+
+/* ---------- Ask buttons (§11) ---------- */
+
+.ask {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  padding: 6px 8px 8px;
+}
+.ask .line { padding-inline: 8px; }
+.ask__button { gap: 8px; }
+.ask__notes { display: flex; flex-direction: column; gap: 2px; }
+.ask-block { padding: 4px 8px 6px; }
+.ask-block .ask { padding: 2px 0 4px; }
+.ask-block .line { padding-inline: 10px; }
+
+/* ---------- Alert rows (§7) ---------- */
+
+.alert-row { align-items: flex-start; gap: 10px; padding-block: 12px; }
+.alert-row .row__icon { margin-top: 1px; }
+.alert-row__name { font-weight: 600; }
+/* One line, tail-truncated, as the iOS row is: a storm warning can carry four tags and the row
+   is a headline with a time under it, not a tag list. The detail screen shows them in full. */
+.alert-row__tags {
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.alert-row .row__chevron { align-self: center; }
+
+/* ---------- The alert detail's head ---------- */
+
+.detail-head { display: flex; flex-direction: column; gap: 4px; padding: 12px 0 14px; }
+.detail-head > p { padding-inline: 16px; font-size: var(--text-callout); }
+.detail-head__covers { font-weight: 500; }
+
+.headline {
+  --tint: var(--tint-grey);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px 2px;
+}
+.headline__icon { color: var(--tint); display: grid; place-items: center; }
+.headline__title { font-size: 1.125rem; font-weight: 600; }
+
+/* ---------- Maps ---------- */
+
+/* The whole card is the button: a card whose only content is a picture looks tappable and does
+   nothing unless the button itself has a hit area (docs/MESHWX_UI.md §3.1 U-32). */
+.card-map {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  text-align: start;
+  cursor: pointer;
+  overflow: hidden;
+}
+.card-map .map { border-radius: 0; }
+.card-map__open {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  font-size: var(--text-foot);
+  color: var(--text-2);
+}
+.card-map:hover .card-map__open { background: var(--surface-hover); }
+.card-map .row__chevron { display: inline-flex; }
+
+/* A full-bleed map screen: the map fills it, and both bars float **over** it. A safe-area inset
+   that appears the moment a tap goes out resizes the map and throws away what it has drawn —
+   the flash the owner saw on every tap on a shaded area (§3.1 U-33). */
+.map-screen { position: relative; height: 100%; width: 100%; }
+.map-screen > .map { position: absolute; inset: 0; }
+.map__chip--pending { padding: 0; background: none; box-shadow: none; }
+.map__chip--pending .pending { position: static; margin: 0; }
+
+.legend { padding: 10px 16px 14px; }
+
+/* ---------- Segmented control ---------- */
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  margin: 6px 16px 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.segmented__option {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-2);
+  font-size: var(--text-foot);
+  line-height: 1.2;
+  cursor: pointer;
+  /* Two lines rather than an ellipsis: "Warnings and watches" is the whole point of the choice. */
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+.segmented__option.is-selected {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(10 20 30 / 0.12);
+}
+.segmented__option:hover:not(.is-selected) { color: var(--text); }
+
+/* ---------- The alert map's status card: one block per part (§17) ---------- */
+
+/* Parts stack inside one card, so each needs a hairline over it rather than a card of its own:
+   they are one answer in several pieces, not several answers. */
+.part { gap: 4px; padding-block: 12px; }
+/* The summary under the last part is about the whole picture, not about that part, so it is
+   ruled off from it: without the line "619 areas under an alert" reads as the rest of the
+   country's count. */
+.part + .part, .part + .part-summary { border-top: 1px solid var(--separator); }
+.part__name { font-weight: 600; }
+.part .ask-block { padding-top: 4px; }
+
+/* ---------- The state picker (§17) ---------- */
+
+.pick-row { cursor: pointer; }
+.pick-row__check { width: 22px; justify-content: center; }
+/* The tick is the state; the row does not change colour, because a picked state and an unpicked
+   one are the same kind of thing and a wash of accent over fifteen rows reads as an error. */
+.pick-row[aria-pressed="false"] .pick-row__check { color: transparent; }
+
+/* ---------- Channel traffic: a chat, not a table (§17) ---------- */
+
+.timeline-host { display: flex; flex-direction: column; gap: 6px; padding-block: 8px 12px; }
+.timeline__note { margin-top: 0; }
+.timeline { display: flex; flex-direction: column; gap: 2px; padding-block: 4px; }
+.timeline__empty { padding: 24px 16px; text-align: center; color: var(--text-2); }
+
+/* The sender's name over each run from one radio, on the side its bubbles are on. */
+.timeline__who {
+  padding: 12px 4px 2px;
+  font-size: var(--text-label);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.timeline__who--mine { text-align: end; }
+
+.bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  align-items: flex-start;
+  align-self: flex-start;
+  max-width: min(85%, 30em);
+  min-height: 44px;
+  padding: 9px 13px;
+  border: 0;
+  border-radius: 16px 16px 16px 5px;
+  background: var(--surface);
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.bubble:hover { background: var(--surface-hover); }
+/* This phone's own, on the right and in the accent's wash: the two sides are the two directions,
+   and nothing else about a row is allowed to depend on which side it is on. */
+.bubble--mine {
+  align-self: flex-end;
+  align-items: flex-end;
+  text-align: end;
+  border-radius: 16px 16px 5px 16px;
+  background: var(--accent-soft);
+}
+.bubble--mine:hover { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
+.bubble__title { font-weight: 600; overflow-wrap: anywhere; }
+.bubble__detail { font-size: var(--text-callout); color: var(--text-2); overflow-wrap: anywhere; }
+.bubble__facts { font-size: var(--text-foot); color: var(--text-3); overflow-wrap: anywhere; }
+/* "from the radio's queue" and "duplicate": what makes this row not simply a message arriving. */
+.bubble__notes { font-size: var(--text-foot); color: var(--stale); }
+
+/* ---------- One datagram, in full ---------- */
+
+/* The decoded fields. Indented by nesting depth rather than boxed: a sweep's entries are a list
+   inside a message, and a card around each of 38 of them is not a reading of anything. */
+.fields { display: flex; flex-direction: column; padding: 10px 16px 14px; font-size: var(--text-foot); }
+.field {
+  display: flex;
+  gap: 10px;
+  padding: 2px 0 2px calc(var(--depth, 0) * 14px);
+  min-width: 0;
+}
+.field__name { color: var(--text-2); flex: none; }
+.field__value { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; text-align: end; }
+.field--heading .field__name { color: var(--text); font-weight: 600; }
+
+/* The bytes: monospace, wrapping, and selectable, because copying them into a decoder is the
+   whole reason this screen shows them. */
+.hexdump {
+  margin: 0;
+  padding: 12px 16px 14px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* ---------- Small parts ---------- */
+
+.row__check { color: var(--accent); display: inline-flex; }
+.row__break { display: block; height: 0; }
+
+/* The bell that stops a watch. 44 px of target around a 20 px glyph (§3.1 U-21). */
+.bell {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+.bell:hover { background: var(--accent-soft); }
+
+.sheet__actions { padding: 10px 16px 14px; }
+
+.narrative { user-select: text; }
+
+@media (prefers-reduced-motion: reduce) {
+  .segmented__option { transition: none; }
+}

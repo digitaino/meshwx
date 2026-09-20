@@ -1,0 +1,13 @@
+{
+  "name": "meshwx-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MeshWX weather client for Chromium browsers: weather from the mesh, over Web Bluetooth or Web Serial",
+  "type": "module",
+  "scripts": {
+    "dev": "node tools/dev-server.mjs",
+    "test": "node --test test/",
+    "strings": "node tools/strings-to-json.mjs"
+  },
+  "engines": { "node": ">=22" }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "MeshWX",
+  "short_name": "MeshWX",
+  "description": "Weather from a MeshCore weather radio: alerts, conditions and forecasts without the internet.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b0e12",
+  "theme_color": "#0b0e12",
+  "icons": [
+    { "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "assets/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

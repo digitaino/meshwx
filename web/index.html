@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#edf0f3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b0e12" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="Severe weather alerts, current conditions and the forecast from a MeshCore weather radio, over Bluetooth or USB. No internet needed.">
+  <title>MeshWX</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles/app.css">
+  <link rel="stylesheet" href="styles/place.css">
+  <link rel="stylesheet" href="styles/radio.css">
+</head>
+<body>
+  <div id="app" aria-live="off">
+    <div class="boot" id="boot">
+      <p id="boot-status">Loading the weather tables…</p>
+    </div>
+  </div>
+  <noscript>MeshWX needs JavaScript, and a Chromium browser for Bluetooth or USB.</noscript>
+  <script type="module" src="src/app/main.js"></script>
+</body>
+</html>

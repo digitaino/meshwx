@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshWX web — icon set</title>
+<style>
+  :root {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --gap: 18px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f2f2f6; color: #1c1c1e; }
+
+  header {
+    padding: 22px 24px 16px;
+    border-bottom: 1px solid #d6d6db;
+    background: #fff;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  h1 { margin: 0 0 4px; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+  .sub { margin: 0; font-size: 13px; color: #6b6b70; }
+  .sub code { font-size: 12px; }
+
+  .controls { margin-top: 12px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .controls label { font-size: 13px; color: #3a3a3c; display: flex; gap: 5px; align-items: center; }
+  .controls input[type="search"] {
+    font: inherit; font-size: 13px; padding: 5px 9px; border: 1px solid #c8c8cd;
+    border-radius: 7px; min-width: 200px; background: #fff; color: inherit;
+  }
+
+  section { padding: 20px 24px 34px; }
+  section h2 {
+    margin: 0 0 14px; font-size: 13px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.07em; opacity: 0.55;
+  }
+  section.light { background: #fff; color: #1c1c1e; }
+  section.dark  { background: #131316; color: #f2f2f7; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+    gap: var(--gap);
+  }
+  .cell {
+    border: 1px solid currentColor;
+    border-radius: 10px;
+    padding: 12px 10px 10px;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    text-align: center;
+  }
+  section.light .cell { border-color: #e2e2e7; }
+  section.dark  .cell { border-color: #2c2c31; }
+  .cell.alias { border-style: dashed; }
+
+  .sizes { display: flex; align-items: flex-end; gap: 12px; min-height: 68px; }
+  .sizes > span { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .sizes small { font-size: 9px; opacity: 0.4; font-variant-numeric: tabular-nums; }
+
+  .name { font-size: 11.5px; font-family: ui-monospace, "SF Mono", Menlo, monospace; word-break: break-all; line-height: 1.35; }
+  .tag { font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase; opacity: 0.45; }
+
+  /* Colour comes from currentColor, so a tint on the cell tints the glyph. */
+  .accent { color: #0a84ff; }
+  section.light .accent { color: #0064d2; }
+
+  .empty { font-size: 13px; opacity: 0.5; padding: 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MeshWX web — icon set</h1>
+  <p class="sub">
+    24×24, 1.75 stroke, round caps. Built by <code>src/ui/kit/icons.js</code>;
+    every glyph is inline SVG, no fonts and nothing fetched.
+    Solid border = drawing, dashed = alias.
+  </p>
+  <div class="controls">
+    <input id="filter" type="search" placeholder="filter by name…" autocomplete="off" spellcheck="false">
+    <label><input id="accent" type="checkbox"> tint with <code>currentColor</code></label>
+    <span class="sub" id="count"></span>
+  </div>
+</header>
+
+<section class="light">
+  <h2>Light</h2>
+  <div class="grid" id="grid-light"></div>
+</section>
+
+<section class="dark">
+  <h2>Dark</h2>
+  <div class="grid" id="grid-dark"></div>
+</section>
+
+<script type="module">
+import { ICONS, ALIASES, icon } from '../src/ui/kit/icons.js';
+
+const SIZES = [20, 32, 64];
+
+const entries = [
+  ...Object.keys(ICONS).map((name) => ({ name, alias: null })),
+  ...Object.keys(ALIASES).map((name) => ({ name, alias: ALIASES[name] })),
+];
+
+function cell({ name, alias }) {
+  const box = document.createElement('div');
+  box.className = alias ? 'cell alias' : 'cell';
+  box.dataset.name = name;
+
+  const sizes = document.createElement('div');
+  sizes.className = 'sizes';
+  for (const size of SIZES) {
+    const holder = document.createElement('span');
+    const svg = icon(name, { size, label: name });
+    holder.append(svg);
+    const cap = document.createElement('small');
+    cap.textContent = size;
+    holder.append(cap);
+    sizes.append(holder);
+  }
+  box.append(sizes);
+
+  const label = document.createElement('div');
+  label.className = 'name';
+  label.textContent = name;
+  box.append(label);
+
+  if (alias) {
+    const tag = document.createElement('div');
+    tag.className = 'tag';
+    tag.textContent = alias.filled ? `${alias.of} · filled` : `= ${alias.of}`;
+    box.append(tag);
+  }
+  return box;
+}
+
+const light = document.getElementById('grid-light');
+const dark = document.getElementById('grid-dark');
+for (const entry of entries) {
+  light.append(cell(entry));
+  dark.append(cell(entry));
+}
+
+document.getElementById('count').textContent =
+  `${Object.keys(ICONS).length} drawings · ${Object.keys(ALIASES).length} aliases`;
+
+document.getElementById('filter').addEventListener('input', (event) => {
+  const q = event.target.value.trim().toLowerCase();
+  let shown = 0;
+  for (const box of document.querySelectorAll('.cell')) {
+    const hit = !q || box.dataset.name.includes(q);
+    box.style.display = hit ? '' : 'none';
+    if (hit) shown += 1;
+  }
+  document.getElementById('count').textContent =
+    q ? `${shown / 2} matching` : `${Object.keys(ICONS).length} drawings · ${Object.keys(ALIASES).length} aliases`;
+});
+
+document.getElementById('accent').addEventListener('change', (event) => {
+  for (const box of document.querySelectorAll('.cell')) {
+    box.classList.toggle('accent', event.target.checked);
+  }
+});
+</script>
+</body>
+</html>

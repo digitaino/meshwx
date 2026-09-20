@@ -1,0 +1,15 @@
+{
+  "web.place.conditionsAsk": "No current conditions for %1$@. Tap Update to ask %2$@ for %3$@.",
+  "web.place.emptyAsk": "Tap Update to ask %@.",
+  "web.place.outsideArea": "Warnings aren't pushed here — tap Update to check.",
+  "web.place.connectRadio": "Connect your radio",
+  "web.place.locationDeniedHint": "Location is blocked for this site. Allow it in your browser's site settings, then tap My location again.",
+  "web.place.notificationsDenied": "Notifications are blocked for this site, so a bell can't ring.",
+  "web.place.notificationsDeniedHint": "Allow notifications for this site in your browser's settings, then turn the bell on again.",
+  "web.place.edit": "Edit",
+  "web.place.editDone": "Finish editing",
+  "web.place.moveUp": "Move %@ up",
+  "web.place.moveDown": "Move %@ down",
+  "web.place.removePlace": "Remove %@",
+  "web.place.clearSearch": "Clear the search"
+}

@@ -1,0 +1,6 @@
+{
+  "web.notifications.promise": "Alerts arrive only while this page is open, your radio is connected and in range, and the weather radio is broadcasting. Closing the tab stops them. This is not a substitute for a NOAA weather radio or your phone's emergency alerts.",
+  "web.notifications.pageOnly": "Notifications stop when this tab is closed.",
+  "web.notifications.denied": "Notifications are blocked for this site, so a bell cannot ring. Allow them in your browser's site settings.",
+  "web.notifications.unsupported": "This browser cannot show notifications, so a bell cannot ring."
+}

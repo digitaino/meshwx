@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map preview</title>
+<link rel="stylesheet" href="../styles/app.css">
+<style>
+  body { display: grid; grid-template-rows: auto 1fr; height: 100dvh; }
+  header { padding: 10px 16px; font-size: 14px; color: var(--text-2); }
+  #map { min-height: 0; }
+</style>
+<header id="status">Loading…</header>
+<div id="map" class="map"></div>
+<script type="module">
+  import { MapCanvas } from '../src/ui/kit/MapCanvas.js'
+  const status = document.getElementById('status')
+  const map = new MapCanvas(document.getElementById('map'))
+  map.setBasemap(await (await fetch('../assets/basemap.json')).json())
+  map.fit('conus')
+  const places = (await (await fetch('/data/places.json')).json()).places
+    .map(([name, state, lat, lon, population]) => ({ name: name[0] + name.slice(1).toLowerCase(), state, lat, lon, population }))
+  map.setPlaces(places)
+  const t0 = performance.now()
+  const counties = await (await fetch('/data/counties.geojson')).json()
+  const ringsOf = (g) => (g.type === 'MultiPolygon' ? g.coordinates.flat() : g.coordinates)
+  const tints = ['red', 'orange', 'yellow', 'darkGreen', 'pink', 'blue', 'orangeRed', 'lavender']
+  const shapes = counties.features.filter((f, i) => i % 23 === 0)
+    .map((f, i) => ({ id: f.properties.code, rings: ringsOf(f.geometry), tint: tints[i % tints.length], data: f.properties }))
+  map.setShapes(shapes)
+  map.onTap = ({ shapes, coordinate }) => {
+    map.setSelected(shapes[0]?.id ?? null)
+    status.textContent = shapes.length ? `${shapes[0].data.name}, ${shapes[0].data.state} (${shapes[0].id})` : `${coordinate.latitude.toFixed(3)}, ${coordinate.longitude.toFixed(3)}`
+  }
+  status.textContent = `${shapes.length} counties shaded, outlines loaded in ${Math.round(performance.now() - t0)} ms. Drag, scroll, tap.`
+  window.map = map
+</script>
+</html>

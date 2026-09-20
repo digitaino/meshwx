@@ -1,0 +1,11 @@
+{
+  "web.radio.error": "This part of the screen could not be drawn.",
+  "web.radio.pill.connected": "Radio connected",
+  "web.radio.pill.connecting": "Connecting",
+  "web.radio.pill.disconnected": "No radio",
+  "web.radio.pill.action": "Opens the connect panel.",
+  "web.radio.map.loading": "Loading the area outlines.",
+  "web.radio.notifications.browserSettings": "Notifications are allowed or blocked for this site in your browser's settings.",
+  "web.radio.other.title": "Other messages this radio delivered",
+  "web.radio.other.note": "Chats and channel messages that arrived while this tab held the radio. Reading them took them off the radio's queue, so they are listed here rather than lost. This tool does not reply to them."
+}

@@ -1,0 +1,253 @@
+/* MeshWX web — the place side: the pager, a place page, the conditions hero, the forecast,
+   Update, Places and the stations screens.
+   Additions only. `styles/app.css` holds the tokens, the shell and the shared classes; nothing
+   here redefines one of those, and nothing here is fetched from another origin. */
+
+/* ---------- The pager's shell ---------- */
+
+/* The root screen scrolls sideways, not down: `.screen--pager` is app.css's own class for that,
+   and `WeatherToolView` puts it on the section nav made. */
+.pager-host { position: relative; height: 100%; }
+.pager-host > .pager { height: 100%; }
+
+/* A request on the air whose button is not on screen: an overlay, never an inset, so the page it
+   sits over never resizes for it (docs/MESHWX_UI.md §3.1 U-33). */
+.pager-host > .pending {
+  position: absolute;
+  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  bottom: 12px;
+  margin: 0;
+  z-index: 4;
+}
+
+/* Places · the dots · Update, in the same three positions on every page (§4). `.toolbar` is the
+   grid; `display: contents` makes these three its items rather than one long capsule. */
+.toolbar__inner > :first-child { justify-self: start; }
+.toolbar__inner > :last-child { justify-self: end; }
+
+/* ---------- The place page ---------- */
+
+.page-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 16px;
+  text-align: center;
+}
+.page-preview__name { font-size: var(--text-title); font-weight: 600; }
+
+/* ---------- The conditions hero (§8, §3.1.2 V-1) ---------- */
+
+.hero > .page-eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.hero__block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  text-align: center;
+}
+
+/* The ask is a sentence in body type, never an 80 pt placeholder temperature: "--°" was tried at
+   that size and drew as two long dashes and a ring (§3.1.2 V-1). */
+.hero__headline {
+  max-width: 24em;
+  padding-top: 8px;
+  font-size: 1.25rem;
+  font-weight: 600;
+  text-wrap: balance;
+}
+.hero__sentence {
+  max-width: 34em;
+  font-size: var(--text-callout);
+  color: var(--text-2);
+}
+.hero__action { padding-top: 8px; }
+.hero__locating {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px 8px 8px;
+  color: var(--text-2);
+}
+
+/* ---------- Cards ---------- */
+
+/* Free text inside a card, where a card has a sentence rather than rows. */
+.card__note {
+  padding: 10px 16px 12px;
+  font-size: var(--text-callout);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.card__note.footnote { padding-top: 0; color: var(--text-2); }
+
+/* A block of controls inside a card (Update, the coded reports). */
+.card__block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 14px;
+}
+
+.footnote--warn { color: var(--stale); }
+
+/* ---------- Forecast rows (§9) ---------- */
+
+.forecast-row__icon {
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+}
+
+/* ---------- The alert strip (§7.3) ---------- */
+
+/* One strip, the same height whatever the weather, so the page below it never moves. The name and
+   its end time stack: a button may hold only phrasing content, so they are spans, and the column
+   has to be asked for here. */
+.alert-strip__main { display: flex; flex-direction: column; justify-content: center; }
+.alert-strip .row__chevron { margin-inline-start: 2px; }
+
+/* ---------- Update and ask buttons (§11) ---------- */
+
+.update { display: flex; flex-direction: column; gap: 8px; }
+.update > .button { align-self: flex-start; }
+.ask { display: flex; flex-direction: column; gap: 4px; }
+.ask > .button { align-self: flex-start; }
+.ask__notes { display: flex; flex-direction: column; gap: 2px; }
+
+/* ---------- Places (§12) ---------- */
+
+.place-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 48px;
+  padding-inline-end: 8px;
+}
+.place-row + .place-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 0;
+  height: 1px;
+  background: var(--separator);
+}
+
+.place-row__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 10px 4px 10px 16px;
+  border: 0;
+  background: none;
+  text-align: start;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 10px;
+}
+.place-row__main:hover { background: var(--surface-hover); }
+.place-row__tick { flex: none; color: var(--accent); display: grid; place-items: center; }
+
+/* 44 x 44, like every other target in the tool: the paddings that used to stand in for it made a
+   26 x 31 pt bell (docs/MESHWX_UI.md §3.1 U-21). */
+.place-row__bell,
+.place-row__move {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.place-row__bell:hover,
+.place-row__move:hover { background: var(--surface-hover); }
+.place-row__bell.is-on { color: var(--accent); }
+.place-row__move:disabled { opacity: 0.35; cursor: default; }
+
+.place-row__grip {
+  flex: none;
+  width: 28px;
+  display: grid;
+  place-items: center;
+  margin-inline-start: 8px;
+  color: var(--text-3);
+  cursor: grab;
+}
+.place-row--editing { background: var(--surface-2); }
+.place-row--editing + .place-row--editing::before { background: transparent; }
+
+.place-row__edits { display: flex; align-items: center; gap: 2px; }
+.place-row__remove {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--bad);
+  font-size: var(--text-callout);
+  font-weight: 500;
+  cursor: pointer;
+}
+.place-row__remove:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+
+/* The kit draws no arrow-up glyph; the move-up button is the chevron turned over. */
+.icon--flip { transform: rotate(180deg); }
+
+.search__clear {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 17px;
+  background: none;
+  color: var(--text-3);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.search__clear:hover { background: var(--surface-hover); }
+/* The browser's own clear control would be a second one beside it (docs/MESHWX_UI.md §3.1 U-28). */
+.search input[type="search"]::-webkit-search-cancel-button { display: none; }
+
+/* ---------- The station screen (§12) ---------- */
+
+.station-summary { gap: 4px; }
+.station-summary__name { font-size: var(--text-title); font-weight: 600; }
+.station-report { display: flex; flex-direction: column; gap: 2px; }
+.station-report .narrative { padding: 8px 0 0; margin: 0; white-space: pre-wrap; }
+
+/* ---------- Wide screens ---------- */
+
+/* The column stays a column: weather is read, not tiled. */
+@media (min-width: 900px) {
+  .pager-host > .pending {
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    max-width: var(--column);
+    width: calc(100% - 32px);
+  }
+}

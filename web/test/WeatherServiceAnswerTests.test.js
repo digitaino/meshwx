@@ -1,0 +1,654 @@
+// Port of MC1ServicesTests/Weather/WeatherServiceAnswerTests.swift (docs/PORTING.md).
+//
+// What counts as an answer: the request flow from send to settlement, the five-minute rule's
+// slots and what fills them, backlog drained at connect versus traffic heard live, and which
+// text replies are this phone's.
+
+import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+
+import { MeshWXTables } from '../src/meshwx/index.js'
+import { nodeBundleLoader } from '../src/meshwx/nodeLoader.js'
+import {
+  InMemoryWeatherStateStore,
+  WeatherPartsKind,
+  WeatherRequest,
+  WeatherRequestError,
+  WeatherRequestOutcome,
+  WeatherService,
+  dateFromUnixMinutes
+} from '../src/weather/index.js'
+import * as F from './helpers/weather-fixtures.js'
+
+const tables = await MeshWXTables.load(nodeBundleLoader())
+
+const other = {
+  publicKey: Uint8Array.from([0x02, 0x01, ...new Array(30).fill(0x22)]),
+  name: 'WX-SAT',
+  latitude: 29.4,
+  longitude: -98.5,
+  lastAdvert: null
+}
+
+/**
+ * The fake radio cannot flood a Request datagram here (spec §7B), so every request in this
+ * suite goes out as the DM of §8.2 and the assertions on `transport.sent` still read the send
+ * they were written for. The channel path has its own section in `WeatherServiceTests`.
+ */
+async function makeHarness() {
+  const transport = await F.makeTransport({ channelRequestsSupported: false })
+  const clock = new F.WeatherTestClock()
+  const service = new WeatherService({
+    transport,
+    store: new InMemoryWeatherStateStore(),
+    now: () => clock.now,
+    stationIndex: (icao) => (icao === 'KAUS' ? 202 : null),
+    tables,
+    setTimeout: (fn, milliseconds) => clock.setTimeout(fn, milliseconds),
+    clearTimeout: (id) => clock.clearTimeout(id),
+    decode: F.fixtureDecode
+  })
+  return { transport, clock, service, events: F.collectEvents(service) }
+}
+
+describe('WeatherService answers', () => {
+  // MARK: - Request flow
+
+  it('a request is sent, waits as pending, and settles as answered', async () => {
+    const h = await makeHarness()
+    const log = []
+    h.service.subscribe((event) => {
+      if (event.kind === 'requestSent') log.push(`sent ${WeatherRequest.wireText(event.value.request)}`)
+      if (event.kind === 'requestSettled') {
+        log.push(`settled ${WeatherRequest.wireText(event.value.request)} ${event.value2.kind}`)
+      }
+    })
+    const pending = await h.service.send(WeatherRequest.digest, { to: F.bot })
+    assert.deepStrictEqual(h.service.pendingRequests().map((entry) => entry.id), [pending.id])
+    assert.deepStrictEqual(h.transport.sent.map((entry) => entry.text), ['>d'])
+
+    await h.clock.advance(3)
+    await h.service.ingest(F.digest({ seq: 1, entries: [] }))
+    assert.deepStrictEqual(log, ['sent >d', 'settled >d answered'])
+    assert.deepStrictEqual(h.service.pendingRequests(), [])
+  })
+
+  it('a second request inside five seconds is refused with the time left', async () => {
+    const h = await makeHarness()
+    await h.service.send(WeatherRequest.digest, { to: F.bot })
+    await h.clock.advance(3)
+    await assert.rejects(
+      () => h.service.send(WeatherRequest.observations, { to: F.bot }),
+      (error) => error instanceof WeatherRequestError
+        && error.kind === 'rateLimited'
+        && Math.abs(error.retryAfter - 2) < 0.001
+    )
+    assert.equal(h.transport.sent.length, 1)
+  })
+
+  // MARK: - Slots
+
+  it('an answer served from the channel says what it is as of', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(
+      F.observations({ seq: 1, timestampMinutes: F.t0Minutes - 7, stations: [[202, 88], [860, 84]] })
+    )
+    await h.service.ingest(
+      F.forecast({ seq: 2, point: 102, issuedMinutes: F.t0Minutes - 30, bot: 0x0102 })
+    )
+    await h.service.ingest(F.digest({ seq: 3, nowMinutes: F.t0Minutes - 2, entries: [] }))
+    await h.clock.advance(60)
+
+    assert.equal(await h.service.send(WeatherRequest.observations, { to: F.bot }), null)
+    assert.equal(await h.service.send(WeatherRequest.forecast({ point: 102 }), { to: F.bot }), null)
+    assert.equal(await h.service.send(WeatherRequest.digest, { to: F.bot }), null)
+    assert.deepStrictEqual(F.settlements(h.events).map(([, outcome]) => outcome), [
+      WeatherRequestOutcome.alreadyReceived({
+        receivedAt: F.t0, contentAsOf: dateFromUnixMinutes(F.t0Minutes - 7)
+      }),
+      WeatherRequestOutcome.alreadyReceived({
+        receivedAt: F.t0, contentAsOf: dateFromUnixMinutes(F.t0Minutes - 30)
+      }),
+      WeatherRequestOutcome.alreadyReceived({
+        receivedAt: F.t0, contentAsOf: dateFromUnixMinutes(F.t0Minutes - 2)
+      })
+    ])
+    assert.deepStrictEqual(h.transport.sent, [])
+  })
+
+  it("a station's slot is as of that station's own report, not the batch's", async () => {
+    const h = await makeHarness()
+    // Revision 5 (spec §6.1): KAUS filed 40 minutes before the newest station in the batch.
+    await h.service.ingest(F.observations({
+      seq: 1, timestampMinutes: F.t0Minutes - 7, stations: [[202, 88], [860, 84]], ages: [40, 0]
+    }))
+    await h.clock.advance(60)
+
+    assert.equal(
+      await h.service.send(WeatherRequest.observation({ station: 'KAUS' }), { to: F.bot }), null
+    )
+    assert.equal(await h.service.send(WeatherRequest.observations, { to: F.bot }), null)
+    assert.deepStrictEqual(F.settlements(h.events).map(([, outcome]) => outcome), [
+      WeatherRequestOutcome.alreadyReceived({
+        receivedAt: F.t0, contentAsOf: dateFromUnixMinutes(F.t0Minutes - 7 - 40)
+      }),
+      WeatherRequestOutcome.alreadyReceived({
+        receivedAt: F.t0, contentAsOf: dateFromUnixMinutes(F.t0Minutes - 7)
+      })
+    ])
+    assert.deepStrictEqual(h.transport.sent, [])
+  })
+
+  it('a list older than the one held answers nothing, in order or late', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.digest({ seq: 10, nowMinutes: F.t0Minutes, entries: [] }))
+    await h.clock.advance(6 * 60)
+
+    const older = await h.service.ingest(F.digest({ seq: 11, nowMinutes: F.t0Minutes - 30, entries: [] }))
+    assert.ok(older.some((change) => change.kind === 'digestIgnoredOlder'
+      && change.builtMinutes === F.t0Minutes - 30))
+    assert.notEqual(await h.service.send(WeatherRequest.digest, { to: F.bot }), null)
+
+    await h.clock.advance(6 * 60)
+    const late = await h.service.ingest(F.digest({ seq: 5, nowMinutes: F.t0Minutes - 20, entries: [] }))
+    assert.deepStrictEqual(late.map((change) => change.kind), ['outOfOrder', 'digestIgnoredOlder'])
+    assert.notEqual(await h.service.send(WeatherRequest.digest, { to: F.bot }), null)
+  })
+
+  it('a late warning the reducer set aside answers nothing', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.cancel({ seq: 10, identity: F.svw42 }))
+    await h.service.ingest(F.warning({ seq: 8, identity: F.svw42 }))
+    const { identityKey } = await import('../src/weather/index.js')
+    const state = await h.service.state({ for: F.botID })
+    assert.equal(state.warnings[identityKey(F.svw42)], undefined)
+    assert.notEqual(
+      await h.service.send(WeatherRequest.warning({ identity: 'SV.W.EWX.42' }), { to: F.bot }), null
+    )
+  })
+
+  it('a warning from any bot answers a request for that warning', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.warning({ seq: 1, identity: F.svw42, bot: 0x0102 }))
+    assert.equal(
+      await h.service.send(WeatherRequest.warning({ identity: 'SV.W.EWX.42' }), { to: F.bot }), null
+    )
+    assert.equal(
+      await h.service.send(WeatherRequest.warning({ identity: 'sv.w.ewx.42' }), { to: F.bot }), null
+    )
+    assert.notEqual(
+      await h.service.send(WeatherRequest.warning({ identity: 'SV.W.EWX.43' }), { to: F.bot }), null
+    )
+  })
+
+  it('a list from the bot answers its warnings requests while nothing is outstanding', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.digest({ seq: 1, entries: [] }))
+    assert.equal(await h.service.send(WeatherRequest.activeWarnings, { to: F.bot }), null)
+    assert.equal(
+      await h.service.send(WeatherRequest.warningsTouching({ ugc: 'TXC453' }), { to: F.bot }), null
+    )
+    assert.notEqual(
+      await h.service.send(WeatherRequest.activeWarnings, { to: other }), null,
+      "another bot's list is not this one's"
+    )
+  })
+
+  // The list itself is what shows a warning never arrived; asking again is the repair.
+  it("warnings requests are sent while the bot's list names a warning this phone lacks", async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.digest({ seq: 1, entries: [[F.svw43, 30]] }))
+    await h.service.ingest(F.warning({ seq: 2, identity: F.svw42 }))
+    const state = await h.service.state({ for: F.botID })
+    assert.deepStrictEqual(state.missingFromDigest, [F.svw43])
+    assert.notEqual(
+      await h.service.send(WeatherRequest.warningsTouching({ ugc: 'TXC453' }), { to: F.bot }), null
+    )
+  })
+
+  // Asking for missing warnings one at a time ends in `>d` once the bot has said it has none of
+  // them; that last ask must not wait out the five minutes behind the list it wants replaced.
+  it("a list request is sent while the bot's list names a warning this phone lacks", async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.digest({ seq: 1, entries: [[F.svw43, 30]] }))
+    const state = await h.service.state({ for: F.botID })
+    assert.deepStrictEqual(state.missingFromDigest, [F.svw43])
+    assert.notEqual(await h.service.send(WeatherRequest.digest, { to: F.bot }), null)
+  })
+
+  it('only a complete reply this phone asked for answers a text request', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(
+      F.text({ seq: 1, subject: 6, group: 1, index: 0, total: 1, text: 'outlook' })
+    )
+    assert.notEqual(
+      await h.service.send(WeatherRequest.hazardousOutlook, { to: F.bot }), null,
+      "somebody else's reply is not an answer"
+    )
+
+    await h.service.ingest(
+      F.text({ seq: 2, subject: 6, group: 2, index: 0, total: 1, text: 'outlook' })
+    )
+    assert.equal(F.settlements(h.events).length, 1)
+    await h.clock.advance(30)
+    assert.equal(await h.service.send(WeatherRequest.hazardousOutlook, { to: F.bot }), null)
+  })
+
+  // MARK: - Coverage
+
+  // Spec §7A, §8.2: `>cov` asks a bot what it carries. The statement carries no time of its
+  // own, so the five-minute rule runs from receipt and the answer names nothing it is "as of".
+  it('a statement answers the request that asked for it, and fills its slot', async () => {
+    const h = await makeHarness()
+    const pending = await h.service.send(WeatherRequest.coverage, { to: F.bot })
+    assert.deepStrictEqual(h.transport.sent.map((entry) => entry.text), ['>cov'])
+
+    await h.clock.advance(2)
+    await h.service.ingest(F.coverage({ seq: 1 }))
+    let settled = F.settlements(h.events)
+    assert.equal(settled.length, 1)
+    assert.equal(settled[0][0].id, pending.id)
+    assert.deepStrictEqual(settled[0][1], WeatherRequestOutcome.answered)
+    const state = await h.service.state({ for: F.botID })
+    assert.equal(state.coverage.coverage.radius_km, 120)
+
+    await h.clock.advance(30)
+    assert.equal(await h.service.send(WeatherRequest.coverage, { to: F.bot }), null)
+    settled = F.settlements(h.events)
+    assert.equal(settled.length, 2)
+    assert.deepStrictEqual(
+      settled[1][1],
+      WeatherRequestOutcome.alreadyReceived({ receivedAt: F.t0 + 2000, contentAsOf: null })
+    )
+  })
+
+  // A statement describes whichever bot sent it, so another bot's settles nothing here.
+  it("another bot's statement is not this bot's", async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.coverage({ seq: 1, bot: 0x0102 }))
+    assert.notEqual(await h.service.send(WeatherRequest.coverage, { to: F.bot }), null)
+  })
+
+  it('clearing a bot forgets the answers any bot gave', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.forecast({ seq: 1, point: 102, bot: 0x0102 }))
+    assert.equal(await h.service.send(WeatherRequest.forecast({ point: 102 }), { to: F.bot }), null)
+    await h.service.clearState({ for: F.botID })
+    assert.notEqual(await h.service.send(WeatherRequest.forecast({ point: 102 }), { to: F.bot }), null)
+  })
+
+  // MARK: - Area sweep (spec §7C)
+
+  // `>wmap` is answered by the sweep's **first** packet — the other seven are already on the
+  // air — and the slot it fills is what stops the next phone spending eight more.
+  it('the first sweep packet answers the map request and fills its slot', async () => {
+    const h = await makeHarness()
+    const pending = await h.service.send(
+      WeatherRequest.areaSweep({ includesAdvisories: false }), { to: F.bot }
+    )
+    assert.deepStrictEqual(h.transport.sent.map((entry) => entry.text), ['>wmap'])
+
+    await h.clock.advance(2)
+    await h.service.ingest(
+      F.areaSweep({ seq: 1, group: 1, index: 0, total: 3, entries: [F.texasSweepEntry] })
+    )
+    let settled = F.settlements(h.events)
+    assert.equal(settled.length, 1)
+    assert.equal(settled[0][0].id, pending.id)
+    assert.deepStrictEqual(settled[0][1], WeatherRequestOutcome.answered)
+    // The sweep the tap produced is marked as this phone's, even though it is still arriving.
+    const state = await h.service.state({ for: F.botID })
+    assert.deepStrictEqual(
+      state.areaSweeps[0].request, WeatherRequest.areaSweep({ includesAdvisories: false })
+    )
+
+    // A narrow national sweep answers a wide national tap: a sweep that covered the country
+    // covered it, and the level the bot actually sent is what the map reads off the sweep.
+    await h.clock.advance(30)
+    assert.equal(
+      await h.service.send(WeatherRequest.areaSweep({ includesAdvisories: true }), { to: F.bot }), null
+    )
+    settled = F.settlements(h.events)
+    assert.equal(settled.length, 2)
+    assert.deepStrictEqual(
+      settled[1][1],
+      WeatherRequestOutcome.alreadyReceived({
+        receivedAt: F.t0 + 2000, contentAsOf: dateFromUnixMinutes(F.t0Minutes)
+      })
+    )
+  })
+
+  // MARK: - Revision 10
+
+  /**
+   * "slots keyed so two different state selections are different requests". A sweep of Texas is
+   * not the answer to a tap on Oklahoma, however recently it went out.
+   */
+  it('a sweep of one selection does not answer a tap on another', async () => {
+    const h = await makeHarness()
+    const texas = tables.states.indexOf('TX')
+    const oklahoma = tables.states.indexOf('OK')
+    await h.service.ingest(F.areaSweep({
+      seq: 1, group: 1, index: 0, total: 1, scope: [texas], entries: [F.texasSweepEntry]
+    }))
+
+    await h.clock.advance(10)
+    assert.equal(
+      await h.service.send(
+        WeatherRequest.areaSweep({ includesAdvisories: false, states: ['TX'] }), { to: F.bot }
+      ),
+      null,
+      'Texas was just delivered',
+    )
+    await h.clock.advance(10)
+    assert.notEqual(
+      await h.service.send(
+        WeatherRequest.areaSweep({ includesAdvisories: false, states: ['OK'] }), { to: F.bot }
+      ),
+      null,
+      'nothing said anything about Oklahoma',
+    )
+
+    // ...and a sweep of the whole country did cover Oklahoma.
+    await h.clock.advance(10)
+    await h.service.ingest(F.areaSweep({ seq: 2, group: 2, index: 0, total: 1, entries: [] }))
+    await h.clock.advance(10)
+    assert.equal(
+      await h.service.send(
+        WeatherRequest.areaSweep({ includesAdvisories: false, states: ['OK'] }), { to: F.bot }
+      ),
+      null,
+    )
+    void oklahoma
+  })
+
+  /**
+   * A scoped sweep whose packet 0 this phone missed cannot be named, so it is evidence of
+   * nothing: the scope entries are in packet 0 and nowhere else.
+   */
+  it('a scoped sweep whose packet 0 was missed fills no slot', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.areaSweep({
+      seq: 1, group: 1, index: 1, total: 2, isScoped: true, entries: [F.texasSweepEntry]
+    }))
+    await h.clock.advance(10)
+    assert.notEqual(
+      await h.service.send(
+        WeatherRequest.areaSweep({ includesAdvisories: false, states: ['TX'] }), { to: F.bot }
+      ),
+      null,
+    )
+  })
+
+  /**
+   * Spec §7C, revision 10: "A `>part` request is never refused by the app's five-minute 'already
+   * answered' rule." The rule exists so the channel is not asked to rebuild an answer it just
+   * sent, and the whole point of `>part` is that this phone did not get it.
+   */
+  it('a parts request is never held back by the five-minute rule', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.areaSweep({ seq: 1, group: 1, index: 0, total: 3, entries: [] }))
+    const parts = WeatherRequest.parts({
+      group: 1, indexes: [1, 2], of: WeatherPartsKind.areaSweep
+    })
+    await h.clock.advance(10)
+    const pending = await h.service.send(parts, { to: F.bot })
+    assert.notEqual(pending, null)
+    assert.deepStrictEqual(h.transport.sent.map((one) => one.text), ['>part 1 1,2'])
+
+    // And again immediately after one has been answered: still nothing held back.
+    await h.service.ingest(F.areaSweep({ seq: 2, group: 1, index: 1, total: 3, entries: [] }))
+    await h.clock.advance(10)
+    assert.notEqual(
+      await h.service.send(
+        WeatherRequest.parts({ group: 1, indexes: [2], of: WeatherPartsKind.areaSweep }), { to: F.bot }
+      ),
+      null,
+    )
+  })
+
+  /** "It settles as answered when any asked-for index arrives from the bot asked." */
+  it('one asked-for packet settles a parts request, and another bot\'s does not', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.areaSweep({ seq: 1, group: 1, index: 0, total: 3, entries: [] }))
+    await h.clock.advance(10)
+    const pending = await h.service.send(
+      WeatherRequest.parts({ group: 1, indexes: [1, 2], of: WeatherPartsKind.areaSweep }), { to: F.bot }
+    )
+
+    // Not this: a packet of another group, and another bot's packet of the right one.
+    await h.service.ingest(F.areaSweep({ seq: 2, group: 9, index: 1, total: 3, entries: [] }))
+    await h.service.ingest(F.areaSweep({
+      seq: 1, group: 1, index: 1, total: 3, entries: [], bot: 0x0102
+    }))
+    assert.equal(h.service.pendingRequests().length, 1)
+
+    // The resent packet: the same group and build time, a fresh seq.
+    await h.service.ingest(F.areaSweep({
+      seq: 40, group: 1, index: 1, total: 3, entries: [F.texasSweepEntry]
+    }))
+    const settled = F.settlements(h.events)
+    assert.equal(settled.length, 1)
+    assert.equal(settled[0][0].id, pending.id)
+    assert.deepStrictEqual(settled[0][1], WeatherRequestOutcome.answered)
+
+    // The sweep keeps the request that fetched it: a `>part` fills a hole, it does not own one.
+    const state = await h.service.state({ for: F.botID })
+    assert.equal(state.areaSweeps[0].request, null)
+  })
+
+  /**
+   * `>f <lat>,<lon>`: the bot chooses the point, so the answer is paired by the bot asked and
+   * then by distance from the coordinate — or by having no bundled point at all, which only a
+   * question that was asked can produce.
+   */
+  it('a coordinate forecast is paired by the bot asked and the distance', async () => {
+    const h = await makeHarness()
+    const austin = tables.point({ at: 102 })
+    assert.notEqual(austin, null)
+    const request = WeatherRequest.forecastAt({ latitude: austin.lat, longitude: austin.lon })
+    await h.service.send(request, { to: F.bot })
+    assert.deepStrictEqual(h.transport.sent.map((one) => one.text), [WeatherRequest.wireText(request)])
+
+    // Another bot's answer is not this question's: the point is one bot's choice out of what it
+    // holds.
+    await h.service.ingest(F.forecast({ seq: 1, point: 102, bot: 0x0102 }))
+    assert.equal(h.service.pendingRequests().length, 1)
+
+    await h.service.ingest(F.forecast({ seq: 1, point: 102 }))
+    const settled = F.settlements(h.events)
+    assert.equal(settled.length, 1)
+    assert.deepStrictEqual(settled[0][1], WeatherRequestOutcome.answered)
+  })
+
+  it('a coordinate forecast is not settled by a forecast for somewhere else', async () => {
+    const h = await makeHarness()
+    // A coordinate in Montana, answered with Austin's point: 1,800 km is not a substitution.
+    await h.service.send(WeatherRequest.forecastAt({ latitude: 46.9, longitude: -110.4 }), { to: F.bot })
+    await h.service.ingest(F.forecast({ seq: 1, point: 102 }))
+    assert.equal(h.service.pendingRequests().length, 1)
+  })
+
+  /**
+   * The answer to a coordinate is filed under the coordinate asked about, which is the only
+   * thing that says where it is for: a `0xFFFF` forecast knows which weather, never which place.
+   */
+  it('a bot-chosen answer is filed under the coordinate that was asked', async () => {
+    const h = await makeHarness()
+    const request = WeatherRequest.forecastAt({ latitude: 35.687, longitude: -105.938 })
+    await h.service.send(request, { to: F.bot })
+    await h.service.ingest(F.forecast({ seq: 1, point: 0xffff }))
+    assert.deepStrictEqual(h.service.pendingRequests(), [])
+
+    const state = await h.service.state({ for: F.botID })
+    assert.deepStrictEqual(Object.keys(state.unbundledForecasts), ['35.687,-105.938'])
+    assert.equal(state.unbundledForecasts['35.687,-105.938'].requestedHere, true)
+    assert.equal(state.forecasts['65535'], undefined, 'never under an index no place has')
+  })
+
+  it('a bot-chosen answer nobody here asked for stays in the one unasked slot', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.forecast({ seq: 1, point: 0xffff }))
+    const state = await h.service.state({ for: F.botID })
+    assert.deepStrictEqual(Object.keys(state.unbundledForecasts), ['?'])
+    assert.equal(state.unbundledForecasts['?'].requestedHere, false)
+  })
+
+  // Spec §7C: a sweep is cut where the sending bot's own feed runs out.
+  it("another bot's sweep does not answer this bot's map request", async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.areaSweep({
+      seq: 1, group: 1, index: 0, total: 1, entries: [F.texasSweepEntry], bot: 0x0102
+    }))
+    assert.notEqual(
+      await h.service.send(WeatherRequest.areaSweep({ includesAdvisories: false }), { to: F.bot }), null
+    )
+  })
+
+  // MARK: - Backlog
+
+  it('a backlog message updates state but answers nothing and is not hearing the bot', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.digest({ seq: 1, entries: [] }), { isBacklog: true })
+    const state = await h.service.state({ for: F.botID })
+    assert.notEqual(state.digest, null)
+    assert.equal(state.lastHeardAt, h.clock.now)
+    assert.equal(state.lastLiveHeardAt, null)
+    assert.notEqual(await h.service.send(WeatherRequest.digest, { to: F.bot }), null)
+  })
+
+  it('datagrams delivered while the radio drains its queue are backlog, later ones live', async () => {
+    const h = await makeHarness()
+    await h.service.startEventMonitoring()
+    h.transport.setDrainingBacklog(true)
+    h.transport.deliver(F.datagram(F.observations({ seq: 1, stations: [[202, 88], [860, 84]] })))
+    await F.flush()
+    let state = await h.service.state({ for: F.botID })
+    assert.equal(Object.keys(state.observations).length, 2)
+    assert.equal(state.lastLiveHeardAt, null)
+    assert.notEqual(
+      await h.service.send(WeatherRequest.observations, { to: F.bot }), null,
+      'a drained batch is no answer'
+    )
+
+    h.transport.setDrainingBacklog(false)
+    await h.clock.advance(10)
+    h.transport.deliver(F.datagram(F.observations({ seq: 2, stations: [[202, 89], [860, 85]] })))
+    await F.flush()
+    state = await h.service.state({ for: F.botID })
+    assert.equal(state.lastLiveHeardAt, h.clock.now)
+    assert.deepStrictEqual(h.service.pendingRequests(), [])
+    assert.equal(await h.service.send(WeatherRequest.observations, { to: F.bot }), null)
+  })
+
+  it('a backlog drained after a request does not stop the retry', async () => {
+    const h = await makeHarness()
+    await h.service.send(WeatherRequest.spaceWeather, { to: F.bot })
+    await h.clock.advance(1)
+    await h.service.ingest(
+      F.observations({ seq: 1, stations: [[202, 88], [860, 84]] }), { isBacklog: true }
+    )
+    // Backlog is not "heard": the resend goes along the route, and the flood follows it.
+    await h.clock.advance(45)
+    assert.deepStrictEqual(h.transport.sent.map((entry) => entry.attempt), [0, 1, 2])
+    const settled = F.settlements(h.events)
+    assert.equal(settled.length, 1)
+    assert.deepStrictEqual(settled[0][1], WeatherRequestOutcome.timedOut({ botWasHeard: false }))
+  })
+
+  // MARK: - Text ownership
+
+  it("a METAR request is settled only by that station's METAR, a TAF only by its TAF", async () => {
+    const h = await makeHarness()
+    await h.service.send(WeatherRequest.metar({ station: 'KAUS' }), { to: F.bot })
+    await h.service.ingest(F.text({
+      seq: 1, subject: 5, group: 1, index: 0, total: 1,
+      text: 'TAF KAUS 150520Z 1506/1612 17008KT P6SM SCT025'
+    }))
+    await h.service.ingest(F.text({
+      seq: 2, subject: 5, group: 2, index: 0, total: 1,
+      text: 'METAR KATT 150551Z 16006KT 10SM CLR 29/21 A3001'
+    }))
+    assert.equal(h.service.pendingRequests().length, 1)
+    let state = await h.service.state({ for: F.botID })
+    assert.equal(state.texts['1'].request, null)
+    assert.equal(state.texts['2'].request, null)
+
+    await h.service.ingest(F.text({
+      seq: 3, subject: 5, group: 3, index: 0, total: 1,
+      text: 'METAR KAUS 150551Z 17007KT 10SM FEW250 30/21 A3000'
+    }))
+    assert.equal(F.settlements(h.events).length, 1)
+    state = await h.service.state({ for: F.botID })
+    assert.deepStrictEqual(state.texts['3'].request, WeatherRequest.metar({ station: 'KAUS' }))
+
+    await h.clock.advance(6)
+    await h.service.send(WeatherRequest.taf({ station: 'KAUS' }), { to: F.bot })
+    await h.service.ingest(F.text({
+      seq: 4, subject: 5, group: 4, index: 0, total: 1,
+      text: 'KAUS 150651Z 17007KT 10SM FEW250 30/21 A3000'
+    }))
+    assert.equal(h.service.pendingRequests().length, 1, 'a raw METAR is not the TAF')
+    await h.service.ingest(F.text({
+      seq: 5, subject: 5, group: 5, index: 0, total: 1,
+      text: 'TAF AMD KAUS 150640Z 1507/1612 17008KT P6SM SCT025'
+    }))
+    assert.equal(F.settlements(h.events).length, 2)
+    state = await h.service.state({ for: F.botID })
+    assert.deepStrictEqual(state.texts['5'].request, WeatherRequest.taf({ station: 'KAUS' }))
+  })
+
+  it("storm reports for another state neither settle nor become this phone's", async () => {
+    const h = await makeHarness()
+    await h.service.send(WeatherRequest.stormReports({ state: 'TX' }), { to: F.bot })
+    await h.service.ingest(F.text({
+      seq: 1, subject: 3, group: 1, index: 0, total: 1,
+      text: '0210 HAIL 3 SW TULSA TULSA OK 1.00 INCH'
+    }))
+    assert.equal(h.service.pendingRequests().length, 1)
+    const state = await h.service.state({ for: F.botID })
+    assert.equal(state.texts['1'].request, null)
+    await h.service.ingest(F.text({
+      seq: 2, subject: 3, group: 2, index: 0, total: 1,
+      text: '0115 TSTM WND DMG 2 N AUSTIN TRAVIS TX'
+    }))
+    assert.equal(F.settlements(h.events).length, 1)
+  })
+
+  // The kit's own narrative (vectors `text_warning_narrative_chunk0` and `_chunk1`), for a
+  // storm warning over Travis County.
+  it('a warning narrative is claimed by its event and area, from the bot asked, whatever the chunk order', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.warning({ seq: 1, identity: F.svw42 }))
+    await h.service.send(WeatherRequest.warningText({ identity: 'SV.W.EWX.42' }), { to: F.bot })
+
+    await h.service.ingest(F.text({
+      seq: 2, group: 2, index: 0, total: 1,
+      text: 'FLASH FLOOD WARNING FOR CENTRAL BEXAR COUNTY UNTIL 300 AM CDT.'
+    }))
+    await h.service.ingest(F.text({
+      seq: 3, group: 3, index: 0, total: 1,
+      text: 'SEVERE THUNDERSTORM WARNING FOR NORTHERN KERR COUNTY UNTIL 200 AM CDT.'
+    }))
+    const chunk0 = 'SEVERE THUNDERSTORM WARNING FOR NORTHEASTERN HAYS AND SOUTHWESTERN TRAVIS '
+      + 'COUNTIES UNTIL 145 AM CDT. At 1257 AM a severe thunderstorm was near Dripping Sprin'
+    const chunk1 = 'gs, moving east at 40 mph. HAZARD: 60 mph gusts and quarter size hail. '
+      + 'SOURCE: Radar indicated.'
+    await h.service.ingest(F.text({ seq: 9, group: 9, index: 0, total: 2, text: chunk0, bot: 0x0102 }))
+    assert.equal(
+      h.service.pendingRequests().length, 1, "another bot cannot vouch for this bot's warning"
+    )
+
+    await h.service.ingest(F.text({ seq: 24, group: 23, index: 1, total: 2, text: chunk1 }))
+    assert.equal(h.service.pendingRequests().length, 1, 'the second chunk alone names nothing')
+    await h.service.ingest(F.text({ seq: 23, group: 23, index: 0, total: 2, text: chunk0 }))
+    assert.equal(F.settlements(h.events).length, 1)
+
+    const state = await h.service.state({ for: F.botID })
+    assert.deepStrictEqual(
+      state.texts['23'].request, WeatherRequest.warningText({ identity: 'SV.W.EWX.42' })
+    )
+    assert.equal(state.texts['2'].request, null)
+    assert.equal(state.texts['3'].request, null)
+  })
+})
