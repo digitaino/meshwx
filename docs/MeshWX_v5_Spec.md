@@ -1,8 +1,18 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, revision 9, 2026-09-20. This is the document an app developer
+Version 5.0, revision 10, 2026-09-20. This is the document an app developer
 builds against. It replaces the v3/v4 protocol documents, the April 2026
 iOS brief and the v4 client guide, all of which are now superseded.
+
+Revision 10 adds three request forms and reinterprets one byte. `>part`
+(section 7C) asks for the packets of a multi-packet answer a phone did not
+hear, instead of the whole answer again. `>wmap TXOK` scopes an Area sweep
+to the states a person asked for, which the sweep then names in its own
+entries, and `total` bit 7 says a sweep is scoped. `>f 35.687,-105.938`
+asks for a forecast at a coordinate, so a phone no longer has to know of a
+bundled point to ask. The one byte that changed meaning is the sweep's
+`total`, and it could change because no revision 9 client had shipped to
+anyone. If you hold revision 9, read section 16.
 
 Revision 9 adds one message: **Area sweep** (type 10, section 7C), the
 national picture of active alerts as runs of UGC numbers, which the phone
@@ -10,7 +20,7 @@ draws on the zone and county outlines it already ships. It answers the new
 requests `>wmap` and `>wmap all`, is never broadcast on a schedule, and is
 limited to one sweep every 5 minutes across all senders. Nothing already
 on the wire changed and unknown types are ignored, so a revision 8 client
-keeps working untouched. If you hold revision 8, read section 16.
+keeps working untouched. If you hold revision 8, read section 16A.
 
 Revision 8 changes one answer and no byte. `>o KAUS` for a station with
 no fresh report now answers with the nearest station within 40 km of it
@@ -25,7 +35,7 @@ stop guessing whether it is reading satellite data. And a **cut flag** on
 Text (section 8.1) says a narrative was longer than the air allows and the
 tail was dropped; the text now ends at a sentence rather than mid-word.
 A revision 6 client ignores both bits and reads every packet exactly as
-before. If you hold revision 6, read section 16B.
+before. If you hold revision 6, read section 16C.
 
 Revision 5 adds two times, so that a phone can say *when* a number is true
 instead of implying it is true now: a **per-station age** in Observations
@@ -33,7 +43,7 @@ instead of implying it is true now: a **per-station age** in Observations
 appended after everything a revision 4 decoder reads and both are
 announced by a bit in the flags nibble, so a revision 4 client keeps
 decoding every message exactly as before and simply never learns the two
-times. If you hold revision 4, read section 16D.
+times. If you hold revision 4, read section 16E.
 
 Revision 4 adds one message: **Coverage** (type 8, section 7A), the bot's
 own statement of what it carries — centre, radius, NWS offices, and the
@@ -667,11 +677,15 @@ comes back cut. The same picture as polygons would be hundreds of packets.
 
 `area_sweep_national_packet0` and `packet1` in `meshwx_v5_vectors.json`
 are one cut two-packet sweep; decode both and reassemble them.
+`area_sweep_scoped_packet0` is a sweep of two states, one of which has
+nothing active (section 7C.1).
 
 **Request only, and never scheduled.** It answers `>wmap` (warnings and
-watches) and `>wmap all` (advisories as well). Like every other answer it
-is flooded on `#meshwx`, so one request serves everyone listening — which
-is exactly why the bot limits it hard (below).
+watches), `>wmap all` (advisories as well) and, since revision 10,
+`>wmap [all] [states]`, the same sweep of a few states rather than the
+country. Like every other answer it is flooded on `#meshwx`, so one
+request serves everyone listening — which is exactly why the bot limits it
+hard (below).
 
 Flags nibble: bit 0 **cut**, bit 1 **advisories**, bits 2 and 3 the data
 source (section 2.2.1).
@@ -681,8 +695,8 @@ source (section 2.2.1).
 | 4 | 4 | `built` | u32 LE, Unix minutes: when the bot built this sweep. Not a live feed — show it as a picture taken at `built` |
 | 8 | 1 | `group` | The same value on every packet of one sweep: the `seq` its first packet went out with, exactly as Text does it (section 8.1) |
 | 9 | 1 | `idx` | Packet number, from 0 |
-| 10 | 1 | `total` | Packets in this sweep, 1 to 8 |
-| 11 | ≤152 | `entries` | 4 bytes each, at most 38 per packet |
+| 10 | 1 | `total` | Bits 0-3: packets in this sweep, 1 to 8. Bit 7: **scoped** (revision 10, below). Bits 4-6 are 0 |
+| 11 | ≤152 | `entries` | 4 bytes each, at most 38 per packet, scope entries included |
 
 One entry is one run of consecutive UGC numbers in one state:
 
@@ -699,15 +713,16 @@ sweep entry carries an event code that one does not, and pays for it by
 capping the run at 64. Decode them with different code.
 
 Reassemble by `(bot, group)` in `idx` order, as with Text. A sweep is at
-most 8 packets and so at most 304 entries.
+most 8 packets and so at most 304 entries, scope entries (section 7C.1)
+included.
 
 **Ordering.** Entries are sorted most severe first (warning, then watch,
 then advisory, by the significance letter of the event code), then by
 state, then by `start`. This is what makes a cut sweep useful: what
 survives is the worst of it.
 
-**The cut flag (bit 0).** More than 304 runs were active and the least
-severe were dropped. It is set on **every** packet, not only the last, so
+**The cut flag (bit 0).** More runs were active than the sweep could hold
+(304, less one for each scope entry) and the least severe were dropped. It is set on **every** packet, not only the last, so
 a phone that loses a packet still knows it is not holding the whole
 picture. Read a cut sweep as incomplete, never as a denial: an area absent
 from it may still be under something.
@@ -722,6 +737,97 @@ sweep is on screen; the two are not comparable.
 warning and a flood advisory appears once, under the tornado warning. The
 sweep is a picture of the worst thing happening in each place, not an
 index of everything: for the detail of one area, ask `>w TXC453`.
+
+**Trailing bytes are padding.** A packet ends where its last whole entry
+ends. Bytes left over, fewer than four of them, are ignored: a sweep is
+not worth throwing away over three of them, and both shipping clients
+already read it this way. The reference decoder did not, and was wrong
+(revision 10).
+
+### 7C.1 Scoped sweeps (revision 10)
+
+`>wmap` defaulted to the whole country, which is the most expensive answer
+on this mesh and is rarely what a person opened a map to see. From
+revision 10 a request may name the states it wants: `>wmap TX`,
+`>wmap tx, ok`, `>wmap all TXOKLA`. Up to **15** two-letter codes from
+`index.json` `states`, run together or separated by spaces or commas, in
+any case. No states is the whole country, exactly as in revision 9. An
+unknown code is answered Not available, reason 1.
+
+`all` is the advisories level and is matched as a whole token, never as
+Alabama plus a stray letter. `ALLA` is four characters, so it is Alabama
+and Louisiana. An app should send the compact upper-case form with no
+separators, so that 15 states still fit the 40-byte request text.
+
+**`total` bit 7: scoped.** `total & 0x0F` is the packet count, 1 to 8; bit
+7 set means this sweep covers only the states its scope entries name. It
+is set on **every** packet of a scoped sweep, for the same reason the cut
+flag is: a phone that lost packet 0 must still know it is not looking at
+the country.
+
+**Scope entries.** A scoped sweep's packet 0 begins with one entry per
+state asked for:
+
+| Field | Value |
+|---|---|
+| `event` | 0. No event has code 0, which is what tells a scope entry from an alert |
+| `state << 1 \| kind` | The state index, `kind` 0 (forecast zone) |
+| `start` | 0 |
+| `run` | 1 |
+
+That is `XXZ000`, the Weather Service's own way of writing "all of state
+XX". Scope entries sort before every alert entry and count toward the 38 a
+packet holds, so a sweep of 15 states carries 289 alert entries rather
+than 304. They ride on packet 0 alone; the other packets carry bit 7 and
+nothing else about the scope.
+
+**A state with no alert entries is an answer**, not an omission: nothing
+is active there at this level. That is the whole reason the scope is on
+the wire. Draw a scoped sweep as a picture of the states it names and of
+nothing else: a state outside the scope is unknown, never clear.
+
+**The cooldown is per state.** The bot records, per state, when a sweep
+last covered it and whether that sweep carried advisories; a national
+sweep covers every state. A request is refused (Not available, reason 4)
+when **every** state it names was covered in the last 5 minutes at the
+same or a higher level, `all` being higher than plain. A national request
+is refused when a national sweep at that level went out in the last 5
+minutes: two scoped sweeps do not add up to a picture of the country.
+
+**The budget.** A national sweep still needs 8 packets left in the hour
+before the bot starts one, because half a national sweep is a wrong map.
+A scoped sweep is small enough to build first and then measure: it needs
+its own packet count left, which is usually one or two.
+
+### 7C.2 `>part`: the packets that did not arrive (revision 10)
+
+`>part <group> <idx>[,<idx>…]`, decimal, e.g. `>part 212 1,4,6`. `group`
+is the `group` byte of an Area sweep (type 10) or a Text (type 6), and
+each `idx` is a packet or chunk number. A phone holding 4 of 7 packets
+asks for the other 3 instead of spending a whole sweep again.
+
+The bot keeps the transmitted bytes of its last **8** multi-packet answers
+for **10 minutes**, keyed by the `group` they actually went out with. It
+answers by sending the named packets again: the same bytes, with a new
+`seq` in byte 0 and **nothing else changed**. In particular `group` does
+not change, so the packets file under the assembly they belong to. Not
+available, request letter `p`, reason 0 when the bot no longer holds that
+group or none of the indexes exist in it.
+
+Limits. The per-sender 5 s rule applies and every resent packet comes out
+of the hourly 60-packet budget. The sweep cooldown does **not** apply and
+is not restarted: a resend is not a new sweep. The same `(group, idx)` is
+resent at most once every **30 seconds** whoever asks, so ten phones that
+all missed packet 3 cost one packet. A request whose every index is inside
+that window is answered with nothing at all; that is not an error and not
+a refusal, it is the bot declining to send twice what is already on the
+air.
+
+**When to offer it.** Offered, never automatic. Offer it when an assembly
+is incomplete, its newest packet arrived at least **15 s** ago (the bot's
+own echo resend has had its chance) and its first packet no more than 10
+minutes ago. After that the ordinary ask, the whole map or the whole
+report, is the only offer left: the bot no longer holds the bytes.
 
 ## 8. Text (type 6) and Not available (type 7)
 
@@ -745,8 +851,10 @@ than the air allows and the tail was dropped. Bits 2 and 3 are the data
 source (section 2.2.1).
 
 Reassemble by `(bot, group)` in `idx` order; show partial text with a
-"missing part" marker if a chunk never arrives (ask again after 20 s,
-at most once).
+"missing part" marker if a chunk never arrives. From revision 10, ask for
+that chunk with `>part <group> <idx>` (section 7C.2) rather than for the
+whole reply again: it is one packet instead of eight, and the chunk comes
+back under the same `group`.
 
 **The cut flag.** A reply holds at most 8 chunks of 157 bytes, so 1256
 bytes of UTF-8 is the ceiling, and a forecast discussion is routinely
@@ -780,14 +888,17 @@ type and get a text DM back.
 | `>w` | One Warning message per active warning in coverage (at most 6, newest first), then a Digest |
 | `>w SV.W.EWX.42` | That one warning (identity as `event.office.etn` with the office's 3-letter code) |
 | `>w TXC453` or `>w TXZ192` | Every active warning touching that county or zone (at most 6) |
-| `>wmap` | Area sweep (section 7C): every active warning and watch in the country, as runs of UGC numbers, 1 to 8 packets. At most one sweep every 5 minutes across all senders; inside that window, and when fewer than 8 packets of the hour's budget remain, Not available reason 4. Never broadcast on a schedule |
+| `>wmap` | Area sweep (section 7C): every active warning and watch in the country, as runs of UGC numbers, 1 to 8 packets. At most one national sweep every 5 minutes across all senders (section 7C.1: the window is per state); inside that window, and when fewer than 8 packets of the hour's budget remain, Not available reason 4. Never broadcast on a schedule |
 | `>wmap all` | The same sweep with advisories and statements included (flags bit 1 set) |
+| `>wmap TXOK`, `>wmap tx, ok`, `>wmap all TXOKLA` | The same sweep of those states only (section 7C.1, revision 10): up to 15 two-letter codes, run together or separated by spaces or commas, any case. `total` bit 7 is set and packet 0 names the states in its scope entries. An unknown code, or more than 15, gets Not available reason 1. The 5-minute cooldown is per state |
+| `>part 212 1,4,6` | Those packets of Area sweep or Text `group` 212 again (section 7C.2, revision 10), identical but for a fresh `seq`. Not available `p` reason 0 when the bot no longer holds the group or none of the indexes exist; silence when every index asked for went out again in the last 30 s |
 | `>wt SV.W.EWX.42` | The warning's narrative as Text, subject 0 |
 | `>o` | Observations for the coverage stations |
 | `>o KAUS` | Observations, one station: that one, or the nearest within 40 km that reports (section 6, revision 8) |
 | `>f` | Forecast for the bot's home point |
 | `>f 102` | Forecast for point index 102; `point` is 102 whenever the forecast is at that point's coordinates (section 7) |
 | `>f round rock tx` | Forecast for a place the bot resolves (nearest point; `point` may be 0xFFFF) |
+| `>f 35.687,-105.938` | Forecast at a coordinate, decimal degrees (revision 10). The same answer a resolved place gets: the nearest point the bot **holds a forecast for**, within 80 km, under that point's bundle index or 0xFFFF when it is not in the bundle. Recognised by the comma between two signed decimals, so a place with a comma in it is still a place. Out of range gets Not available reason 1 |
 | `>f 78701`, `>f 78701-1234` | Forecast for a US ZIP, looked up in `zips.json` (section 9) and answered like a place. A ZIP not in the table gets Not available reason 1 |
 | `>afd EWX` | Forecast discussion, Text subject 1 |
 | `>space` | Space weather summary, Text subject 2 |
@@ -850,8 +961,13 @@ the zone.
 
 | Offset | Size | Field |
 |---|---|---|
-| 4 | 1 | `request`: ASCII code of the request's first letter (`w`, `o`, `f`, `a`, `s`, `r`, `m`, `t`, `h`, `d`, `c`) |
+| 4 | 1 | `request`: ASCII code of the request's first letter (`w`, `o`, `f`, `a`, `s`, `r`, `m`, `t`, `h`, `d`, `c`, `p`) |
 | 5 | 1 | `reason`: 0 no data yet, 1 unknown location, 2 unsupported, 3 bot error, 4 rate limited (try later) |
+
+`p` is `>part` (section 7C.2, revision 10), and it carries reason 0 only:
+the bot no longer holds that group, or none of the indexes named exist in
+it. Either way the packets are gone and the answer is to ask for the whole
+thing again, not to ask for the parts again.
 
 `reason` 0 is ambiguous in this bot. It is sent when nothing is active for
 a place, when the bot holds no data for it, and when a named station has
@@ -883,7 +999,7 @@ here; the bot never sends names.
 | `protocol.json` | 14 KB | `version`, `events` (code → `TO.W`), `event_names` (`short`, `long`), `sky_codes`, and under `v5` the message types, flags, `text_subjects`, `not_available_reasons`, tags, limits and sentinels. The top-level `messages`, `data_types`, `text_subjects` and `not_available_reasons` are v4 tables with other numbers: do not use them for v5 | Every decode |
 | `index.json` | 17 KB | `offices`: ordered list of office codes (the `office` byte): the 125 WFOs in alphabetical order, then the national centres `NHC` (125, National Hurricane Center) and `WNS` (126, Storm Prediction Center). `stations`: ordered ICAO list (the `station` u16). `states`: ordered state/territory codes (the `state` byte, bits 6-0). Append-only: new entries go at the end, so an index never changes meaning | Warning, digest, observations |
 | `stations.json` | 185 KB | ICAO → name, state, lat, lon | Station search, labels, map pins |
-| `pfm_points.json` | 104 KB | `points`: ordered list `[name, office, lat, lon, zone]`; the list position is the `point` u16 | Forecast labels, "forecast for my location" (nearest point by distance) |
+| `pfm_points.json` | 104 KB | `version` (2 since revision 10) and `points`: ordered list `[name, office, lat, lon, zone]`; the list position is the `point` u16. Append-only. It was built from one day's products, so it has never been the whole truth about what the bot can forecast: with no point near a place, ask `>f <lat>,<lon>` rather than deciding there is no forecast | Forecast labels, "forecast for my location" (nearest point by distance) |
 | `places.json` | 1.4 MB | `places`: list `[NAME, ST, lat, lon, population]` | Place search and autocomplete. Show a place by the label rule in 9.1 |
 | `zips.json` | 1.1 MB | `version` (1), `source`, and `zips`: list `["78701", 30.2706, -97.7426, 29645]` sorted by ZIP: the ZIP as a 5-character string (leading zeros kept, `00901`), the ZCTA's internal point (lat, lon, 4 decimals), and the index into `places.json` `places` of the nearest place by great circle. US Census Bureau 2020 ZCTA Gazetteer (public domain), 33,144 ZIPs including Puerto Rico. ZCTAs approximate delivery ZIPs: PO-box-only and some business ZIPs have no entry and are unknown ZIPs | ZIP search. Take the first 5 digits (ZIP+4 `78701-1234` too) and look them up exactly, never by prefix. Label: the place's label (9.1), a space and the ZIP: `San Juan, PR 00901`, `Hell's Kitchen, NY 10019`. Then the point is a coordinate like any other: nearest `pfm_points` entry, nearest station, zone and county from the polygons. The bot resolves `wx 78701` and `>f 78701` from this same table |
 | `zones.json` | 355 KB | Zone id (`TXZ192`) → name, office, state, lat, lon | Naming the areas of a warning; zone lookup for a place |
@@ -899,10 +1015,18 @@ then `C` or `Z`, then the 3-digit number. `TXC453` is in `counties.json`,
 Louisiana parishes, Alaska boroughs and Virginia's independent cities are
 all "counties" here, as in the NWS products.
 
-Bundle versioning: `protocol.json` `version` (13 since revision 9) and
-`index.json` `version` (2 since revision 3). Revision 9 changed one bundle
-file, `protocol.json`, which gained the Area sweep type, its two flags,
-its limits and its two record sizes. No index moved, and the outlines the
+Bundle versioning: `protocol.json` `version` (14 since revision 10),
+`index.json` `version` (2 since revision 3) and `pfm_points.json`
+`version` (2 since revision 10). Revision 10 changed two bundle files.
+`protocol.json` gained the sweep's scope event code, the scoped bit and
+the `total` mask, the 15-state limit, the parts cache in seconds and
+groups, the 30-second floor on resending one packet, and a note on the
+three new request forms. `pfm_points.json` gained the points nine offices
+had none of at all (ABQ, AFC, BOU, GUM, HFO, PIH, PPG, PQE, PQW): they are
+**appended**, so no index moves and a held forecast still reads under the
+index it was filed with. No index moved anywhere else. Revision 9 changed
+one bundle file, `protocol.json`, which gained the Area sweep type, its
+two flags, its limits and its two record sizes. No index moved, and the outlines the
 sweep is drawn with (`zones.geojson`, `counties.geojson`) are files the
 bundle already shipped. Revision 8 changed only
 `protocol.json`'s notes. Revision 7 changed one bundle
@@ -1175,11 +1299,20 @@ range shows old data; saying so is the feature.
 - `>wmap` (section 7C) is the most expensive answer on this mesh: up to
   eight packets, for everyone in range. Ask for it when a person opened a
   map, never to refresh one in the background, and use a sweep another
-  phone asked for when you hear it. The bot sends at most one every ten
+  phone asked for when you hear it. The bot sends at most one every 5
   minutes whoever asks, and answers Not available reason 4 in between.
-- Do not re-request something you already hold. The bot has no cache: it
-  rebuilds and re-transmits the whole answer, spending airtime for
-  everyone on the mesh.
+- **Ask for the states you are showing**, not the country (section 7C.1).
+  A sweep of two states is usually one packet; the country is five, or
+  eight with advisories. The country is the right ask when a person is
+  looking at the country, and a needless one otherwise.
+- **Ask for the packets you missed**, not the answer again (section 7C.2).
+  `>part 212 1,4,6` is three packets where `>wmap` would be eight, and the
+  bot sends the same bytes it sent before, so nobody has to re-draw what
+  they already hold. Offer it, do not do it automatically, and never for
+  an assembly older than 10 minutes: the bot has let those bytes go.
+- Do not re-request something you already hold. Apart from `>part`, the
+  bot has no cache: it rebuilds and re-transmits the whole answer,
+  spending airtime for everyone on the mesh.
 - Listen passively: the scheduled broadcasts (warnings on change, digest
   every 3 h, observations hourly, home forecast every 6 h, coverage every
   3 h) cover the common case without any request.
@@ -1199,9 +1332,17 @@ range shows old data; saying so is the feature.
 8. Text fallback screen with the human commands and `more`.
 9. Take the bot's area from Coverage (7A), never from the stations or
    warnings you have seen; read a cut list as incomplete, not as a denial.
-10. For a national map, `>wmap` (7C): reassemble by `(bot, group)`, draw
+10. For an alert map, `>wmap` (7C): reassemble by `(bot, group)`, draw
     each run from your own outlines, and honour `cut` and the advisories
     flag before telling a user an area is clear.
+11. Scope the ask to the states on screen (7C.1). Read `total` bit 7 and
+    the scope entries of packet 0, and shade no state the sweep does not
+    name: outside the scope is unknown, not clear.
+12. Offer `>part` for an assembly with a gap in it (7C.2), by the 15 s and
+    10-minute rule, and file what comes back under the same `group`.
+13. Ask `>f <lat>,<lon>` when a place has a coordinate and your bundle has
+    no point near it (8.2). "No forecast point nearby" is a fact about the
+    bundle, not about the weather.
 
 ## 15. What changed from v4
 
@@ -1214,7 +1355,65 @@ event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
 
-## 16. Changes in revision 9
+## 16. Changes in revision 10
+
+Revision 10 adds three request forms and reinterprets one byte. No field
+moved, no index moved, and no message body changed.
+
+| Section | Revision 9 | Revision 10 |
+|---|---|---|
+| 7C | `total` was the packet count, 1 to 8, in a whole byte | `total & 0x0F` is the packet count; bit 7 is **scoped**, set on every packet of a scoped sweep. Bits 4-6 are 0 |
+| 7C.1 | `>wmap` was the country or nothing | `>wmap [all] [states]`: up to 15 two-letter codes, run together, spaced or comma separated, any case. Packet 0 begins with one **scope entry** per state (`event` 0, zone, `start` 0, `run` 1, which is `XXZ000`), which sort before every alert entry and count toward the 38 a packet holds. A state named with no alert entries is an answer: nothing is active there at that level |
+| 7C.1 | One sweep every 5 minutes across all senders | The same 5 minutes, per state. A request is refused (reason 4) when every state it names was covered that recently at the same or a higher level; a national request when a **national** sweep at that level was. A national sweep still needs 8 packets of budget; a scoped one is built first and needs its own count |
+| 7C | A trailing partial entry was undefined; the reference decoder rejected the whole packet, the clients ignored the bytes | Stated: a packet ends at its last whole entry and the leftovers are padding. The reference decoder now agrees with the clients |
+| 7C.2, 8.1 | A missing packet meant asking for the whole answer again | `>part <group> <idx>[,<idx>…]`: those packets again, identical but for a fresh `seq`, from the bot's cache of its last 8 multi-packet answers, kept 10 minutes. Same `group`, the per-sender 5 s rule, the hourly budget, no sweep cooldown, and at most one resend of a `(group, idx)` every 30 s whoever asks |
+| 8.2 | `>f` took a point index, a place or a ZIP | `>f <lat>,<lon>` as well: decimal degrees, recognised by the comma between two signed decimals, answered exactly as a resolved place is |
+| 8.3 | The request letters had no `p` | `p` is `>part`, and carries reason 0 only |
+| 9 | `protocol.json` `version` 13 | `version` 14: the scope event code, the scoped bit and the `total` mask, the 15-state limit, the parts cache in seconds and groups, the 30-second resend floor, and the three request forms. `pfm_points.json` `version` 2: points appended for the nine offices that had none, so no index moves |
+| 13, 14 | (silent) | Ask for the states on screen, ask for the packets you missed, and ask `>f <lat>,<lon>` when your bundle has no point near a place |
+| 16A-16E | (none) | Every older changelog moved down a letter |
+
+**Why the `total` byte could change.** It is the only byte in this spec
+whose meaning revision 10 alters, and altering a byte is normally out of
+the question. Two things made it safe. Revision 9 wrote all eight bits but
+never a value above 8, so every sweep it ever produced reads identically
+under `total & 0x0F`: the bytes on the air do not change, only what a
+reader is entitled to assume about the four high bits. And no revision 9
+client had shipped to anyone when this was written, so there was no phone
+in the field to disagree with. There will not be a second chance like it;
+after this, the sweep's spare room is bits 4-6 and nothing else.
+
+Why a scope at all, in the owner's words of 20 September 2026: *can we go
+from national alert map to just alert map, and have a way for the user to
+select which areas they want to request the warnings for. One, a few, or
+all. That way we don't default to sending everything.* A national sweep is
+five packets, eight with advisories, flooded to everyone in range, for a
+person who was looking at one state. The scope is how that person asks for
+one state and is told about it honestly, including "nothing is active
+here", which a sweep that simply left the state out could never say.
+
+Why `>part`: *"4 of 7 parts arrived" should allow me to re-request the
+missing data.* Asking again cost eight packets to recover three, so the
+cheapest thing an app could do was give up. The bot already had the bytes
+in hand for as long as anyone would want them.
+
+Why `>f <lat>,<lon>`: `pfm_points.json` was built from one day's products
+and has no point at all for nine offices, so a phone in Albuquerque was
+told there was no forecast point nearby while the bot held a forecast
+15 km away. The bundle gains those points, and the app stops depending on
+the bundle being complete.
+
+To adopt revision 10: mask `total` with `0x0F` and read bit 7; lift the
+leading `event` 0 entries out of packet 0 as the scope and never shade a
+state outside it; offer `>part` for an incomplete assembly and file what
+comes back under the `group` it carries; and ask `>f <lat>,<lon>` instead
+of deciding a place has no forecast. An app that adopts none of them still
+reads every national sweep exactly as it did, and still gets an answer to
+every request it knows how to send; what it cannot do is read a **scoped**
+sweep, whose `total` it would take for 129 packets. It should therefore
+not send `>wmap` with states until it has read this section.
+
+## 16A. Changes in revision 9
 
 Revision 9 adds one message: **Area sweep** (type 10, section 7C), the
 national picture of active alerts as runs of UGC numbers. Nothing already
@@ -1229,7 +1428,7 @@ own area.
 | 8.2 | — | New requests `>wmap` and `>wmap all` |
 | 8.3 | `reason` 4 defined but never sent | `>wmap` answers with it when a sweep is refused |
 | 9 | `protocol.json` `version` 12 | `version` 13: the Area sweep type, its flags, limits and record sizes |
-| 13, 16A-16D | — | The revision 8 changelog is now 16A, revision 7 is 16B, revision 6 is 16C and revision 5 is 16D |
+| 13, 16B-16E | (none) | Every older changelog moved down a letter, as it does with each revision: revision 8 is now 16B, revision 7 is 16C, revision 6 is 16D and revision 5 is 16E |
 
 Why: an app can draw the whole country from four bytes per run of
 counties, because it already ships the outlines. What it cannot do is
@@ -1257,7 +1456,7 @@ is not an area with nothing in it. An app that does not implement type 10
 ignores it, as section 2.2 says of every unknown type, and should not send
 `>wmap`.
 
-## 16A. Changes in revision 8
+## 16B. Changes in revision 8
 
 Revision 8 changes what one request answers. No byte, field or index
 moved.
@@ -1278,7 +1477,7 @@ station within 40 km of the one named, from the bot asked. A revision 7
 app already stores the reading, since every Observations message is filed
 by its own indices; it only fails to count it as the answer.
 
-## 16B. Changes in revision 7
+## 16C. Changes in revision 7
 
 Revision 7 adds two flag bits and moves no byte. Nothing in any body
 changed, no field grew, and no index moved.
@@ -1305,7 +1504,7 @@ To adopt revision 7: read two bits out of the flags nibble everywhere but
 Cancel, read bit 0 of a Text chunk, and stop drawing a cut narrative as
 damage. Nothing else needs touching.
 
-## 16C. Changes in revision 6
+## 16D. Changes in revision 6
 
 Revision 6 adds one message and changes no existing byte: **Request
 (type 9, section 7B)**, an app's `>` request flooded on `#meshwx` as a
@@ -1313,7 +1512,7 @@ datagram. The DM and channel-text forms of section 8.2 still work; a
 revision 5 bot ignores type 9 and a revision 5 app never sends it.
 Sections 8.2, 12 and 13 say where the datagram fits.
 
-## 16D. Changes in revision 5
+## 16E. Changes in revision 5
 
 Revision 5 adds two times and nothing else. Both are appended after
 everything revision 4 reads, both are announced by a flags-nibble bit, and

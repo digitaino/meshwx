@@ -354,7 +354,7 @@ def test_legacy_routes_are_gone(client):
 
 
 def test_limits_are_visible_and_resettable(client, monkeypatch):
-    """The four gates between a request and an answer, and the button that
+    """The five gates between a request and an answer, and the button that
     opens one by hand. Until this card an operator could not tell a refusal
     from a silence."""
     import time
@@ -392,6 +392,73 @@ def test_limits_are_visible_and_resettable(client, monkeypatch):
     assert rows["budget"]["state"] == "ready" and rows["sweep"]["state"] == "ready"
 
     assert c.post("/api/limits/reset", json={"id": "nonsense"}).status_code == 400
+
+
+def test_the_sweep_row_counts_the_states_inside_their_own_window(client):
+    """Since revision 10 the sweep cooldown is per state, so the national
+    figure is only half of what is holding a request back."""
+    import time
+
+    from meshcore_weather.protocol import broadcaster as bc
+
+    c, bot = client
+    now = time.time()
+    bot._broadcaster = SimpleNamespace(
+        _sent=[], _last_by_sender={},
+        _last_sweep=now - 3600,                     # the country is free again
+        _last_sweep_state={"TX": (now - 10, False), "OK": (now - 20, True),
+                           "CO": (now - 3600, False)},
+        _parts=bc.PartsCache(),
+    )
+    row = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}["sweep"]
+    assert row["state"] == "cooling" and row["used"] == 2      # TX and OK, not CO
+    assert "2 states inside their own window" in row["detail"]
+    assert 0 < row["opens_in_s"] <= bc.SWEEP_COOLDOWN_S
+
+    # One button clears the national window and every state's with it.
+    c.post("/api/limits/reset", json={"id": "sweep"})
+    assert bot._broadcaster._last_sweep == 0.0
+    assert bot._broadcaster._last_sweep_state == {}
+    row = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}["sweep"]
+    assert row["state"] == "ready" and row["opens_in_s"] == 0
+
+
+def test_the_parts_row_shows_what_is_still_askable_for(client):
+    """`>part` can only answer for what the bot still holds, so the row says
+    how much that is and how old the oldest of it is."""
+    import time
+
+    from meshcore_weather.protocol import broadcaster as bc
+
+    c, bot = client
+    now = time.time()
+    cache = bc.PartsCache()
+    bot._broadcaster = SimpleNamespace(
+        _sent=[], _last_by_sender={}, _last_sweep=0.0, _last_sweep_state={},
+        _parts=cache,
+    )
+    row = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}["parts"]
+    assert row["state"] == "ready" and row["detail"] == "nothing held"
+    assert row["resettable"] is False
+
+    for idx in range(3):
+        cache.remember(212, idx, b"packet", now=now - 200)
+    cache.remember(97, 0, b"packet", now=now - 5)
+    row = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}["parts"]
+    assert row["used"] == 2 and "2 groups held (4 packets)" in row["detail"]
+    assert "oldest 3m" in row["detail"]
+    assert row["state"] == "ready"           # held, but nothing inside the floor
+
+    # A packet just resent holds the next ask for it, and Reset opens that.
+    cache.stamp(212, [1], now=now)
+    row = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}["parts"]
+    assert row["state"] == "cooling" and 0 < row["opens_in_s"] <= bc.PART_RESEND_FLOOR_S
+    assert row["resettable"] is True
+    c.post("/api/limits/reset", json={"id": "parts"})
+    row = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}["parts"]
+    assert row["state"] == "ready"
+    # The packets themselves stay: dropping them would close this gate.
+    assert row["used"] == 2 and cache.lookup(212, [1])[0] == [b"packet"]
 
 
 def test_the_channel_reply_limits_show_what_they_are_holding(client):

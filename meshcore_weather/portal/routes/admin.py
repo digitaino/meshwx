@@ -481,7 +481,7 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
 def _limit_rows(bot) -> list[dict]:
     """Every gate between a request and an answer, and when it opens again.
 
-    The bot spends other people's airtime, so it rations itself in four
+    The bot spends other people's airtime, so it rations itself in five
     places, and until now none of them could be seen from here: an operator
     watching a request go unanswered had no way to tell a refusal from a
     silence. Each row says what the rule is, where it stands, and how many
@@ -528,17 +528,49 @@ def _limit_rows(bot) -> list[dict]:
             last_sweep = getattr(responder, attr, 0.0) or last_sweep
         cooldown = getattr(bc, "SWEEP_COOLDOWN_S", 300.0)
         left = max(0.0, cooldown - (now - last_sweep)) if last_sweep else 0.0
+        # Since revision 10 the window is per state, so the national figure is
+        # only half the story: a scoped sweep of Texas holds Texas and nothing
+        # else, and an operator watching a refusal needs to see that.
+        by_state = getattr(responder, "_last_sweep_state", None) or {}
+        cooling_states = {s: at for s, (at, _all) in by_state.items()
+                          if now - at < cooldown}
+        state_left = max((cooldown - (now - at) for at in cooling_states.values()),
+                         default=0.0)
         rows.append({
             "id": "sweep",
             "name": "Alert map sweep",
-            "rule": f"one national sweep every {cooldown / 60:.0f} min, whoever asks",
+            "rule": f"one sweep of the same ground every {cooldown / 60:.0f} min, whoever asks",
             "detail": ("never sent" if not last_sweep else
-                       f"last sent {_ago(now - last_sweep)} ago"),
-            "used": None, "cap": None,
-            "state": "cooling" if left > 0 else "ready",
-            "opens_in_s": int(left),
-            "resettable": left > 0,
+                       f"last national sweep {_ago(now - last_sweep)} ago")
+                      + (f", {_states(len(cooling_states))} inside their own window"
+                         if cooling_states else ""),
+            "used": len(cooling_states), "cap": None,
+            "state": "cooling" if left > 0 or cooling_states else "ready",
+            "opens_in_s": int(max(left, state_left)),
+            "resettable": bool(left > 0 or cooling_states),
         })
+
+        # `>part` holds the bytes it resends, so this row is about what is
+        # still there to ask for, and about the floor that stops ten phones
+        # missing one packet from costing ten packets.
+        parts = getattr(responder, "_parts", None)
+        status = parts.status(now) if parts is not None else None
+        if status is not None:
+            held = status["groups"]
+            rows.append({
+                "id": "parts",
+                "name": "Missing packet resends",
+                "rule": (f"the last {getattr(bc, 'PARTS_CACHE_GROUPS', 8)} multi-packet answers, "
+                         f"kept {getattr(bc, 'PARTS_CACHE_S', 600.0) / 60:.0f} min; "
+                         f"one resend of a packet every {getattr(bc, 'PART_RESEND_FLOOR_S', 30.0):.0f} s"),
+                "detail": ("nothing held" if not held else
+                           f"{held} group{'' if held == 1 else 's'} held "
+                           f"({status['packets']} packets), oldest {_ago(status['oldest_age_s'])}"),
+                "used": held, "cap": getattr(bc, "PARTS_CACHE_GROUPS", 8),
+                "state": "cooling" if status["waiting"] else "ready",
+                "opens_in_s": status["opens_in_s"],
+                "resettable": bool(status["waiting"]),
+            })
 
     replies = [t for t in getattr(bot, "_channel_replies", []) if now - t <= 3600]
     per_hour = getattr(type(bot), "CHANNEL_REPLY_PER_HOUR", 12)
@@ -563,6 +595,10 @@ def _limit_rows(bot) -> list[dict]:
 
 def _radios(n: int) -> str:
     return "1 radio" if n == 1 else f"{n} radios"
+
+
+def _states(n: int) -> str:
+    return "1 state" if n == 1 else f"{n} states"
 
 
 def _ago(seconds: float) -> str:
@@ -595,6 +631,13 @@ async def limits_reset(request: Request) -> JSONResponse:
         for attr in ("_last_sweep_at", "_last_sweep", "_sweep_at"):
             if hasattr(responder, attr):
                 setattr(responder, attr, 0.0)
+        # The per-state windows go with it: one button, one rule.
+        if getattr(responder, "_last_sweep_state", None) is not None:
+            responder._last_sweep_state.clear()
+    elif which == "parts" and getattr(responder, "_parts", None) is not None:
+        # The held packets stay: dropping them would close this gate rather
+        # than open it. What is cleared is the 30 s floor on resending them.
+        responder._parts.clear_floors()
     elif which == "channel":
         getattr(bot, "_channel_replies", []).clear()
         getattr(bot, "_channel_reply_by_sender", {}).clear()

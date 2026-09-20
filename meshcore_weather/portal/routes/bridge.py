@@ -122,9 +122,9 @@ async def bridge_request(request: Request) -> JSONResponse:
     the same hourly packet budget as anybody on the air. The answer goes out
     on the data channel as usual, so it arrives on the feed.
 
-    Always 200 with an outcome — `sent`, `rate_limited` or `budget_spent` —
-    so a client can synthesise the radio's delivery confirmation on `sent`
-    rather than read HTTP status codes.
+    Always 200 with an outcome — `sent`, `rate_limited`, `budget_spent` or
+    `already_resent` — so a client can synthesise the radio's delivery
+    confirmation on `sent` rather than read HTTP status codes.
     """
     client = _authorise(request)
     responder = _responder(request)
@@ -152,6 +152,12 @@ async def bridge_request(request: Request) -> JSONResponse:
     if outcome == "hourly budget spent":
         return JSONResponse({"ok": False, "accepted": False, "outcome": "budget_spent",
                              "detail": outcome})
+    # A `>part` whose every packet went out again in the last 30 s (spec 7C.2).
+    # Nothing was sent, so there is nothing for a client to confirm.
+    if outcome == "already resent":
+        from meshcore_weather.protocol.broadcaster import PART_RESEND_FLOOR_S
+        return JSONResponse({"ok": False, "accepted": False, "outcome": "already_resent",
+                             "retry_after": PART_RESEND_FLOOR_S, "detail": outcome})
     m = _OUTCOME_SENT.match(outcome)
     return JSONResponse({
         "ok": True, "accepted": True, "outcome": "sent",

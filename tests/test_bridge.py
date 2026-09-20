@@ -250,6 +250,26 @@ def test_the_bridge_client_is_just_another_sender(client):
     assert datagram_feed.cursor == 2
 
 
+def test_a_part_already_on_the_air_is_not_a_delivery(client):
+    """`>part` for packets that went out again in the last 30 s sends nothing
+    (spec 7C.2). A simulator must not confirm a delivery that never happened,
+    so it is told how long to wait rather than "sent"."""
+    from meshcore_weather.protocol.broadcaster import PART_RESEND_FLOOR_S
+
+    c, bot, _ = client
+    cache = bot._broadcaster._parts
+    cache.remember(212, 1, bytes.fromhex("017a4ca0") + b"\x00" * 7, mtype=10)
+    assert c.post("/api/bridge/request",
+                  json={"text": ">part 212 1", "client": "sim"}).json()["ok"]
+    assert datagram_feed.cursor == 1
+
+    again = c.post("/api/bridge/request",
+                   json={"text": ">part 212 1", "client": "other"}).json()
+    assert again == {"ok": False, "accepted": False, "outcome": "already_resent",
+                     "retry_after": PART_RESEND_FLOOR_S, "detail": "already resent"}
+    assert datagram_feed.cursor == 1                   # nothing more went out
+
+
 def test_a_request_that_is_not_a_request_is_refused(client):
     c, _, _ = client
     assert c.post("/api/bridge/request", json={"text": "hello"}).status_code == 400

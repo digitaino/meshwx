@@ -112,6 +112,10 @@ __all__ = [
     "MAX_SWEEP_ENTRIES",
     "MAX_SWEEP_RUN",
     "MAX_SWEEP_START",
+    "SWEEP_SCOPED_BIT",
+    "SWEEP_TOTAL_MASK",
+    "SWEEP_SCOPE_EVENT",
+    "MAX_SWEEP_SCOPE_STATES",
     "Header",
     "Request",
     "encode_header",
@@ -323,6 +327,24 @@ MAX_SWEEP_ENTRIES = MAX_SWEEP_PACKETS * MAX_SWEEP_ENTRIES_PER_PACKET
 MAX_SWEEP_RUN = 64
 #: The largest UGC number one entry starts at: ten bits.
 MAX_SWEEP_START = 1023
+
+# Scoped sweeps (spec 7C, revision 10).  A sweep may cover a few states
+# instead of the country, and says which in its own entries.
+#: `total` bit 7: this sweep covers only the states its scope entries name.
+#: It is on *every* packet, so a phone that lost packet 0 still knows it is
+#: not looking at the country.
+SWEEP_SCOPED_BIT = 0x80
+#: What is left of `total` once the scoped bit is out of it: 1 to 8 packets.
+#: Revision 9 wrote the whole byte, but never a value above 8, so the four
+#: low bits carried it then too.
+SWEEP_TOTAL_MASK = 0x0F
+#: The event code of a scope entry.  No event has code 0, which is what makes
+#: the entry tellable from an alert; the rest of it reads `XXZ000`, the
+#: Weather Service's own way of writing "all of state XX".
+SWEEP_SCOPE_EVENT = 0
+#: The most states one request may name, and so the most scope entries a
+#: sweep carries: 15 codes are 30 bytes, which fits the 40-byte request text.
+MAX_SWEEP_SCOPE_STATES = 15
 
 # Sentinels.
 _TEMP_UNKNOWN = -128
@@ -1459,6 +1481,13 @@ def _decode_request(data: bytes, hdr: Header) -> dict:
 # byte on `run` and flags a county in bit 7 of the state byte.  A sweep entry
 # carries an event code the Warning run does not, and pays for it by capping
 # the run at 64.
+#
+# Revision 10 adds the scope: a sweep may cover a few states rather than the
+# country.  `total` bit 7 says so on every packet, and packet 0 begins with
+# one entry per state named — event 0, zone kind, start 0, run 1, which is
+# `XXZ000`, "all of state XX".  A state in the scope with no alert entry is
+# an answer: nothing is active there at this level.  The decoder lifts those
+# entries out into `scope` so `entries` is alerts alone.
 
 
 def encode_area_sweep(
@@ -1473,6 +1502,8 @@ def encode_area_sweep(
     cut: bool = False,
     advisories: bool = False,
     source: int = SOURCE_UNSTATED,
+    scope: "list[int]" = (),
+    scoped: bool = False,
 ) -> bytes:
     """Encode one packet of an Area sweep.
 
@@ -1486,15 +1517,34 @@ def encode_area_sweep(
     loses the last one must still know it is not holding the whole picture.
     ``advisories`` says advisories (VTEC significance Y and S) are included;
     without it the sweep is warnings and watches only.
+
+    ``scope`` is the state indices this sweep covers (spec 7C, revision 10).
+    They go out as one entry each, ahead of the alert entries and counting
+    toward the 38 a packet holds, and they belong on packet 0 alone.
+    ``scoped`` sets ``total`` bit 7 and belongs on *every* packet, so a phone
+    that lost packet 0 still knows it is not looking at the country; passing a
+    scope implies it.
     """
     if not (1 <= total <= MAX_SWEEP_PACKETS):
         raise ValueError(f"total must be 1..{MAX_SWEEP_PACKETS}, got {total}")
     if not (0 <= idx < total):
         raise ValueError(f"idx must be 0..{total - 1}, got {idx}")
+    scope = list(scope)
+    scoped = bool(scoped or scope)
+    if len(scope) > MAX_SWEEP_SCOPE_STATES:
+        raise ValueError(
+            f"a sweep names at most {MAX_SWEEP_SCOPE_STATES} states, "
+            f"got {len(scope)}"
+        )
+    # The scope entries are entries: they are what the packet spends its room
+    # on before an alert gets any.
+    entries = [
+        (SWEEP_SCOPE_EVENT, state, False, 0, 1) for state in scope
+    ] + list(entries)
     if len(entries) > MAX_SWEEP_ENTRIES_PER_PACKET:
         raise ValueError(
             f"a sweep packet holds at most {MAX_SWEEP_ENTRIES_PER_PACKET} "
-            f"entries, got {len(entries)}"
+            f"entries, got {len(entries)} (scope included)"
         )
     flags = (FLAG_SWEEP_CUT if cut else 0) | (
         FLAG_SWEEP_ADVISORIES if advisories else 0
@@ -1507,7 +1557,7 @@ def encode_area_sweep(
         _u32(built_min, "built_min"),
         _u8(group, "group"),
         idx,
-        total,
+        total | (SWEEP_SCOPED_BIT if scoped else 0),
     )
     for event, state, is_county, start, run in entries:
         if not (0 <= state <= 127):
@@ -1538,25 +1588,36 @@ def sweep_packets(
     cut: bool = False,
     advisories: bool = False,
     source: int = SOURCE_UNSTATED,
+    scope: "list[int]" = (),
 ) -> "list[bytes]":
     """Split an ordered entry list into Area sweep packets.
 
     Entries arrive most severe first (the caller's ordering, spec 7C), so
-    anything past ``MAX_SWEEP_ENTRIES`` is the least severe and is dropped
-    here with ``cut`` set on every packet.  Packets share
+    anything past the sweep's room is the least severe and is dropped here
+    with ``cut`` set on every packet.  Packets share
     ``group = seq_start & 0xFF`` and take consecutive sequence numbers from
     ``seq_start``, wrapping 255 -> 0.
+
+    ``scope`` names the states a scoped sweep covers.  Its entries ride on
+    packet 0 and cost that packet the room they take, so a scoped sweep holds
+    ``MAX_SWEEP_ENTRIES - len(scope)`` alert entries.  A scope with no alert
+    entries at all is still one packet: "nothing is active in these states"
+    is the answer, and the reason the scope is on the wire.
     """
     _check_header(seq_start, bot, TYPE_AREA_SWEEP, 0)
+    scope = list(scope)
     entries = list(entries)
-    if len(entries) > MAX_SWEEP_ENTRIES:
-        entries = entries[:MAX_SWEEP_ENTRIES]
+    room = MAX_SWEEP_ENTRIES - len(scope)
+    if len(entries) > room:
+        entries = entries[:room]
         cut = True
-    if not entries:
+    if not entries and not scope:
         return []
-    chunks = [
-        entries[i:i + MAX_SWEEP_ENTRIES_PER_PACKET]
-        for i in range(0, len(entries), MAX_SWEEP_ENTRIES_PER_PACKET)
+    first = entries[:MAX_SWEEP_ENTRIES_PER_PACKET - len(scope)]
+    rest = entries[len(first):]
+    chunks = [first] + [
+        rest[i:i + MAX_SWEEP_ENTRIES_PER_PACKET]
+        for i in range(0, len(rest), MAX_SWEEP_ENTRIES_PER_PACKET)
     ]
     group = seq_start & 0xFF
     total = len(chunks)
@@ -1572,6 +1633,8 @@ def sweep_packets(
             cut=cut,
             advisories=advisories,
             source=source,
+            scope=scope if i == 0 else (),
+            scoped=bool(scope),
         )
         for i, chunk in enumerate(chunks)
     ]
@@ -1580,16 +1643,12 @@ def sweep_packets(
 def _decode_area_sweep(data: bytes, hdr: Header) -> dict:
     _need(data, 11, "area_sweep")
     built, group, idx, total = struct.unpack_from("<IBBB", data, 4)
-    # The packet ends where the entries end; a trailing partial entry is a
-    # truncation, not a run of fewer bytes.
-    rest = len(data) - 11
-    if rest % 4:
-        raise ValueError(
-            f"truncated area_sweep entry: {rest} body bytes is not a multiple of 4"
-        )
+    # Whole entries only.  A trailing part of one is read as padding and
+    # dropped: both shipping clients already ignore it, and the alternative —
+    # throwing away 37 good runs over three stray bytes — serves nobody.
     entries = []
     off = 11
-    for _ in range(rest // 4):
+    for _ in range((len(data) - 11) // 4):
         event, state, packed = struct.unpack_from("<BBH", data, off)
         off += 4
         entries.append(
@@ -1601,13 +1660,22 @@ def _decode_area_sweep(data: bytes, hdr: Header) -> dict:
                 "run": (packed >> 10) + 1,
             }
         )
+    # The scope entries lead, and no alert carries event 0, so the run of them
+    # at the front is the scope.  They come out of `entries`: a caller drawing
+    # the map wants alerts, and "which states is this about" is a different
+    # question with its own answer (spec 7C, revision 10).
+    scope = []
+    while entries and entries[0]["event"] == SWEEP_SCOPE_EVENT:
+        scope.append(entries.pop(0)["state"])
     out = hdr.as_dict()
     out.update(
         built_min=built,
         group=group,
         idx=idx,
-        total=total,
+        total=total & SWEEP_TOTAL_MASK,
         entries=entries,
+        scoped=bool(total & SWEEP_SCOPED_BIT),
+        scope=scope,
         cut=bool(hdr.flags & FLAG_SWEEP_CUT),
         advisories=bool(hdr.flags & FLAG_SWEEP_ADVISORIES),
         source=unpack_source(hdr.flags),

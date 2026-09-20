@@ -877,7 +877,11 @@ class WeatherBot:
         rev = traffic_log.record("reply_data", req=req, sender=sender_name, transport="channel_data")
         outcome = await self._broadcaster.handle_request(text, sender_key, ev=rev)
         logger.info("App request from %s: %s -> %s", sender_name, text[:40], outcome)
-        if outcome in ("rate limited", "hourly budget spent"):
+        # "already resent": a `>part` whose every packet went out again in the
+        # last 30 seconds (spec 7C.2). Nothing was sent, so the row is the
+        # dropped it is, and a copy of the request is answered afresh: by then
+        # the floor may have opened.
+        if outcome in ("rate limited", "hourly budget spent", "already resent"):
             traffic_log.update(rev, kind="dropped", dir="out", reason=outcome, ok=False, push=True)
             if dreq is not None:
                 dreq.state = "app_unanswered"

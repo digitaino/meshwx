@@ -1030,11 +1030,13 @@
           "run": 3
         }
       ],
+      "scoped": false,
+      "scope": [],
       "cut": true,
       "advisories": false,
       "source": 2
     },
-    "note": "type byte 0xA9: area sweep, flags 0x9 = cut (bit 0) + source 2 internet (bits 2-3); advisories (bit 1) clear, so this is warnings and watches only. Group 32, reassemble by (bot, group) in idx order"
+    "note": "type byte 0xA9: area sweep, flags 0x9 = cut (bit 0) + source 2 internet (bits 2-3); advisories (bit 1) clear, so this is warnings and watches only. Group 32, reassemble by (bot, group) in idx order. `total` has bit 7 clear and the scope is empty: the country, the revision 9 bytes unchanged"
   },
   {
     "name": "area_sweep_national_packet1",
@@ -1065,11 +1067,67 @@
           "run": 3
         }
       ],
+      "scoped": false,
+      "scope": [],
       "cut": true,
       "advisories": false,
       "source": 2
     },
-    "note": "type byte 0xA9: area sweep, flags 0x9 = cut (bit 0) + source 2 internet (bits 2-3); advisories (bit 1) clear, so this is warnings and watches only. Group 32, reassemble by (bot, group) in idx order"
+    "note": "type byte 0xA9: area sweep, flags 0x9 = cut (bit 0) + source 2 internet (bits 2-3); advisories (bit 1) clear, so this is warnings and watches only. Group 32, reassemble by (bot, group) in idx order. `total` has bit 7 clear and the scope is empty: the country, the revision 9 bytes unchanged"
+  },
+  {
+    "name": "area_sweep_scoped_packet0",
+    "hex": "227a4ca89c13c70122008100460000005400001854bf0c0355d1100155c5010655eb05",
+    "decoded": {
+      "seq": 34,
+      "bot": 19578,
+      "type": 10,
+      "name": "area_sweep",
+      "flags": 8,
+      "built_min": 29823900,
+      "group": 34,
+      "idx": 0,
+      "total": 1,
+      "entries": [
+        {
+          "event": 24,
+          "state": 42,
+          "county": false,
+          "start": 191,
+          "run": 4
+        },
+        {
+          "event": 3,
+          "state": 42,
+          "county": true,
+          "start": 209,
+          "run": 5
+        },
+        {
+          "event": 1,
+          "state": 42,
+          "county": true,
+          "start": 453,
+          "run": 1
+        },
+        {
+          "event": 6,
+          "state": 42,
+          "county": true,
+          "start": 491,
+          "run": 2
+        }
+      ],
+      "scoped": true,
+      "scope": [
+        35,
+        42
+      ],
+      "cut": false,
+      "advisories": false,
+      "source": 2
+    },
+    "note": "type byte 0xA8: area sweep, flags 0x8 = source 2 internet, nothing cut and no advisories. `total` is 0x81: bit 7 scoped, one packet. The first two entries are the scope, Oklahoma and Texas; Oklahoma has no alert entry, which says it is clear at this level"
   },
   {
     "name": "request_digest",
@@ -1085,5 +1143,35 @@
       "text": ">d"
     },
     "note": "app -> bot: 16 bytes, sender prefix 01..06, ts 1789660000 (2026-09-17 15:46:40 UTC); a resend repeats these bytes exactly"
+  },
+  {
+    "name": "request_parts",
+    "hex": "021d04900102030405068a0bac6a3e706172742032313220312c342c36",
+    "decoded": {
+      "seq": 2,
+      "bot": 1053,
+      "type": 9,
+      "name": "request",
+      "flags": 0,
+      "sender": "010203040506",
+      "ts": 1789660042,
+      "text": ">part 212 1,4,6"
+    },
+    "note": "app -> bot: `>part <group> <idx>[,<idx>\u2026]`, decimal. The answer is those packets again, identical but for a fresh seq; the group they carry does not change"
+  },
+  {
+    "name": "request_forecast_at",
+    "hex": "031d0490010203040506c40bac6a3e662033352e3638372c2d3130352e393338",
+    "decoded": {
+      "seq": 3,
+      "bot": 1053,
+      "type": 9,
+      "name": "request",
+      "flags": 0,
+      "sender": "010203040506",
+      "ts": 1789660100,
+      "text": ">f 35.687,-105.938"
+    },
+    "note": "app -> bot: Santa Fe NM as a coordinate. The answer is an ordinary Forecast for the nearest point the bot holds one for, carrying that point's bundle index or 0xFFFF when it is not in the bundle"
   }
 ]

@@ -619,8 +619,38 @@ def build_vectors(index: dict) -> list:
             "type byte 0xA9: area sweep, flags 0x9 = cut (bit 0) + source 2 "
             "internet (bits 2-3); advisories (bit 1) clear, so this is "
             "warnings and watches only. Group 32, reassemble by (bot, group) "
-            "in idx order",
+            "in idx order. `total` has bit 7 clear and the scope is empty: "
+            "the country, the revision 9 bytes unchanged",
         )
+
+    # 8c. Area sweep (revision 10): a sweep of two states, the answer to
+    #     `>wmap OKTX`.  Packet 0 opens with one scope entry per state asked
+    #     for — event 0, zone kind, start 0, run 1, which is `XXZ000`, "all of
+    #     state XX" — and `total` carries bit 7 to say the picture is those
+    #     states and not the country.  Oklahoma has nothing active: its scope
+    #     entry with no alert entry behind it is the answer, and the reason the
+    #     scope is on the wire at all.
+    scoped_scope = sorted(states.index(s) for s in ("OK", "TX"))
+    add(
+        "area_sweep_scoped_packet0",
+        v5.sweep_packets(
+            34,
+            BOT,
+            built_min=NOW_MIN,
+            entries=in_wire_order(
+                runs(EV_WS_W, "TX", "Z", [(191, 4)])
+                + runs(EV_SV_W, "TX", "C", [(209, 5)])
+                + runs(EV_TO_W, "TX", "C", [(453, 1)])
+                + runs(EV_FF_W, "TX", "C", [(491, 2)])
+            ),
+            scope=scoped_scope,
+            source=v5.SOURCE_INTERNET,
+        )[0],
+        "type byte 0xA8: area sweep, flags 0x8 = source 2 internet, nothing "
+        "cut and no advisories. `total` is 0x81: bit 7 scoped, one packet. "
+        "The first two entries are the scope, Oklahoma and Texas; Oklahoma "
+        "has no alert entry, which says it is clear at this level",
+    )
 
     # 9. Request (revision 6): the one message that travels app -> bot, a `>d`
     #    flooded on #meshwx.  Its `bot` is 0x041D, not this bot's BOT, because
@@ -637,6 +667,39 @@ def build_vectors(index: dict) -> list:
         ),
         "app -> bot: 16 bytes, sender prefix 01..06, ts 1789660000 "
         "(2026-09-17 15:46:40 UTC); a resend repeats these bytes exactly",
+    )
+
+    # 9b. Request (revision 10): the three packets of a sweep this phone never
+    #     heard, asked for by the group the packets it did hear carried.
+    add(
+        "request_parts",
+        v5.encode_request(
+            2,
+            0x041D,
+            bytes.fromhex("010203040506"),
+            1789660042,
+            ">part 212 1,4,6",
+        ),
+        "app -> bot: `>part <group> <idx>[,<idx>…]`, decimal. The answer is "
+        "those packets again, identical but for a fresh seq; the group they "
+        "carry does not change",
+    )
+
+    # 9c. Request (revision 10): a forecast for a coordinate, which is how a
+    #     phone asks when it knows of no bundled point near the place. Three
+    #     decimals, the comma is what tells it from a place name.
+    add(
+        "request_forecast_at",
+        v5.encode_request(
+            3,
+            0x041D,
+            bytes.fromhex("010203040506"),
+            1789660100,
+            ">f 35.687,-105.938",
+        ),
+        "app -> bot: Santa Fe NM as a coordinate. The answer is an ordinary "
+        "Forecast for the nearest point the bot holds one for, carrying that "
+        "point's bundle index or 0xFFFF when it is not in the bundle",
     )
 
     return vectors

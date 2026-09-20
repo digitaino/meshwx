@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -199,6 +200,82 @@ def parse_identity(text: str) -> tuple[int, int, int] | None:
     if not event or parts[2] not in tables.offices:
         return None
     return event, tables.office(parts[2]), int(parts[3]) & 0xFFFF
+
+
+# The separators a request may put between its arguments: the app sends the
+# compact form, people type spaces and commas.
+_ARG_SPLIT = re.compile(r"[\s,]+")
+# `>f 35.687,-105.938`: two signed decimals and a comma, and nothing else.
+# The comma is what tells it from a place, so `>f austin, tx` is still a place.
+_LATLON = re.compile(
+    r"\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)\s*\Z"
+)
+
+
+def parse_sweep_request(arg: str) -> tuple[bool, list[str]] | None:
+    """`>wmap [all] [states]` -> (advisories, state codes), None when it
+    cannot be read (spec 7C, revision 10: Not available reason 1).
+
+    State codes come run together, spaced or comma separated, in any case:
+    `TX`, `tx, ok`, `all TXOKLA`. An empty list is the whole country. `ALL` on
+    its own is the advisories level and never Alabama plus a stray L, which is
+    why it is matched as a whole token; `ALLA` is four characters and so is
+    Alabama and Louisiana.
+    """
+    tables.load()
+    known = set(tables.states)
+    advisories = False
+    codes: list[str] = []
+    for token in _ARG_SPLIT.split((arg or "").strip().upper()):
+        if not token:
+            continue
+        if token == "ALL":
+            advisories = True
+            continue
+        if len(token) % 2:
+            return None
+        for i in range(0, len(token), 2):
+            code = token[i:i + 2]
+            if code not in known:
+                return None
+            if code not in codes:
+                codes.append(code)
+    # More states than a sweep can name is refused rather than quietly cut:
+    # a map covering twelve of the fifteen states asked for is a wrong map.
+    if len(codes) > v5.MAX_SWEEP_SCOPE_STATES:
+        return None
+    # Wire order is the state index, so two phones asking for the same states
+    # in different words get the same bytes.
+    codes.sort(key=tables.states.index)
+    return advisories, codes
+
+
+def parse_parts_request(arg: str) -> tuple[int, list[int]] | None:
+    """`>part <group> <idx>[,<idx>…]` -> (group, indexes), None when it cannot
+    be read. Decimal, spaces or commas between the indexes."""
+    tokens = [t for t in _ARG_SPLIT.split((arg or "").strip()) if t]
+    if len(tokens) < 2 or not all(t.isdigit() for t in tokens):
+        return None
+    group = int(tokens[0])
+    indexes = sorted({int(t) for t in tokens[1:]})
+    if group > 0xFF or indexes[-1] > 0xFF:
+        return None
+    return group, indexes
+
+
+def parse_latlon(arg: str) -> tuple[float, float] | None:
+    """`>f <lat>,<lon>` -> the coordinate, None when this is not one.
+
+    Out of range reads as not a coordinate: the caller answers Not available
+    reason 1 either way, and a place is never spelled with a comma between two
+    numbers."""
+    m = _LATLON.match(arg or "")
+    if not m:
+        return None
+    lat, lon = float(m.group(1)), float(m.group(2))
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    return lat, lon
 
 
 def expires_min(w: dict) -> int:
@@ -743,31 +820,48 @@ def sweep_entries(active: list[dict], advisories: bool = False) -> list[tuple]:
 
 def area_sweep_messages(seq: SeqCounter, bot: int, store: WeatherStore,
                         advisories: bool = False, source: int | None = None,
-                        built_min: int | None = None) -> list[bytes]:
-    """`>wmap`: every active alert in the country as an Area sweep.
+                        built_min: int | None = None,
+                        states: list[str] | None = None) -> list[bytes]:
+    """`>wmap`: the active alerts as an Area sweep.
 
-    Coverage never filters it — the whole point is the national picture — so
-    it reads the store with `coverage=None`. Empty when nothing the tables
-    know is active, which the caller answers as Not available.
+    Coverage never filters it — the point is a picture wider than the bot's
+    own area — so it reads the store with `coverage=None`. Empty when nothing
+    the tables know is active, which the caller answers as Not available.
+
+    `states` scopes the sweep to those state codes (spec 7C, revision 10).
+    A scoped sweep names them in its scope entries and carries the alerts of
+    those states only, so it is never empty: a state with nothing active is
+    answered by its scope entry alone.
 
     A sweep is aggregated from every product the bot holds, so `source`
     defaults to the store-wide answer (spec 2.2.1).
     """
     from meshcore_weather.protocol.warnings import extract_active_warnings
+    tables.load()
     if source is None:
         source = store.products_source()
+    scope = [tables.states.index(code) for code in (states or [])]
     entries = sweep_entries(extract_active_warnings(store, coverage=None),
                             advisories=advisories)
-    if not entries:
+    if scope:
+        # Runs never cross a state, so the scope is a filter on the entries
+        # rather than on the warnings: a warning over Texas and Oklahoma sent
+        # to a Texas sweep contributes its Texas runs and nothing else.
+        wanted = set(scope)
+        entries = [e for e in entries if e[1] in wanted]
+    if not entries and not scope:
         return []
-    cut = len(entries) > v5.MAX_SWEEP_ENTRIES
+    room = v5.MAX_SWEEP_ENTRIES - len(scope)
+    cut = len(entries) > room
     start = seq.next()
     msgs = v5.sweep_packets(start, bot, built_min=now_min() if built_min is None else built_min,
-                            entries=entries, cut=cut, advisories=advisories, source=source)
+                            entries=entries, cut=cut, advisories=advisories, source=source,
+                            scope=scope)
     for _ in msgs[1:]:
         seq.next()
-    logger.info("Area sweep: %d entries, %d packet(s), %d bytes%s",
-                min(len(entries), v5.MAX_SWEEP_ENTRIES), len(msgs),
+    logger.info("Area sweep%s: %d entries, %d packet(s), %d bytes%s",
+                f" of {' '.join(states)}" if states else " (national)",
+                min(len(entries), room), len(msgs),
                 sum(len(m) for m in msgs),
                 f", cut from {len(entries)}" if cut else ", not cut")
     return msgs

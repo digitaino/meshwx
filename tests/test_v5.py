@@ -145,6 +145,8 @@ def reencode(d: dict) -> bytes:
             cut=d["cut"],
             advisories=d["advisories"],
             source=d["source"],
+            scope=d["scope"],
+            scoped=d["scoped"],
         )
     raise AssertionError(f"no re-encoder for {name!r}")
 
@@ -1157,9 +1159,11 @@ def test_index_json_matches_the_source_tables():
 
 
 def test_protocol_json_v5_block():
+    from meshcore_weather.protocol import broadcaster as bc
+
     with open(PROTOCOL_PATH, encoding="utf-8") as fh:
         proto = json.load(fh)
-    assert proto["version"] == 13
+    assert proto["version"] == 14
     assert proto["index_file"] == "index.json"
     # Legacy keys other code still reads are untouched.
     for key in ("messages", "events", "event_names", "sky_codes", "data_types"):
@@ -1230,6 +1234,17 @@ def test_protocol_json_v5_block():
     assert block["limits"]["sweep_start"] == [0, v5.MAX_SWEEP_START]
     assert block["record_sizes"]["area_sweep_fixed"] == 11
     assert block["record_sizes"]["area_sweep_entry"] == 4
+    # Revision 10: the scoped sweep and the parts cache.
+    assert block["area_sweep"] == {
+        "total_mask": v5.SWEEP_TOTAL_MASK,
+        "scoped_bit": v5.SWEEP_SCOPED_BIT,
+        "scope_event": v5.SWEEP_SCOPE_EVENT,
+    }
+    assert block["limits"]["sweep_scope_states"] == [0, v5.MAX_SWEEP_SCOPE_STATES]
+    assert block["limits"]["parts_cache_groups"] == bc.PARTS_CACHE_GROUPS
+    assert block["limits"]["parts_cache_seconds"] == bc.PARTS_CACHE_S
+    assert block["limits"]["part_resend_floor_seconds"] == bc.PART_RESEND_FLOOR_S
+    assert ">part" in block["notes"] and ">f <lat>,<lon>" in block["notes"]
     assert block["notes"]
 
 

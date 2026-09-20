@@ -40,9 +40,14 @@ _STATE_PATH = Path(settings.data_dir) / "warning_state.json"
 
 
 class Scheduler:
-    def __init__(self, store: WeatherStore, radio: MeshcoreRadio, ready: asyncio.Event | None = None):
+    def __init__(self, store: WeatherStore, radio: MeshcoreRadio, ready: asyncio.Event | None = None,
+                 parts=None):
         self.store = store
         self.radio = radio
+        # Where `>part` reads its packets from (protocol.broadcaster.PartsCache),
+        # filled below as each one is stamped and taken by the radio. None for
+        # a scheduler nobody asks questions of.
+        self._parts = parts
         # Set when the bot's product backlog is in; None when there is nothing
         # to wait for (a test, the CLI). The tick loop holds until then.
         self._ready = ready
@@ -244,7 +249,8 @@ class Scheduler:
                             {"job_id": job.id, "product": job.product, "messages": n, "bytes": nbytes})
         return n
 
-    async def transmit(self, msgs: list[bytes], label: str, ev: dict | None = None) -> tuple[int, int]:
+    async def transmit(self, msgs: list[bytes], label: str, ev: dict | None = None,
+                       keep_groups: bool = False) -> tuple[int, int]:
         """Send v5 messages on the data channel with spacing. Returns
         (packets sent, bytes).
 
@@ -252,7 +258,12 @@ class Scheduler:
         interleave and packets leave in seq order. The seq is stamped here,
         not by the builders, and a number is used only when the radio took
         the packet: a failed send leaves no gap. The radio's echo resend
-        repeats these stamped bytes, same seq."""
+        repeats these stamped bytes, same seq.
+
+        `keep_groups` is the `>part` case: these packets went out once
+        already, so they take a fresh seq and keep the `group` they were
+        assembled under. They are not remembered again either — a resend must
+        not extend the ten minutes the original answer is held for."""
         async with self._tx_lock:
             # Saved past the batch before it starts: killed part-way, the bot comes back ahead of
             # every number it may have put on air (apps see a gap), never behind them (apps would
@@ -265,7 +276,7 @@ class Scheduler:
                 wait = self._last_tx + TX_SPACING - time.monotonic()
                 if wait > 0:                        # spacing holds across batches too
                     await asyncio.sleep(wait)
-                msg = self._stamp(msg, groups)
+                msg = self._stamp(msg, groups, keep_groups=keep_groups)
                 try:
                     ok = await self.radio.send_channel_data(msg, ev=ev)
                 except Exception:
@@ -276,6 +287,8 @@ class Scheduler:
                     self._next_seq = (self._next_seq + 1) & 0xFF
                     sent += 1
                     nbytes += len(msg)
+                    if not keep_groups:
+                        self._remember_part(msg)
             if msgs:
                 self._save_state()
             if sent:
@@ -283,26 +296,50 @@ class Scheduler:
                 logger.info("%s: %d packet(s), %d bytes", label, sent, nbytes)
             return sent, nbytes
 
-    # Where a multi-packet type keeps `group` and `idx`: Text (spec 8.1) and
-    # the Area sweep (spec 7C), which numbers itself the same way from a
-    # different offset.
-    _GROUP_FIELDS = {v5.TYPE_TEXT: (5, 6, 8), v5.TYPE_AREA_SWEEP: (8, 9, 11)}
+    # Where a multi-packet type keeps `group`, `idx` and `total`: Text
+    # (spec 8.1) and the Area sweep (spec 7C), which numbers itself the same
+    # way from a different offset. The last number is the smallest packet the
+    # three fields fit in.
+    _GROUP_FIELDS = {v5.TYPE_TEXT: (5, 6, 7, 8), v5.TYPE_AREA_SWEEP: (8, 9, 10, 11)}
 
-    def _stamp(self, msg: bytes, groups: dict[tuple[int, int], int]) -> bytes:
+    def _stamp(self, msg: bytes, groups: dict[tuple[int, int], int],
+               keep_groups: bool = False) -> bytes:
         """Byte 0 = the next seq. A multi-packet reply's group is the seq its
-        first packet goes out with (spec 8.1, 7C), so it follows the restamp."""
+        first packet goes out with (spec 8.1, 7C), so it follows the restamp.
+
+        `keep_groups` leaves `group` alone: a packet resent for `>part` is the
+        same packet of the same answer, and a phone reassembles by
+        `(bot, group)`. Renumbering it would file packet 3 under a group whose
+        other packets nobody ever sent."""
         out = bytearray(msg)
         out[0] = self._next_seq
         mtype = out[3] >> 4
         where = self._GROUP_FIELDS.get(mtype)
-        if where is not None:
-            gi, ii, size = where
+        if where is not None and not keep_groups:
+            gi, ii, _ti, size = where
             if len(out) >= size:
                 key = (mtype, msg[gi])
                 if out[ii] == 0:
                     groups[key] = self._next_seq
                 out[gi] = groups.get(key, msg[gi])
         return bytes(out)
+
+    def _remember_part(self, msg: bytes) -> None:
+        """Keep a packet of a multi-packet answer for `>part`, under the group
+        it actually went out with. Answers of one packet are not kept: the
+        eight slots are for the answers a phone can lose a piece of."""
+        if self._parts is None:
+            return
+        mtype = msg[3] >> 4
+        where = self._GROUP_FIELDS.get(mtype)
+        if where is None:
+            return
+        gi, ii, ti, size = where
+        if len(msg) < size:
+            return
+        total = msg[ti] & (v5.SWEEP_TOTAL_MASK if mtype == v5.TYPE_AREA_SWEEP else 0xFF)
+        if total > 1:
+            self._parts.remember(msg[gi], msg[ii], msg, mtype=mtype)
 
     # -- portal --
 

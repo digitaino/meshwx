@@ -132,16 +132,24 @@ def test_encode_range_checks(kw):
         v5.encode_area_sweep(1, BOT, **args)
 
 
-@pytest.mark.parametrize(
-    "data",
-    [
-        bytes.fromhex("207a4ca0c913c701201f"),          # header short of `total`
-        bytes.fromhex("207a4ca0c913c70120000101c501"),  # a 3-byte entry
-    ],
-)
-def test_truncated_sweep_raises(data):
+def test_truncated_sweep_raises():
+    """The seven fixed bytes are not optional: without `total` there is no
+    sweep to read."""
     with pytest.raises(ValueError):
-        v5.decode(data)
+        v5.decode(bytes.fromhex("207a4ca0c913c701201f"))
+
+
+def test_trailing_bytes_are_padding_not_a_truncation():
+    """Revision 10: a packet ends at its last whole entry and anything after
+    it is ignored. Both shipping clients already read it that way, and
+    throwing away good runs over three stray bytes serves nobody."""
+    whole = v5.encode_area_sweep(
+        32, BOT, built_min=NOW, group=32, idx=0, total=1,
+        entries=[_entry(3, 42, True, 209, 5), _entry(1, 42, True, 453, 1)],
+    )
+    d = v5.decode(whole + b"\x01\x02\x03")
+    assert [e["start"] for e in d["entries"]] == [209, 453]
+    assert v5.decode(whole + b"\x01") == v5.decode(whole)
 
 
 def test_sweep_packets_number_themselves_like_text():
@@ -154,6 +162,83 @@ def test_sweep_packets_number_themselves_like_text():
     assert {d["total"] for d in decoded} == {3}
     assert [len(d["entries"]) for d in decoded] == [38, 38, 24]
     assert v5.sweep_packets(1, BOT, built_min=NOW, entries=[]) == []
+
+
+# ---------------------------------------------------------------------------
+# The scope (spec 7C.1, revision 10)
+# ---------------------------------------------------------------------------
+
+
+def test_scope_entries_lead_the_packet_and_total_carries_the_bit():
+    """One entry per state asked for: event 0, zone kind, start 0, run 1,
+    which is `XXZ000`. The decoder lifts them out of `entries`."""
+    data = v5.encode_area_sweep(
+        40, BOT, built_min=NOW, group=40, idx=0, total=1,
+        entries=[_entry(3, 42, True, 209, 5)], scope=[35, 42],
+    )
+    # `total` is the count under the mask with bit 7 on top; nothing else.
+    assert data[10] == 0x81 == (1 | v5.SWEEP_SCOPED_BIT)
+    assert data[11:15] == bytes([v5.SWEEP_SCOPE_EVENT, 35 << 1, 0, 0])
+    assert data[15:19] == bytes([v5.SWEEP_SCOPE_EVENT, 42 << 1, 0, 0])
+    d = v5.decode(data)
+    assert d["total"] == 1 and d["scoped"] is True and d["scope"] == [35, 42]
+    assert [e["start"] for e in d["entries"]] == [209]
+
+
+def test_a_national_sweep_decodes_as_unscoped_with_an_empty_scope():
+    d = v5.decode(v5.encode_area_sweep(
+        1, BOT, built_min=NOW, group=1, idx=0, total=1,
+        entries=[_entry(3, 1, False, 5, 1)],
+    ))
+    assert d["scoped"] is False and d["scope"] == []
+
+
+def test_the_scoped_bit_rides_every_packet_and_the_scope_rides_packet_zero():
+    """A phone that lost packet 0 must still know it is not looking at the
+    country, so bit 7 is on all of them; the scope entries are not repeated."""
+    entries = [_entry(3, 42, True, n, 1) for n in range(1, 120)]
+    msgs = v5.sweep_packets(9, BOT, built_min=NOW, entries=entries, scope=[35, 42])
+    decoded = [v5.decode(m) for m in msgs]
+    assert all(d["scoped"] for d in decoded)
+    assert [d["scope"] for d in decoded] == [[35, 42]] + [[]] * (len(msgs) - 1)
+    # The scope costs packet 0 two of its 38 entries and no other packet any.
+    assert [len(d["entries"]) for d in decoded] == [36, 38, 38, 7]
+    assert sum(len(d["entries"]) for d in decoded) == len(entries)
+
+
+def test_a_scope_with_nothing_active_is_still_one_packet():
+    """The point of the scope: "nothing is active in Oklahoma" is an answer a
+    sweep that simply left Oklahoma out could never give."""
+    msgs = v5.sweep_packets(7, BOT, built_min=NOW, entries=[], scope=[35])
+    assert len(msgs) == 1
+    d = v5.decode(msgs[0])
+    assert d["scope"] == [35] and d["entries"] == [] and d["total"] == 1
+    # Without a scope there is nothing to say and nothing goes out.
+    assert v5.sweep_packets(7, BOT, built_min=NOW, entries=[]) == []
+
+
+def test_the_scope_comes_out_of_the_sweeps_own_ceiling():
+    entries = [_entry(3, 42, True, n % 1024, 1) for n in range(400)]
+    msgs = v5.sweep_packets(1, BOT, built_min=NOW, entries=entries, scope=[35, 42, 36])
+    decoded = [v5.decode(m) for m in msgs]
+    assert len(msgs) == v5.MAX_SWEEP_PACKETS
+    kept = sum(len(d["entries"]) for d in decoded)
+    assert kept == v5.MAX_SWEEP_ENTRIES - 3 == 301
+    assert all(d["cut"] for d in decoded)
+    assert all(len(m) <= v5.MAX_DATA for m in msgs)
+
+
+def test_a_sweep_names_at_most_fifteen_states():
+    args = dict(built_min=NOW, group=1, idx=0, total=1, entries=[])
+    v5.encode_area_sweep(1, BOT, scope=list(range(15)), **args)
+    with pytest.raises(ValueError):
+        v5.encode_area_sweep(1, BOT, scope=list(range(16)), **args)
+    # The scope and the entries share the 38 a packet holds.
+    with pytest.raises(ValueError):
+        v5.encode_area_sweep(
+            1, BOT, built_min=NOW, group=1, idx=0, total=1, scope=[1, 2],
+            entries=[_entry(3, 1, False, 1, 1)] * 37,
+        )
 
 
 def test_sweep_packets_cut_beyond_eight_packets():
@@ -431,6 +516,211 @@ async def test_a_sweep_with_nothing_active_is_not_available(monkeypatch):
     )
     # Nothing went out, so the next request is not inside a ten-minute window.
     assert r._last_sweep == 0.0
+
+
+# ---------------------------------------------------------------------------
+# `>wmap [all] [states]` (spec 7C.1 and 8.2, revision 10)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "arg,expected",
+    [
+        ("", (False, [])),
+        ("all", (True, [])),
+        ("ALL", (True, [])),
+        ("TX", (False, ["TX"])),
+        ("tx", (False, ["TX"])),
+        ("TXOK", (False, ["OK", "TX"])),
+        ("tx, ok", (False, ["OK", "TX"])),
+        ("TX OK", (False, ["OK", "TX"])),
+        ("  tx ,ok , la ", (False, ["LA", "OK", "TX"])),
+        ("all TXOKLA", (True, ["LA", "OK", "TX"])),
+        ("ALL txok", (True, ["OK", "TX"])),
+        # `ALL` is the level only as a whole token. Four letters are two
+        # states: Alabama and Louisiana, which is the pair that proves it.
+        ("ALLA", (False, ["AL", "LA"])),
+        ("alla", (False, ["AL", "LA"])),
+        ("all ALLA", (True, ["AL", "LA"])),
+        ("TXTX", (False, ["TX"])),          # the same state twice is one state
+    ],
+)
+def test_wmap_arguments_in_every_form(arg, expected):
+    advisories, codes = b.parse_sweep_request(arg)
+    assert (advisories, codes) == expected
+    # Wire order is the state index, so two spellings of one ask agree.
+    assert codes == sorted(codes, key=b.tables.states.index)
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        "ZZ",            # not a state
+        "TXZZ",
+        "TEX",           # an odd number of letters is not a run of pairs
+        "tx ok zz",
+        "all ZZ",
+    ],
+)
+def test_wmap_arguments_that_cannot_be_read(arg):
+    assert b.parse_sweep_request(arg) is None
+
+
+def test_more_states_than_a_sweep_can_name_is_refused():
+    """Cutting the list quietly would answer a different question: a map of
+    twelve of the fifteen states asked for is a wrong map, not a partial one.
+    Fifteen is also every state a 40-byte request can carry."""
+    b.tables.load()
+    assert v5.MAX_SWEEP_SCOPE_STATES == 15
+    fifteen = b.tables.states[:15]
+    assert b.parse_sweep_request("".join(fifteen))[1] == sorted(
+        fifteen, key=b.tables.states.index
+    )
+    assert len(">wmap all " + "".join(fifteen)) <= v5.MAX_REQUEST_TEXT
+    assert b.parse_sweep_request("".join(b.tables.states[:16])) is None
+
+
+@pytest.mark.asyncio
+async def test_wmap_states_answers_a_sweep_of_those_states_only(monkeypatch):
+    active = [
+        _warning("TO", "W", ["TXC453"], onset=500),
+        _warning("SV", "W", ["OKC101"], onset=500),
+        _warning("WS", "W", ["COZ033"], onset=400),
+    ]
+    r, sent = _responder(monkeypatch, active)
+    await r.handle_request(">wmap TXOK", "a")
+    packets = _sweep_of(sent)
+    assert len(packets) == 1
+    d = packets[0]
+    tx, ok, co = (b.tables.states.index(s) for s in ("TX", "OK", "CO"))
+    assert d["scoped"] is True and d["scope"] == sorted([tx, ok])
+    # Texas and Oklahoma only: Colorado was not asked about and is not drawn.
+    assert {e["state"] for e in d["entries"]} == {tx, ok}
+    assert co not in {e["state"] for e in d["entries"]}
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_sweep_names_a_state_with_nothing_active(monkeypatch):
+    """The answer to "what about Oklahoma" is the scope entry with no alert
+    behind it. A sweep that left Oklahoma out could not say it."""
+    r, sent = _responder(monkeypatch, [_warning("TO", "W", ["TXC453"])])
+    await r.handle_request(">wmap OKTX", "a")
+    d = _sweep_of(sent)[0]
+    tx, ok = b.tables.states.index("TX"), b.tables.states.index("OK")
+    assert d["scope"] == sorted([tx, ok])
+    assert {e["state"] for e in d["entries"]} == {tx}
+
+    # And a scope where nothing at all is active is still an answer.
+    r._last_sweep_state.clear()
+    await r.handle_request(">wmap OK", "b")
+    d = _sweep_of(sent)[-1]
+    assert d["scope"] == [ok] and d["entries"] == [] and d["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_sweep_keeps_only_the_asked_states_runs_of_one_warning(monkeypatch):
+    """A warning over two states sent to a one-state sweep contributes that
+    state's runs and nothing else: a run never crosses a state line."""
+    r, sent = _responder(monkeypatch,
+                         [_warning("WS", "W", ["TXZ191", "OKZ010", "OKZ011"])])
+    await r.handle_request(">wmap OK", "a")
+    d = _sweep_of(sent)[0]
+    ok = b.tables.states.index("OK")
+    assert [(e["state"], e["start"], e["run"]) for e in d["entries"]] == [(ok, 10, 2)]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_state_is_not_available_reason_1(monkeypatch):
+    r, sent = _responder(monkeypatch, [_warning("TO", "W", ["TXC453"])])
+    await r.handle_request(">wmap TXZZ", "a")
+    d = v5.decode(sent[-1])
+    assert (d["name"], d["request"], d["reason"]) == (
+        "not_available", "w", v5.REASON_UNKNOWN_LOCATION
+    )
+    assert _sweep_of(sent) == []
+    # Nothing went out, so no state is inside a window.
+    assert r._last_sweep_state == {}
+
+
+@pytest.mark.asyncio
+async def test_the_cooldown_is_per_state_and_per_level(monkeypatch):
+    from meshcore_weather.protocol.broadcaster import SWEEP_COOLDOWN_S
+
+    active = [_warning("TO", "W", ["TXC453"]), _warning("SV", "W", ["OKC101"]),
+              _warning("HT", "Y", ["TXZ191"])]
+    r, sent = _responder(monkeypatch, active)
+    await r.handle_request(">wmap TX", "a")
+    assert len(_sweep_of(sent)) == 1
+
+    # The same ground, a different sender, inside the window: refused.
+    await r.handle_request(">wmap TX", "b")
+    d = v5.decode(sent[-1])
+    assert (d["name"], d["reason"]) == ("not_available", v5.REASON_RATE_LIMITED)
+
+    # Ground that was not covered: answered, however recent the other sweep.
+    await r.handle_request(">wmap OK", "c")
+    assert len(_sweep_of(sent)) == 2
+    # Texas and Oklahoma together: Oklahoma is inside its window but Texas is
+    # not the whole ask, so this is refused only when EVERY state is covered.
+    await r.handle_request(">wmap TXOK", "d")
+    d = v5.decode(sent[-1])
+    assert (d["name"], d["reason"]) == ("not_available", v5.REASON_RATE_LIMITED)
+
+    # A higher level is new information: `all` over ground covered plain goes.
+    await r.handle_request(">wmap all TX", "e")
+    every = _sweep_of(sent)[-1]
+    assert every["advisories"] is True and len(_sweep_of(sent)) == 3
+    # And plain over ground covered with advisories is refused: it says less.
+    await r.handle_request(">wmap TX", "f")
+    assert v5.decode(sent[-1])["reason"] == v5.REASON_RATE_LIMITED
+
+    # Just outside the window, the ground is free again.
+    r._last_sweep_state["TX"] = (time.time() - (SWEEP_COOLDOWN_S + 1), True)
+    await r.handle_request(">wmap TX", "g")
+    assert len(_sweep_of(sent)) == 4
+
+
+@pytest.mark.asyncio
+async def test_a_national_sweep_covers_every_state(monkeypatch):
+    """It is the whole country, so it closes every state's window, and a
+    scoped request for any of them inside the five minutes is refused."""
+    r, sent = _responder(monkeypatch, [_warning("TO", "W", ["TXC453"])])
+    await r.handle_request(">wmap", "a")
+    assert len(_sweep_of(sent)) == 1
+    assert set(r._last_sweep_state) == set(b.tables.states)
+    for code in ("TX", "AK", "PR"):
+        await r.handle_request(">wmap " + code, code)
+        assert v5.decode(sent[-1])["reason"] == v5.REASON_RATE_LIMITED
+    assert len(_sweep_of(sent)) == 1
+
+    # The other way round: two scoped sweeps do not add up to the country,
+    # so a national request is measured against national sweeps alone.
+    r._last_sweep = 0.0
+    await r.handle_request(">wmap", "h")
+    assert len(_sweep_of(sent)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_sweep_is_built_first_and_measured_against_the_hour(monkeypatch):
+    """A national sweep is refused before the work because it is always eight
+    packets. A scoped one is usually one, so it is built and then weighed."""
+    from meshcore_weather.protocol.broadcaster import PER_HOUR
+
+    r, sent = _responder(monkeypatch, [_warning("TO", "W", ["TXC453"])])
+    # Seven packets left: too few for a national sweep, plenty for this one.
+    r._sent.extend([time.time()] * (PER_HOUR - v5.MAX_SWEEP_PACKETS + 1))
+    await r.handle_request(">wmap TX", "a")
+    assert len(_sweep_of(sent)) == 1
+
+    # One packet of budget left and a two-packet sweep to send: refused, and
+    # the states it would have covered are not stamped.
+    active = [_warning("SV", "W", [f"OKC{n:03d}" for n in range(1, 120, 2)])]
+    r, sent = _responder(monkeypatch, active)
+    r._sent.extend([time.time()] * (PER_HOUR - 1))
+    await r.handle_request(">wmap OK", "b")
+    d = v5.decode(sent[-1])
+    assert (d["name"], d["reason"]) == ("not_available", v5.REASON_RATE_LIMITED)
+    assert _sweep_of(sent) == [] and r._last_sweep_state == {}
 
 
 @pytest.mark.asyncio

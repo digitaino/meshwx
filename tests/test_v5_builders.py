@@ -493,3 +493,77 @@ def test_f_request_by_index_carries_that_index(monkeypatch):
     asyncio.run(AppResponder(WeatherStore(), radio).handle_request(">f 454", "a"))
     d = v5.decode(radio.send_channel_data.await_args.args[0])
     assert d["name"] == "forecast" and d["point"] == 454
+
+
+# -- `>f <lat>,<lon>` (spec 8.2, revision 10) -------------------------------------------
+
+
+def _ask(monkeypatch, text):
+    """One request through the responder, returning the decoded answer."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+    from meshcore_weather.parser.weather import WeatherStore
+    from meshcore_weather.protocol.broadcaster import AppResponder
+    radio = MagicMock()
+    radio._mc.self_info = {"public_key": "1d04" + "00" * 30}
+    radio.send_channel_data = AsyncMock(return_value=True)
+    asyncio.run(AppResponder(WeatherStore(), radio, render_text=lambda c, a: None)
+                .handle_request(text, "a"))
+    return v5.decode(radio.send_channel_data.await_args.args[0])
+
+
+def test_a_coordinate_is_told_from_a_place_by_its_comma():
+    assert b.parse_latlon("35.687,-105.938") == (35.687, -105.938)
+    assert b.parse_latlon(" 35.687 , -105.938 ") == (35.687, -105.938)
+    assert b.parse_latlon("+30,-97") == (30.0, -97.0)
+    # A place is still a place, and a point index is still a point index.
+    for text in ("round rock tx", "austin, tx", "102", "78701", "35.687",
+                 "35.687,-105.938,0", "", "tx,ok"):
+        assert b.parse_latlon(text) is None
+    # Out of range reads as not a coordinate: the answer is reason 1 anyway.
+    for text in ("95.0,-105.9", "35.6,-200.1", "-91,0"):
+        assert b.parse_latlon(text) is None
+
+
+def test_f_at_a_coordinate_answers_under_the_bundled_point(monkeypatch):
+    """The same answer a resolved place gets. The point in the bundle at the
+    coordinates the bot actually used is what the answer carries."""
+    b.tables.load()
+    p = b.tables.points[102]
+    _serve(monkeypatch, _austin_point(lat=p[2], lon=p[3], name=p[0]))
+    d = _ask(monkeypatch, f">f {p[2]},{p[3]}")
+    assert d["name"] == "forecast" and d["point"] == 102
+
+
+def test_f_at_a_coordinate_answers_0xffff_off_the_bundle(monkeypatch):
+    """A point the bundle does not hold at those coordinates is 0xFFFF: the
+    phone labels it from the coordinate it asked for. `pfm_points.json` was
+    built from one day's products, so this is the ordinary case for the nine
+    offices it has no point for at all."""
+    # Central Nevada: the nearest bundled point is 70 km away, so whatever
+    # the bot forecasts for here is not in the list the phone ships.
+    b.tables.load()
+    assert b.tables.point_index(38.5, -116.5) == 0xFFFF
+    _serve(monkeypatch, _austin_point(lat=38.5, lon=-116.5, name="Railroad Valley-Nye NV"))
+    d = _ask(monkeypatch, ">f 38.5,-116.5")
+    assert d["name"] == "forecast" and d["point"] == 0xFFFF
+
+
+def test_f_at_a_coordinate_out_of_range_is_unknown_location(monkeypatch):
+    d = _ask(monkeypatch, ">f 95.0,-105.938")
+    assert (d["name"], d["request"], d["reason"]) == (
+        "not_available", "f", v5.REASON_UNKNOWN_LOCATION
+    )
+
+
+def test_f_at_a_coordinate_with_no_forecast_within_reach(monkeypatch):
+    """`nearest_pfm_point` stops at 80 km. Past that the bot holds nothing for
+    the place and says so, which is not the same as the bundle holding no
+    point near it."""
+    from meshcore_weather.core import services
+    monkeypatch.setattr(services, "nearest_pfm_point", lambda store, lat, lon: None)
+    assert services.FORECAST_MAX_KM == 80.0
+    d = _ask(monkeypatch, ">f 35.687,-105.938")
+    assert (d["name"], d["request"], d["reason"]) == (
+        "not_available", "f", v5.REASON_NO_DATA
+    )

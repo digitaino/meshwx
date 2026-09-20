@@ -417,7 +417,7 @@ var Portal = {
   // -- Text bot: command tester, behaviour, channels line -------------------------
 
   // Every gate between a request and an answer: where it stands, and when it
-  // opens. The bot rations itself in four places because it spends everyone's
+  // opens. The bot rations itself in five places because it spends everyone's
   // airtime; until this card they were invisible, so a refused request and a
   // lost one looked the same from here.
   limits: {

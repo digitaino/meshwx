@@ -30,11 +30,115 @@ PER_SENDER_S = 5.0
 PER_HOUR = 60                    # packets, not requests: a `>w` answer can be 7
 MAX_WARNINGS_PER_REQUEST = 6
 # `>wmap` is the one answer that can take eight packets at once, so it gets a
-# limit of its own on top of everything else: one sweep every 5 minutes
-# across ALL senders (spec 7C). It is never scheduled; it only ever answers.
-# The name is the portal's: its limits panel reads this constant and
-# `_last_sweep` to show when the next sweep may go out.
-SWEEP_COOLDOWN_S = 300.0            # one national sweep per 5 minutes, whoever asks (owner, 2026-09-20)
+# limit of its own on top of everything else: one sweep of the same ground
+# every 5 minutes across ALL senders (spec 7C). Since revision 10 "the same
+# ground" is per state, so the window is kept per state as well as nationally.
+# It is never scheduled; it only ever answers. The name is the portal's: its
+# limits panel reads this constant, `_last_sweep` and `_last_sweep_state` to
+# show when the next sweep may go out.
+SWEEP_COOLDOWN_S = 300.0            # one sweep per state per 5 minutes, whoever asks (owner, 2026-09-20)
+
+# `>part` (spec 7C/8.1, revision 10): the packets of the last few multi-packet
+# answers, kept so a phone that heard 4 of 7 can ask for the other 3 instead of
+# the whole map again. Eight answers is more than a busy minute produces, and
+# ten minutes is longer than a phone waits before it gives up on an assembly.
+PARTS_CACHE_S = 600.0
+PARTS_CACHE_GROUPS = 8
+# One resend of the same packet every 30 s, whoever asks: ten phones that all
+# missed packet 3 of one sweep cost one packet, not ten.
+PART_RESEND_FLOOR_S = 30.0
+
+
+class PartsCache:
+    """The transmitted bytes of the last few multi-packet answers.
+
+    Keyed by the `group` a packet actually went out with, which is why this is
+    filled at transmission and not where the answer was built: `group` is the
+    seq the first packet took from the radio, and nothing knows it until then.
+    """
+
+    def __init__(self, groups: int = PARTS_CACHE_GROUPS, seconds: float = PARTS_CACHE_S,
+                 floor: float = PART_RESEND_FLOOR_S):
+        self._max_groups = groups
+        self._seconds = seconds
+        self._floor = floor
+        # group byte -> {"at": when the first packet went out, "type": message
+        # type, "packets": {idx: bytes}, "sent": {idx: when it was last resent}}
+        self._groups: dict[int, dict] = {}
+
+    def remember(self, group: int, idx: int, data: bytes, mtype: int = 0,
+                 now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        self._expire(now)
+        held = self._groups.get(group)
+        if held is None:
+            held = self._groups[group] = {"at": now, "type": mtype,
+                                          "packets": {}, "sent": {}}
+            # The newest few answers, by when they started going out.
+            for old in sorted(self._groups, key=lambda g: self._groups[g]["at"])[:-self._max_groups]:
+                del self._groups[old]
+        held["packets"][idx] = bytes(data)
+
+    def lookup(self, group: int, indexes: list[int], now: float | None = None
+               ) -> tuple[list[bytes], list[int], list[int]]:
+        """What `>part` can answer with: (packets, indexes inside the resend
+        floor, indexes this bot does not hold)."""
+        now = time.time() if now is None else now
+        self._expire(now)
+        held = self._groups.get(group)
+        if held is None:
+            return [], [], list(indexes)
+        packets, waiting, unknown = [], [], []
+        for idx in indexes:
+            data = held["packets"].get(idx)
+            if data is None:
+                unknown.append(idx)
+            elif now - held["sent"].get(idx, 0.0) < self._floor:
+                waiting.append(idx)
+            else:
+                packets.append(data)
+        return packets, waiting, unknown
+
+    def stamp(self, group: int, indexes: list[int], now: float | None = None) -> None:
+        """Start the 30 s floor on the packets that just went out again."""
+        now = time.time() if now is None else now
+        held = self._groups.get(group)
+        if held is None:
+            return
+        for idx in indexes:
+            if idx in held["packets"]:
+                held["sent"][idx] = now
+
+    def kind(self, group: int) -> str:
+        """What sort of answer this group was, for the log's wording. The
+        request does not carry it and the packets do not need it."""
+        held = self._groups.get(group)
+        return v5.TYPE_NAMES.get((held or {}).get("type"), "answer")
+
+    def clear_floors(self) -> None:
+        """Let every held packet be asked for again now. The packets stay:
+        dropping them would close this gate, not open it."""
+        for held in self._groups.values():
+            held["sent"].clear()
+
+    def status(self, now: float | None = None) -> dict:
+        """What the portal's limits card shows: how much is held, how old the
+        oldest answer is, and when the next resend is allowed."""
+        now = time.time() if now is None else now
+        self._expire(now)
+        sent = [t for held in self._groups.values() for t in held["sent"].values()
+                if now - t < self._floor]
+        return {
+            "groups": len(self._groups),
+            "packets": sum(len(h["packets"]) for h in self._groups.values()),
+            "oldest_age_s": int(now - min((h["at"] for h in self._groups.values()), default=now)),
+            "waiting": len(sent),
+            "opens_in_s": int(max((self._floor - (now - t) for t in sent), default=0)),
+        }
+
+    def _expire(self, now: float) -> None:
+        for group in [g for g, h in self._groups.items() if now - h["at"] > self._seconds]:
+            del self._groups[group]
 
 
 class AppResponder:
@@ -47,14 +151,21 @@ class AppResponder:
         # Set when the bot's product backlog is in. While it is not, requests
         # are answered Not available and the scheduler broadcasts nothing.
         self._ready = ready
-        self._scheduler = Scheduler(store=store, radio=radio, ready=ready)
+        # The scheduler fills the cache as it stamps packets and hands them to
+        # the radio, which is the only place a group is known (spec 7C).
+        self._parts = PartsCache()
+        self._scheduler = Scheduler(store=store, radio=radio, ready=ready, parts=self._parts)
         self._render_text = render_text          # the text bot's renderer, for narrative products
         self._last_by_sender: dict[str, float] = {}
         self._sent: deque[float] = deque(maxlen=PER_HOUR * 2)
-        # When the last Area sweep actually went on air, not when one was
-        # asked for: a sweep that was built and never sent must not lock the
-        # next ten minutes out (spec 7C).
+        # When the last national Area sweep actually went on air, and whether
+        # it carried advisories. Not when one was asked for: a sweep that was
+        # built and never sent must not lock the next five minutes out (7C).
         self._last_sweep = 0.0
+        self._last_sweep_advisories = False
+        # state code -> (when a sweep last covered it, with advisories or not).
+        # A national sweep covers every state; a scoped one covers its own.
+        self._last_sweep_state: dict[str, tuple[float, bool]] = {}
 
     @property
     def scheduler(self):
@@ -106,6 +217,11 @@ class AppResponder:
             return "hourly budget spent"
         # Scratch numbering: Scheduler.transmit stamps the real seq on air.
         seq, bot = b.SeqCounter(), self._scheduler.bot_id()
+        # `>part` sends bytes that already went out once, so it neither builds
+        # an answer nor lets the stamping step touch `group`. It also has a
+        # silence of its own (below), which `_answer` has no way to say.
+        if cmd == "part":
+            return await self._resend_parts(arg, seq, bot, now, ev)
         try:
             msgs = self._answer(cmd, arg, seq, bot)
         except Exception:
@@ -115,11 +231,93 @@ class AppResponder:
             msgs = [b.not_available(seq.next(), bot, cmd, v5.REASON_NO_DATA)]
         n, nbytes = await self._scheduler.transmit(msgs, f"app request {text.strip()[:24]!r}", ev=ev)
         self._sent.extend([now] * n)
-        # The five-minute sweep window starts when the sweep went out, so it is
-        # stamped here and only when the radio took at least one packet.
-        if n and msgs[0][3] >> 4 == v5.TYPE_AREA_SWEEP:
-            self._last_sweep = time.time()
+        # The five-minute window starts when the sweep went out, so it is
+        # stamped here and only when the radio took at least one packet. Only
+        # `>wmap` starts it: a `>part` that happens to resend sweep packets is
+        # not a new sweep, and the packets it resends carry a scope of their
+        # own that says nothing about now.
+        if n and cmd == "wmap" and msgs[0][3] >> 4 == v5.TYPE_AREA_SWEEP:
+            self._stamp_sweep(v5.decode(msgs[0]))
         return f"{n} packet(s), {nbytes} B"
+
+    async def _resend_parts(self, arg: str, seq: b.SeqCounter, bot: int,
+                            now: float, ev: dict | None) -> str:
+        """`>part <group> <idx>[,<idx>…]`: the named packets of a multi-packet
+        answer again, identical but for a fresh `seq` (spec 7C, revision 10).
+
+        Three outcomes. Nothing held under that group, or none of the indexes
+        in it: Not available, letter `p`, reason 0 — the phone should ask for
+        the whole answer again. Every index held but inside its 30 s floor:
+        silence, because another phone has just been sent those same bytes and
+        this one is about to hear them. Otherwise the packets go out.
+        """
+        ask = b.parse_parts_request(arg)
+        if ask is None:
+            logger.info("Could not read a `>part` request: %r", arg)
+            return await self._send_not_available(seq, bot, "p", v5.REASON_NO_DATA, now, ev)
+        group, indexes = ask
+        packets, waiting, unknown = self._parts.lookup(group, indexes)
+        if not packets and not waiting:
+            logger.info("`>part` for group %d: %s not held", group, unknown)
+            return await self._send_not_available(seq, bot, "p", v5.REASON_NO_DATA, now, ev)
+        if not packets:
+            # Not an error: the answer is already on the air for everyone.
+            logger.info("`>part` for group %d: %s resent inside the last %.0fs; sending nothing",
+                        group, waiting, PART_RESEND_FLOOR_S)
+            return "already resent"
+        n, nbytes = await self._scheduler.transmit(
+            packets,
+            f"app request '>part {group} {','.join(str(i) for i in indexes)}'"
+            f" ({self._parts.kind(group)})",
+            ev=ev, keep_groups=True)
+        self._sent.extend([now] * n)
+        # Stamped once the radio took something, the way the sweep window is.
+        # A batch the radio refused outright leaves the floor open, so the
+        # phone's next ask is answered rather than met with silence.
+        if n:
+            self._parts.stamp(group, indexes)
+        return f"{n} packet(s), {nbytes} B"
+
+    async def _send_not_available(self, seq: b.SeqCounter, bot: int, letter: str,
+                                  reason: int, now: float, ev: dict | None) -> str:
+        msg = b.not_available(seq.next(), bot, letter, reason)
+        n, nbytes = await self._scheduler.transmit(
+            [msg], f"not available for {letter!r}", ev=ev)
+        self._sent.extend([now] * n)
+        return f"{n} packet(s), {nbytes} B"
+
+    def _stamp_sweep(self, sweep: dict) -> None:
+        """Record what a sweep just covered, so the next request for the same
+        ground inside five minutes is refused and one for other states is not.
+
+        The states come from the packet itself rather than from the request:
+        the bytes on the air are what other phones heard, which is what the
+        cooldown is really about.
+        """
+        b.tables.load()
+        at, advisories = time.time(), bool(sweep.get("advisories"))
+        if sweep.get("scoped"):
+            codes = [b.tables.states[i] for i in sweep.get("scope") or []
+                     if i < len(b.tables.states)]
+        else:
+            codes = list(b.tables.states)
+            self._last_sweep = at
+            self._last_sweep_advisories = advisories
+        for code in codes:
+            self._last_sweep_state[code] = (at, advisories)
+
+    def _sweep_is_cooling(self, states: list[str], advisories: bool, now: float) -> bool:
+        """Was this ground covered in the last five minutes, at this level or
+        a higher one? A national request asks about the country, so only a
+        national sweep answers it: two scoped sweeps do not add up to one."""
+        if not states:
+            return (now - self._last_sweep < SWEEP_COOLDOWN_S
+                    and (self._last_sweep_advisories or not advisories))
+        for code in states:
+            at, had_advisories = self._last_sweep_state.get(code, (0.0, False))
+            if now - at >= SWEEP_COOLDOWN_S or (advisories and not had_advisories):
+                return False        # this one has not been covered: build it
+        return True
 
     def _answer(self, cmd: str, arg: str, seq: b.SeqCounter, bot: int) -> list[bytes]:
         ctx = self._scheduler.context()
@@ -162,25 +360,38 @@ class AppResponder:
                                             source=store_source))
             return out
 
-        # `>wmap`: the national picture as an Area sweep (spec 7C). Up to eight
-        # packets in one answer, so it carries limits nothing else needs: never
-        # scheduled, one sweep every 5 minutes across all senders, and only
-        # started when a whole sweep still fits in the hour's budget. A request
-        # inside either limit is answered with the 6-byte Not available rather
-        # than silence, because this is the one request an app is told to wait
-        # on. Coverage does not filter it: the point is the whole country.
+        # `>wmap [all] [states]`: the picture as an Area sweep (spec 7C). Up to
+        # eight packets in one answer, so it carries limits nothing else needs:
+        # never scheduled, one sweep per state every 5 minutes across all
+        # senders, and only started when the whole sweep still fits in the
+        # hour's budget. A request inside either limit is answered with the
+        # 6-byte Not available rather than silence, because this is the one
+        # request an app is told to wait on. Coverage does not filter it: the
+        # point is ground the bot does not itself cover.
         if cmd == "wmap":
-            since = time.time() - self._last_sweep
-            if since < SWEEP_COOLDOWN_S:
-                logger.info("Area sweep asked for %.0fs after the last one; rate limited", since)
+            parsed = b.parse_sweep_request(arg)
+            if parsed is None:
+                logger.info("Could not read the states in `>wmap %s`", arg.strip())
+                return [b.not_available(seq.next(), bot, cmd, v5.REASON_UNKNOWN_LOCATION)]
+            advisories, states = parsed
+            if self._sweep_is_cooling(states, advisories, time.time()):
+                logger.info("Area sweep of %s asked for inside the %.0fs window; rate limited",
+                            " ".join(states) or "the country", SWEEP_COOLDOWN_S)
                 return [b.not_available(seq.next(), bot, cmd, v5.REASON_RATE_LIMITED)]
-            if len(self._sent) + v5.MAX_SWEEP_PACKETS > PER_HOUR:
+            # A national sweep is eight packets until it is built, so it is
+            # refused before the work; a scoped one is usually one or two, so
+            # it is built first and measured against what the hour has left.
+            if not states and len(self._sent) + v5.MAX_SWEEP_PACKETS > PER_HOUR:
                 logger.info("Area sweep needs %d packets and %d remain this hour; rate limited",
                             v5.MAX_SWEEP_PACKETS, PER_HOUR - len(self._sent))
                 return [b.not_available(seq.next(), bot, cmd, v5.REASON_RATE_LIMITED)]
-            return b.area_sweep_messages(seq, bot, self.store,
-                                         advisories=arg.strip().lower() == "all",
-                                         source=store_source)
+            msgs = b.area_sweep_messages(seq, bot, self.store, advisories=advisories,
+                                         states=states, source=store_source)
+            if states and len(self._sent) + len(msgs) > PER_HOUR:
+                logger.info("Area sweep of %s is %d packets and %d remain this hour; rate limited",
+                            " ".join(states), len(msgs), PER_HOUR - len(self._sent))
+                return [b.not_available(seq.next(), bot, cmd, v5.REASON_RATE_LIMITED)]
+            return msgs
 
         if cmd == "wt":
             ident = b.parse_identity(arg)
@@ -209,6 +420,13 @@ class AppResponder:
             lat = lon = point = None
             if not arg and ctx.home is not None:
                 lat, lon = ctx.home
+            # `>f 35.687,-105.938`: a coordinate, answered through the same
+            # path a resolved place takes, so a phone that knows of no bundled
+            # point near it can still ask (spec 8.2, revision 10). `point`
+            # stays None: the answer carries the bundle index of the point the
+            # bot actually used, or 0xFFFF when it is not in the bundle.
+            elif (coord := b.parse_latlon(arg)) is not None:
+                lat, lon = coord
             elif arg.isdigit() and len(arg) <= 4:      # a point index; 5 digits is a ZIP
                 b.tables.load()
                 try:
