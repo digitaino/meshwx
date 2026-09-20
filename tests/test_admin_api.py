@@ -348,3 +348,62 @@ def test_legacy_routes_are_gone(client):
         assert c.get(path).status_code in (404, 405), path
     assert c.post("/api/actions/v2-request", json={}).status_code in (404, 405)
     assert c.get("/").status_code == 200 and "Meshcore Weather" in c.get("/").text
+
+
+# -- Limits and cooldowns ---------------------------------------------------------
+
+
+def test_limits_are_visible_and_resettable(client, monkeypatch):
+    """The four gates between a request and an answer, and the button that
+    opens one by hand. Until this card an operator could not tell a refusal
+    from a silence."""
+    import time
+
+    from meshcore_weather.protocol import broadcaster as bc
+
+    c, bot = client
+    rows = c.get("/api/limits").json()["rows"]
+    by_id = {r["id"]: r for r in rows}
+    # With no broadcaster the channel row still stands on its own.
+    assert "channel" in by_id
+
+    # Give the bot a responder holding a spent hour and a sender inside the floor.
+    now = time.time()
+    bot._broadcaster = SimpleNamespace(
+        _sent=[now - 60] * bc.PER_HOUR,
+        _last_by_sender={"abc": now - 1.0},
+        _last_sweep_at=now - 60,
+    )
+    rows = c.get("/api/limits").json()["rows"]
+    by_id = {r["id"]: r for r in rows}
+    assert by_id["budget"]["state"] == "spent"
+    assert by_id["budget"]["used"] == bc.PER_HOUR
+    assert by_id["budget"]["opens_in_s"] > 3000
+    assert by_id["sender"]["state"] == "cooling"
+    assert 0 < by_id["sender"]["opens_in_s"] <= bc.PER_SENDER_S
+    assert by_id["sweep"]["state"] == "cooling"
+    assert by_id["sweep"]["opens_in_s"] > 0
+
+    assert c.post("/api/limits/reset", json={"id": "budget"}).status_code == 200
+    assert not bot._broadcaster._sent
+    c.post("/api/limits/reset", json={"id": "sweep"})
+    assert bot._broadcaster._last_sweep_at == 0.0
+    rows = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}
+    assert rows["budget"]["state"] == "ready" and rows["sweep"]["state"] == "ready"
+
+    assert c.post("/api/limits/reset", json={"id": "nonsense"}).status_code == 400
+
+
+def test_the_channel_reply_limits_show_what_they_are_holding(client):
+    import time
+
+    c, bot = client
+    now = time.time()
+    bot._channel_replies = [now - 30] * WeatherBot.CHANNEL_REPLY_PER_HOUR
+    bot._channel_reply_by_sender = {"stranger": now - 30}
+    row = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}["channel"]
+    assert row["state"] == "spent"
+    assert row["used"] == WeatherBot.CHANNEL_REPLY_PER_HOUR
+    assert row["opens_in_s"] > 3000
+    c.post("/api/limits/reset", json={"id": "channel"})
+    assert not bot._channel_replies and not bot._channel_reply_by_sender

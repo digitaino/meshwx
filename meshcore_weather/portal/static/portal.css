@@ -245,3 +245,20 @@ details > summary { cursor: pointer; color: var(--color-text-secondary); }
   .card-header { flex-direction: column; }
   .stream-page { height: 60vh; }
 }
+
+/* Limits and cooldowns: rule, state, countdown, reset. */
+.limits { display: flex; flex-direction: column; }
+.limit-row {
+  display: grid;
+  grid-template-columns: minmax(12rem, 2fr) 2fr 9rem auto;
+  gap: .75rem;
+  align-items: start;
+  padding: .55rem 0;
+  border-top: 1px solid var(--color-border);
+}
+.limit-row:first-child { border-top: 0; }
+.limit-name { font-weight: 600; }
+.limit-row > :nth-child(3) { white-space: nowrap; }
+@media (max-width: 720px) {
+  .limit-row { grid-template-columns: 1fr auto; }
+}

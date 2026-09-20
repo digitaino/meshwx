@@ -416,6 +416,76 @@ var Portal = {
 
   // -- Text bot: command tester, behaviour, channels line -------------------------
 
+  // Every gate between a request and an answer: where it stands, and when it
+  // opens. The bot rations itself in four places because it spends everyone's
+  // airtime; until this card they were invisible, so a refused request and a
+  // lost one looked the same from here.
+  limits: {
+    _timer: null, _rows: [], _at: 0,
+
+    start: function () {
+      var self = this;
+      this.refresh();
+      if (this._timer) clearInterval(this._timer);
+      this._timer = setInterval(function () { self.tick(); }, 1000);
+    },
+    stop: function () { if (this._timer) { clearInterval(this._timer); this._timer = null; } },
+
+    refresh: function () {
+      var self = this;
+      api("/api/limits").then(function (d) {
+        self._rows = d.rows || [];
+        self._at = Date.now();
+        self.render();
+      }).catch(function () {});
+    },
+
+    // The countdowns run in the browser between polls, so the card ticks down
+    // a second at a time instead of jumping every fifteen.
+    tick: function () {
+      var elapsed = (Date.now() - this._at) / 1000;
+      var stale = false;
+      this._rows.forEach(function (r) {
+        if (r.opens_in_s > 0 && r.opens_in_s - elapsed <= 0) stale = true;
+      });
+      if (stale || elapsed > 15) { this.refresh(); return; }
+      this.render(elapsed);
+    },
+
+    render: function (elapsed) {
+      var body = $("limits-body");
+      if (!body) return;
+      elapsed = elapsed || 0;
+      body.innerHTML = this._rows.map(function (r) {
+        var left = Math.max(0, Math.round((r.opens_in_s || 0) - elapsed));
+        var dot = left > 0 ? "dot-yellow" : (r.state === "spent" ? "dot-red" : "dot-green");
+        var when = left > 0
+          ? "in " + (left >= 60 ? Math.floor(left / 60) + "m " + ("0" + (left % 60)).slice(-2) + "s" : left + "s")
+          : "ready";
+        var btn = r.resettable
+          ? '<button class="btn btn-mini" onclick="Portal.limits.reset(' + JSON.stringify(r.id).replace(/"/g, "&quot;") + ')">Reset</button>'
+          : "";
+        return '<div class="limit-row">' +
+          '<div><span class="dot ' + dot + '"></span><span class="limit-name">' + esc(r.name) + "</span>" +
+          '<div class="text-small text-muted">' + esc(r.rule) + "</div></div>" +
+          '<div class="text-small">' + esc(r.detail) + "</div>" +
+          '<div class="text-small text-mono">' + esc(when) + "</div>" +
+          "<div>" + btn + "</div></div>";
+      }).join("");
+    },
+
+    // Resetting spends airtime the rule was holding back, so it says so.
+    reset: function (id) {
+      var self = this;
+      api("/api/limits/reset", { method: "POST", body: { id: id } }).then(function (d) {
+        self._rows = d.rows || [];
+        self._at = Date.now();
+        self.render();
+        Portal.ui.toast("Limit cleared: the next request is answered", true);
+      }).catch(function (e) { Portal.ui.toast("Reset: " + e.message, false); });
+    },
+  },
+
   textbot: {
     _loaded: false, _orig: {},
     _keys: ["MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
@@ -432,8 +502,9 @@ var Portal = {
       }
       this.loadBehaviour();
       Portal.traffic.start();
+      Portal.limits.start();
     },
-    onLeave: function () { Portal.traffic.stop(); },
+    onLeave: function () { Portal.traffic.stop(); Portal.limits.stop(); },
 
     loadBehaviour: function () {
       var self = this;

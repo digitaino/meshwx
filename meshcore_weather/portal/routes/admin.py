@@ -7,6 +7,7 @@ portal has no login: keep it on the LAN or gate it at the edge (see server.py)."
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import subprocess
@@ -27,6 +28,8 @@ from meshcore_weather.portal.sse import sse_response
 from meshcore_weather.traffic import KINDS as TRAFFIC_KINDS, traffic_log
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 # .env keys the portal may write. Anything else is refused.
 ENV_WRITABLE = {
@@ -470,6 +473,135 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
         "broadcasts": {"24h": activity_log.stats(1440), "1h": activity_log.stats(60)},
         "recent": traffic_log.recent(n, public=True),
     })
+
+
+# -- Limits and cooldowns -------------------------------------------------------------
+
+
+def _limit_rows(bot) -> list[dict]:
+    """Every gate between a request and an answer, and when it opens again.
+
+    The bot spends other people's airtime, so it rations itself in four
+    places, and until now none of them could be seen from here: an operator
+    watching a request go unanswered had no way to tell a refusal from a
+    silence. Each row says what the rule is, where it stands, and how many
+    seconds until it lets the next one through.
+    """
+    from meshcore_weather.protocol import broadcaster as bc
+
+    now = time.time()
+    rows: list[dict] = []
+    responder = getattr(bot, "_broadcaster", None)
+
+    if responder is not None:
+        sent = [t for t in getattr(responder, "_sent", []) if now - t <= 3600]
+        cap = getattr(bc, "PER_HOUR", 60)
+        spent = len(sent) >= cap
+        rows.append({
+            "id": "budget",
+            "name": "App answer budget",
+            "rule": f"{cap} packets an hour, all app requests together",
+            "detail": f"{len(sent)} of {cap} packets in the last hour",
+            "used": len(sent), "cap": cap,
+            "state": "spent" if spent else "ready",
+            "opens_in_s": int(3600 - (now - min(sent))) if spent and sent else 0,
+            "resettable": True,
+        })
+
+        floor = getattr(bc, "PER_SENDER_S", 5.0)
+        waiting = {k: v for k, v in getattr(responder, "_last_by_sender", {}).items()
+                   if now - v < floor}
+        rows.append({
+            "id": "sender",
+            "name": "Per-sender floor",
+            "rule": f"one request every {floor:.0f} s from the same radio",
+            "detail": (f"{_radios(len(waiting))} inside the window"
+                       if waiting else "nobody waiting"),
+            "used": len(waiting), "cap": None,
+            "state": "cooling" if waiting else "ready",
+            "opens_in_s": int(max((floor - (now - v) for v in waiting.values()), default=0)),
+            "resettable": bool(waiting),
+        })
+
+        last_sweep = 0.0
+        for attr in ("_last_sweep_at", "_last_sweep", "_sweep_at"):
+            last_sweep = getattr(responder, attr, 0.0) or last_sweep
+        cooldown = getattr(bc, "SWEEP_COOLDOWN_S", 300.0)
+        left = max(0.0, cooldown - (now - last_sweep)) if last_sweep else 0.0
+        rows.append({
+            "id": "sweep",
+            "name": "Alert map sweep",
+            "rule": f"one national sweep every {cooldown / 60:.0f} min, whoever asks",
+            "detail": ("never sent" if not last_sweep else
+                       f"last sent {_ago(now - last_sweep)} ago"),
+            "used": None, "cap": None,
+            "state": "cooling" if left > 0 else "ready",
+            "opens_in_s": int(left),
+            "resettable": left > 0,
+        })
+
+    replies = [t for t in getattr(bot, "_channel_replies", []) if now - t <= 3600]
+    per_hour = getattr(type(bot), "CHANNEL_REPLY_PER_HOUR", 12)
+    per_sender = getattr(type(bot), "CHANNEL_REPLY_PER_SENDER_S", 600)
+    holding = {k: v for k, v in getattr(bot, "_channel_reply_by_sender", {}).items()
+               if now - v < per_sender}
+    spent = len(replies) >= per_hour
+    rows.append({
+        "id": "channel",
+        "name": "Channel replies to strangers",
+        "rule": f"{per_hour} an hour, and one per radio every {per_sender // 60} min",
+        "detail": (f"{len(replies)} of {per_hour} this hour"
+                   + (f", {_radios(len(holding))} inside their own window" if holding else "")),
+        "used": len(replies), "cap": per_hour,
+        "state": "spent" if spent else ("cooling" if holding else "ready"),
+        "opens_in_s": (int(3600 - (now - min(replies))) if spent and replies
+                       else int(max((per_sender - (now - v) for v in holding.values()), default=0))),
+        "resettable": bool(replies or holding),
+    })
+    return rows
+
+
+def _radios(n: int) -> str:
+    return "1 radio" if n == 1 else f"{n} radios"
+
+
+def _ago(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 5400:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h"
+
+
+@router.get("/limits")
+async def limits(request: Request) -> JSONResponse:
+    return JSONResponse({"t": time.time(), "rows": _limit_rows(_bot(request))})
+
+
+@router.post("/limits/reset")
+async def limits_reset(request: Request) -> JSONResponse:
+    """Clear one gate by hand. The operator's own bot, and every reset is
+    logged: it spends airtime that the rule was holding back."""
+    body = await _body(request)
+    which = str(body.get("id") or "")
+    bot = _bot(request)
+    responder = getattr(bot, "_broadcaster", None)
+    if which == "budget" and responder is not None:
+        getattr(responder, "_sent").clear()
+    elif which == "sender" and responder is not None:
+        getattr(responder, "_last_by_sender").clear()
+    elif which == "sweep" and responder is not None:
+        for attr in ("_last_sweep_at", "_last_sweep", "_sweep_at"):
+            if hasattr(responder, attr):
+                setattr(responder, attr, 0.0)
+    elif which == "channel":
+        getattr(bot, "_channel_replies", []).clear()
+        getattr(bot, "_channel_reply_by_sender", {}).clear()
+    else:
+        raise HTTPException(400, f"unknown limit {which!r}")
+    logger.warning("Portal: %s limit reset by hand", which)
+    return JSONResponse({"ok": True, "rows": _limit_rows(bot)})
 
 
 # -- Logs, host, settings -------------------------------------------------------------

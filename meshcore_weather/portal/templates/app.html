@@ -78,6 +78,15 @@
         <div id="traffic-body" class="stream stream-tall"></div>
       </div>
 
+      <div class="card">
+        <div class="card-header">
+          <div><div class="card-title">Limits and cooldowns</div>
+            <div class="card-subtitle">Every gate between a request and an answer: the rule, where it stands, and when it opens. Resetting one spends airtime it was holding back.</div></div>
+          <button class="btn btn-mini" onclick="Portal.limits.refresh()">Refresh</button>
+        </div>
+        <div id="limits-body" class="limits"></div>
+      </div>
+
       <div class="grid grid-2">
         <div>
           <div class="card">
