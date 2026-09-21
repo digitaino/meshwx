@@ -109,7 +109,12 @@ function devlog(req, res) {
 createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost')
   if (url.pathname.startsWith('/api/bridge/')) return proxyBridge(req, res)
-  if (url.pathname === '/__devlog' && req.method === 'POST') return devlog(req, res)
+  if (url.pathname === '/__devlog') {
+    // The page asks before it posts, so that the same files served by anything else stay quiet.
+    if (req.method === 'POST') return devlog(req, res)
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    return res.end('{"ok":true}')
+  }
   if (req.method !== 'GET' && req.method !== 'HEAD') return notFound(res)
   if (url.pathname.startsWith('/data/')) return serveFile(res, safeJoin(dataRoot, url.pathname.slice('/data/'.length)))
   return serveFile(res, safeJoin(webRoot, url.pathname))

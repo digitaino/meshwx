@@ -17,6 +17,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 
 - **An operator node.** In production: a Raspberry Pi 4 (2 GB) running goestools for the dish and this bot for the mesh, with a MeshCore companion radio on USB, under systemd. Any Linux or macOS box with internet EMWIN works for development.
 - **MeshWX v5 for apps.** Warnings with storm tags, polygons and county/zone runs, cancels, an active-warning digest for loss recovery, batched observations, point forecasts, text and "not available", each one MeshCore `GRP_DATA` packet on `#meshwx`. The mesh carries identifiers and numbers; the phone carries the tables. Spec: [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md).
+- **Two clients.** A native iOS app ([DigitainoMesh](https://github.com/digitaino/DigitainoMesh)) and a web client in this repository (`web/`), which runs in any Chromium browser and talks to a MeshCore radio over Web Bluetooth or Web Serial. Same wire format, same tables, same words: see [The web client](#the-web-client).
 - **Text replies for people.** Anyone on `#meshwx` can send `wx austin tx`, `warn TX` or `sat`, on the channel or by DM, and get a text reply, by DM where the bot can reach them. Long replies are paged with `more`. This is how people without the app use the bot.
 - **One request grammar for apps and people.** An app sends `>f 102` and gets a binary answer on the channel for every listener; a person sends `forecast austin tx` and gets text. An app's `>` arrives as a flooded Request datagram (v5 type 9), by DM, or as channel text; the answer is the same either way.
 - **Delivery confirmation.** The radio hears a repeater's copy of each channel packet the bot sends. When none comes back within the echo window, the packet goes out once more, byte for byte the same, so nobody sees it twice. DM replies wait for the recipient's ACK instead: about 2 s after the request, one at a time per person, one timestamp for all tries (attempts 0 and 1 on the route, then one by flood). A phone's resend of a request is not answered twice.
@@ -48,8 +49,69 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 | Admin portal and public dashboard | shipped |
 | Accuracy audit (`scripts/audit.py`) | shipped |
 | MQTT packet publishing for CoreScope | shipped, off by default |
-| iOS client | building against v5 |
+| iOS client | in beta, revision 11 |
+| Web client (`web/`), Chromium over Bluetooth or USB | shipped, revision 11 |
+| A downloadable copy of the web client (`web/tools/package.mjs`) | shipped |
 | Standalone e-ink dashboard | idea parked in `docs/Future_EInk_Dashboard.md` |
+
+## The web client
+
+`web/` is the whole weather tool as a web page: alerts, conditions, forecasts,
+the area map and radar, from a `WX-` bot over a MeshCore radio on **Web
+Bluetooth** or **Web Serial**. It is a port of the iOS tool layer for layer and
+follows the same documents, so the two say the same things in the same words.
+No build step, no dependencies, no internet: the tables, the map outlines and
+the eleven languages are all in the folder, and after the first visit the
+browser keeps it and it works offline.
+
+What a person needs:
+
+| | |
+|---|---|
+| A browser | Chrome, Edge, Brave or Vivaldi on macOS, Windows, Linux or Chrome OS, or Chrome on Android. Safari and Firefox have no Web Bluetooth or Web Serial |
+| A radio | A MeshCore companion radio, firmware 1.15 or newer, over Bluetooth or USB. A radio talks to one companion at a time, so it has to be disconnected from the phone's MeshCore app first |
+| A bot in reach | Any `WX-` node on `#meshwx`. Without one there is still `?link=demo`, a recorded morning |
+| A way to open the folder | The page has to come from `https://` or `http://localhost`, which is what a browser calls a secure context and what it wants before it hands out Bluetooth. `file://` will not do |
+
+From this checkout, for development:
+
+```bash
+cd web
+node tools/dev-server.mjs          # http://localhost:8137
+node --test test/                  # the suite
+```
+
+The dev server serves `/data/` straight out of `meshcore_weather/client_data/`,
+so a table the bot regenerates is on the page at the next reload, and it
+proxies the debug bridge. Details, and the porting rules, in
+[`web/README.md`](web/README.md).
+
+### Giving it to somebody else
+
+They do not need this repository, Python, or anything the bot needs:
+
+```bash
+cd web
+npm run package                    # dist/meshwx-web/ and dist/meshwx-web.zip
+```
+
+`web/tools/package.mjs` copies the client and the parts of `client_data/` it
+reads into one folder that is a plain static site, and adds a README and a
+small `serve.mjs`. Nothing is bundled or minified: what ships is the code in
+this repository, file for file. The download is 5.7 MB, 20.5 MB unfolded,
+most of it the zone and county outlines — `--no-outlines` leaves those out for
+1.9 MB, and the maps then draw without the shapes.
+
+Whoever receives it unzips it and runs one command:
+
+```bash
+node serve.mjs                     # then open http://localhost:8137
+python3 -m http.server 8137        # or this, if they have no Node
+```
+
+Or put the same folder on a web server **over https**, which is the only way a
+phone will give the page Bluetooth, and nobody has to download anything at all.
+It is static files, so any host will do, including a Pi already on the mesh.
 
 ## Wire format at a glance
 
@@ -118,10 +180,17 @@ Reference codec: [`meshcore_weather/protocol/v5.py`](meshcore_weather/protocol/v
 
 ## For client developers (iOS, web, embedded)
 
-Start and finish with **`docs/MeshWX_v5_Spec.md`**. If you built against
-revision 2, read its section 16 first: the wire layout did not change, the
-bundle did. Decode the test vectors, ship the `client_data/` bundle, follow
-the request rules.
+Start and finish with **`docs/MeshWX_v5_Spec.md`**, revision 11. Decode the
+test vectors, ship the `client_data/` bundle, follow the request rules. If you
+built against an earlier revision, its sections 16 to 16F are what changed and
+in which order; no field has ever moved, and an unknown type is ignored, so an
+old client keeps working and simply learns less.
+
+Two implementations to read against it, both complete and both carrying the
+vectors as tests: the iOS app in
+[DigitainoMesh](https://github.com/digitaino/DigitainoMesh) and the web client
+in [`web/`](web/README.md), which is the smaller of the two to read and needs
+nothing but a browser to run.
 
 Revision 6 adds one message, and it is the only one an app sends: the
 Request datagram of section 7B. Send `>` requests that way — same channel,
@@ -741,12 +810,15 @@ docs/        below
 
 ## Docs
 
-- [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md) — the protocol and the app developer's guide (wire, requests, bundle, rendering), revision 6. The current contract.
+- [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md) — the protocol and the app developer's guide (wire, requests, bundle, rendering), revision 11. The current contract.
 - [`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json) — test vectors every client must pass, generated by `scripts/v5_vectors.py`
 - [`docs/Radio_Swap.md`](docs/Radio_Swap.md) — replacing the radio (same or different board): the node profile, adoption, the udev rule, the Health card
 - [`docs/Delivery_Confirmation_Design.md`](docs/Delivery_Confirmation_Design.md) — echo tracking and the single resend: the design and the firmware facts it rests on
 - [`docs/USB_Radio_Restart.md`](docs/USB_Radio_Restart.md) — what happens on the Pi when the USB radio is unplugged, dies or reboots, and what to check
 - [`docs/Future_EInk_Dashboard.md`](docs/Future_EInk_Dashboard.md) — parked idea for a standalone e-ink display, written against the v4 message codes
+- [`web/README.md`](web/README.md) — the web client: running it, packaging it for somebody else, the radio settings screen, the radar card, and how the folder is laid out
+- [`web/docs/PORTING.md`](web/docs/PORTING.md) — the rules the port follows: Swift names kept, layer order, what a screen may import
+- [`web/docs/UI_KIT.md`](web/docs/UI_KIT.md) — the client's own small UI framework, for anyone adding a screen to it
 
 Dated reviews, kept as records of what was found and changed at the time.
 Where they disagree with the spec or the code, the spec and the code are
@@ -783,6 +855,10 @@ Shipped:
 - [x] MeshWX v5 revision 5: GRP_DATA on `#meshwx`, warning/cancel/digest/observations/forecast/text/not available/coverage, `>` request grammar, per-station observation ages and warning issue times
 - [x] MeshWX v5 revision 6: the Request datagram (type 9) — an app's `>` flooded on `#meshwx` instead of DMed down a route that may have gone stale
 - [x] MeshWX v5 revision 7: the data source in the flags nibble (GOES dish / internet / both), and a cut flag on Text replies trimmed at a sentence instead of mid-word
+- [x] MeshWX v5 revision 8: `>o` answers with the nearest station within 40 km that has a fresh report, not silence from a station that sends nothing
+- [x] MeshWX v5 revision 9: Area sweep (type 10), the national picture of what is active as runs of UGC numbers
+- [x] MeshWX v5 revision 10: `>part` for a missing part, `>wmap` by state, `>f lat,lon`, and forecast points rebuilt so a place without a PFM gets the nearest one that has it
+- [x] MeshWX v5 revision 11: Radar (type 11), one tile of an EMWIN mosaic in one packet, request only
 - [x] App requests answered on the channel so one request serves every listener
 - [x] Discovery by advert (`WX-<city>` chat node)
 - [x] Echo tracking and one byte-identical resend; DM ACKs; optional CoreScope check
@@ -801,10 +877,11 @@ Shipped:
 - [x] MQTT packet publishing for CoreScope
 - [x] Pi deployment: systemd unit, git-based updates with `scripts/pi_update.sh`
 - [x] Docker container (radio over a TCP bridge)
+- [x] iOS client against v5 (in beta, revision 11)
+- [x] Web client for Chromium browsers over Web Bluetooth or Web Serial, and a downloadable copy of it
 
 Planned:
 
-- [ ] iOS client against v5
 - [ ] A permanent `GRP_DATA` data type requested upstream (spec section 2.1)
 - [ ] H-VTEC hydrologic metadata (flood severity, river ID, stage forecast)
 - [ ] 3-hourly hour-by-hour PFM forecast format

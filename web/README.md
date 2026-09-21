@@ -18,13 +18,48 @@ node tools/dev-server.mjs          # http://localhost:8137
 node --test test/                  # the whole suite
 ```
 
-No build step, no dependencies. `http://localhost` is a secure context, which Web Bluetooth and
-Web Serial require; anywhere else it has to be served over https.
+No build step, no dependencies, Node 22 or newer. `http://localhost` is a secure context, which
+Web Bluetooth and Web Serial require; anywhere else it has to be served over https.
 
 The dev server maps `/data/` to `../meshcore_weather/client_data/`, the same bundle the bot
 reads, and proxies `/api/bridge/` to the bot's debug bridge when a token file is present
 (`web/.bridge-token`, ignored by git, or `MESHWX_BRIDGE_TOKEN_FILE`). The token is added
-server-side and never reaches the page.
+server-side and never reaches the page. It also takes the page's own account of its radio link
+at `/__devlog` and appends it to `.devlog.jsonl`, which is how a browser tab nobody else can see
+is read while hardware is brought up; the page asks whether that path is there before it posts
+anything, so the same files served by anything else stay quiet.
+
+## Give it to somebody else
+
+They need none of this repository, and nothing the bot needs:
+
+```
+npm run package                    # ../dist/meshwx-web/ and ../dist/meshwx-web.zip
+node tools/package.mjs --no-outlines --zip
+```
+
+`tools/package.mjs` copies this folder and the bundle files it reads into one plain static site:
+`index.html`, `src/`, `styles/`, `strings/`, `assets/`, `demo/`, the tables under `data/`, a
+README for whoever receives it (`tools/package/README.md`, stamped with the date, the commit and
+the bundle version) and a `serve.mjs` that hands the folder to a browser and does nothing else. The test suite has the folder's file list (`test/Package.test.js`): the way this breaks is
+quiet, a client that boots and then cannot find one table.
+
+Nothing is bundled, minified or transpiled. What ships is the source in this repository, file for
+file, which is also what makes the download readable by the person who runs it.
+
+| | Zipped | Unfolded |
+|---|---|---|
+| Everything | 5.7 MB | 20.5 MB |
+| `--no-outlines` | 1.9 MB | 5.8 MB |
+
+The outlines are `zones.geojson` and `counties.geojson`, 15 MB of zone and county polygons for the
+map. A missing bundle file is an empty table to the client, so without them the maps draw the
+basemap and the weather and no shapes.
+
+At the other end: unzip, `node serve.mjs`, open `http://localhost:8137`. Anything that serves a
+folder does as well (`python3 -m http.server 8137`). The same folder on a web server **over
+https** needs no download at all, and https is what a phone wants before it will give the page
+Bluetooth.
 
 ## Three ways to get weather into it
 

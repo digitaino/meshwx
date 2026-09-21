@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node tools/dev-server.mjs",
     "test": "node --test test/",
+    "package": "node tools/package.mjs --zip",
     "strings": "node tools/strings-to-json.mjs"
   },
   "engines": { "node": ">=22" }

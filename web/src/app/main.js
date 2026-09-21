@@ -74,17 +74,22 @@ async function boot() {
   const { createNotifications } = await import('../platform/notifications.js').catch(() => ({}))
   const notifications = createNotifications?.() ?? null
   // On the dev server the page also tells the server what its radio link saw (`/__devlog`,
-  // tools/dev-server.mjs): hardware is brought up in a tab nobody else can look into.
-  const isDev = ['localhost', '127.0.0.1'].includes(globalThis.location.hostname)
+  // tools/dev-server.mjs): hardware is brought up in a tab nobody else can look into. The server
+  // has to answer for that path before anything is posted to it — a downloaded copy of this folder
+  // (tools/package.mjs) is served by something that has never heard of the dev server, and it is
+  // the page's business to keep quiet there.
+  const isLocal = ['localhost', '127.0.0.1'].includes(globalThis.location.hostname)
+  let devlogWanted = false
+  if (isLocal) fetch('/__devlog').then((response) => { devlogWanted = response.ok }).catch(() => {})
   const devlog = (entry) => {
-    if (!isDev) return
+    if (!devlogWanted) return
     fetch('/__devlog', { method: 'POST', body: JSON.stringify(entry), keepalive: true }).catch(() => {})
   }
   const connection = new RadioConnection({
     weatherService, kv, location: locationService, notifications,
     log: (m) => { console.info('[meshwx]', m); devlog({ log: String(m) }) },
   })
-  if (isDev) {
+  if (isLocal) {
     const names = (list) => (list ?? []).map((c) => c.name).filter((n) => /^WX-/i.test(n ?? ''))
     connection.subscribe(() => devlog({
       state: connection.state, kind: connection.kind, label: connection.label, error: connection.error,
