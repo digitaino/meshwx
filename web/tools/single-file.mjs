@@ -16,9 +16,12 @@ import { readFile, writeFile, readdir, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import * as esbuild from 'esbuild'
 import { MeshWXTables } from '../src/meshwx/index.js'
 
+const run = promisify(execFile)
 const here = dirname(fileURLToPath(import.meta.url))
 const webRoot = resolve(here, '..')
 const bundleRoot = resolve(webRoot, '../meshcore_weather/client_data')
@@ -57,6 +60,15 @@ const escapeControlCharacters = (js) =>
   js.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,
     (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
 
+async function commit() {
+  try {
+    const { stdout } = await run('git', ['-C', webRoot, 'rev-parse', '--short', 'HEAD'])
+    return stdout.trim()
+  } catch {
+    return 'unknown'
+  }
+}
+
 export async function build({ out, outlines = true } = {}) {
   const bundled = await esbuild.build({
     entryPoints: [join(webRoot, 'src/app/main.js')],
@@ -86,11 +98,17 @@ export async function build({ out, outlines = true } = {}) {
     embedded += `<script type="application/json" id="meshwx:${path}">${safeJSON(await readFile(source, 'utf8'))}</script>\n`
   }
 
+  const protocol = JSON.parse(await readFile(join(bundleRoot, 'protocol.json'), 'utf8'))
+  const stamp = `MeshWX ${new Date().toISOString().slice(0, 10)}, build ${await commit()}, `
+    + `protocol bundle ${protocol.version}${outlines ? '' : ', without the zone and county outlines'}`
+
   const icon = await readFile(join(webRoot, 'assets/icon.svg'), 'utf8')
   // Every replacement below puts a file's contents into the page, so each one is a function:
   // as a string, `$&` and `$1` in the replacement are patterns, and the client's own
   // `escapeForRegExp` contains a `$&` that spliced the tag it was replacing into the bundle.
   const page = html
+    .replace('<!doctype html>', () => `<!doctype html>\n<!-- ${stamp}. https://github.com/digitaino/meshwx -->`)
+    .replace('<meta charset="utf-8">', () => `<meta charset="utf-8">\n  <meta name="generator" content="${stamp}">`)
     .replace(/\n\s*<link rel="manifest"[^>]*>/, '')              // there is no file beside this one
     .replace(/<link rel="icon" href="[^"]+" type="image\/svg\+xml">/,
       () => `<link rel="icon" href="data:image/svg+xml;base64,${Buffer.from(icon).toString('base64')}" type="image/svg+xml">`)
