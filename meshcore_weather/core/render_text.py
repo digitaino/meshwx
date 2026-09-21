@@ -322,3 +322,34 @@ def rain(label: str, ro) -> str:
         return _cap(f"No rain reported {label}")
     items = [f"{place_name(c['name'])} {c['rain_text'].lower()} {c['temp_f']}F" for c in ro.cities]
     return fit_list(f"Rain {label} ({len(ro.cities)}): ", items)
+
+
+_RADAR_LEVELS = {1: "light", 2: "moderate", 3: "heavy"}
+
+
+def radar(loc: dict, taken: datetime, facts: dict | None, now: datetime | None = None) -> str:
+    """The `radar` reply: what the newest radar picture shows at a place.
+
+    `facts` is `radar.tiles.describe()`; None means the bot holds no picture
+    for the place. The picture's own time leads, with its age, because a radar
+    picture is 10 to 25 minutes old by the time anyone reads it and the rain
+    has moved since."""
+    label = place_label(loc)
+    if facts is None:
+        return f"{label}: no recent radar picture for this area"
+    now = now or datetime.now(timezone.utc)
+    age = max(0, int((now - taken).total_seconds() // 60))
+    head = f"Radar {_clock(taken, tz_for_loc(loc))} ({age} min old), {label}: "
+    here, nearest, heavy = facts.get("here"), facts.get("nearest"), facts.get("heavy")
+    if here is None:
+        return head + "the picture does not reach this place"
+    parts = [f"{_RADAR_LEVELS[here]} precipitation here" if here else "dry here"]
+    if nearest is not None and not here:
+        level, km, bearing = nearest
+        parts.append(f"nearest precipitation {km:.0f} km {bearing}, {_RADAR_LEVELS[level]}")
+    if heavy is not None:
+        parts.append(f"heavy {heavy[1]:.0f} km {heavy[2]}")
+    if not here and nearest is None:
+        parts = ["no precipitation on the picture (220 km across)"]
+    return head + ". ".join(p if i == 0 else p[0].upper() + p[1:] for i, p in enumerate(parts))
+

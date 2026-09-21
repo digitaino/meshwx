@@ -29,7 +29,7 @@ LOC_PREFIX = re.compile(r"^@(-?\d+\.?\d*),(-?\d+\.?\d*)\s+(.*)")
 # One message, under the channel budget, no newlines (phones wrap it).
 # A DM already is the private reply, so it does not say "DM me".
 HELP_TEXT_DM = (
-    "Weather bot: wx/forecast/warn <city ST|ZIP> | warn/storm/rain <ST> | "
+    "Weather bot: wx/forecast/warn/radar <city ST|ZIP> | warn/storm/rain <ST> | "
     "metar <ICAO|ZIP> | space | sat | cov | more"
 )
 HELP_TEXT = HELP_TEXT_DM + ". DM me for private replies"
@@ -1327,6 +1327,27 @@ class WeatherBot:
         fc = services.forecast_for(self.store, loc)
         return render_text.summary(loc, ob, ws, fc)
 
+    def _radar_reply(self, location: str) -> str:
+        """radar [place]: the newest radar picture in words (spec 7D). The
+        bot's home when no place is given."""
+        from datetime import datetime, timezone
+        from meshcore_weather.core import render_text
+        from meshcore_weather.radar import describe, service as radar_service
+        radar = radar_service.shared()
+        if not radar.available:
+            return "No radar on this bot: the pictures come down the satellite dish, and it has none"
+        target = location or (settings.home_cities.split(",")[0].strip() if settings.home_cities else "")
+        loc = resolver.resolve(target) if target else None
+        if not loc or loc.get("lat") is None:
+            return f"Unknown {'ZIP' if zip_code(location) else 'location'}: {location}" if location \
+                else "Usage: radar <city ST>"
+        lat, lon = float(loc["lat"]), float(loc["lon"])
+        found = radar.tile_for(lat, lon, 0)
+        if found is None:
+            return render_text.radar(loc, datetime.now(timezone.utc), None)
+        tile, picture, _frame = found
+        return render_text.radar(loc, picture.taken, describe(tile, lat, lon))
+
     def _area_reply(self, kind: str, location: str) -> str:
         """rain / storm: for a state code, or the state of a place, or the
         bot's home state when nothing is given."""
@@ -1429,6 +1450,9 @@ class WeatherBot:
 
         if command == "rain":
             return self._area_reply("rain", location)
+
+        if command == "radar":
+            return self._radar_reply(location)
 
         if command == "storm":
             return self._area_reply("storm", location)

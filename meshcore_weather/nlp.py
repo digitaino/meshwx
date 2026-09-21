@@ -8,6 +8,7 @@ Supported formats:
     warn FL
     metar KJFK
     taf KJFK
+    radar Austin TX     (what the newest radar picture shows there)
     sat
     help
 """
@@ -17,7 +18,7 @@ import re
 
 # Command must be first word, followed by location
 COMMAND_RE = re.compile(
-    r"^(wx|warn|warnings?|wanr|forecast|metar|taf|help|more|outlook|rain|storm|storms|space|swx|solar)\b\s*(.*)",
+    r"^(wx|warn|warnings?|wanr|forecast|metar|taf|help|more|outlook|rain|radar|storm|storms|space|swx|solar)\b\s*(.*)",
     re.IGNORECASE,
 )
 

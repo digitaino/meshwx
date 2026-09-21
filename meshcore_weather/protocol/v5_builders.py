@@ -278,6 +278,47 @@ def parse_latlon(arg: str) -> tuple[float, float] | None:
     return lat, lon
 
 
+_RADAR_ZOOM = re.compile(r"(?:^|\s)z([0-9])\s*$", re.IGNORECASE)
+
+
+def parse_radar_request(arg: str) -> "tuple[str, int] | None":
+    """`>radar [place] [z<n>]` -> (place, zoom).  None when the zoom is not 0..3.
+
+    The zoom is its own last token, `z0` to `z3`; anything else after the
+    place is part of the place, so `>radar zion il` is a town."""
+    arg = (arg or "").strip()
+    m = _RADAR_ZOOM.search(arg)
+    if not m:
+        return arg, 0
+    zoom = int(m.group(1))
+    if zoom > v5.MAX_RADAR_ZOOM:
+        return None
+    return arg[:m.start()].strip(), zoom
+
+
+def radar_message(seq: int, bot: int, tile, picture, frame) -> "bytes | None":
+    """One Radar packet for a cut tile: fine when it fits, else coarse.
+
+    None when the tile is partial and no whole coarse cell is inside the
+    picture, which leaves nothing honest to send."""
+    from meshcore_weather.radar.tiles import coarse_bounds
+    common = dict(taken_min=int(picture.taken.timestamp() // 60), south=tile.south, west=tile.west,
+                  zoom=tile.zoom, product=frame.index, source=v5.SOURCE_GOES)
+    try:
+        return v5.encode_radar(seq, bot, rows=tile.rows, bounds=tile.bounds, **common)
+    except ValueError:
+        pass
+    bounds = coarse_bounds(tile.bounds)
+    if tile.bounds is not None and bounds is None:
+        return None
+    rows = v5.radar_coarsen(tile.rows)
+    if bounds is not None:
+        r0, r1, c0, c1 = bounds
+        rows = [[v if r0 <= r <= r1 and c0 <= c <= c1 else 0 for c, v in enumerate(row)]
+                for r, row in enumerate(rows)]
+    return v5.encode_radar(seq, bot, rows=rows, bounds=bounds, **common)
+
+
 def expires_min(w: dict) -> int:
     exp = w.get("expires_at")
     if isinstance(exp, datetime):
@@ -943,5 +984,12 @@ def text_messages(seq: SeqCounter, bot: int, subject: int, text: str,
     return msgs
 
 
+def request_letter(request: str) -> str:
+    """The letter a Not available carries for a request word (spec 8.3): its
+    first, except `radar`, whose `r` was already `rain`'s."""
+    word = request.lstrip(">").strip().lower()
+    return v5.RADAR_REQUEST_LETTER if word == "radar" else (word[:1] or "?")
+
+
 def not_available(seq: int, bot: int, request: str, reason: int) -> bytes:
-    return v5.encode_not_available(seq, bot, request=request[:1] or "?", reason=reason)
+    return v5.encode_not_available(seq, bot, request=request_letter(request), reason=reason)

@@ -47,6 +47,7 @@ __all__ = [
     "TYPE_COVERAGE",
     "TYPE_REQUEST",
     "TYPE_AREA_SWEEP",
+    "TYPE_RADAR",
     "TYPE_NAMES",
     "SUBJECT_WARNING",
     "SUBJECT_AFD",
@@ -84,6 +85,8 @@ __all__ = [
     "FLAG_TEXT_CUT",
     "FLAG_SWEEP_CUT",
     "FLAG_SWEEP_ADVISORIES",
+    "FLAG_RADAR_COARSE",
+    "FLAG_RADAR_PARTIAL",
     "SOURCE_MASK",
     "SOURCE_SHIFT",
     "SOURCE_UNSTATED",
@@ -116,6 +119,12 @@ __all__ = [
     "SWEEP_TOTAL_MASK",
     "SWEEP_SCOPE_EVENT",
     "MAX_SWEEP_SCOPE_STATES",
+    "RADAR_GRID",
+    "RADAR_COARSE_GRID",
+    "MAX_RADAR_ZOOM",
+    "MAX_RADAR_PRODUCT",
+    "RADAR_LEVELS_DBZ",
+    "RADAR_REQUEST_LETTER",
     "Header",
     "Request",
     "encode_header",
@@ -132,6 +141,9 @@ __all__ = [
     "decode_request",
     "encode_area_sweep",
     "sweep_packets",
+    "encode_radar",
+    "radar_tile",
+    "radar_coarsen",
     "decode",
     "areas_from_ugcs",
     "wind_dir_nibble",
@@ -168,6 +180,10 @@ TYPE_REQUEST = 9
 #: The national picture of active alerts, as runs of UGC numbers the phone
 #: draws on its own bundled outlines (spec 7C, revision 9).  Request only.
 TYPE_AREA_SWEEP = 10
+#: Radar (spec 7D, revision 11): one tile of a radar picture, as a quadtree of
+#: 2-bit levels.  The number revision 2 reserved "for a future structured
+#: product".
+TYPE_RADAR = 11
 
 TYPE_NAMES = {
     TYPE_WARNING: "warning",
@@ -180,6 +196,7 @@ TYPE_NAMES = {
     TYPE_COVERAGE: "coverage",
     TYPE_REQUEST: "request",
     TYPE_AREA_SWEEP: "area_sweep",
+    TYPE_RADAR: "radar",
 }
 
 # Text subjects (spec 8.1).
@@ -257,6 +274,14 @@ FLAG_SWEEP_CUT = 0x1
 #: warnings and watches.  Clear means the sweep is warnings and watches only,
 #: so an area absent from it may still hold an advisory.
 FLAG_SWEEP_ADVISORIES = 0x2
+
+# Radar flags nibble (spec 7D, revision 11).
+#: Bit 0: the grid is 16 x 16, not 32 x 32, because the finer picture did not
+#: fit one packet.  Each coarse cell is the highest of the four it replaces.
+FLAG_RADAR_COARSE = 0x1
+#: Bit 1: four `bounds` bytes follow the fixed fields.  The radar picture
+#: covers only those rows and columns; every cell outside is unknown, not dry.
+FLAG_RADAR_PARTIAL = 0x2
 
 # --------------------------------------------------------------------------
 # Data source (flags nibble bits 2-3, spec 2.2.1, new in revision 7)
@@ -345,6 +370,20 @@ SWEEP_SCOPE_EVENT = 0
 #: The most states one request may name, and so the most scope entries a
 #: sweep carries: 15 codes are 30 bytes, which fits the 40-byte request text.
 MAX_SWEEP_SCOPE_STATES = 15
+
+# Radar (spec 7D, revision 11).
+#: Cells along one side of a tile, and of a coarse one.
+RADAR_GRID = 32
+RADAR_COARSE_GRID = 16
+#: A tile spans 2 ** (zoom + 1) degrees: 2, 4, 8, 16.
+MAX_RADAR_ZOOM = 3
+#: `product` is six bits beside the zoom.
+MAX_RADAR_PRODUCT = 63
+#: Level 1 starts at the first, level 2 at the second, level 3 at the third.
+RADAR_LEVELS_DBZ = (20, 35, 50)
+#: The Not-available letter of `>radar`.  Not `r`: that is `>rain`, and a
+#: refusal has to say which of the two it refuses.
+RADAR_REQUEST_LETTER = "x"
 
 # Sentinels.
 _TEMP_UNKNOWN = -128
@@ -1684,6 +1723,218 @@ def _decode_area_sweep(data: bytes, hdr: Header) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Radar (type 11, spec 7D) -- one tile of a radar picture
+# --------------------------------------------------------------------------
+
+
+def radar_tile(lat: float, lon: float, zoom: int = 0) -> "tuple[int, int]":
+    """The tile that answers a coordinate: ``(south, west)`` in whole degrees.
+
+    Tiles sit on a lattice of half their span so that every phone can use a
+    tile any phone asked for, and the one chosen is the one whose *centre* is
+    nearest, so the place asked about is never closer than a quarter of the
+    span to an edge.  ``floor(x / step + 0.5)`` and not ``round``: a tie must
+    fall the same way in every language a client is written in.
+    """
+    if not (0 <= zoom <= MAX_RADAR_ZOOM):
+        raise ValueError(f"zoom must be 0..{MAX_RADAR_ZOOM}, got {zoom}")
+    step = 1 << zoom
+
+    def origin(value: float) -> int:
+        centre = int((value / step + 0.5) // 1) * step
+        return centre - step
+
+    return origin(lat), origin(lon)
+
+
+def radar_coarsen(rows: "list[list[int]]") -> "list[list[int]]":
+    """A 32 x 32 grid as 16 x 16: each cell the highest of the four it covers."""
+    n = len(rows) // 2
+    return [
+        [
+            max(rows[2 * r][2 * c], rows[2 * r][2 * c + 1],
+                rows[2 * r + 1][2 * c], rows[2 * r + 1][2 * c + 1])
+            for c in range(n)
+        ]
+        for r in range(n)
+    ]
+
+
+class _BitWriter:
+    def __init__(self) -> None:
+        self.bits: "list[int]" = []
+
+    def put(self, value: int, width: int) -> None:
+        for shift in range(width - 1, -1, -1):
+            self.bits.append((value >> shift) & 1)
+
+    def bytes(self) -> bytes:
+        bits = self.bits + [0] * (-len(self.bits) % 8)
+        return bytes(
+            sum(bit << (7 - i) for i, bit in enumerate(bits[o:o + 8]))
+            for o in range(0, len(bits), 8)
+        )
+
+
+class _BitReader:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.pos = 0
+
+    def take(self, width: int) -> int:
+        value = 0
+        for _ in range(width):
+            byte = self.pos >> 3
+            if byte >= len(self.data):
+                raise ValueError("radar: the quadtree runs past the end of the packet")
+            value = (value << 1) | ((self.data[byte] >> (7 - (self.pos & 7))) & 1)
+            self.pos += 1
+        return value
+
+
+def _radar_pack(rows: "list[list[int]]") -> bytes:
+    out = _BitWriter()
+
+    def node(r: int, c: int, size: int) -> None:
+        first = rows[r][c]
+        if size == 1:
+            out.put(first, 2)
+            return
+        if all(rows[y][x] == first for y in range(r, r + size) for x in range(c, c + size)):
+            out.put(0, 1)
+            out.put(first, 2)
+            return
+        out.put(1, 1)
+        half = size // 2
+        node(r, c, half)                 # north-west
+        node(r, c + half, half)          # north-east
+        node(r + half, c, half)          # south-west
+        node(r + half, c + half, half)   # south-east
+
+    node(0, 0, len(rows))
+    return out.bytes()
+
+
+def _radar_unpack(data: bytes, size: int) -> "list[list[int]]":
+    rows = [[0] * size for _ in range(size)]
+    bits = _BitReader(data)
+
+    def node(r: int, c: int, span: int) -> None:
+        if span == 1:
+            rows[r][c] = bits.take(2)
+            return
+        if bits.take(1) == 0:
+            level = bits.take(2)
+            for y in range(r, r + span):
+                for x in range(c, c + span):
+                    rows[y][x] = level
+            return
+        half = span // 2
+        node(r, c, half)
+        node(r, c + half, half)
+        node(r + half, c, half)
+        node(r + half, c + half, half)
+
+    node(0, 0, size)
+    return rows
+
+
+def encode_radar(
+    seq: int,
+    bot: int,
+    *,
+    taken_min: int,
+    south: int,
+    west: int,
+    zoom: int,
+    product: int,
+    rows: "list[list[int]]",
+    bounds: "tuple[int, int, int, int] | None" = None,
+    source: int = SOURCE_UNSTATED,
+) -> bytes:
+    """Encode one Radar tile.  Raises ``ValueError`` when it does not fit.
+
+    ``rows`` is the grid, north row first, west column first, each cell a
+    level 0 to 3; 32 rows of 32 for a fine tile, 16 of 16 for a coarse one,
+    and the coarse flag follows from which it is.  A caller whose fine grid
+    does not fit catches the error and sends ``radar_coarsen(rows)``, which
+    always does.
+
+    ``bounds`` is ``(row0, row1, col0, col1)``, inclusive, in this grid's own
+    numbering: the part of the tile the radar picture covers.  Cells outside
+    it must be level 0 on the wire and mean unknown, never dry.
+    """
+    size = len(rows)
+    if size not in (RADAR_GRID, RADAR_COARSE_GRID) or any(len(r) != size for r in rows):
+        raise ValueError(f"rows must be {RADAR_GRID} x {RADAR_GRID} or {RADAR_COARSE_GRID} x {RADAR_COARSE_GRID}")
+    if any(not (0 <= v <= 3) for r in rows for v in r):
+        raise ValueError("a radar level must be 0..3")
+    if not (0 <= zoom <= MAX_RADAR_ZOOM):
+        raise ValueError(f"zoom must be 0..{MAX_RADAR_ZOOM}, got {zoom}")
+    if not (0 <= product <= MAX_RADAR_PRODUCT):
+        raise ValueError(f"product must be 0..{MAX_RADAR_PRODUCT}, got {product}")
+    if not (-90 <= south <= 90):
+        raise ValueError(f"south must be -90..90, got {south}")
+    if not (-180 <= west <= 179):
+        raise ValueError(f"west must be -180..179, got {west}")
+    flags = FLAG_RADAR_COARSE if size == RADAR_COARSE_GRID else 0
+    extra = b""
+    if bounds is not None:
+        row0, row1, col0, col1 = bounds
+        if not (0 <= row0 <= row1 < size and 0 <= col0 <= col1 < size):
+            raise ValueError(f"bounds {bounds} are not inside a {size} x {size} grid")
+        if any(
+            rows[r][c]
+            for r in range(size)
+            for c in range(size)
+            if not (row0 <= r <= row1 and col0 <= c <= col1)
+        ):
+            raise ValueError("a cell outside the bounds must be level 0")
+        flags |= FLAG_RADAR_PARTIAL
+        extra = bytes(bounds)
+    out = (
+        encode_header(seq, bot, TYPE_RADAR, pack_source(source, flags))
+        + struct.pack("<IbhB", _u32(taken_min, "taken_min"), south, west, (product << 2) | zoom)
+        + extra
+        + _radar_pack(rows)
+    )
+    return _check_size(out, "radar")
+
+
+def _decode_radar(data: bytes, hdr: Header) -> dict:
+    _need(data, 13, "radar")
+    taken, south, west, shape = struct.unpack_from("<IbhB", data, 4)
+    coarse = bool(hdr.flags & FLAG_RADAR_COARSE)
+    partial = bool(hdr.flags & FLAG_RADAR_PARTIAL)
+    size = RADAR_COARSE_GRID if coarse else RADAR_GRID
+    off = 12
+    bounds = None
+    if partial:
+        _need(data, off + 4 + 1, "radar bounds")
+        bounds = list(data[off:off + 4])
+        off += 4
+        row0, row1, col0, col1 = bounds
+        if not (row0 <= row1 < size and col0 <= col1 < size):
+            raise ValueError(f"radar: bounds {bounds} are not inside a {size} x {size} grid")
+    rows = _radar_unpack(data[off:], size)
+    out = hdr.as_dict()
+    out.update(
+        taken_min=taken,
+        south=south,
+        west=west,
+        zoom=shape & 0x03,
+        product=shape >> 2,
+        coarse=coarse,
+        partial=partial,
+        bounds=bounds,
+        size=size,
+        rows=["".join(str(v) for v in row) for row in rows],
+        source=unpack_source(hdr.flags),
+    )
+    return out
+
+
+# --------------------------------------------------------------------------
 # Dispatch
 # --------------------------------------------------------------------------
 
@@ -1698,6 +1949,7 @@ _DECODERS = {
     TYPE_COVERAGE: _decode_coverage,
     TYPE_REQUEST: _decode_request,
     TYPE_AREA_SWEEP: _decode_area_sweep,
+    TYPE_RADAR: _decode_radar,
 }
 
 

@@ -38,6 +38,13 @@ MAX_WARNINGS_PER_REQUEST = 6
 # show when the next sweep may go out.
 SWEEP_COOLDOWN_S = 300.0            # one sweep per state per 5 minutes, whoever asks (owner, 2026-09-20)
 
+# `>radar` (spec 7D, revision 11): one packet, so the hourly budget is limit
+# enough, with one exception. The same tile cut from the same picture is the
+# same bytes, and everyone in range already got them: inside this window the
+# answer is the 6-byte Not available instead. It is keyed on the picture's own
+# time as well as the tile, so a newer picture is never held back by an older.
+RADAR_COOLDOWN_S = 300.0
+
 # `>part` (spec 7C/8.1, revision 10): the packets of the last few multi-packet
 # answers, kept so a phone that heard 4 of 7 can ask for the other 3 instead of
 # the whole map again. Eight answers is more than a busy minute produces, and
@@ -166,6 +173,8 @@ class AppResponder:
         # state code -> (when a sweep last covered it, with advisories or not).
         # A national sweep covers every state; a scoped one covers its own.
         self._last_sweep_state: dict[str, tuple[float, bool]] = {}
+        # (south, west, zoom, taken_min) -> when that radar tile last went on air.
+        self._last_radar: dict[tuple[int, int, int, int], float] = {}
 
     @property
     def scheduler(self):
@@ -223,7 +232,13 @@ class AppResponder:
         if cmd == "part":
             return await self._resend_parts(arg, seq, bot, now, ev)
         try:
-            msgs = self._answer(cmd, arg, seq, bot)
+            if cmd == "radar":
+                # Decoding a GIF is a few hundred milliseconds on a Pi, which is
+                # too long to keep the radio's loop waiting.
+                msgs = await asyncio.get_running_loop().run_in_executor(
+                    None, self._radar_answer, arg, seq, bot)
+            else:
+                msgs = self._answer(cmd, arg, seq, bot)
         except Exception:
             logger.exception("App request %r failed", text)
             msgs = [b.not_available(seq.next(), bot, cmd, v5.REASON_BOT_ERROR)]
@@ -238,6 +253,8 @@ class AppResponder:
         # own that says nothing about now.
         if n and cmd == "wmap" and msgs[0][3] >> 4 == v5.TYPE_AREA_SWEEP:
             self._stamp_sweep(v5.decode(msgs[0]))
+        if n and cmd == "radar" and msgs[0][3] >> 4 == v5.TYPE_RADAR:
+            self._stamp_radar(v5.decode(msgs[0]), now)
         return f"{n} packet(s), {nbytes} B"
 
     async def _resend_parts(self, arg: str, seq: b.SeqCounter, bot: int,
@@ -285,6 +302,67 @@ class AppResponder:
             [msg], f"not available for {letter!r}", ev=ev)
         self._sent.extend([now] * n)
         return f"{n} packet(s), {nbytes} B"
+
+    # -- radar (spec 7D) --
+
+    @staticmethod
+    def _radar_key(radar: dict) -> tuple[int, int, int, int]:
+        return radar["south"], radar["west"], radar["zoom"], radar["taken_min"]
+
+    def _stamp_radar(self, radar: dict, now: float) -> None:
+        self._last_radar[self._radar_key(radar)] = now
+        for key in [k for k, t in self._last_radar.items() if now - t > RADAR_COOLDOWN_S]:
+            del self._last_radar[key]
+
+    def radar_cooldowns(self, now: float | None = None) -> list[dict]:
+        """Tiles still inside their window, for the portal's limits card."""
+        now = time.time() if now is None else now
+        return [{"south": k[0], "west": k[1], "zoom": k[2], "taken_min": k[3],
+                 "remaining_s": max(0, int(RADAR_COOLDOWN_S - (now - t)))}
+                for k, t in sorted(self._last_radar.items()) if now - t < RADAR_COOLDOWN_S]
+
+    def clear_radar_cooldowns(self) -> None:
+        self._last_radar.clear()
+
+    def _radar_answer(self, arg: str, seq: b.SeqCounter, bot: int) -> list[bytes]:
+        """`>radar [place] [z<n>]`: one tile of the newest radar picture."""
+        from meshcore_weather.radar import service as radar_service
+        radar = radar_service.shared()
+        if not radar.available:
+            return [b.not_available(seq.next(), bot, "radar", v5.REASON_UNSUPPORTED)]
+        parsed = b.parse_radar_request(arg)
+        if parsed is None:
+            return [b.not_available(seq.next(), bot, "radar", v5.REASON_UNKNOWN_LOCATION)]
+        place, zoom = parsed
+        lat = lon = None
+        if not place:
+            home = self._scheduler.context().home
+            if home is not None:
+                lat, lon = home
+        elif (coord := b.parse_latlon(place)) is not None:
+            lat, lon = coord
+        else:
+            loc = resolver.resolve(place)
+            if loc:
+                lat, lon = loc.get("lat"), loc.get("lon")
+        if lat is None or lon is None:
+            return [b.not_available(seq.next(), bot, "radar", v5.REASON_UNKNOWN_LOCATION)]
+        found = radar.tile_for(float(lat), float(lon), zoom)
+        if found is None:
+            return [b.not_available(seq.next(), bot, "radar", v5.REASON_NO_DATA)]
+        tile, picture, frame = found
+        key = (tile.south, tile.west, tile.zoom, int(picture.taken.timestamp() // 60))
+        if time.time() - self._last_radar.get(key, 0.0) < RADAR_COOLDOWN_S:
+            logger.info("Radar tile %s asked for again inside the %.0fs window; rate limited",
+                        key, RADAR_COOLDOWN_S)
+            return [b.not_available(seq.next(), bot, "radar", v5.REASON_RATE_LIMITED)]
+        msg = b.radar_message(seq.next(), bot, tile, picture, frame)
+        if msg is None:
+            return [b.not_available(seq.next(), bot, "radar", v5.REASON_NO_DATA)]
+        logger.info("Radar tile %d,%d z%d from %s taken %s: %d wet cells, %d B%s",
+                    tile.south, tile.west, tile.zoom, frame.id, picture.taken.strftime("%H:%MZ"),
+                    tile.wet, len(msg), " (coarse)" if msg[3] & v5.FLAG_RADAR_COARSE else "")
+        return [msg]
 
     def _stamp_sweep(self, sweep: dict) -> None:
         """Record what a sweep just covered, so the next request for the same

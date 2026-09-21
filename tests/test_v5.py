@@ -148,6 +148,19 @@ def reencode(d: dict) -> bytes:
             scope=d["scope"],
             scoped=d["scoped"],
         )
+    if name == "radar":
+        return v5.encode_radar(
+            seq,
+            bot,
+            taken_min=d["taken_min"],
+            south=d["south"],
+            west=d["west"],
+            zoom=d["zoom"],
+            product=d["product"],
+            rows=[[int(ch) for ch in row] for row in d["rows"]],
+            bounds=tuple(d["bounds"]) if d["bounds"] is not None else None,
+            source=d["source"],
+        )
     raise AssertionError(f"no re-encoder for {name!r}")
 
 
@@ -203,12 +216,12 @@ def test_header_range_checks(seq, bot):
 
 
 def test_unknown_type_decodes_as_header_only():
-    data = v5.encode_header(9, BOT, 11, 3) + b"\x01\x02"
+    data = v5.encode_header(9, BOT, 12, 3) + b"\x01\x02"
     out = v5.decode(data)
     assert out == {
         "seq": 9,
         "bot": BOT,
-        "type": 11,
+        "type": 12,
         "name": "unknown",
         "flags": 3,
     }
@@ -1163,7 +1176,7 @@ def test_protocol_json_v5_block():
 
     with open(PROTOCOL_PATH, encoding="utf-8") as fh:
         proto = json.load(fh)
-    assert proto["version"] == 14
+    assert proto["version"] == 15
     assert proto["index_file"] == "index.json"
     # Legacy keys other code still reads are untouched.
     for key in ("messages", "events", "event_names", "sky_codes", "data_types"):
@@ -1174,8 +1187,24 @@ def test_protocol_json_v5_block():
     assert block["types"] == {
         "warning": 1, "cancel": 2, "digest": 3, "observations": 4,
         "forecast": 5, "text": 6, "not_available": 7, "coverage": 8,
-        "request": 9, "area_sweep": 10,
+        "request": 9, "area_sweep": 10, "radar": 11,
     }
+    # Revision 11: radar tiles.
+    radar = block["radar"]
+    assert block["flags"]["radar"] == {"coarse": v5.FLAG_RADAR_COARSE, "partial": v5.FLAG_RADAR_PARTIAL}
+    assert (radar["grid"], radar["coarse_grid"], radar["max_zoom"]) == (
+        v5.RADAR_GRID, v5.RADAR_COARSE_GRID, v5.MAX_RADAR_ZOOM)
+    assert radar["levels_dbz"] == list(v5.RADAR_LEVELS_DBZ)
+    assert radar["request_letter"] == v5.RADAR_REQUEST_LETTER
+    assert radar["span_degrees"] == [2 << z for z in range(v5.MAX_RADAR_ZOOM + 1)]
+    from meshcore_weather.radar import load_frames
+    from meshcore_weather.radar.service import MAX_AGE_MIN
+    assert radar["products"] == [f.id for f in load_frames()]
+    assert radar["product_names"] == [f.name for f in load_frames()]
+    assert radar["max_age_minutes"] == MAX_AGE_MIN
+    assert radar["cooldown_seconds"] == bc.RADAR_COOLDOWN_S
+    assert block["record_sizes"]["radar_fixed"] == 12 and block["record_sizes"]["radar_bounds"] == 4
+    assert block["limits"]["radar_cells_bytes"] == [1, v5.MAX_DATA - 12]
     assert block["flags"]["coverage"] == {
         "zones_truncated": v5.FLAG_COVERAGE_ZONES_CUT,
         "offices_truncated": v5.FLAG_COVERAGE_OFFICES_CUT,
@@ -1262,7 +1291,7 @@ def test_vectors_cover_every_message_type():
     names = {v5.decode(bytes.fromhex(v["hex"]))["name"] for v in _vectors()}
     assert names == {
         "warning", "cancel", "digest", "observations", "forecast", "text",
-        "not_available", "coverage", "request", "area_sweep",
+        "not_available", "coverage", "request", "area_sweep", "radar",
     }
 
 

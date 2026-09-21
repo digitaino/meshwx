@@ -394,6 +394,36 @@ def test_limits_are_visible_and_resettable(client, monkeypatch):
     assert c.post("/api/limits/reset", json={"id": "nonsense"}).status_code == 400
 
 
+def test_the_radar_row_shows_the_tiles_inside_their_window(client, monkeypatch):
+    """`>radar` (spec 7D): the row appears with a responder that knows radar,
+    says whether there are pictures at all, and its reset opens the window."""
+    from pathlib import Path
+
+    from meshcore_weather.radar import service as radar_service
+    from meshcore_weather.radar.service import RadarService
+
+    c, bot = client
+    monkeypatch.setattr(radar_service, "_shared",
+                        RadarService(Path(__file__).parent / "fixtures" / "radar"))
+    cooling = [{"south": 32, "west": -98, "zoom": 0, "taken_min": 29832458, "remaining_s": 240}]
+    bot._broadcaster = SimpleNamespace(
+        _sent=[], _last_by_sender={},
+        radar_cooldowns=lambda now=None: list(cooling),
+        clear_radar_cooldowns=cooling.clear,
+    )
+    row = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}["radar"]
+    assert row["state"] == "cooling" and row["opens_in_s"] == 240 and row["resettable"]
+    assert "1 tile inside the window" in row["detail"] and "pictures under 30 min old" in row["detail"]
+
+    assert c.post("/api/limits/reset", json={"id": "radar"}).status_code == 200
+    row = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}["radar"]
+    assert row["state"] == "ready" and not row["resettable"]
+
+    monkeypatch.setattr(radar_service, "_shared", RadarService(None))
+    row = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}["radar"]
+    assert "no dish directory" in row["detail"]
+
+
 def test_the_sweep_row_counts_the_states_inside_their_own_window(client):
     """Since revision 10 the sweep cooldown is per state, so the national
     figure is only half of what is holding a request back."""

@@ -44,6 +44,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 | Radio swap: node profile, adoption, health verdict | shipped |
 | Receiver status (`sat`, `>sat`) | shipped |
 | Coverage statement (`cov`, `>cov`, broadcast every 3 h) | shipped |
+| Radar tiles from the dish's EMWIN radar pictures (`radar`, `>radar`, spec revision 11) | shipped, request only |
 | Admin portal and public dashboard | shipped |
 | Accuracy audit (`scripts/audit.py`) | shipped |
 | MQTT packet publishing for CoreScope | shipped, off by default |
@@ -98,6 +99,7 @@ send channel datagrams (`CMD_SEND_CHANNEL_DATA`, 0x3E).
 | `>afd EWX` | Forecast discussion |
 | `>metar KAUS`, `>taf KAUS` | That station's own report, or Not available; a place or ZIP gets the nearest reporting station |
 | `>space`, `>storm TX`, `>rain TX`, `>hwo` | Space weather, storm reports, rainfall, hazardous weather outlook |
+| `>radar`, `>radar 30.270,-97.740`, `>radar austin tx z1` | One tile of the newest radar picture, 32 x 32 cells in four precipitation levels, always one packet. `z0` to `z3` widens it from 2 to 16 degrees. Needs the dish: the pictures are EMWIN GIFs |
 | `>sat` | The bot's GOES receiver, one line of Text |
 | `>cov` | What this bot covers: centre, radius, NWS offices, zone runs. One packet, also broadcast every 3 h |
 
@@ -497,6 +499,7 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_EMWIN_MAX_AGE_HOURS` | `12` | Hours a product stays in the store; warning-class products stay at least 48 h and storm reports at least 24 h |
 | `MCW_SDR_EMWIN_DIR` | `~/goes-images/emwin` | goesproc's EMWIN output (`YYYY-MM-DD/` directories) |
 | `MCW_SDR_POLL_INTERVAL` | `30` | Seconds between directory scans |
+| `MCW_RADAR_DIR` | empty | Where the EMWIN radar GIFs are (`YYYY-MM-DD/*-RAD*.GIF`). Empty means `MCW_SDR_EMWIN_DIR` when the source is `sdr`, and no radar otherwise: the internet bundle carries no images |
 | `MCW_SDR_DASHBOARD_URL` | `http://127.0.0.1:8080` | The goestools dashboard: the `sat` reply, receiver log lines, the portal's Satellite page and Overview |
 
 **Coverage**
@@ -574,6 +577,7 @@ command is read as a place: `austin tx` means `wx austin tx`.
 | `metar <ICAO, city ST or ZIP>` | `metar KJFK`, `metar 78701` | Raw METAR |
 | `taf <ICAO, city ST or ZIP>` | `taf KJFK` | Terminal aerodrome forecast |
 | `space` | `space` | Space weather |
+| `radar [city ST or ZIP]` | `radar Dallas TX` | The newest radar picture in words: its time and age, what is over the place, the nearest precipitation and the nearest heavy core (the home city without an argument). A bot without a dish says it has none |
 | `sat` | `sat` | The bot's GOES receiver: lock, signal quality, packets dropped in the last minute, age of the newest EMWIN file. A bot on internet EMWIN says it has no receiver |
 | `cov` | `cov` | What this bot covers: the area and how far it reaches, the NWS offices in it, how many stations it reports hourly, how often the alert list goes out |
 | `more` | `more` | The next page of the last long reply |
@@ -684,6 +688,13 @@ meshcore_weather/
 │   ├── coverage.py        # Operator coverage (home radius, states, WFOs -> zone set)
 │   └── meshwx.py, encoders.py, fec.py   # v3/v4 code, still imported for METAR parsing and shared tables
 │
+├── radar/
+│   ├── picture.py         # One EMWIN radar GIF -> precipitation levels: its own colour scale, furniture masks, the printed time
+│   ├── tiles.py           # The 32 x 32 tile a phone asked for, cut from a picture; the words of the `radar` reply
+│   ├── source.py          # Newest picture per product in the dish's EMWIN directory, decoded on demand
+│   ├── service.py         # What `>radar` and `radar` both ask: the best fresh picture for a tile
+│   └── products.json, masks/, stamp_digits.json   # Calibration, written by scripts/radar_calibrate.py
+│
 ├── schedule/
 │   ├── models.py          # BroadcastJob, BroadcastConfig; the four schedulable products
 │   ├── store.py           # Atomic JSON persistence, default jobs, v4 migration
@@ -722,7 +733,7 @@ meshcore_weather/
 
 ```
 deploy/      systemd units, udev rule, goestools dashboard and cleanup for the Pi
-scripts/     pi_update.sh, audit.py, v5_vectors.py, build_client_data.py, build_places.py, start.sh
+scripts/     pi_update.sh, audit.py, v5_vectors.py, radar_calibrate.py, build_client_data.py, build_places.py, start.sh
 tests/       pytest suite
 corescope/   CoreScope packet analyzer and observer brokers (separate Docker stack)
 docs/        below

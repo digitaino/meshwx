@@ -27,6 +27,11 @@ dependencies = [
     "pytz>=2024.1",
     "tzdata>=2024.1",
     "paho-mqtt>=2.0",
+    # Radar (spec 7D): the dish delivers the Weather Service's radar mosaics as
+    # GIFs, and these two turn one into a tile. numpy is already here by way
+    # of pyIEM; it is named because the bot now imports it itself.
+    "Pillow>=10.0",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
@@ -59,6 +64,8 @@ meshcore_weather = [
     "portal/templates/*.html",
     "portal/static/*.css",
     "portal/static/*.js",
+    "radar/*.json",
+    "radar/masks/*.png",
 ]
 
 [tool.ruff]

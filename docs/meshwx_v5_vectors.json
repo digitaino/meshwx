@@ -1173,5 +1173,136 @@
       "text": ">f 35.687,-105.938"
     },
     "note": "app -> bot: Santa Fe NM as a coordinate. The answer is an ordinary Forecast for the nearest point the bot holds one for, carrying that point's bundle index or 0xFFFF when it is not in the bundle"
+  },
+  {
+    "name": "radar_tile",
+    "hex": "287a4cb40a35c701209eff04c0110048844400c4106008163452c9ca99356ad4d43103a6fdc4341c2b10b019020350022382c049f0000182c109c068940111105060080e2a4daa2202088a8880f15ab15b525a9d6acda53559d2af058a9275aad2d4c9ca9c9354d105004d14d507a5d595cf1e499b25646a040cd149d105106a140000",
+    "decoded": {
+      "seq": 40,
+      "bot": 19578,
+      "type": 11,
+      "name": "radar",
+      "flags": 4,
+      "taken_min": 29832458,
+      "south": 32,
+      "west": -98,
+      "zoom": 0,
+      "product": 1,
+      "coarse": false,
+      "partial": false,
+      "bounds": null,
+      "size": 32,
+      "rows": [
+        "00000000000000000000001111111111",
+        "00000000000000000000001111111111",
+        "00000000000000000000001121111111",
+        "00000000000000000000001111111222",
+        "00000000000000000000011111112233",
+        "00000000000000000000221111001223",
+        "00000000000000000000222220000122",
+        "00000000000000000002222220000000",
+        "00000000000000000020022220000000",
+        "00000000000000002220002200000000",
+        "00000000000000022220000000000000",
+        "00000000000000022200000000000000",
+        "00000000000000011100000000000010",
+        "00000000000000000000110111100110",
+        "00000000000000000001111111111000",
+        "00000000000000000001111111110000",
+        "00000000000000000001111111111000",
+        "00000000000000111111111111111000",
+        "00000000000000111111111111111000",
+        "00000000000000111111111111100000",
+        "00000000000001111111111111100000",
+        "00000000000011112222111111110000",
+        "00000000000011122222211111110000",
+        "00000000000111222221111111100000",
+        "00000000011112222222211111101000",
+        "00000001111222221123321111111000",
+        "00000011112222221122301111111000",
+        "00000011112222211122211111111000",
+        "00000011111222111112111111100000",
+        "00000001221222211110001100000000",
+        "00000000221122221100000000000000",
+        "00000001111111222100000000000000"
+      ],
+      "source": 1
+    },
+    "note": "type byte 0xB4: radar, flags 0x4 = source 1 GOES, fine (32 x 32) and whole. `shape` 0x04 = product 1 (RADSTHPL) << 2 | zoom 0. The tile is 32N to 34N, 98W to 96W; the cells are a quadtree, most significant bit first"
+  },
+  {
+    "name": "radar_tile_coarse_partial",
+    "hex": "297a4cb70a35c701189cff050009000fe008940c701a00020401050316100000",
+    "decoded": {
+      "seq": 41,
+      "bot": 19578,
+      "type": 11,
+      "name": "radar",
+      "flags": 7,
+      "taken_min": 29832458,
+      "south": 24,
+      "west": -100,
+      "zoom": 1,
+      "product": 1,
+      "coarse": true,
+      "partial": true,
+      "bounds": [
+        0,
+        9,
+        0,
+        15
+      ],
+      "size": 16,
+      "rows": [
+        "0000000000000000",
+        "0000000000000000",
+        "0001200000000000",
+        "0002320000000000",
+        "0000100000000000",
+        "0000000000000000",
+        "0000000000000000",
+        "0000000000110000",
+        "0000000000120000",
+        "0000000000010000",
+        "0000000000000000",
+        "0000000000000000",
+        "0000000000000000",
+        "0000000000000000",
+        "0000000000000000",
+        "0000000000000000"
+      ],
+      "source": 1
+    },
+    "note": "type byte 0xB7: radar, flags 0x7 = coarse (bit 0) + partial (bit 1) + source 1 GOES. Four bounds bytes follow the fixed fields: rows 0-9, columns 0-15 of this 16 x 16 grid are inside the radar picture"
+  },
+  {
+    "name": "request_radar",
+    "hex": "041d04900102030405066070b06a3e72616461722033322e3738302c2d39362e383030",
+    "decoded": {
+      "seq": 4,
+      "bot": 1053,
+      "type": 9,
+      "name": "request",
+      "flags": 0,
+      "sender": "010203040506",
+      "ts": 1789948000,
+      "text": ">radar 32.780,-96.800"
+    },
+    "note": "app -> bot: the zoom 0 tile for Dallas. A wider tile is `>radar 32.780,-96.800 z2`"
+  },
+  {
+    "name": "not_available_radar",
+    "hex": "2a7a4c707804",
+    "decoded": {
+      "seq": 42,
+      "bot": 19578,
+      "type": 7,
+      "name": "not_available",
+      "flags": 0,
+      "request": "x",
+      "request_code": 120,
+      "reason": 4
+    },
+    "note": "request letter `x` (0x78) is `>radar`, the one request whose letter is not its first; reason 4, this tile of this picture went out in the last 5 minutes"
   }
 ]

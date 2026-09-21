@@ -572,6 +572,33 @@ def _limit_rows(bot) -> list[dict]:
                 "resettable": bool(status["waiting"]),
             })
 
+        # `>radar` (spec 7D): one packet an answer, so the budget above is its
+        # limit, plus a window per tile of one picture. The row also says
+        # whether there are pictures to cut tiles from at all, which is the
+        # first thing to look at when every radar request is refused.
+        if hasattr(responder, "radar_cooldowns"):
+            from meshcore_weather.radar import service as radar_service
+            radar = radar_service.shared().status()
+            cooling = responder.radar_cooldowns(now)
+            window = getattr(bc, "RADAR_COOLDOWN_S", 300.0)
+            products = radar.get("products") or {}
+            fresh = [p for p, info in products.items()
+                     if info.get("calibrated") and info.get("age_min", 999) <= 30]
+            rows.append({
+                "id": "radar",
+                "name": "Radar tiles",
+                "rule": (f"one packet an answer; the same tile of the same picture once "
+                         f"every {window / 60:.0f} min, whoever asks"),
+                "detail": ("no radar pictures: this bot has no dish directory" if not radar.get("available")
+                           else f"{len(fresh)} of {len(products)} pictures under 30 min old"
+                                + (f", {len(cooling)} tile{'' if len(cooling) == 1 else 's'} inside the window"
+                                   if cooling else "")),
+                "used": len(cooling), "cap": None,
+                "state": "cooling" if cooling else "ready",
+                "opens_in_s": max((c["remaining_s"] for c in cooling), default=0),
+                "resettable": bool(cooling),
+            })
+
     replies = [t for t in getattr(bot, "_channel_replies", []) if now - t <= 3600]
     per_hour = getattr(type(bot), "CHANNEL_REPLY_PER_HOUR", 12)
     per_sender = getattr(type(bot), "CHANNEL_REPLY_PER_SENDER_S", 600)
@@ -638,6 +665,8 @@ async def limits_reset(request: Request) -> JSONResponse:
         # The held packets stay: dropping them would close this gate rather
         # than open it. What is cleared is the 30 s floor on resending them.
         responder._parts.clear_floors()
+    elif which == "radar" and hasattr(responder, "clear_radar_cooldowns"):
+        responder.clear_radar_cooldowns()
     elif which == "channel":
         getattr(bot, "_channel_replies", []).clear()
         getattr(bot, "_channel_reply_by_sender", {}).clear()

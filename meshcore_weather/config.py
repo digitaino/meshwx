@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # "sdr": goesproc's emwin output tree (YYYY-MM-DD/ dirs of .TXT files)
     sdr_emwin_dir: str = "~/goes-images/emwin"
     sdr_poll_interval: int = 30     # seconds between directory scans
+    # Radar pictures (spec 7D): a directory of EMWIN `*-RAD*.GIF` under YYYY-MM-DD/.
+    # Empty means the dish's own EMWIN directory when the source is "sdr", and
+    # no radar at all otherwise: the internet bundle carries no images.
+    radar_dir: str = ""
     # goestools dashboard (signal stats, pointing mode) proxied into the admin portal
     sdr_dashboard_url: str = "http://127.0.0.1:8080"
     # How often the bot floods an advert so phones can DM it (hours)

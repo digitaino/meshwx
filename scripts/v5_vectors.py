@@ -702,6 +702,113 @@ def build_vectors(index: dict) -> list:
         "point's bundle index or 0xFFFF when it is not in the bundle",
     )
 
+    # 10. Radar (revision 11): one tile of a radar picture.  This one is real:
+    #     the 2 x 2 degree tile around Dallas cut from the Southern Plains
+    #     mosaic the dish received at 23:46 UTC on 20 September 2026, picture
+    #     time 23:38, with a squall line across it.  32 rows of 32 levels,
+    #     north row first: 0 none, 1 light, 2 moderate, 3 heavy.
+    dallas_rows = [
+        "00000000000000000000001111111111",
+        "00000000000000000000001111111111",
+        "00000000000000000000001121111111",
+        "00000000000000000000001111111222",
+        "00000000000000000000011111112233",
+        "00000000000000000000221111001223",
+        "00000000000000000000222220000122",
+        "00000000000000000002222220000000",
+        "00000000000000000020022220000000",
+        "00000000000000002220002200000000",
+        "00000000000000022220000000000000",
+        "00000000000000022200000000000000",
+        "00000000000000011100000000000010",
+        "00000000000000000000110111100110",
+        "00000000000000000001111111111000",
+        "00000000000000000001111111110000",
+        "00000000000000000001111111111000",
+        "00000000000000111111111111111000",
+        "00000000000000111111111111111000",
+        "00000000000000111111111111100000",
+        "00000000000001111111111111100000",
+        "00000000000011112222111111110000",
+        "00000000000011122222211111110000",
+        "00000000000111222221111111100000",
+        "00000000011112222222211111101000",
+        "00000001111222221123321111111000",
+        "00000011112222221122301111111000",
+        "00000011112222211122211111111000",
+        "00000011111222111112111111100000",
+        "00000001221222211110001100000000",
+        "00000000221122221100000000000000",
+        "00000001111111222100000000000000",
+    ]
+    add(
+        "radar_tile",
+        v5.encode_radar(
+            40,
+            BOT,
+            taken_min=29832458,
+            south=32,
+            west=-98,
+            zoom=0,
+            product=1,
+            rows=[[int(ch) for ch in row] for row in dallas_rows],
+            source=v5.SOURCE_GOES,
+        ),
+        "type byte 0xB4: radar, flags 0x4 = source 1 GOES, fine (32 x 32) and "
+        "whole. `shape` 0x04 = product 1 (RADSTHPL) << 2 | zoom 0. The tile is "
+        "32N to 34N, 98W to 96W; the cells are a quadtree, most significant "
+        "bit first",
+    )
+
+    # 10b. Radar: a coarse, partial tile.  16 x 16 because the fine picture did
+    #      not fit, and only rows 0 to 9 are inside the radar picture: the six
+    #      rows south of it are unknown, not dry, and are level 0 on the wire.
+    coarse_rows = [[0] * 16 for _ in range(16)]
+    for r, c, level in [(2, 3, 1), (2, 4, 2), (3, 3, 2), (3, 4, 3), (3, 5, 2), (4, 4, 1),
+                        (7, 10, 1), (7, 11, 1), (8, 10, 1), (8, 11, 2), (9, 11, 1)]:
+        coarse_rows[r][c] = level
+    add(
+        "radar_tile_coarse_partial",
+        v5.encode_radar(
+            41,
+            BOT,
+            taken_min=29832458,
+            south=24,
+            west=-100,
+            zoom=1,
+            product=1,
+            rows=coarse_rows,
+            bounds=(0, 9, 0, 15),
+            source=v5.SOURCE_GOES,
+        ),
+        "type byte 0xB7: radar, flags 0x7 = coarse (bit 0) + partial (bit 1) + "
+        "source 1 GOES. Four bounds bytes follow the fixed fields: rows 0-9, "
+        "columns 0-15 of this 16 x 16 grid are inside the radar picture",
+    )
+
+    # 10c. The request for the first of those, and the refusal a second phone
+    #      gets when it asks for the same tile of the same picture inside five
+    #      minutes.  The letter is `x`: `r` is `>rain`.
+    add(
+        "request_radar",
+        v5.encode_request(
+            4,
+            0x041D,
+            bytes.fromhex("010203040506"),
+            1789948000,
+            ">radar 32.780,-96.800",
+        ),
+        "app -> bot: the zoom 0 tile for Dallas. A wider tile is "
+        "`>radar 32.780,-96.800 z2`",
+    )
+    add(
+        "not_available_radar",
+        v5.encode_not_available(42, BOT, request=v5.RADAR_REQUEST_LETTER, reason=v5.REASON_RATE_LIMITED),
+        "request letter `x` (0x78) is `>radar`, the one request whose letter "
+        "is not its first; reason 4, this tile of this picture went out in "
+        "the last 5 minutes",
+    )
+
     return vectors
 
 
