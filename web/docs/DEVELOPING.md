@@ -25,6 +25,31 @@ at `/__devlog` and appends it to `.devlog.jsonl`, which is how a browser tab nob
 is read while hardware is brought up; the page asks whether that path is there before it posts
 anything, so the same files served by anything else stay quiet.
 
+## The one-file build
+
+```
+npm run single                     # ../dist/MeshWX.html
+node tools/single-file.mjs --no-outlines --out /tmp/small.html
+```
+
+`tools/single-file.mjs` is the download most people should get: esbuild flattens the module graph
+into one classic script, every JSON file the client reads goes into the page as
+`<script type="application/json" id="meshwx:<path>">`, and `readJSON` (`src/platform/files.js`)
+looks there before it tries the network. Double-clicked, it runs: Chrome treats a `file://` page as
+a secure context and gives it Web Bluetooth and Web Serial, while refusing it modules and `fetch`.
+
+Three things that bit, all of them checked by `test/SingleFile.test.js`:
+
+- **`$&` in a replacement string.** `String.prototype.replace` expands `$&` to the match, and the
+  client's own `escapeForRegExp` contains one, so the `<script src>` tag being replaced was spliced
+  into the middle of the bundle. Every replacement that inserts a file's contents is a function.
+- **Raw control characters.** An HTML parser turns a NUL inside a `<script>` into U+FFFD, which
+  reversed a range in a regex and threw out the whole file. The build escapes them; `src/radio/`
+  no longer writes them literally either.
+- **`</script` in embedded JSON.** A script element ends at the first one, wherever it sits, so
+  `<` is escaped as `\u003c` in every embedded block. It is never structural in JSON, so the data
+  is unchanged.
+
 ## Give it to somebody else
 
 They need none of this repository, and nothing the bot needs:

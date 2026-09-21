@@ -5,6 +5,7 @@ import { setStrings, setStrict, t } from '../l10n.js'
 import { MeshWXTables, MeshWXGeometry } from '../meshwx/index.js'
 import { WeatherService, KeyValueWeatherStateStore, WeatherTrafficLog } from '../weather/index.js'
 import { KeyValueStore } from '../platform/kv.js'
+import { readJSON } from '../platform/files.js'
 import { LocationService } from '../platform/location.js'
 import { Navigation } from '../ui/kit/nav.js'
 import { h, clear } from '../ui/kit/dom.js'
@@ -18,11 +19,7 @@ const WEB_TABLES = [
   'web.en.json', 'web.connect.en.json', 'web.place.en.json', 'web.radio.en.json',
   'web.radiosettings.en.json',
 ]
-const json = async (url) => {
-  const response = await fetch(url)
-  if (!response.ok) throw new Error(`${url}: ${response.status}`)
-  return response.json()
-}
+const json = (url) => readJSON(url)
 const optionalJSON = (url) => json(url).catch(() => ({}))
 const bundleLoader = (name) => json(`data/${name}`)
 
@@ -145,7 +142,8 @@ async function boot() {
   openDeepLink(app).catch((error) => console.warn('[meshwx] deep link', error))
 
   const host = globalThis.location.hostname
-  if ('serviceWorker' in navigator && host !== 'localhost' && host !== '127.0.0.1') {
+  const served = globalThis.location.protocol.startsWith('http')
+  if (served && 'serviceWorker' in navigator && host !== 'localhost' && host !== '127.0.0.1') {
     navigator.serviceWorker.register('sw.js').catch(() => {})
   }
 }

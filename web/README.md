@@ -12,23 +12,23 @@ the place names, the ZIP codes and the words in eleven languages are all in the 
 | Chrome, Edge, Brave or Vivaldi | Safari and Firefox cannot talk to a radio |
 | A MeshCore radio | Firmware 1.15 or newer, on USB or paired over Bluetooth, and not connected to your phone's MeshCore app at the same time |
 | A weather bot in range | Any node named `WX-` something on the `#meshwx` channel |
-| [Node](https://nodejs.org) | One download, the green LTS button. It is what hands the files to your browser |
+
+Nothing else. Nothing to install, no terminal, and no internet at any point.
 
 ## Start it
 
-1. Download **meshwx-web.zip** from the
-   [latest release](https://github.com/digitaino/meshwx/releases/latest), and unzip it.
-2. Double-click **start-macos.command**, or **start-windows.bat** on Windows.
-   The first time, macOS will say it is from an unidentified developer: right-click the file,
-   choose **Open**, then **Open** again. It asks once and never again.
-3. Your browser opens at `http://localhost:8137`. Press **No radio** at the top, then **Connect
-   over Bluetooth** or **Connect over USB**, and pick your radio.
+1. Download **MeshWX.html** from the
+   [latest release](https://github.com/digitaino/meshwx/releases/latest).
+2. Double-click it. It opens in your usual browser: if that is Safari or Firefox, right-click the
+   file instead, choose **Open With**, and pick Chrome.
+3. Press **No radio** at the top, then **Connect over Bluetooth** or **Connect over USB**, and
+   pick your radio.
 
-Add a place, press **Update**, and the weather comes in over the air. Closing the terminal window
-that opened stops MeshWX. Nothing is installed and nothing keeps running.
+Add a place, press **Update**, and the weather comes in over the air.
 
-On Linux, or if you would rather type it: `node serve.mjs` in the folder, or
-`python3 -m http.server 8137`.
+It is one file of about 20 MB, because the maps, the place names, the ZIP codes, the forecast
+zones and the words in eleven languages are all inside it. Keep it anywhere; it works from a stick,
+and it works on a machine that has never been online.
 
 ## Nothing is arriving
 
@@ -42,21 +42,18 @@ settings**, and watch it start counting.
 
 ## Have a look without a radio
 
-`http://localhost:8137/?link=demo` replays a stormy Austin morning that a bot really sent: the
-alerts, the conditions, the forecast, the map and three radar tiles. No radio is involved and
-nothing is transmitted.
+Press **No radio** at the top and choose **Show recorded data**, under "Without a radio". It
+replays a stormy Austin morning that a bot really sent: the alerts, the conditions, the forecast,
+the map and three radar tiles. Nothing is transmitted and no radio is involved.
 
 ## Questions
 
 **Does it need the internet?** No, at no point. Everything it draws with is in the folder. A
 laptop that has never been online runs all of it, which is the entire reason this exists.
 
-**Then why does it start a server?** Because a browser will not let a page opened straight from a
-folder load its own code or reach a radio. `serve.mjs` hands the folder to your browser at
-`localhost` and does nothing else: no internet, nothing listening to the network, nothing left
-behind when you close the window.
-
-**Can I use it on my phone?** Not this. On an iPhone, MeshWX is an app, which needs none of this.
+**Why is it one big file?** Because a browser will not let a page opened from a folder read the
+files beside it. Bluetooth and USB it will allow, so everything the client needs is inside the
+page instead, and nothing is fetched at all.
 
 **Is anything sent anywhere?** No. There is no account, no analytics, no telemetry and no
 connection to anything but your own radio. The places you add and the weather you receive stay in
@@ -65,6 +62,13 @@ your browser.
 **Where does the weather come from?** A weather bot on your mesh, which receives it from the
 Weather Service over a satellite dish. No internet there either. That side is
 [meshcore-weather](../README.md).
+
+## The folder version
+
+`meshwx-web.zip` on the same release page is the same client as a folder of ordinary files, with a
+small server to hand it to the browser. It wants Node or Python installed and a command, and it is
+there for anyone who would rather serve the files, put them on a web server, or read them. The
+one-file download is the same code with the imports flattened and the tables embedded.
 
 ## For developers
 

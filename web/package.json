@@ -8,7 +8,13 @@
     "dev": "node tools/dev-server.mjs",
     "test": "node --test test/",
     "package": "node tools/package.mjs --zip",
+    "single": "node tools/single-file.mjs",
     "strings": "node tools/strings-to-json.mjs"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
 }

@@ -16,6 +16,7 @@
 import {
   MeshCoreSession, RadioParameters, WebBluetoothTransport, WebSerialTransport,
 } from '../radio/index.js'
+import { readJSON } from '../platform/files.js'
 import { SessionWeatherTransport, findWeatherSlot, addWeatherChannel } from '../link/SessionWeatherTransport.js'
 import { RemoteBotWeatherTransport } from '../link/RemoteBotWeatherTransport.js'
 import { ReplayWeatherTransport } from '../link/ReplayWeatherTransport.js'
@@ -264,9 +265,7 @@ export class RadioConnection {
   }
 
   async #demoTransport() {
-    const response = await fetch('demo/datagrams.json')
-    if (!response.ok) throw new Error('the demo recording is missing')
-    return new ReplayWeatherTransport({ recording: await response.json() })
+    return new ReplayWeatherTransport({ recording: await readJSON('demo/datagrams.json') })
   }
 
   async #teardown() {

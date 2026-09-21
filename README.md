@@ -68,10 +68,10 @@ What a person needs:
 
 | | |
 |---|---|
-| A computer, and a browser on it | Chrome, Edge, Brave or Vivaldi on macOS, Windows, Linux or Chrome OS. Safari and Firefox have no Web Bluetooth or Web Serial. A phone is the iOS app's job |
+| A computer, and a browser on it | Chrome, Edge, Brave or Vivaldi on macOS, Windows, Linux or Chrome OS. Safari and Firefox have no Web Bluetooth or Web Serial |
 | A radio | A MeshCore companion radio, firmware 1.15 or newer, over Bluetooth or USB. A radio talks to one companion at a time, so it has to be disconnected from the phone's MeshCore app first |
-| A bot in reach | Any `WX-` node on `#meshwx`. Without one there is still `?link=demo`, a recorded morning |
-| A way to open the folder | The page has to come from `https://` or `http://localhost`, which is what a browser calls a secure context and what it wants before it hands out Bluetooth. `file://` will not do |
+| A bot in reach | Any `WX-` node on `#meshwx`. Without one there is still the recorded morning in the connect panel |
+| Nothing else | `MeshWX.html` is double-clicked and runs. The folder version wants Node or Python to hand it to the browser, and the page then has to come from `http://localhost` |
 
 From this checkout, for development:
 
@@ -88,43 +88,41 @@ proxies the debug bridge. Details, and the porting rules, in
 
 ### Giving it to somebody else
 
-They do not need this repository, Python, or anything the bot needs:
+Nothing installed, no terminal, no server, no internet:
 
 ```bash
 cd web
-npm run package                    # dist/meshwx-web/ and dist/meshwx-web.zip
+npm run single                     # dist/MeshWX.html, about 20 MB
+npm run package                    # dist/meshwx-web/ and dist/meshwx-web.zip, the folder version
 ```
 
-`web/tools/package.mjs` copies the client and the parts of `client_data/` it
-reads into one folder that is a plain static site, and adds a README and a
-small `serve.mjs`. Nothing is bundled or minified: what ships is the code in
-this repository, file for file. The download is 5.7 MB, 20.5 MB unfolded,
-most of it the zone and county outlines — `--no-outlines` leaves those out for
-1.9 MB, and the maps then draw without the shapes.
+**`MeshWX.html`** is the whole client in one file: the modules bundled into one
+script, and every table, the basemap and the eleven string tables embedded as
+`<script type="application/json">` blocks, which `readJSON`
+(`web/src/platform/files.js`) reads before it tries the network. Somebody
+double-clicks it and it runs. That works because Chrome counts a `file://` page
+as a secure context and gives it Web Bluetooth and Web Serial, while refusing
+it modules and `fetch` — measured, not assumed (from disk: `secureContext:
+true, bluetooth: true, serial: true`, 34,937 places read out of the page
+itself). It is the only artifact that is not this repository's files as they
+are, and nothing in it is minified.
 
-Whoever receives it unzips it and double-clicks `start-macos.command` or
-`start-windows.bat`, which runs `serve.mjs` and opens the browser. Node is the
-one thing they have to install first. By hand it is `node serve.mjs`, or
-`python3 -m http.server 8137`, and then `http://localhost:8137`.
+**`meshwx-web.zip`** is the same client as ordinary files, with a README, a
+small `serve.mjs` and `start-macos.command` / `start-windows.bat`. It wants
+Node or Python and a command, and it is there for anyone who would rather serve
+the files, host them, or read them. 5.7 MB, 20.5 MB unfolded; `--no-outlines`
+leaves out the zone and county polygons for 1.9 MB, and the maps then draw
+without the shapes.
 
-The built zip is attached to the
+Both are attached to the
 [latest release](https://github.com/digitaino/meshwx/releases/latest), which is
-the link to give people: [`web/README.md`](web/README.md) is written for them
-and says what they need in five lines.
+the link to give people: [`web/README.md`](web/README.md) is written for them.
 
-None of this touches the internet, which is the point. The client holds no
-absolute URL, every fetch it makes is same-origin and relative, and `serve.mjs`
-listens on 127.0.0.1: a machine that has never been online runs the whole
-thing. Getting the file there wants no network either — a USB stick, an SD
-card, AirDrop, a share on the LAN, or a Pi on the mesh handing the zip out over
-plain http, because downloading a file needs no secure context. Only the page
-that talks to the radio does, and that page is at `localhost`.
-
-A phone is not part of this: it cannot serve itself `localhost`, so it wants an
-address rather than a folder, and the iOS app is the phone answer. Chrome on
-Android has Web Bluetooth and would run these files, but only from an https
-address, which off-grid means a certificate the phone already trusts on the
-local network. Only worth the trouble if Android ever has to be served.
+None of it touches the internet, which is the point. The client holds no
+absolute URL, every fetch it makes is same-origin and relative, and the one
+file fetches nothing at all. Getting it to somebody wants no network either: a
+USB stick, an SD card, AirDrop, a share on the LAN, or a Pi on the mesh handing
+it out over plain http.
 
 ## Wire format at a glance
 

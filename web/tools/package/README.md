@@ -8,8 +8,7 @@ Bluetooth or USB. Every name, table and map outline it is drawn with is already 
 ## What you need
 
 - **A computer, and a Chromium browser on it.** Chrome, Edge, Brave or Vivaldi on macOS, Windows,
-  Linux or Chrome OS. Safari and Firefox cannot talk to a radio. On an iPhone, the MeshWX app is
-  the same weather and needs none of this.
+  Linux or Chrome OS. Safari and Firefox cannot talk to a radio.
 - **A MeshCore companion radio**, firmware 1.15 or newer, on Bluetooth or USB. A radio talks to one
   companion at a time, so disconnect it from your phone's MeshCore app first.
 - **A weather bot within reach** on the `#meshwx` channel. Its name starts with `WX-`.
@@ -84,8 +83,7 @@ card, AirDrop, a share on the local network, or a download from a Pi on the mesh
 does, and by then it is coming from `localhost` on the machine it runs on.
 
 This does not go on a phone. A phone cannot serve itself `localhost`, and no phone browser hands
-out Bluetooth over plain `http://`, so a phone wants an `https://` address instead of a folder. On
-an iPhone the MeshWX app is the answer and is simpler than any of this.
+out Bluetooth over plain `http://`, so a phone wants an address rather than a folder.
 
 ## What is in here
 
