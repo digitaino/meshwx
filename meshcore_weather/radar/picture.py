@@ -72,6 +72,7 @@ class RadarPicture:
     taken_is_printed: bool      # False: the corner could not be read, `taken` is the issue time
     levels: np.ndarray          # int8, (height, width): -1 cannot tell, 0 dry, 1 to 3
     frame_ok: bool              # the black lines are where the mask says
+    line_match: float = 1.0     # how much of the mask's black lines this picture draws, 0 to 1
 
 
 _digits: "tuple[list[str], np.ndarray, tuple[int, int], int] | None" = None
@@ -259,4 +260,5 @@ def read_picture(path: "str | Path", product: str) -> "RadarPicture | None":
     return RadarPicture(
         product=product, path=path, received=received, taken=taken,
         taken_is_printed=printed, levels=levels, frame_ok=line_match >= _MIN_LINE_MATCH,
+        line_match=round(line_match, 3),
     )

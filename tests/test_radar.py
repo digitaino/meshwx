@@ -35,6 +35,13 @@ TAKEN_MIN = 29832458            # 2026-09-20 23:38 UTC
 FRAMES = {f.id: f for f in load_frames()}
 
 
+@pytest.fixture(autouse=True)
+def _audit_lines_go_nowhere_real(monkeypatch, tmp_path):
+    """A tile sent in a test must not land in the operator's audit log."""
+    from meshcore_weather.radar import audit
+    monkeypatch.setattr(audit, "path", lambda: tmp_path / "radar_audit.jsonl")
+
+
 # ---------------------------------------------------------------------------
 # The lattice
 # ---------------------------------------------------------------------------
@@ -396,6 +403,38 @@ async def test_a_radar_request_is_one_packet(monkeypatch):
     out = v5.decode(sent[0])
     assert out["name"] == "radar" and (out["south"], out["west"], out["zoom"]) == (32, -98, 0)
     assert out["taken_min"] == TAKEN_MIN and out["source"] == v5.SOURCE_GOES and out["product"] == 1
+
+
+async def test_every_tile_sent_leaves_an_audit_line(monkeypatch, tmp_path):
+    """scripts/radar_audit.py scores tiles against their source pictures, and
+    this line is how it knows which tiles people actually pulled."""
+    target = tmp_path / "radar_audit.jsonl"                                # where the fixture points
+    responder, sent = _responder(monkeypatch)
+    await responder.handle_request(">radar 32.780,-96.800", "aabbccddeeff00112233")
+    await responder.handle_request(">radar 32.9,-97.1", "bb")             # refused: no line
+    lines = [json.loads(x) for x in target.read_text().splitlines()]
+    assert len(lines) == 1
+    line = lines[0]
+    assert (line["south"], line["west"], line["zoom"], line["product"]) == (32, -98, 0, "RADSTHPL")
+    assert line["file"] == STHPL.name and line["taken_min"] == TAKEN_MIN and line["taken_is_printed"]
+    assert line["sender"] == "aabbccddeeff" and line["request"] == ">radar 32.780,-96.800"
+    assert bytes.fromhex(line["hex"])[1:] == sent[0][1:] and line["bytes"] == 131
+    assert not responder._radar_cut
+
+
+def test_the_audit_log_is_cut_and_never_raises(tmp_path):
+    from meshcore_weather.radar import audit
+    picture = read_picture(STHPL, "RADSTHPL")
+    frame = FRAMES["RADSTHPL"]
+    tile = cut_tile(picture, frame, 32, -98, 0)
+    packet = b.radar_message(1, BOT, tile, picture, frame)
+    target = tmp_path / "radar_audit.jsonl"
+    target.write_bytes(b"x" * (audit.MAX_BYTES + 1))
+    audit.record(request=">radar", sender="s", tile=tile, picture=picture, frame=frame,
+                 packet=packet, file=target)
+    assert target.with_suffix(".jsonl.1").exists() and len(target.read_text().splitlines()) == 1
+    audit.record(request=">radar", sender="s", tile=None, picture=None, frame=None,
+                 packet=b"", file=target)                                   # logged, not raised
 
 
 async def test_the_same_picture_of_the_same_tile_is_refused_for_five_minutes(monkeypatch):

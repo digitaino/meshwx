@@ -175,6 +175,9 @@ class AppResponder:
         self._last_sweep_state: dict[str, tuple[float, bool]] = {}
         # (south, west, zoom, taken_min) -> when that radar tile last went on air.
         self._last_radar: dict[tuple[int, int, int, int], float] = {}
+        # packet bytes -> (tile, picture, frame), from the thread that cut the
+        # tile to the coroutine that sends it, for the audit line (radar/audit.py).
+        self._radar_cut: dict[bytes, tuple] = {}
 
     @property
     def scheduler(self):
@@ -255,6 +258,12 @@ class AppResponder:
             self._stamp_sweep(v5.decode(msgs[0]))
         if n and cmd == "radar" and msgs[0][3] >> 4 == v5.TYPE_RADAR:
             self._stamp_radar(v5.decode(msgs[0]), now)
+            cut = self._radar_cut.pop(msgs[0], None)
+            if cut is not None:
+                from meshcore_weather.radar import audit
+                audit.record(request=text, sender=sender_key, tile=cut[0], picture=cut[1],
+                             frame=cut[2], packet=msgs[0], now=now)
+        self._radar_cut.clear()
         return f"{n} packet(s), {nbytes} B"
 
     async def _resend_parts(self, arg: str, seq: b.SeqCounter, bot: int,
@@ -359,6 +368,7 @@ class AppResponder:
         msg = b.radar_message(seq.next(), bot, tile, picture, frame)
         if msg is None:
             return [b.not_available(seq.next(), bot, "radar", v5.REASON_NO_DATA)]
+        self._radar_cut[msg] = (tile, picture, frame)
         logger.info("Radar tile %d,%d z%d from %s taken %s: %d wet cells, %d B%s",
                     tile.south, tile.west, tile.zoom, frame.id, picture.taken.strftime("%H:%MZ"),
                     tile.wet, len(msg), " (coarse)" if msg[3] & v5.FLAG_RADAR_COARSE else "")

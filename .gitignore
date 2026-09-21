@@ -16,6 +16,8 @@ venv/
 data/*.txt
 data/*.bin
 data/*.json
+data/*.jsonl
+data/*.jsonl.1
 data/emwin_cache/
 !data/.gitkeep
 

@@ -105,8 +105,24 @@ class RadarTile:
     wet: int                                      # cells above level 0
 
 
-def cut_tile(picture: RadarPicture, frame: Frame, south: int, west: int, zoom: int) -> "RadarTile | None":
-    """The tile's grid from one picture, or None when none of it is inside."""
+def strongest(seen) -> int:
+    """A cell's level from the levels of the pixels seen in it: the strongest
+    echo, not the average.  One pixel may set a small cell; a large one wants
+    two, so a single misread pixel cannot paint a 28 km square red."""
+    need = 1 if seen.size < 12 else 2
+    for candidate in (3, 2, 1):
+        if int((seen >= candidate).sum()) >= need:
+            return candidate
+    return 0
+
+
+def cut_tile(picture: RadarPicture, frame: Frame, south: int, west: int, zoom: int,
+             rule=strongest) -> "RadarTile | None":
+    """The tile's grid from one picture, or None when none of it is inside.
+
+    `rule` turns the pixels seen in one cell into its level.  The bot always
+    uses `strongest`; `scripts/radar_audit.py` passes others to measure what a
+    different rule would have sent from the same pictures."""
     n = RADAR_GRID
     span = tile_span(zoom)
     cell = span / n
@@ -136,15 +152,7 @@ def cut_tile(picture: RadarPicture, frame: Frame, south: int, west: int, zoom: i
             seen = box[box >= 0]
             if seen.size == 0:
                 continue
-            # One pixel may set a small cell; a large one wants two, so a
-            # single misread pixel cannot paint a 28 km square red.
-            need = 1 if seen.size < 12 else 2
-            level = 0
-            for candidate in (3, 2, 1):
-                if int((seen >= candidate).sum()) >= need:
-                    level = candidate
-                    break
-            grid[r][c] = level
+            grid[r][c] = rule(seen)
 
     # Cells that were all furniture take the middle of their neighbours.
     for _ in range(4):
