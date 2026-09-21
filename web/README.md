@@ -57,9 +57,20 @@ map. A missing bundle file is an empty table to the client, so without them the 
 basemap and the weather and no shapes.
 
 At the other end: unzip, `node serve.mjs`, open `http://localhost:8137`. Anything that serves a
-folder does as well (`python3 -m http.server 8137`). The same folder on a web server **over
-https** needs no download at all, and https is what a phone wants before it will give the page
-Bluetooth.
+folder does as well (`python3 -m http.server 8137`).
+
+The internet is in none of this. There is no absolute URL in the client, every fetch is
+same-origin and relative, and the server listens on 127.0.0.1, so a machine that has never been
+online runs it. The one-time file copy needs no network either: a stick, a card, AirDrop, the LAN,
+or the Pi handing the zip out over plain http, since a download is not what the secure-context
+rule is about. The page that asks for Bluetooth is the one that has to be secure, and it is at
+`localhost`.
+
+Phones are the gap. A phone cannot serve itself `localhost` and will not give a page Bluetooth
+over plain http, so off-grid it needs an https origin on the local network with a certificate the
+phone trusts: a real name and a real certificate obtained while internet was available and renewed
+when it is again, with the Pi answering DNS for that name on its own network. On an iPhone the app
+is the answer instead.
 
 ## Three ways to get weather into it
 

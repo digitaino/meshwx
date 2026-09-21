@@ -109,9 +109,20 @@ node serve.mjs                     # then open http://localhost:8137
 python3 -m http.server 8137        # or this, if they have no Node
 ```
 
-Or put the same folder on a web server **over https**, which is the only way a
-phone will give the page Bluetooth, and nobody has to download anything at all.
-It is static files, so any host will do, including a Pi already on the mesh.
+None of this touches the internet, which is the point. The client holds no
+absolute URL, every fetch it makes is same-origin and relative, and `serve.mjs`
+listens on 127.0.0.1: a machine that has never been online runs the whole
+thing. Getting the file there wants no network either — a USB stick, an SD
+card, AirDrop, a share on the LAN, or a Pi on the mesh handing the zip out over
+plain http, because downloading a file needs no secure context. Only the page
+that talks to the radio does, and that page is at `localhost`.
+
+A phone is the exception. It cannot serve itself `localhost`, and it will not
+give a page Bluetooth over plain http, so off-grid it needs an https address on
+the local network carrying a certificate it already trusts (a real name and a
+real certificate, fetched while there was internet and renewed when there is
+again, with the Pi answering DNS for that name on its own network) — or an
+iPhone and the app, which is why the app exists.
 
 ## Wire format at a glance
 

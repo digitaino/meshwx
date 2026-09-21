@@ -61,11 +61,22 @@ After the first visit the browser keeps the whole client, so it works with no ne
 Chrome's menu, **Cast, save and share → Install page as app** (or **Add to Home screen** on
 Android) makes it a window of its own.
 
-## Put it on a web server
+## There is no internet in any of this
 
-This folder is a plain static site: no build step, no server code, nothing to install. Copy it to
-any web server, a static host, or a Raspberry Pi on the mesh, and everyone on that network can use
-it. Serve it over **https**, which is what a phone needs before it will give the page Bluetooth.
+`serve.mjs` listens on 127.0.0.1 and hands out the files in this folder. Nothing here holds the
+address of anything on the internet, and the page never asks for one: a laptop in airplane mode,
+for a week, runs all of it. The only radio in the story is the one on your desk.
+
+Getting this folder to somebody needs no network either. It is one 5.7 MB file: a USB stick, an SD
+card, AirDrop, a share on the local network, or a download from a Pi on the mesh over plain
+`http://`. Downloading a file does not have to be secure; only the page that asks for Bluetooth
+does, and by then it is coming from `localhost` on the machine it runs on.
+
+A **phone** is the exception, and the reason is worth knowing before you fight it. A phone cannot
+serve itself `localhost`, so the page has to come off the network, and no phone browser will give
+a page Bluetooth over plain `http://`. Off the grid that leaves two ways: an `https://` address on
+the local network with a certificate the phone already trusts, or, on an iPhone, the MeshWX app,
+which is the same weather without any of this.
 
 ## What is in here
 
