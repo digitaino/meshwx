@@ -1,14 +1,15 @@
 # MeshWX
 
-Severe weather alerts, current conditions, the forecast and radar from a weather radio on your
-MeshCore mesh. There is no internet in this: the weather arrives over LoRa from a `WX-` bot on the
+Severe weather alerts, current conditions, the forecast and radar on your computer, from a weather
+radio on your MeshCore mesh. There is no internet in this: the weather arrives over LoRa from a `WX-` bot on the
 `#meshwx` channel, through a MeshCore radio connected to this computer by Bluetooth or USB. Every
 name, table and map outline the weather is drawn with is already in this folder.
 
 ## What you need
 
-- **A Chromium browser.** Chrome, Edge, Brave or Vivaldi on macOS, Windows, Linux or Chrome OS, or
-  Chrome on Android. Bluetooth and USB devices are not available to Safari or Firefox.
+- **A computer, and a Chromium browser on it.** Chrome, Edge, Brave or Vivaldi on macOS, Windows,
+  Linux or Chrome OS. Bluetooth and USB devices are not available to Safari or Firefox. On an
+  iPhone, the MeshWX app is the same weather and needs none of this.
 - **A MeshCore companion radio**, firmware 1.15 or newer, on Bluetooth or USB. A radio talks to one
   companion at a time, so disconnect it from your phone's MeshCore app first.
 - **A weather bot within reach** on the `#meshwx` channel. Its name starts with `WX-`.
@@ -72,11 +73,9 @@ card, AirDrop, a share on the local network, or a download from a Pi on the mesh
 `http://`. Downloading a file does not have to be secure; only the page that asks for Bluetooth
 does, and by then it is coming from `localhost` on the machine it runs on.
 
-A **phone** is the exception, and the reason is worth knowing before you fight it. A phone cannot
-serve itself `localhost`, so the page has to come off the network, and no phone browser will give
-a page Bluetooth over plain `http://`. Off the grid that leaves two ways: an `https://` address on
-the local network with a certificate the phone already trusts, or, on an iPhone, the MeshWX app,
-which is the same weather without any of this.
+This does not go on a phone. A phone cannot serve itself `localhost`, and no phone browser hands
+out Bluetooth over plain `http://`, so a phone wants an `https://` address instead of a folder. On
+an iPhone the MeshWX app is the answer and is simpler than any of this.
 
 ## What is in here
 

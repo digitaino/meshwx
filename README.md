@@ -68,7 +68,7 @@ What a person needs:
 
 | | |
 |---|---|
-| A browser | Chrome, Edge, Brave or Vivaldi on macOS, Windows, Linux or Chrome OS, or Chrome on Android. Safari and Firefox have no Web Bluetooth or Web Serial |
+| A computer, and a browser on it | Chrome, Edge, Brave or Vivaldi on macOS, Windows, Linux or Chrome OS. Safari and Firefox have no Web Bluetooth or Web Serial. A phone is the iOS app's job |
 | A radio | A MeshCore companion radio, firmware 1.15 or newer, over Bluetooth or USB. A radio talks to one companion at a time, so it has to be disconnected from the phone's MeshCore app first |
 | A bot in reach | Any `WX-` node on `#meshwx`. Without one there is still `?link=demo`, a recorded morning |
 | A way to open the folder | The page has to come from `https://` or `http://localhost`, which is what a browser calls a secure context and what it wants before it hands out Bluetooth. `file://` will not do |
@@ -117,12 +117,11 @@ card, AirDrop, a share on the LAN, or a Pi on the mesh handing the zip out over
 plain http, because downloading a file needs no secure context. Only the page
 that talks to the radio does, and that page is at `localhost`.
 
-A phone is the exception. It cannot serve itself `localhost`, and it will not
-give a page Bluetooth over plain http, so off-grid it needs an https address on
-the local network carrying a certificate it already trusts (a real name and a
-real certificate, fetched while there was internet and renewed when there is
-again, with the Pi answering DNS for that name on its own network) — or an
-iPhone and the app, which is why the app exists.
+A phone is not part of this: it cannot serve itself `localhost`, so it wants an
+address rather than a folder, and the iOS app is the phone answer. Chrome on
+Android has Web Bluetooth and would run these files, but only from an https
+address, which off-grid means a certificate the phone already trusts on the
+local network. Only worth the trouble if Android ever has to be served.
 
 ## Wire format at a glance
 

@@ -1,7 +1,7 @@
 # MeshWX web
 
-The MeshWX weather client for Chromium browsers (Chrome, Edge, Brave, and Chrome on Android):
-severe weather alerts, current conditions and the forecast from a `WX-` weather bot on the
+The MeshWX weather client for a computer, in any Chromium browser (Chrome, Edge, Brave,
+Vivaldi): severe weather alerts, current conditions and the forecast from a `WX-` weather bot on the
 `#meshwx` channel, received through a MeshCore companion radio over **Web Bluetooth** or
 **Web Serial**. Nothing is fetched from the internet. After the first visit the page works
 offline.
@@ -66,11 +66,11 @@ or the Pi handing the zip out over plain http, since a download is not what the 
 rule is about. The page that asks for Bluetooth is the one that has to be secure, and it is at
 `localhost`.
 
-Phones are the gap. A phone cannot serve itself `localhost` and will not give a page Bluetooth
-over plain http, so off-grid it needs an https origin on the local network with a certificate the
-phone trusts: a real name and a real certificate obtained while internet was available and renewed
-when it is again, with the Pi answering DNS for that name on its own network. On an iPhone the app
-is the answer instead.
+This is the client for a computer. A phone is the iOS app's job, and the app needs none of this:
+no folder, no server, no address. Chrome on Android can run these files too, since it has Web
+Bluetooth, but only from an `https://` address, which off-grid means a certificate the phone
+already trusts on the local network. Worth knowing if an Android ever has to be served; not a
+thing anybody unzips onto a phone.
 
 ## Three ways to get weather into it
 
