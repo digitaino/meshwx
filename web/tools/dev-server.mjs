@@ -11,7 +11,7 @@
 //
 // Web Bluetooth and Web Serial need a secure context; http://localhost counts as one.
 import { createServer, request as httpRequest } from 'node:http'
-import { createReadStream, existsSync, statSync, readFileSync } from 'node:fs'
+import { createReadStream, existsSync, statSync, readFileSync, appendFileSync } from 'node:fs'
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -91,9 +91,25 @@ function proxyBridge(req, res) {
   req.pipe(upstream)
 }
 
+// `POST /__devlog`: the page's own account of its radio link, one JSON line each, appended to
+// `web/.devlog.jsonl`. Bringing up real hardware happens in a browser tab nobody else can see;
+// this is how whoever is helping reads what the tab saw. Localhost only, like everything here.
+function devlog(req, res) {
+  let body = ''
+  req.on('data', (chunk) => { if (body.length < 20000) body += chunk })
+  req.on('end', () => {
+    try {
+      const line = JSON.stringify({ at: new Date().toISOString(), ...JSON.parse(body) })
+      appendFileSync(join(webRoot, '.devlog.jsonl'), line + '\n')
+    } catch { /* a line that is not JSON is not worth keeping */ }
+    res.writeHead(204).end()
+  })
+}
+
 createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost')
   if (url.pathname.startsWith('/api/bridge/')) return proxyBridge(req, res)
+  if (url.pathname === '/__devlog' && req.method === 'POST') return devlog(req, res)
   if (req.method !== 'GET' && req.method !== 'HEAD') return notFound(res)
   if (url.pathname.startsWith('/data/')) return serveFile(res, safeJoin(dataRoot, url.pathname.slice('/data/'.length)))
   return serveFile(res, safeJoin(webRoot, url.pathname))

@@ -29,6 +29,7 @@ import {
   WeatherSavedPlace,
   WeatherSavedPlaces,
   WeatherSavedPlacesEdit,
+  WeatherScreenSnapshot,
   WeatherSettledOutcome,
   WeatherTrafficSummary,
   WeatherUpdatePlan,
@@ -1544,7 +1545,9 @@ export class WeatherToolModel {
    */
   async send(request, { queued = false } = {}) {
     const service = this.host.weatherService
-    const bot = this.snapshot?.source?.bot ?? null
+    const source = this.snapshot?.source ?? null
+    // The announced bot, or a stand-in for one only heard on the channel (`heardOnly`).
+    const bot = source == null ? null : WeatherScreenSnapshot.Source.requestBot(source)
     if (service == null || bot == null) return
     const status = this.status({ for: request })
     switch (status.kind) {

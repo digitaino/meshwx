@@ -34,6 +34,28 @@ server-side and never reaches the page.
 | Development bridge | The bot's own feed of what it transmits, through the dev server. Requests go out on the real air |
 | Recorded data | `demo/datagrams.json`, what WX-AUS sent one morning, replayed with its times moved to now |
 
+## Radio settings
+
+A MeshCore radio hears only the radios that are on **exactly** the same frequency, bandwidth,
+spreading factor and coding rate. A factory-fresh one is on the firmware's own default, not on any
+mesh, and from a browser it looks perfect: it connects, it answers, it names itself, and it hears
+nobody. The radio settings screen is where that is set right — the name, the four radio values from
+a preset picker or by hand, transmit power, position, whether the radio adds the contacts it hears,
+an advert, and a restart.
+
+It is pushed from the radio pill (connect sheet → **Radio settings**) and from `?open=radiosettings`,
+and only for a real radio: Bluetooth, USB or `?link=simulated`. Every card owns one write and
+nothing goes out until its own button is tapped; every write re-reads the radio's self info, so
+what the fields show afterwards is what the radio says and not what was typed. The radio card also
+carries the tally of adverts and messages heard since this page connected — "Heard since
+connecting: Nothing" is the cue that the four values are worth checking.
+
+The preset table is the app's `RadioPresets.swift`, 25 entries grouped by region
+(`src/radio/RadioPresets.js`); the owner's Austin mesh and the weather bot are on `us-ca`,
+910.525 MHz, 62.5 kHz, SF 7, CR 5. Matching a radio to a preset is exact, on the integers the
+firmware persists, where the Swift allows a tolerance: a radio 75 kHz off `us-ca` is deaf to it, and
+calling it "USA/Canada" would hide the failure the screen exists to show.
+
 ## Radar
 
 A place page's Radar card (revision 11, `../../DigitainoMesh/docs/MESHWX_REV11.md` §3) draws one

@@ -76,7 +76,9 @@ const evaluate = async (expression) => {
 const FIND = `(sel) => {
   if (sel.startsWith('text=')) {
     const want = sel.slice(5)
-    const scope = document.querySelector('dialog[open]') ?? document
+    // The *last* open dialog: sheets stack (the connect sheet opens the radio settings over
+    // itself), and the one on top is the only one a tap can reach.
+    const scope = [...document.querySelectorAll('dialog[open]')].pop() ?? document
     const all = [...scope.querySelectorAll('button, a, [role=button], [role=menuitem], [role=tab], label, input')]
     const visible = all.filter((el) => el.getClientRects().length && !el.closest('[hidden]'))
     return visible.find((el) => (el.innerText || el.getAttribute('aria-label') || '').trim() === want)

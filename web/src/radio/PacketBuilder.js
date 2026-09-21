@@ -7,6 +7,7 @@
 
 import {
   concatBytes,
+  i32LE,
   u16LE,
   u32LE,
   utf8Encode,
@@ -21,6 +22,32 @@ export const publicKeySize = 32
 export const floodPathSentinel = 0xff
 /** Maximum payload bytes for `CMD_SEND_CHANNEL_DATA` (`MAX_FRAME_SIZE - 9` per firmware). */
 export const channelDataMaxPayloadBytes = 163
+/** Fixed-point scale firmware applies to latitude/longitude (degrees × 1e6, stored as Int32). */
+export const coordinateScale = 1_000_000
+/** Fixed-point scale firmware applies to radio frequency and bandwidth (MHz/kHz × 1,000). */
+export const radioScale = 1000
+
+// The ranges `CMD_SET_RADIO_PARAMS` and `CMD_SET_TX_POWER` accept. A Swift `ClosedRange` is an
+// object with its two bounds (docs/PORTING.md §3), so a caller can read them for a form's limits
+// instead of restating the numbers.
+
+/** Valid latitude range in degrees. */
+export const latitudeRange = Object.freeze({ lowerBound: -90, upperBound: 90 })
+/** Valid longitude range in degrees. */
+export const longitudeRange = Object.freeze({ lowerBound: -180, upperBound: 180 })
+/** Valid radio frequency range in kHz, matching firmware `CMD_SET_RADIO_PARAMS`. */
+export const frequencyRangeKHz = Object.freeze({ lowerBound: 150_000, upperBound: 2_500_000 })
+/** Valid radio bandwidth range in Hz, matching firmware `CMD_SET_RADIO_PARAMS`. */
+export const bandwidthRangeHz = Object.freeze({ lowerBound: 7000, upperBound: 500_000 })
+/** Valid LoRa spreading factor range, matching firmware `CMD_SET_RADIO_PARAMS`. */
+export const spreadingFactorRange = Object.freeze({ lowerBound: 5, upperBound: 12 })
+/** Valid LoRa coding rate range, matching firmware `CMD_SET_RADIO_PARAMS`. */
+export const codingRateRange = Object.freeze({ lowerBound: 5, upperBound: 8 })
+/**
+ * Minimum LoRa transmit power in dBm (firmware rejects below this). The upper bound is the
+ * device-reported `maxTxPower`, not a fixed constant, so it is supplied per device.
+ */
+export const txPowerFloor = -9
 
 /**
  * Clamps a date to the firmware's unsigned 32-bit seconds-since-epoch field, saturating
@@ -35,11 +62,66 @@ export function epochSeconds32(date) {
   return seconds
 }
 
+/**
+ * Scales a coordinate (degrees) into the firmware's `Int32` fixed-point form, clamping to a
+ * finite, valid range. A NaN or infinite value becomes 0 rather than overflowing.
+ *
+ * Exported so a caller can compare two coordinates by the integer the device actually persists,
+ * sidestepping float-equality noise between values that encode identically.
+ *
+ * `Math.trunc` is Swift's `Int32(_:)`: the conversion truncates toward zero, it does not round.
+ */
+export function scaledCoordinate(degrees, range) {
+  const clamped = Number.isFinite(degrees)
+    ? Math.min(Math.max(degrees, range.lowerBound), range.upperBound)
+    : 0
+  return Math.trunc(clamped * coordinateScale)
+}
+
+/**
+ * Scales a radio value (MHz or kHz) by 1,000 into the firmware's `UInt32` field, rounding to the
+ * nearest unit and clamping to `range`. Rounding avoids truncating a representable value one unit
+ * low — 910.525 MHz is 910 525 kHz, not 910 524 — and clamping saturates a NaN, infinite or
+ * out-of-range value instead of overflowing.
+ *
+ * Exported for the same reason as `scaledCoordinate`: preset matching compares the integers the
+ * radio persists, not two floats.
+ */
+export function scaledRadioValue(value, range) {
+  if (!Number.isFinite(value)) return range.lowerBound
+  // Swift's `.rounded()` is to-nearest with ties away from zero; `Math.round` breaks ties toward
+  // +∞, which differs only for a negative half, and these fields are unsigned.
+  const scaled = value < 0 ? -Math.round(-value * radioScale) : Math.round(value * radioScale)
+  return Math.min(Math.max(scaled, range.lowerBound), range.upperBound)
+}
+
+/**
+ * A dBm value as the firmware's `Int8` field, two's complement in one byte.
+ *
+ * Swift's type system does the clamping (the parameter *is* an `Int8`); JS has to, and a value
+ * outside the range saturates rather than wrapping into a wildly different power.
+ */
+function int8Byte(value) {
+  const whole = Number.isFinite(value) ? Math.trunc(value) : 0
+  return Math.min(Math.max(whole, -128), 127) & 0xff
+}
+
 export const PacketBuilder = Object.freeze({
   publicKeySize,
   floodPathSentinel,
   channelDataMaxPayloadBytes,
+  coordinateScale,
+  radioScale,
+  latitudeRange,
+  longitudeRange,
+  frequencyRangeKHz,
+  bandwidthRangeHz,
+  spreadingFactorRange,
+  codingRateRange,
+  txPowerFloor,
   epochSeconds32,
+  scaledCoordinate,
+  scaledRadioValue,
 
   /**
    * appStart, which initialises the session.
@@ -79,6 +161,81 @@ export const PacketBuilder = Object.freeze({
   /** setName: `[0x08][name]`, 31 UTF-8 bytes max (firmware `char[32]`). */
   setName(name) {
     return concatBytes(CommandCode.setName, utf8Prefix(name, 31))
+  },
+
+  /**
+   * setCoordinates: `[0x0E][latitude i32 LE][longitude i32 LE][0x00 × 4]`.
+   *
+   * Degrees × 1e6 as `Int32`; the last four bytes are the altitude field, which this client has
+   * nothing to put in and the firmware reads as zero.
+   */
+  setCoordinates({ latitude, longitude }) {
+    return concatBytes(
+      CommandCode.setCoordinates,
+      i32LE(scaledCoordinate(latitude, latitudeRange)),
+      i32LE(scaledCoordinate(longitude, longitudeRange)),
+      [0, 0, 0, 0],
+    )
+  },
+
+  /** setTxPower: `[0x0C][power dBm Int8]`. */
+  setTxPower(power) {
+    return Uint8Array.of(CommandCode.setTxPower, int8Byte(power))
+  },
+
+  /**
+   * setRadio: `[0x0B][frequency kHz u32 LE][bandwidth Hz u32 LE][spreading factor][coding rate]`,
+   * plus one byte for the client-repeat flag (firmware v9+) when it is given.
+   *
+   * `frequency` is MHz and `bandwidth` kHz; both are scaled by 1,000 into the firmware's fields
+   * and clamped there. The spreading factor and coding rate go out as given, exactly as the Swift
+   * builder does: the firmware answers `ERR_CODE_ILLEGAL_ARGUMENT` for a value outside its range,
+   * and a caller validates before sending (`RadioParameters.validateRadio`). Clamping them here
+   * would quietly tune the radio to something nobody asked for.
+   */
+  setRadio({ frequency, bandwidth, spreadingFactor, codingRate, clientRepeat = null }) {
+    const parts = [
+      CommandCode.setRadio,
+      u32LE(scaledRadioValue(frequency, frequencyRangeKHz)),
+      u32LE(scaledRadioValue(bandwidth, bandwidthRangeHz)),
+      spreadingFactor & 0xff,
+      codingRate & 0xff,
+    ]
+    if (clientRepeat != null) parts.push(clientRepeat ? 1 : 0)
+    return concatBytes(...parts)
+  },
+
+  /**
+   * setOtherParams: `[0x26][manual add contacts 0/1][telemetry modes][advert location policy]`,
+   * plus the multi-ACK byte (newer firmware) when it is given.
+   *
+   * The telemetry byte packs three two-bit modes — environment in bits 5-4, location in bits 3-2,
+   * base in bits 1-0 — which is the layout `Parsers.SelfInfo` unpacks, so a caller can hand back
+   * what self info reported and change one field.
+   *
+   * There is no partial form of this command: every field is written on every call, so a caller
+   * that does not read the current values first overwrites them.
+   */
+  setOtherParams({
+    manualAddContacts,
+    telemetryModeEnvironment = 0,
+    telemetryModeLocation = 0,
+    telemetryModeBase = 0,
+    advertisementLocationPolicy = 0,
+    multiAcks = null,
+  }) {
+    const telemetryMode =
+      ((telemetryModeEnvironment & 0b11) << 4) |
+      ((telemetryModeLocation & 0b11) << 2) |
+      (telemetryModeBase & 0b11)
+    const parts = [
+      CommandCode.setOtherParams,
+      manualAddContacts ? 1 : 0,
+      telemetryMode,
+      advertisementLocationPolicy & 0xff,
+    ]
+    if (multiAcks != null) parts.push(multiAcks & 0xff)
+    return concatBytes(...parts)
   },
 
   /** sendAdvertisement: `[0x07]`, or `[0x07][0x01]` to flood. */

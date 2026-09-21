@@ -14,12 +14,13 @@
 // `otherMessages` and shown on the radio page rather than dropped.
 
 import {
-  MeshCoreSession, WebBluetoothTransport, WebSerialTransport,
+  MeshCoreSession, RadioParameters, WebBluetoothTransport, WebSerialTransport,
 } from '../radio/index.js'
 import { SessionWeatherTransport, findWeatherSlot, addWeatherChannel } from '../link/SessionWeatherTransport.js'
 import { RemoteBotWeatherTransport } from '../link/RemoteBotWeatherTransport.js'
 import { ReplayWeatherTransport } from '../link/ReplayWeatherTransport.js'
 import { WeatherChannel } from '../weather/index.js'
+import { HeardBots } from './HeardBots.js'
 
 const LAST_LINK_KEY = 'meshwx.link.last'
 const OTHER_MESSAGES_KEY = 'other.messages'
@@ -70,6 +71,12 @@ export class RadioConnection {
     this.firmwareSupportsWeather = null
     this.firmwareVersion = null
     this.contacts = []
+    /** What the radio itself lists, and the weather bots heard advertising that it did not keep. */
+    this.radioContacts = []
+    this.heardBots = []
+    /** How many of each kind of event the radio has sent this session: bring-up diagnostics. */
+    this.radioEvents = {}
+    this.radioSettings = null
     this.channels = []
     this.isChannelSyncDone = false
     this.maxChannels = 0
@@ -126,6 +133,7 @@ export class RadioConnection {
   /** Restores what was kept and quietly tries the link used last time. Never prompts. */
   async start() {
     try { this.otherMessages = (await this.kv.get(OTHER_MESSAGES_KEY)) ?? [] } catch { this.otherMessages = [] }
+    try { this.heardBots = HeardBots.fromStored(await this.kv.get(HeardBots.storageKey)) } catch { this.heardBots = [] }
     this.#probeBridge()
     // `?link=demo` (or `bridge`) opens that link without a tap: a shareable demo, and a way to
     // look at the tool from a script. Radios cannot be opened this way; they need a gesture.
@@ -219,7 +227,12 @@ export class RadioConnection {
     this.frames = frames
     this.channels = []
     this.contacts = []
+    this.radioContacts = []
     this.isChannelSyncDone = false
+    // Per connection, as the field's own name says: the radio settings screen reads this tally as
+    // "heard since connecting", and a count carried over from the last radio would answer the
+    // wrong question.
+    this.radioEvents = {}
 
     const transport = new SessionWeatherTransport({
       session,
@@ -236,7 +249,7 @@ export class RadioConnection {
 
     const device = session.deviceInfo ?? {}
     const self = session.selfInfo ?? {}
-    this.label = self.name ?? frames.deviceName ?? null
+    this.#adoptSelfInfo(self, { fallbackName: frames.deviceName ?? null })
     this.firmwareSupportsWeather = session.supportsChannelDatagrams
     this.firmwareVersion = device.version || device.firmwareBuild || (device.firmwareVersion != null ? `v${device.firmwareVersion}` : null)
     this.maxChannels = device.maxChannels ?? 8
@@ -271,12 +284,122 @@ export class RadioConnection {
     if (session) await session.stop().catch(() => {})
   }
 
+  // MARK: What the radio says about itself
+
+  /**
+   * What the radio is tuned to, what it is called, where it says it is. A radio on other values
+   * than the mesh hears nothing and is heard by nothing, and looks exactly like a working one from
+   * here — which is the whole reason the radio settings screen exists.
+   */
+  #adoptSelfInfo(self, { fallbackName = null } = {}) {
+    this.label = self.name ?? fallbackName ?? null
+    this.radioSettings = {
+      name: self.name ?? null,
+      frequency: self.radioFrequency ?? null, bandwidth: self.radioBandwidth ?? null,
+      spreadingFactor: self.radioSpreadingFactor ?? null, codingRate: self.radioCodingRate ?? null,
+      txPower: self.txPower ?? null, maxTxPower: self.maxTxPower ?? null,
+      latitude: self.latitude ?? null, longitude: self.longitude ?? null,
+      manualAddContacts: self.manualAddContacts ?? null,
+      advertisementLocationPolicy: self.advertisementLocationPolicy ?? null,
+      key: Array.from(self.publicKey?.subarray?.(0, 6) ?? [], (b) => b.toString(16).padStart(2, '0')).join(''),
+    }
+  }
+
+  /** Whether this link's own settings can be read and written: a radio, connected. */
+  get canConfigureRadio() {
+    return this.isRadio && this.state === 'connected' && this.session != null
+  }
+
+  #radioSession() {
+    if (!this.canConfigureRadio) throw new Error('no radio connected')
+    return this.session
+  }
+
+  /**
+   * Reads self info back after a write and republishes it, so the screen shows what the radio now
+   * says rather than what was typed. A link swapped while the read was in flight is left alone.
+   */
+  async #rereadSelfInfo(session) {
+    const self = await session.refreshSelfInfo()
+    if (this.session !== session) return this.radioSettings
+    this.#adoptSelfInfo(self)
+    this.#changed()
+    return this.radioSettings
+  }
+
+  /** From a tap only. Sets the advertised name; the radio truncates at 31 UTF-8 bytes. */
+  async renameRadio(name) {
+    const session = this.#radioSession()
+    const wanted = (name ?? '').trim()
+    if (wanted === '') throw new Error('a radio needs a name')
+    await session.setName(wanted)
+    return this.#rereadSelfInfo(session)
+  }
+
+  /**
+   * From a tap only. Sets the four values that decide what this radio can hear. Validated here as
+   * well as in the screen: a value outside the firmware's ranges is refused by the radio, and a
+   * refusal leaves it on whatever it was on, which reads from a screen like a write that worked.
+   */
+  async applyRadioParams({ frequency, bandwidth, spreadingFactor, codingRate }) {
+    const session = this.#radioSession()
+    const check = RadioParameters.validateRadio({ frequency, bandwidth, spreadingFactor, codingRate })
+    if (!check.ok) throw radioParameterError(check.problems)
+    await session.setRadio({ frequency, bandwidth, spreadingFactor, codingRate })
+    return this.#rereadSelfInfo(session)
+  }
+
+  /** From a tap only. Transmit power in dBm, between the firmware's floor and this radio's own. */
+  async setTxPower(power) {
+    const session = this.#radioSession()
+    const check = RadioParameters.validateTxPower(power, { maxTxPower: this.radioSettings?.maxTxPower })
+    if (!check.ok) throw radioParameterError(check.problems)
+    await session.setTxPower(power)
+    return this.#rereadSelfInfo(session)
+  }
+
+  /** From a tap only. The position the radio carries in its adverts, in degrees. */
+  async setPosition({ latitude, longitude }) {
+    const session = this.#radioSession()
+    const check = RadioParameters.validatePosition({ latitude, longitude })
+    if (!check.ok) throw radioParameterError(check.problems)
+    await session.setCoordinates({ latitude, longitude })
+    return this.#rereadSelfInfo(session)
+  }
+
+  /**
+   * From a tap only. Whether the radio adds by itself the contacts it hears. The session reads the
+   * other "other params" first and writes them back unchanged: the command has no partial form.
+   */
+  async setManualAddContacts(enabled) {
+    const session = this.#radioSession()
+    const self = await session.setManualAddContacts(enabled)
+    if (this.session !== session) return this.radioSettings
+    this.#adoptSelfInfo(self ?? session.selfInfo ?? {})
+    this.#changed()
+    return this.radioSettings
+  }
+
+  /** From a tap only. Broadcasts an advert, flooded through the mesh or one hop only. */
+  async sendAdvert({ flood = false } = {}) {
+    await this.#radioSession().sendAdvertisement({ flood })
+  }
+
+  /**
+   * From a tap only. Restarts the radio. The link goes with it: the radio reboots instead of
+   * answering, and a Bluetooth or USB radio the browser already granted is reconnected by
+   * `#onLinkLost` once it is back.
+   */
+  async rebootRadio() {
+    await this.#radioSession().reboot()
+  }
+
   // MARK: The radio's tables
 
   async #syncContacts() {
     if (!this.session) return
     const contacts = await this.session.getContacts()
-    this.contacts = (contacts ?? []).map((c) => ({
+    this.radioContacts = (contacts ?? []).map((c) => ({
       publicKey: c.publicKey,
       name: c.advertisedName ?? c.name ?? '',
       latitude: c.latitude ?? 0,
@@ -285,6 +408,23 @@ export class RadioConnection {
       lastAdvertTimestamp: c.lastAdvertisement ? Math.floor(c.lastAdvertisement / 1000) : 0,
       type: c.type ?? null,
     }))
+    this.contacts = HeardBots.merge(this.radioContacts, this.heardBots)
+    this.log(`contacts: the radio lists ${this.radioContacts.length}`)
+    this.#changed()
+  }
+
+  /**
+   * An advert from a node the radio did not keep (it adds contacts by hand, or its list is full).
+   * A weather bot among them is remembered here, so it can be named and asked; the radio's own
+   * list is left alone (`HeardBots.js`).
+   */
+  #heardAdvert(contact) {
+    const row = HeardBots.fromAdvert(contact, { now: Date.now() })
+    if (row == null) return
+    this.heardBots = HeardBots.upsert(this.heardBots, row)
+    this.kv.set(HeardBots.storageKey, HeardBots.toStored(this.heardBots)).catch(() => {})
+    this.contacts = HeardBots.merge(this.radioContacts, this.heardBots)
+    this.log(`heard ${row.name} advertise; the radio did not keep it, so it is kept here`)
     this.#changed()
   }
 
@@ -321,6 +461,8 @@ export class RadioConnection {
   // MARK: Session events
 
   #onSessionEvent(event) {
+    this.radioEvents[event.kind] = (this.radioEvents[event.kind] ?? 0) + 1
+    if (event.kind === 'parseFailure') this.log(`could not read a frame from the radio: ${event.reason ?? event.message ?? ''}`)
     switch (event.kind) {
       case 'connectionStateChanged':
         if (event.value === 'disconnected' && this.state !== 'disconnected') this.#onLinkLost()
@@ -331,8 +473,10 @@ export class RadioConnection {
       case 'channelMessage':
         this.#keepOtherMessage({ kind: 'channel', from: this.#channelName(event.message?.channelIndex), text: event.message?.text ?? '', receivedAt: Date.now() })
         break
-      case 'advertisement':
       case 'newContact':
+        this.#heardAdvert(event.value)
+        // falls through: the list is re-read as well, in case the radio did keep it
+      case 'advertisement':
       case 'pathUpdate':
         clearTimeout(this.contactsTimer)
         this.contactsTimer = setTimeout(() => this.#syncContacts().catch(() => {}), 2000)
@@ -416,6 +560,13 @@ export class RadioConnection {
   #changed() {
     for (const fn of [...this.listeners]) fn(this)
   }
+}
+
+/** A refusal from this side rather than from the radio; `problems` names the fields. */
+function radioParameterError(problems) {
+  const error = new Error(`radio parameter out of range: ${problems.map((p) => p.field).join(', ')}`)
+  error.problems = problems
+  return error
 }
 
 function hexPrefix(bytes) {

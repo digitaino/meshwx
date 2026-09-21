@@ -307,3 +307,157 @@ async function waitFor(predicate, { timeoutMs = 1000 } = {}) {
     await new Promise((resolve) => setTimeout(resolve, 1))
   }
 }
+
+// ---------------------------------------------------------------------------
+// The configuration commands against the fake radio: what the radio accepts, what it refuses, and
+// that the re-read is what the screen ends up showing. Web only — the radio settings screen is
+// this client's own, and nothing above this layer may trust what was typed.
+
+const RADIO_PARAMS = { frequency: 910.525, bandwidth: 62.5, spreadingFactor: 7, codingRate: 5 }
+
+test('setName is accepted and the re-read reports the new name', async () => {
+  const { session } = makeSession({ name: 'FakeRadio' })
+  await session.start()
+
+  await session.setName('WX Bench')
+  const self = await session.refreshSelfInfo()
+
+  assert.equal(self.name, 'WX Bench')
+  assert.equal(session.selfInfo.name, 'WX Bench')
+  await session.stop()
+})
+
+test('setRadio moves a factory-fresh radio onto the mesh and the re-read proves it', async () => {
+  const { transport, session } = makeSession()
+  await session.start()
+  // The firmware's own default, which is what made the owner's fresh radio deaf.
+  assert.equal(session.selfInfo.radioFrequency, 906.875)
+
+  await session.setRadio(RADIO_PARAMS)
+  const self = await session.refreshSelfInfo()
+
+  assert.equal(self.radioFrequency, 910.525)
+  assert.equal(self.radioBandwidth, 62.5)
+  assert.equal(self.radioSpreadingFactor, 7)
+  assert.equal(self.radioCodingRate, 5)
+  assert.equal(transport.radioFrequency, 910.525)
+  await session.stop()
+})
+
+test('a radio parameter outside the firmware range is refused and nothing changes', async () => {
+  const { transport, session } = makeSession()
+  await session.start()
+
+  await assert.rejects(
+    () => session.setRadio({ ...RADIO_PARAMS, spreadingFactor: 4 }),
+    (error) => error.kind === 'deviceError' && error.code === 6,
+  )
+  // A refusal leaves the radio on what it was on, which is exactly why the caller must check
+  // first: from a screen, a refused write and a write that worked look the same.
+  assert.equal(transport.radioFrequency, 906.875)
+  assert.equal(transport.radioSpreadingFactor, 11)
+
+  await assert.rejects(
+    () => session.setRadio({ ...RADIO_PARAMS, codingRate: 9 }),
+    (error) => error.kind === 'deviceError' && error.code === 6,
+  )
+  await session.stop()
+})
+
+test('a frequency outside the range is saturated by the builder, not refused by the radio', async () => {
+  // Why the caller has to validate before sending: the builder clamps frequency and bandwidth
+  // into the firmware's fields, so 1 MHz arrives as 150 MHz and the radio answers OK. The radio
+  // is then on a value nobody asked for, and only the spreading factor and coding rate can ever
+  // come back as an error.
+  const { transport, session } = makeSession()
+  await session.start()
+
+  await session.setRadio({ ...RADIO_PARAMS, frequency: 1, bandwidth: 1 })
+
+  assert.equal(transport.radioFrequency, 150)
+  assert.equal(transport.radioBandwidth, 7)
+  await session.stop()
+})
+
+test('setTxPower is capped by the radio own maximum', async () => {
+  const { transport, session } = makeSession({ maxTxPower: 22 })
+  await session.start()
+
+  await session.setTxPower(20)
+  assert.equal((await session.refreshSelfInfo()).txPower, 20)
+
+  await assert.rejects(
+    () => session.setTxPower(27),
+    (error) => error.kind === 'deviceError' && error.code === 6,
+  )
+  await assert.rejects(
+    () => session.setTxPower(-20),
+    (error) => error.kind === 'deviceError' && error.code === 6,
+  )
+  assert.equal(transport.txPower, 20)
+  await session.stop()
+})
+
+test('setCoordinates round-trips through the radio at 1e-6 degrees', async () => {
+  const { session } = makeSession()
+  await session.start()
+
+  await session.setCoordinates({ latitude: 30.2672, longitude: -97.7431 })
+  const self = await session.refreshSelfInfo()
+
+  assert.equal(self.latitude, 30.2672)
+  assert.equal(self.longitude, -97.7431)
+  await session.stop()
+})
+
+test('setManualAddContacts preserves every other field of setOtherParams', async () => {
+  const { transport, session } = makeSession({
+    manualAddContacts: false,
+    telemetryMode: 0b011011,          // environment 1, location 2, base 3
+    advertisementLocationPolicy: 2,
+    multiAcks: 3,
+  })
+  await session.start()
+
+  const self = await session.setManualAddContacts(true)
+
+  const written = transport.sentFrames.find((frame) => frame[0] === 0x26)
+  assert.deepEqual([...written], [0x26, 0x01, 0b011011, 0x02, 0x03])
+  assert.equal(self.manualAddContacts, true)
+  assert.equal(self.telemetryModeEnvironment, 1)
+  assert.equal(self.telemetryModeLocation, 2)
+  assert.equal(self.telemetryModeBase, 3)
+  assert.equal(self.advertisementLocationPolicy, 2)
+  assert.equal(self.multiAcks, 3)
+  await session.stop()
+})
+
+test('an advert goes out flooded or one hop, as asked', async () => {
+  const { transport, session } = makeSession()
+  await session.start()
+
+  await session.sendAdvertisement({ flood: true })
+  await session.sendAdvertisement()
+
+  assert.deepEqual(transport.advertisementSends, [{ flood: true }, { flood: false }])
+  await session.stop()
+})
+
+test('a reboot drops the link', async () => {
+  const { transport, session } = makeSession()
+  const states = []
+  session.subscribe((event) => { if (event.kind === 'connectionStateChanged') states.push(event.value) })
+  await session.start()
+
+  await session.reboot()
+  await waitFor(() => session.state === 'disconnected')
+
+  assert.equal(transport.rebootCount, 1)
+  assert.equal(transport.isConnected, false)
+  assert.deepEqual(states, ['connecting', 'connected', 'disconnected'])
+})
+
+test('a configuration command on a session that is not running fails', async () => {
+  const { session } = makeSession()
+  await assert.rejects(() => session.reboot(), (error) => error.kind === 'notConnected')
+})

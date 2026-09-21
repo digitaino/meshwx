@@ -148,6 +148,14 @@ export const WeatherScreenSnapshot = Object.freeze({
     make({ botID, bot = null, lastHeardAt = null, lastLiveHeardAt = null }) {
       return { botID, bot, lastHeardAt, lastLiveHeardAt }
     },
+    /**
+     * Who a request goes to: the announced bot, or, for one only ever heard on the channel, a
+     * stand-in carrying the two bytes a Request datagram needs (`WeatherBot.heardOnly`). `bot`
+     * stays null for such a source, so it is still named "Weather radio 041D".
+     */
+    requestBot(source) {
+      return source.bot ?? WeatherBot.heardOnly({ botID: source.botID })
+    },
   }),
 
   /**
@@ -232,7 +240,11 @@ export const WeatherScreenSnapshot = Object.freeze({
     } else if (banner?.kind === 'channelMissing') {
       requestBlock = WeatherRequestBlock.channelMissing
     } else if (source != null) {
-      requestBlock = source.bot == null ? WeatherRequestBlock.botNotAnnounced : null
+      // A bot heard but never seen to advertise can still be asked: a Request datagram names it
+      // by the two bytes its own packets carry (spec §7B). Only a radio that cannot send one
+      // needs the DM, and only the DM needs the whole key an advert brings.
+      requestBlock = source.bot == null && inputs.firmwareSupportsWeather !== true
+        ? WeatherRequestBlock.botNotAnnounced : null
     } else {
       requestBlock = WeatherRequestBlock.noBot
     }

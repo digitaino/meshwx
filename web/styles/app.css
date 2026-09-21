@@ -443,6 +443,49 @@ button.row:hover, a.row:hover { background: var(--surface-hover); }
 .search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--text); font: inherit; outline: none; min-height: 42px; }
 .search:focus-within { border-color: var(--accent); }
 
+/* ---------- Fields: a row whose value is typed or chosen (Field, Select) ---------- */
+
+/* The entry sits where a row's value would, so a card of fields reads as a card of rows. It is the
+   only thing on a row allowed to be narrow: a frequency is five characters and a name is thirty. */
+.field-row { gap: 10px; }
+.field-row .row__main { flex: 1 1 auto; }
+.field-row__entry {
+  display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0;
+  padding: 0 10px; min-height: 38px;
+  border: 1px solid var(--separator); border-radius: var(--radius-small);
+  background: var(--surface-2); color: var(--text-2);
+}
+.field-row__entry:focus-within { border-color: var(--accent); }
+.field-row__entry.is-invalid { border-color: var(--stale); }
+.field-row__input {
+  flex: 1 1 auto; width: 11ch; min-width: 0;
+  border: 0; background: none; color: var(--text); font: inherit; text-align: end;
+  outline: none; min-height: 36px;
+}
+.field-row__unit { flex: none; font-size: var(--text-foot); }
+/* A select keeps the platform's own control, so it is the browser's picker on a phone and a menu on
+   a desktop, and it is held to a share of the row: an option list is as wide as its longest option
+   and would otherwise push the label off the row. */
+.field-row__entry--select { max-width: 62%; padding-inline-end: 4px; overflow: hidden; }
+.field-row__select {
+  flex: 1 1 auto; width: 100%; min-width: 0;
+  border: 0; background: none; color: var(--text); font: inherit; outline: none; min-height: 36px;
+  padding-inline-end: 2px; text-overflow: ellipsis;
+}
+.field-row__input:disabled, .field-row__select:disabled { color: var(--text-3); }
+
+/* `wide` for a field that holds words rather than a number: a name is thirty-one bytes. */
+.field-row--wide .field-row__input { width: 18ch; }
+
+/* On a narrow phone the label takes its own line rather than squeezing the entry to nothing, and
+   the entry then fills the width, so what is typed is never clipped. */
+@media (max-width: 430px) {
+  .field-row { flex-wrap: wrap; }
+  .field-row .row__main { flex: 1 1 100%; }
+  .field-row__entry, .field-row__entry--select { flex: 1 1 100%; max-width: none; }
+  .field-row__input, .field-row--wide .field-row__input { width: auto; text-align: start; }
+}
+
 /* ---------- Menus and small things ---------- */
 
 .menu {

@@ -21,7 +21,12 @@ export function WeatherStationsScreen({ app, page }) {
 ```
 
 - `app.nav.push(screen)`, `app.nav.pop()`, `app.nav.sheet({ title, render, onDismiss })`,
-  `app.nav.refresh()`. Pushes and sheets are browser history entries, so Back closes them.
+  `app.nav.closeSheets()`, `app.nav.refresh()`. Pushes and sheets are browser history entries, so
+  Back closes them.
+- **One sheet at a time.** A sheet presented over another cannot be taken apart again: closing the
+  inner one sends a back that the outer one answers as well, and both go. A screen reached from a
+  sheet is pushed after `await app.nav.closeSheets()` (the radio settings screen, from the connect
+  sheet), never stacked on it.
 - `render()` reads from the model every time and keeps no copy of model data. Screen-local state
   (a search string, which tab is picked) lives in the closure; after changing it call
   `app.nav.refresh()`.
@@ -35,9 +40,27 @@ export function WeatherStationsScreen({ app, page }) {
 
 `List`, `Card({ label, labelTrailing, foot })`, `Row({ icon, title, subtitle, value, trailing,
 onclick, stale, destructive, muted, tint, key })`, `Button({ label, icon, kind, small, onclick })`,
-`Banner({ text, detail, actions, kind })`, `Switch`, `Spinner`, `Empty`, `Prose`, `Note`,
-`openMenu(anchor, items)`. They map onto the classes of `styles/app.css`; read that file before
-adding a class, and add new classes there (one stylesheet), grouped under a comment for your screen.
+`Banner({ text, detail, actions, kind })`, `Field`, `Select`, `Switch`, `Spinner`, `Empty`, `Prose`,
+`Note`, `openMenu(anchor, items)`. They map onto the classes of `styles/app.css`; read that file
+before adding a class, and add new classes there (one stylesheet), grouped under a comment for your
+screen.
+
+## Fields: a row you type in or choose from
+
+`Field({ label, value, unit, detail, inputmode, oninput, invalid, wide, key })` and
+`Select({ label, value, options, onchange, detail, invalid, key })` are rows whose value sits on
+the right where a `Row`'s value would, so a card of fields reads as a card of rows. `Select`'s
+`options` is `[{ value, label, disabled? }]`, or `[{ group, options: [...] }]` for an `optgroup`.
+
+- `value` comes from the screen's own state on **every** render, like everything else. `morph`
+  keeps a live input in step with it and leaves it alone while it has focus, so a field needs no
+  `data-static` and no `hook` — unlike the search field, which is its own thing.
+- `Field` is always `type="text"` with an `inputmode`, never `type="number"`: a number input
+  reports `""` for anything it dislikes, so "910." mid-typing comes back as nothing and the digits
+  already entered are lost. Parse and range-check in the caller, which is the only place that knows
+  what the field is for, and pass `invalid` to paint the border.
+- Keep a `Select`'s option list stable across renders: `morph` sets the select's value before it
+  updates the options, so a value whose option has only just appeared would not take.
 
 Event colours: set `--tint` from a `MeshWXEventTint` name, `style="--tint: var(--tint-orangeRed)"`
 (`Row({ tint })` does it). Icons: `icon('cloud.sun', { size })` from `icons.js`, named after the

@@ -276,6 +276,15 @@
 
 .sheet__actions { padding: 10px 16px 14px; }
 
+/* ---------- Radio settings (web only) ---------- */
+
+/* Every write says in place how it went, and the sentence belongs to the button above it rather
+   than floating between two cards, so the gap the actions block leaves is closed again. */
+.sheet__actions + .line, .sheet__actions + .loading { margin-top: -10px; padding-bottom: 6px; }
+/* A field that has been typed into but not sent, and a field the radio would refuse: both sit
+   between the fields and the button, and both are about to be acted on. */
+.field-row + .line { padding-top: 8px; }
+
 .narrative { user-select: text; }
 
 @media (prefers-reduced-motion: reduce) {

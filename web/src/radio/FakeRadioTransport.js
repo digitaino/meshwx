@@ -11,8 +11,25 @@
 // `send(frame)`, `subscribe(fn)`, `onDisconnect`. Frames in and out are bare companion
 // payloads; no length prefix, as over BLE.
 
-import { concatBytes, u16LE, u32LE, utf8Encode, utf8PaddedOrTruncated } from './Bytes.js'
-import { CommandCode, ResponseCode, StatsType } from './PacketCodes.js'
+import {
+  concatBytes,
+  i32LE,
+  readInt32LE,
+  readUInt32LE,
+  u16LE,
+  u32LE,
+  utf8Decode,
+  utf8Encode,
+  utf8PaddedOrTruncated,
+} from './Bytes.js'
+import { CommandCode, ErrorCode, ResponseCode, StatsType } from './PacketCodes.js'
+import {
+  bandwidthRangeHz,
+  codingRateRange,
+  frequencyRangeKHz,
+  spreadingFactorRange,
+  txPowerFloor,
+} from './PacketBuilder.js'
 
 const DEFAULT_PUBLIC_KEY = Uint8Array.from(
   Array.from({ length: 32 }, (_, i) => (i + 1) & 0xff),
@@ -57,6 +74,10 @@ export class FakeRadioTransport {
   messageSends = []
   /** Every channel text message this radio was given. */
   channelMessageSends = []
+  /** Every advert this radio was told to broadcast, as `{ flood }`. */
+  advertisementSends = []
+  /** How many times it was told to reboot. */
+  rebootCount = 0
 
   #channelDataListeners = new Set()
   #messageListeners = new Set()
@@ -80,6 +101,19 @@ export class FakeRadioTransport {
    * @param {number} [options.deviceTime] the radio's clock, milliseconds
    * @param {boolean} [options.answerCommands] when false, nothing is answered — for testing
    *   the command timeout
+   * @param {number} [options.radioFrequency] MHz. The default is the firmware's own default, so a
+   *   fresh fake radio is as deaf on a `us-ca` mesh as a fresh real one.
+   * @param {number} [options.radioBandwidth] kHz
+   * @param {number} [options.radioSpreadingFactor]
+   * @param {number} [options.radioCodingRate]
+   * @param {number} [options.txPower] dBm
+   * @param {number} [options.maxTxPower] dBm, this radio's ceiling
+   * @param {number} [options.latitude] degrees
+   * @param {number} [options.longitude] degrees
+   * @param {boolean} [options.manualAddContacts]
+   * @param {number} [options.advertisementLocationPolicy]
+   * @param {number} [options.telemetryMode] the packed byte, as self info reports it
+   * @param {number} [options.multiAcks]
    */
   constructor({
     firmwareVersion = 11,
@@ -92,6 +126,19 @@ export class FakeRadioTransport {
     channels = new Map(),
     deviceTime = Date.now(),
     answerCommands = true,
+    radioFrequency = 906.875,
+    radioBandwidth = 250,
+    radioSpreadingFactor = 11,
+    radioCodingRate = 8,
+    txPower = 22,
+    maxTxPower = 30,
+    latitude = 0,
+    longitude = 0,
+    manualAddContacts = false,
+    advertisementType = 0x01,
+    advertisementLocationPolicy = 0,
+    telemetryMode = 0,
+    multiAcks = 0,
   } = {}) {
     this.firmwareVersion = firmwareVersion
     this.maxChannels = maxChannels
@@ -103,6 +150,21 @@ export class FakeRadioTransport {
     this.channels = channels
     this.deviceTime = deviceTime
     this.answerCommands = answerCommands
+    // Everything a configuration command writes. Self info is built from these, so a write the
+    // radio accepted is a write the next `appStart` reports back.
+    this.radioFrequency = radioFrequency
+    this.radioBandwidth = radioBandwidth
+    this.radioSpreadingFactor = radioSpreadingFactor
+    this.radioCodingRate = radioCodingRate
+    this.txPower = txPower
+    this.maxTxPower = maxTxPower
+    this.latitude = latitude
+    this.longitude = longitude
+    this.manualAddContacts = manualAddContacts
+    this.advertisementType = advertisementType
+    this.advertisementLocationPolicy = advertisementLocationPolicy
+    this.telemetryMode = telemetryMode
+    this.multiAcks = multiAcks
   }
 
   // MARK: - Transport interface
@@ -307,6 +369,45 @@ export class FakeRadioTransport {
         this.#ok()
         break
 
+      case CommandCode.setName:
+        this.name = utf8Decode(frame.subarray(1))
+        this.#ok()
+        break
+
+      case CommandCode.setRadio:
+        this.#handleSetRadio(frame)
+        break
+
+      case CommandCode.setTxPower:
+        this.#handleSetTxPower(frame)
+        break
+
+      case CommandCode.setCoordinates:
+        this.latitude = readInt32LE(frame, 1) / 1_000_000
+        this.longitude = readInt32LE(frame, 5) / 1_000_000
+        this.#ok()
+        break
+
+      case CommandCode.setOtherParams:
+        this.manualAddContacts = frame[1] > 0
+        this.telemetryMode = frame[2]
+        this.advertisementLocationPolicy = frame[3]
+        // The multi-ACK byte is optional on the wire; a frame without it leaves the value alone.
+        if (frame.length > 4) this.multiAcks = frame[4]
+        this.#ok()
+        break
+
+      case CommandCode.sendAdvertisement:
+        this.advertisementSends.push({ flood: frame.length > 1 && frame[1] === 0x01 })
+        this.#ok()
+        break
+
+      case CommandCode.reboot:
+        // The firmware restarts instead of answering, so the companion link simply goes away.
+        this.rebootCount += 1
+        queueMicrotask(() => { this.disconnect().catch(() => {}) })
+        break
+
       default:
         // Firmware answers an unknown command byte with ERR_CODE_UNSUPPORTED_CMD.
         this.#push(Uint8Array.of(ResponseCode.error, 1))
@@ -325,22 +426,61 @@ export class FakeRadioTransport {
   #selfInfoFrame() {
     return concatBytes(
       ResponseCode.selfInfo,
-      0x01, // adv type
-      22, // tx power
-      30, // max tx power
+      this.advertisementType & 0xff,
+      this.txPower & 0xff,
+      this.maxTxPower & 0xff,
       this.publicKey.subarray(0, 32),
-      u32LE(0), // lat
-      u32LE(0), // lon
-      0x00, // multi acks
-      0x00, // adv location policy
-      0x00, // telemetry mode
-      0x00, // manual add contacts
-      u32LE(906_875), // radio frequency × 1000
-      u32LE(250_000), // bandwidth × 1000
-      11, // spreading factor
-      8, // coding rate
+      i32LE(Math.trunc(this.latitude * 1_000_000)),
+      i32LE(Math.trunc(this.longitude * 1_000_000)),
+      this.multiAcks & 0xff,
+      this.advertisementLocationPolicy & 0xff,
+      this.telemetryMode & 0xff,
+      this.manualAddContacts ? 0x01 : 0x00,
+      u32LE(Math.round(this.radioFrequency * 1000)), // kHz
+      u32LE(Math.round(this.radioBandwidth * 1000)), // Hz
+      this.radioSpreadingFactor & 0xff,
+      this.radioCodingRate & 0xff,
       utf8Encode(this.name),
     )
+  }
+
+  /**
+   * `CMD_SET_RADIO_PARAMS`, including the refusal: the firmware checks all four values and
+   * answers `ERR_CODE_ILLEGAL_ARGUMENT` for any one outside its range, leaving the radio on
+   * whatever it was on. A fake radio that accepted anything would hide the case a caller most
+   * needs to handle.
+   */
+  #handleSetRadio(frame) {
+    const frequencyKHz = readUInt32LE(frame, 1)
+    const bandwidthHz = readUInt32LE(frame, 5)
+    const spreadingFactor = frame[9]
+    const codingRate = frame[10]
+    const inside = (value, range) => value >= range.lowerBound && value <= range.upperBound
+    if (
+      !inside(frequencyKHz, frequencyRangeKHz) ||
+      !inside(bandwidthHz, bandwidthRangeHz) ||
+      !inside(spreadingFactor, spreadingFactorRange) ||
+      !inside(codingRate, codingRateRange)
+    ) {
+      this.#error(ErrorCode.illegalArgument)
+      return
+    }
+    this.radioFrequency = frequencyKHz / 1000
+    this.radioBandwidth = bandwidthHz / 1000
+    this.radioSpreadingFactor = spreadingFactor
+    this.radioCodingRate = codingRate
+    this.#ok()
+  }
+
+  /** `CMD_SET_TX_POWER`: an Int8 dBm, floored by the firmware and capped by this radio's own. */
+  #handleSetTxPower(frame) {
+    const power = frame[1] > 0x7f ? frame[1] - 0x100 : frame[1]
+    if (power < txPowerFloor || power > this.maxTxPower) {
+      this.#error(ErrorCode.illegalArgument)
+      return
+    }
+    this.txPower = power
+    this.#ok()
   }
 
   #deviceInfoFrame() {

@@ -1,2 +1,3 @@
 .bridge-token
 node_modules/
+.devlog.jsonl

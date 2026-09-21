@@ -23,6 +23,7 @@ export { WeatherCachedScreen } from './WeatherCachedView.js'
 export { WeatherRadarScreen, radarDrawing, radarPrint, RADAR_WIDTHS } from './WeatherRadarView.js'
 export { WeatherAlertNotificationsScreen } from './WeatherAlertNotificationsView.js'
 export { RadioPill } from './RadioPill.js'
+export { RadioSettingsScreen } from './RadioSettingsView.js'
 
 // Shared with the place side: the alert row and the ask button, so a place page's alert strip
 // and its Update control read as the same tool.

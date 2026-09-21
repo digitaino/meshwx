@@ -166,9 +166,16 @@ Swift reads the bundle synchronously on first use. A browser cannot, so:
 ui  →  app  →  screen  →  weather  →  meshwx
                link  →  radio
                app   →  link, platform
+               ui    →  radio, but only its pure rules
 ```
 
 A layer imports only from layers to its right (and `src/l10n.js`). `weather`
 never imports `radio`: the service talks to a `WeatherTransport` (the port of
 the Swift protocol of that name), and `src/link/` holds the implementations —
 the bot's debug bridge, a replay of recorded datagrams, and the radio.
+
+The radio settings screen (`src/ui/radio/RadioSettingsView.js`) is the one
+screen that imports `src/radio`, for the preset table, the firmware's ranges,
+the heard-event tally and the name of an error code. Rules and names only:
+a screen never holds a session or builds a packet, and every byte it causes
+goes through `RadioConnection`.

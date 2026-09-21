@@ -318,6 +318,111 @@ export class MeshCoreSession {
     }
   }
 
+  // MARK: - Device configuration
+
+  /**
+   * Re-reads the radio's own info. `appStart` is the only command that returns it, and the
+   * session caches what comes back (`#dispatch`), so after a write this is how a screen comes to
+   * show what the radio now says rather than what was typed into it.
+   */
+  async refreshSelfInfo() {
+    return this.sendAppStart()
+  }
+
+  /** Sets the advertised name. Truncated to 31 UTF-8 bytes by the builder. */
+  async setName(name) {
+    await this.#sendSimpleCommand(PacketBuilder.setName(name))
+  }
+
+  /**
+   * Sets the four LoRa parameters. `frequency` is MHz, `bandwidth` kHz.
+   *
+   * Nothing is validated here, as in the Swift: the firmware answers
+   * `ERR_CODE_ILLEGAL_ARGUMENT` for a value outside its range and this throws that error, and the
+   * caller checks first (`RadioParameters.validateRadio`) so a person sees the problem before the
+   * radio does.
+   */
+  async setRadio({ frequency, bandwidth, spreadingFactor, codingRate, clientRepeat = null }) {
+    await this.#sendSimpleCommand(
+      PacketBuilder.setRadio({ frequency, bandwidth, spreadingFactor, codingRate, clientRepeat }),
+    )
+  }
+
+  /** Sets transmit power in dBm. The radio's own `maxTxPower` is the ceiling. */
+  async setTxPower(power) {
+    await this.#sendSimpleCommand(PacketBuilder.setTxPower(power))
+  }
+
+  /** Sets the position the radio carries in its adverts, in degrees. */
+  async setCoordinates({ latitude, longitude }) {
+    await this.#sendSimpleCommand(PacketBuilder.setCoordinates({ latitude, longitude }))
+  }
+
+  /**
+   * Writes all of the "other params" at once. There is no partial form of the command, so every
+   * field goes out on every call; prefer `setManualAddContacts`, which reads the current ones
+   * first.
+   */
+  async setOtherParams({
+    manualAddContacts,
+    telemetryModeEnvironment = 0,
+    telemetryModeLocation = 0,
+    telemetryModeBase = 0,
+    advertisementLocationPolicy = 0,
+    multiAcks = null,
+  }) {
+    await this.#sendSimpleCommand(
+      PacketBuilder.setOtherParams({
+        manualAddContacts,
+        telemetryModeEnvironment,
+        telemetryModeLocation,
+        telemetryModeBase,
+        advertisementLocationPolicy,
+        multiAcks,
+      }),
+    )
+  }
+
+  /**
+   * Whether the radio adds by itself the contacts it hears, preserving every other field of
+   * `setOtherParams` as self info reported it.
+   *
+   * Read, modify, write, then read again — the Swift's `mutateOtherParams`. The read-back is not
+   * a nicety: the command has no partial form, so the only proof the other fields survived is
+   * what the radio says afterwards.
+   */
+  async setManualAddContacts(enabled) {
+    const current = this.#selfInfo ?? (await this.sendAppStart())
+    if (current == null) throw MeshCoreError.sessionNotStarted()
+    await this.setOtherParams({
+      manualAddContacts: enabled,
+      telemetryModeEnvironment: current.telemetryModeEnvironment ?? 0,
+      telemetryModeLocation: current.telemetryModeLocation ?? 0,
+      telemetryModeBase: current.telemetryModeBase ?? 0,
+      advertisementLocationPolicy: current.advertisementLocationPolicy ?? 0,
+      multiAcks: current.multiAcks ?? null,
+    })
+    return this.refreshSelfInfo()
+  }
+
+  /**
+   * Broadcasts an advert. `flood` sends it through the mesh; without it the advert is heard by
+   * whatever is in direct range and no further.
+   */
+  async sendAdvertisement({ flood = false } = {}) {
+    await this.#sendSimpleCommand(PacketBuilder.sendAdvertisement({ flood }))
+  }
+
+  /**
+   * Restarts the radio. Nothing is awaited, as in the Swift: the radio reboots instead of
+   * answering, so the link drops and this session is finished. A new one has to be started after
+   * the radio comes back.
+   */
+  async reboot() {
+    if (!this.#running) throw MeshCoreError.notConnected()
+    await this.#transport.send(PacketBuilder.reboot())
+  }
+
   // MARK: - Contacts
 
   /**

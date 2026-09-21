@@ -80,6 +80,75 @@ export function Banner({ icon: iconName = 'exclamationmark.triangle', text, deta
       actions.length ? h('div', { class: 'cluster' }, actions) : null))
 }
 
+/**
+ * A row whose value is a field you type in: the label on the left, the entry on the right, a quiet
+ * unit after it ("MHz"). `value` comes from the screen's state on every render, so `morph` keeps it
+ * in step without rebuilding the input — and leaves it alone while it has focus.
+ *
+ * Always `type="text"` with an `inputmode`, never `type="number"`: a number input reports `""`
+ * for anything it dislikes, so "910." mid-typing would come back as nothing and the digits already
+ * entered would be lost. Parsing and range checking belong to the caller, which is the only place
+ * that knows what the field is for (`RadioParameters`).
+ */
+export function Field({
+  label, value = '', unit = null, detail = null, placeholder = null, inputmode = null,
+  oninput = null, onchange = null, disabled = false, invalid = false, maxlength = null,
+  wide = false, id = null, key = null,
+}) {
+  const fieldID = id ?? `field-${slug(label)}`
+  return h('div', { class: ['row', 'field-row', wide && 'field-row--wide'], key },
+    h('label', { class: 'row__main', for: fieldID },
+      h('span', { class: 'row__title' }, label),
+      detail != null ? h('span', { class: 'row__subtitle' }, detail) : null),
+    h('span', { class: ['field-row__entry', invalid && 'is-invalid'] },
+      h('input', {
+        class: 'field-row__input', id: fieldID, type: 'text', value: String(value ?? ''),
+        placeholder, inputmode, maxlength, disabled,
+        autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
+        'aria-invalid': invalid ? 'true' : null,
+        oninput: oninput ? (event) => oninput(event.currentTarget.value) : null,
+        onchange: onchange ? (event) => onchange(event.currentTarget.value) : null,
+      }),
+      unit != null ? h('span', { class: 'field-row__unit' }, unit) : null))
+}
+
+/**
+ * A row whose value is one of a list. `options` is `[{ value, label, disabled? }]`, or
+ * `[{ group, options: [...] }]` for an `optgroup` (the preset picker's regions). `onchange` gets
+ * the chosen option's value as a string.
+ *
+ * Keep the option list stable across renders: `morph` sets the select's value before it updates
+ * the options, so a value whose option has just appeared would not take.
+ */
+export function Select({
+  label, value, options, onchange, detail = null, disabled = false, invalid = false,
+  id = null, key = null,
+}) {
+  const fieldID = id ?? `field-${slug(label)}`
+  const current = value == null ? '' : String(value)
+  const build = (list) => list.map((option) => (option.options
+    ? h('optgroup', { label: option.group }, build(option.options))
+    : h('option', {
+      value: String(option.value),
+      selected: String(option.value) === current ? true : null,
+      disabled: option.disabled ? true : null,
+    }, option.label)))
+  return h('div', { class: ['row', 'field-row'], key },
+    h('label', { class: 'row__main', for: fieldID },
+      h('span', { class: 'row__title' }, label),
+      detail != null ? h('span', { class: 'row__subtitle' }, detail) : null),
+    h('span', { class: ['field-row__entry', 'field-row__entry--select', invalid && 'is-invalid'] },
+      h('select', {
+        class: 'field-row__select', id: fieldID, disabled,
+        'aria-invalid': invalid ? 'true' : null,
+        onchange: (event) => onchange(event.currentTarget.value),
+      }, build(options))))
+}
+
+function slug(text) {
+  return String(text ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
 export function Switch({ checked, onchange, label, id = null, disabled = false }) {
   return h('label', { class: 'switch', 'aria-label': label },
     h('input', { type: 'checkbox', role: 'switch', id, checked: checked ? true : null, disabled, onchange: (event) => onchange(event.currentTarget.checked) }),

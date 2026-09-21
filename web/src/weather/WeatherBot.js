@@ -42,6 +42,26 @@ export const WeatherBot = {
   id(bot) { return bot.publicKey },
 
   /**
+   * A bot known only from its own packets: every v5 message carries the first two bytes of the
+   * bot's public key (spec §2.2), and a Request datagram names the bot asked by those same two
+   * bytes (§7B). So a bot that has been heard can be asked without ever having been seen to
+   * advertise. It has no name, no position and no full key, which is why the DM fallback, the
+   * one path that needs the key, stays closed to it (`isAnnounced`).
+   *
+   * Found the hard way on 2026-09-21: the owner's web client sat on a radio that was itself
+   * named WX-AUS, which can never hear "itself" announce, with every ask blocked.
+   */
+  heardOnly({ botID }) {
+    return WeatherBot.make({
+      publicKey: Uint8Array.of(botID & 0xff, (botID >> 8) & 0xff),
+      name: '', latitude: 0, longitude: 0, lastAdvert: null
+    })
+  },
+
+  /** Whether the bot's whole key is known, from an advert or a link: what a DM needs. */
+  isAnnounced(bot) { return bot?.publicKey?.length === 32 },
+
+  /**
    * The `bot` field every v5 message carries: the first two bytes of the public key as a
    * little-endian u16 (spec §2.2).
    */

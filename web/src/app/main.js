@@ -9,13 +9,14 @@ import { LocationService } from '../platform/location.js'
 import { Navigation } from '../ui/kit/nav.js'
 import { h, clear } from '../ui/kit/dom.js'
 import { RadioConnection } from './RadioConnection.js'
-import { openConnectSheet, DefaultRadioPill } from '../ui/ConnectSheet.js'
+import { openConnectSheet, openRadioSettings, DefaultRadioPill } from '../ui/ConnectSheet.js'
 
 const LOCALES = ['en', 'de', 'es', 'fr', 'it', 'nl', 'pl', 'pt', 'ru', 'uk', 'zh-Hans']
 // The browser cannot list a directory, so the web-only tables are named here; `src/l10n.js`'s
 // Node fallback globs them instead. Keep the two in step when a screen adds a table.
 const WEB_TABLES = [
   'web.en.json', 'web.connect.en.json', 'web.place.en.json', 'web.radio.en.json',
+  'web.radiosettings.en.json',
 ]
 const json = async (url) => {
   const response = await fetch(url)
@@ -72,7 +73,39 @@ async function boot() {
   })
   const { createNotifications } = await import('../platform/notifications.js').catch(() => ({}))
   const notifications = createNotifications?.() ?? null
-  const connection = new RadioConnection({ weatherService, kv, location: locationService, notifications, log: (m) => console.info('[meshwx]', m) })
+  // On the dev server the page also tells the server what its radio link saw (`/__devlog`,
+  // tools/dev-server.mjs): hardware is brought up in a tab nobody else can look into.
+  const isDev = ['localhost', '127.0.0.1'].includes(globalThis.location.hostname)
+  const devlog = (entry) => {
+    if (!isDev) return
+    fetch('/__devlog', { method: 'POST', body: JSON.stringify(entry), keepalive: true }).catch(() => {})
+  }
+  const connection = new RadioConnection({
+    weatherService, kv, location: locationService, notifications,
+    log: (m) => { console.info('[meshwx]', m); devlog({ log: String(m) }) },
+  })
+  if (isDev) {
+    const names = (list) => (list ?? []).map((c) => c.name).filter((n) => /^WX-/i.test(n ?? ''))
+    connection.subscribe(() => devlog({
+      state: connection.state, kind: connection.kind, label: connection.label, error: connection.error,
+      firmware: connection.firmwareVersion, firmwareSupportsWeather: connection.firmwareSupportsWeather,
+      radioContacts: connection.radioContacts?.length ?? null, radioBots: names(connection.radioContacts),
+      heardBots: names(connection.heardBots), weatherSlot: connection.weatherSlot,
+      channelSyncDone: connection.isChannelSyncDone, radioEvents: connection.radioEvents,
+      radioSettings: connection.radioSettings,
+    }))
+    // Traffic does not change the connection, so it is reported on a slow tick of its own:
+    // what the radio has delivered, and what the weather service has asked and been answered.
+    let lastTick = ''
+    setInterval(() => {
+      const tick = JSON.stringify({
+        radioEvents: connection.radioEvents,
+        pending: weatherService.pendingRequests?.().map((p) => `${p.transportKind}:${p.request?.kind ?? ''}`) ?? [],
+        heardAt: weatherService.sessionInfo?.().lastChannelDatagramAt ?? null,
+      })
+      if (tick !== lastTick) { lastTick = tick; devlog({ tick: JSON.parse(tick), label: connection.label }) }
+    }, 5000)
+  }
 
   const { WeatherToolModel } = await import('./index.js')
   const model = new WeatherToolModel({ host: connection })
@@ -84,6 +117,7 @@ async function boot() {
     basemap: null,
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     openConnect: () => openConnectSheet(app),
+    openRadioSettings: () => openRadioSettings(app),
     radioPill: () => DefaultRadioPill({ app }),
   }
   globalThis.meshwx = app                                  // for the console, while this is young
@@ -112,13 +146,17 @@ async function boot() {
 }
 
 /**
- * `?open=radio|alerts|map|radar|places|connect` opens that screen on arrival (home-screen
- * shortcuts, and looking at one screen from a script). It waits for the page it belongs to.
+ * `?open=radio|alerts|map|radar|places|connect|radiosettings` opens that screen on arrival
+ * (home-screen shortcuts, and looking at one screen from a script). It waits for the page it
+ * belongs to; the two that are about the link rather than about a place do not need one.
  */
 async function openDeepLink(app) {
   const wanted = new URLSearchParams(globalThis.location.search).get('open')
   if (!wanted) return
   if (wanted === 'connect') return void app.openConnect()
+  // `openRadioSettings` closes any open sheet itself, and the screen answers for the link rather
+  // than for a place, so it does not wait for a page.
+  if (wanted === 'radiosettings') return void (await openRadioSettings(app))
   if (wanted === 'places') return void (await import('../ui/place/index.js')).openPlaces({ app })
   let page = null
   for (let i = 0; i < 40 && !page; i++) {
@@ -126,12 +164,7 @@ async function openDeepLink(app) {
     if (!page) await new Promise((resolve) => setTimeout(resolve, 150))
   }
   if (!page) return
-  // A first visit opens Places as a sheet. A screen pushed under an open sheet would be the one
-  // its Done button pops, so the sheet goes first and its history entry is given time to unwind.
-  if (app.nav.sheetStack.length) {
-    for (const sheet of [...app.nav.sheetStack]) sheet.close()
-    await new Promise((resolve) => setTimeout(resolve, 350))
-  }
+  await app.nav.closeSheets()
   const radio = await import('../ui/radio/index.js')
   const screen = {
     radio: radio.WeatherRadioScreen, alerts: radio.WeatherAlertsListScreen, map: radio.WeatherAreaMapScreen,

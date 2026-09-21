@@ -12,6 +12,7 @@ import { describe, it } from 'node:test'
 import { MeshWXTables } from '../src/meshwx/index.js'
 import { nodeBundleLoader } from '../src/meshwx/nodeLoader.js'
 import {
+  WeatherBot,
   InMemoryWeatherStateStore,
   WeatherReplyKind,
   WeatherRequest,
@@ -775,6 +776,25 @@ describe('WeatherService', () => {
     const pending = await h.service.send(WeatherRequest.digest, { to: F.bot })
     assert.equal(pending.transportKind, 'dm')
     assert.deepStrictEqual(h.transport.sent.map((entry) => entry.text), ['>d'])
+  })
+
+  // A bot only ever heard on the channel has no advert and so no whole key, and a Request
+  // datagram needs none: it names the bot by the two bytes every one of its packets carries.
+  it('a bot that was heard but never announced is asked by datagram', async () => {
+    const h = await makeHarness({ channelRequests: true })
+    const heard = WeatherBot.heardOnly({ botID: WeatherBot.botID(F.bot) })
+    const pending = await h.service.send(WeatherRequest.digest, { to: heard })
+    assert.equal(pending.transportKind, 'channel')
+    assert.equal(pending.botID, WeatherBot.botID(F.bot))
+    assert.deepStrictEqual(h.transport.channelSent.map((entry) => entry.botID), [WeatherBot.botID(F.bot)])
+    assert.deepStrictEqual(h.transport.sent, [], 'and never by DM')
+  })
+
+  it('and when the radio cannot send one, it is refused rather than sent to half a key', async () => {
+    const h = await makeHarness({ channelRequests: false })
+    const heard = WeatherBot.heardOnly({ botID: WeatherBot.botID(F.bot) })
+    await assert.rejects(() => h.service.send(WeatherRequest.digest, { to: heard }), /has not announced itself/)
+    assert.deepStrictEqual(h.transport.sent, [])
   })
 
   // Requests are flooded now, so a phone on `#meshwx` hears everybody else's.

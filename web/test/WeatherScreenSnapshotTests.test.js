@@ -176,16 +176,35 @@ test("the link's bot never displaces the contact for the same bot", () => {
 test('with no link of its own the radio still decides', () => {
   // Every build over a radio: the link is null and nothing about the block changes.
   assert.equal(snapshot(inputs({ connected: false, link: null })).requestBlock, WeatherRequestBlock.radioOffline)
-  // Heard on the channel, no contact for it: still the block it always was.
-  assert.equal(snapshot(inputs({ bots: [], connected: true, link: null })).requestBlock, WeatherRequestBlock.botNotAnnounced)
+  // Heard on the channel, no contact for it: askable by datagram since 2026-09-21 (below).
+  assert.equal(snapshot(inputs({ bots: [], connected: true, link: null })).requestBlock, null)
   assert.equal(snapshot(inputs({ states: {}, bots: [], connected: true, link: null })).requestBlock, WeatherRequestBlock.noBot)
 })
 
-test('a bot with no advert can be read but not asked', () => {
+// Until 2026-09-21 this read "can be read but not asked". A Request datagram names the bot by the
+// two bytes its own packets carry (spec §7B), so the advert was only ever needed for the DM. The
+// owner found the hole from the other side: a web client on a radio that was itself named WX-AUS,
+// which can never hear itself announce, with every ask blocked for a night.
+test('a bot with no advert can be read, and asked by datagram', () => {
   const screen = snapshot(inputs({ bots: [] }))
   assert.equal(screen.source?.botID, P.botID)
-  assert.equal(screen.source?.bot, null)
+  assert.equal(screen.source?.bot, null)                       // still unnamed: "Weather radio 041D"
+  assert.equal(screen.requestBlock, null)
+  const stand = WeatherScreenSnapshot.Source.requestBot(screen.source)
+  assert.equal(WeatherBot.botID(stand), P.botID)
+  assert.equal(WeatherBot.isAnnounced(stand), false)
+})
+
+test('a radio that may not be able to send a datagram still needs the advert', () => {
+  // Firmware unknown: the ask could fall back to a DM, and a DM needs the whole key.
+  const screen = snapshot(inputs({ bots: [], firmware: null }))
   assert.equal(screen.requestBlock, WeatherRequestBlock.botNotAnnounced)
+})
+
+test('an announced bot is who the request goes to', () => {
+  const screen = snapshot(inputs({}))
+  assert.equal(WeatherScreenSnapshot.Source.requestBot(screen.source), screen.source.bot)
+  assert.equal(WeatherBot.isAnnounced(screen.source.bot), true)
 })
 
 test('old firmware is the banner and the block', () => {

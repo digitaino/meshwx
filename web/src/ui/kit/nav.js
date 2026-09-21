@@ -137,8 +137,25 @@ export class Navigation {
   // MARK: Sheets
 
   /**
+   * Closes every open sheet and waits for their history entries to unwind.
+   *
+   * What it is for: a screen pushed while a sheet is open would be the one that sheet's Done
+   * button pops. A first visit opens Places as a sheet, and the connect sheet is where the radio
+   * settings screen is reached from, so both `openDeepLink` and that tap come through here.
+   */
+  async closeSheets() {
+    if (!this.sheetStack.length) return
+    for (const sheet of [...this.sheetStack]) sheet.close()
+    await new Promise((resolve) => setTimeout(resolve, 350))
+  }
+
+  /**
    * Presents `{ title, render, onDismiss?, done? }` as a modal sheet. Returns a handle with
    * `close()` and `refresh()`. A sheet is a history entry too, so back closes it.
+   *
+   * One at a time: a sheet presented over another cannot be taken apart again, because closing the
+   * inner one sends a back that the outer one answers as well. A screen reached from a sheet is
+   * pushed after `closeSheets()`, not stacked on it.
    */
   sheet(spec) {
     const dialog = h('dialog', { class: 'sheet' })

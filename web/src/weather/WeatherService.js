@@ -776,6 +776,11 @@ export class WeatherService {
       }
       // This radio cannot flood a datagram: no v1.15.0 firmware, no `#meshwx` slot, or no key
       // of its own. The DM still works, and the bot still answers it (spec §7B).
+      // Unless the bot was only ever heard and never seen to advertise: a DM needs its whole
+      // key, and two bytes of it are all its packets carry.
+      if (!WeatherBot.isAnnounced(bot)) {
+        throw WeatherRequestError.transport('this radio cannot send a channel request, and the weather radio has not announced itself for a direct message')
+      }
     }
 
     const entry = WeatherPendingRequest.make({

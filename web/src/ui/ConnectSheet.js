@@ -34,6 +34,17 @@ export function openConnectSheet(app) {
       else details.push(Note(t('web.connect.channel.missing')))
     }
 
+    // The way to the radio's own settings, and the only one: this is where a link is diagnosed,
+    // and a radio that turns out to be on the wrong four values is set right there. The screen is
+    // pushed and this sheet closes, so Back comes to the page rather than here.
+    const radioSettings = connection.canConfigureRadio
+      ? Card({}, Row({
+        key: 'radio-settings', icon: 'antenna.radiowaves.left.and.right',
+        title: t('web.radiosettings.open'), subtitle: t('web.radiosettings.open.detail'),
+        onclick: () => openRadioSettings(app),
+      }))
+      : null
+
     return List(
       Card({},
         Row({
@@ -45,6 +56,7 @@ export function openConnectSheet(app) {
         })),
       details,
       error ? Banner({ text: t('web.connect.error', error) }) : null,
+      radioSettings,
 
       Card({ label: t('web.connect.section.radio') },
         Row({
@@ -70,6 +82,19 @@ export function openConnectSheet(app) {
 
   handle = app.nav.sheet({ title: () => t('web.connect.title'), render, onDismiss: unsubscribe })
   return handle
+}
+
+/**
+ * Pushes the radio settings screen, closing whatever sheet asked for it first.
+ *
+ * A screen pushed under an open sheet would be the one that sheet's Done button pops, which is
+ * what `nav.closeSheets()` is for. The radio side owns the screen and is loaded at the moment of
+ * the tap, as the pill is.
+ */
+export async function openRadioSettings(app) {
+  await app.nav.closeSheets()
+  const { RadioSettingsScreen } = await import('./radio/index.js')
+  app.nav.push(RadioSettingsScreen({ app }))
 }
 
 /** The pill in the navigation bar, until the radio screens supply theirs. */
