@@ -6,6 +6,7 @@ import {
   WeatherStoredDigest,
   WeatherStoredForecast,
   WeatherStoredObservation,
+  WeatherStoredRadarTile,
   WeatherStoredWarning
 } from '../weather/index.js'
 import { WeatherAlertRequests } from './WeatherAlertRequests.js'
@@ -52,6 +53,14 @@ export const WeatherChannelSubject = Object.freeze({
   },
   /** The bot's statement of what it carries (spec §7A). */
   coverage: Object.freeze({ kind: 'coverage' }),
+  /**
+   * One radar tile (spec §7D, revision 11). **The tile is the subject**: a picture of a square of
+   * earth, named by its width and its centre rather than by anybody's question — nothing on the
+   * wire says who asked for it, and the lattice means several people may have.
+   */
+  radar({ tile }) {
+    return { kind: 'radar', tile }
+  },
 })
 
 // MARK: - Heard on the channel
@@ -152,6 +161,16 @@ export const WeatherHeard = Object.freeze({
       if (state.coverage != null) {
         add('coverage', WeatherChannelSubject.coverage, { contentAt: null, receivedAt: state.coverage.receivedAt })
       }
+      for (const stored of state.radarTiles ?? []) {
+        const tile = stored.tile
+        add(
+          `radar-${tile.zoom}-${tile.south}-${tile.west}`,
+          WeatherChannelSubject.radar({ tile }),
+          // The picture's own time, which is not when it was sent: a tile cut from a mosaic an
+          // hour after it was made is an hour old the moment it lands.
+          { contentAt: WeatherStoredRadarTile.takenAt(stored), receivedAt: stored.receivedAt },
+        )
+      }
     }
 
     return items
@@ -175,8 +194,13 @@ export const WeatherCacheGroup = Object.freeze({
   warningNarratives: 'warningNarratives',
   /** Warnings the phone holds for somewhere other than the place on screen. */
   warningsElsewhere: 'warningsElsewhere',
+  /** The radar tiles the phone is holding (spec §7D, revision 11), one row per square of earth. */
+  radarPictures: 'radarPictures',
 
-  allCases: Object.freeze(['readings', 'forecasts', 'airportReports', 'warningNarratives', 'warningsElsewhere']),
+  allCases: Object.freeze([
+    'readings', 'forecasts', 'airportReports', 'warningNarratives', 'warningsElsewhere',
+    'radarPictures',
+  ]),
 })
 
 /**
@@ -288,6 +312,21 @@ export const WeatherCache = Object.freeze({
           contentAt: null,
           receivedAt: assembly.lastReceivedAt,
           destination: WeatherCache.destination({ of: assembly.request ?? null, tables }),
+        })
+      }
+      // One row per square of earth held, whatever its width (design §3). No destination: the
+      // radar screen is reached from the place page's card, which knows which place it is about;
+      // a cached row knows only a tile.
+      for (const stored of state.radarTiles ?? []) {
+        const tile = stored.tile
+        add({
+          id: `radar-${botID}-${tile.zoom}-${tile.south}-${tile.west}`,
+          group: WeatherCacheGroup.radarPictures,
+          botID,
+          subject: WeatherChannelSubject.radar({ tile }),
+          contentAt: WeatherStoredRadarTile.takenAt(stored),
+          receivedAt: stored.receivedAt,
+          destination: null,
         })
       }
     }

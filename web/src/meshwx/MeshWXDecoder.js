@@ -19,13 +19,22 @@ import { MeshWXCompass } from './MeshWXMessage.js';
  * an app has for a bad packet is the log line: the radio is gone by then and the bot will not
  * repeat itself on request.
  *
- * `kind` is `'truncated'` (with `what`, `need`, `have`) or `'badUTF8'`.
+ * `kind` is `'truncated'` (with `what`, `need`, `have`), `'badUTF8'`, `'radarTreeTruncated'` or
+ * `'radarBoundsOutsideGrid'`.
  */
 export class MeshWXDecodeError extends Error {
   constructor(kind, details = {}) {
-    const message = kind === 'truncated'
-      ? `truncated ${details.what}: need ${details.need} bytes, have ${details.have}`
-      : 'text is not valid UTF-8';
+    let message;
+    if (kind === 'truncated') {
+      message = `truncated ${details.what}: need ${details.need} bytes, have ${details.have}`;
+    } else if (kind === 'radarTreeTruncated') {
+      message = `the radar quadtree ran out of bits after ${details.bits}`;
+    } else if (kind === 'radarBoundsOutsideGrid') {
+      message = `radar bounds ${details.row0},${details.row1},${details.col0},${details.col1}`
+        + ` are not inside a ${details.size} x ${details.size} grid`;
+    } else {
+      message = 'text is not valid UTF-8';
+    }
     super(message);
     this.name = 'MeshWXDecodeError';
     this.kind = kind;
@@ -43,6 +52,29 @@ export class MeshWXDecodeError extends Error {
    */
   static badUTF8() {
     return new MeshWXDecodeError('badUTF8', {});
+  }
+
+  /**
+   * A Radar tile's quadtree ran out of bits before the grid was complete (spec §7D).
+   *
+   * A half-read tree leaves the rest of the grid at level 0 — which on a radar picture reads as
+   * "no rain here", the one wrong answer that looks exactly like a right one. `bits` is how far
+   * the reader got.
+   */
+  static radarTreeTruncated({ bits }) {
+    return new MeshWXDecodeError('radarTreeTruncated', { bits });
+  }
+
+  /**
+   * A partial Radar tile named rows or columns its own grid does not have (spec §7D).
+   *
+   * The one place this decoder refuses a body it could read the bytes of. It has to: every cell
+   * outside `bounds` is *unknown*, and bounds that do not describe a run of this grid's rows
+   * would have the screen read a level off a cell the picture never covered — a dry reading
+   * where there is no reading at all.
+   */
+  static radarBoundsOutsideGrid({ row0, row1, col0, col1, size }) {
+    return new MeshWXDecodeError('radarBoundsOutsideGrid', { row0, row1, col0, col1, size });
   }
 }
 
@@ -524,6 +556,100 @@ function decodeAreaSweep(bytes, header) {
   };
 }
 
+// MARK: - Radar (type 11, spec §7D)
+
+/**
+ * The cells, as a quadtree read most significant bit first.
+ *
+ * `node(size)`: at size 1, two bits of level. Otherwise one bit — `0` and the whole square is
+ * one level, two bits of it; `1` and four children follow, north-west, north-east, south-west,
+ * south-east. A dry tile is three bits, which is why a clear picture costs 13 bytes.
+ *
+ * Bits left over after the tree are padding to the end of the last byte and are ignored; bits
+ * that run out *before* it are refused, because a half-read tree leaves the rest of the grid at
+ * level 0 — which on a radar picture reads as "no rain here", the one wrong answer that looks
+ * exactly like a right one.
+ */
+function decodeRadarCells(bytes, offset, size) {
+  const rows = Array.from({ length: size }, () => new Array(size).fill(0));
+  let position = 0;
+
+  const take = (width) => {
+    let value = 0;
+    for (let bit = 0; bit < width; bit += 1) {
+      const index = offset + (position >> 3);
+      if (index >= bytes.length) throw MeshWXDecodeError.radarTreeTruncated({ bits: position });
+      value = (value << 1) | ((bytes[index] >> (7 - (position & 7))) & 1);
+      position += 1;
+    }
+    return value;
+  };
+
+  const node = (row, col, span) => {
+    if (span === 1) {
+      rows[row][col] = take(2);
+      return;
+    }
+    if (take(1) === 0) {
+      const level = take(2);
+      for (let y = row; y < row + span; y += 1) {
+        for (let x = col; x < col + span; x += 1) rows[y][x] = level;
+      }
+      return;
+    }
+    const half = span / 2;
+    node(row, col, half);
+    node(row, col + half, half);
+    node(row + half, col, half);
+    node(row + half, col + half, half);
+  };
+
+  node(0, 0, size);
+  return rows.map((row) => row.join(''));
+}
+
+/**
+ * One tile of a radar picture (spec §7D, revision 11).
+ *
+ * The flags nibble carries both shape bits: coarse says the grid is 16 × 16 rather than 32 × 32
+ * — the bot's answer to a picture too busy for one packet, never a second packet — and partial
+ * says four `bounds` bytes sit between the fixed fields and the cells.
+ */
+function decodeRadar(bytes, header) {
+  need(bytes, MeshWXWire.radarFixedSize + 1, 'radar');
+  const isCoarse = (header.flags & MeshWXWire.radarCoarseBit) !== 0;
+  const isPartial = (header.flags & MeshWXWire.radarPartialBit) !== 0;
+  const size = isCoarse ? MeshWXWire.radarCoarseGrid : MeshWXWire.radarGrid;
+  const shape = bytes[11];
+
+  let offset = MeshWXWire.radarFixedSize;
+  let bounds = null;
+  if (isPartial) {
+    need(bytes, offset + MeshWXWire.radarBoundsSize + 1, 'radar bounds');
+    bounds = [...bytes.subarray(offset, offset + MeshWXWire.radarBoundsSize)];
+    offset += MeshWXWire.radarBoundsSize;
+    const [row0, row1, col0, col1] = bounds;
+    if (!(row0 <= row1 && row1 < size && col0 <= col1 && col1 < size)) {
+      throw MeshWXDecodeError.radarBoundsOutsideGrid({ row0, row1, col0, col1, size });
+    }
+  }
+  return {
+    ...header,
+    // The time printed on the radar picture: not when the bot received it, not when it sent it.
+    taken_min: u32(bytes, 4),
+    south: i8(bytes[8]),
+    west: i16(bytes, 9),
+    zoom: shape & MeshWXWire.radarZoomMask,
+    product: shape >> MeshWXWire.radarProductShift,
+    coarse: isCoarse,
+    partial: isPartial,
+    bounds,
+    size,
+    rows: decodeRadarCells(bytes, offset, size),
+    source: source(header),
+  };
+}
+
 const DECODERS = {
   [MeshWXMessageType.warning]: decodeWarning,
   [MeshWXMessageType.cancel]: decodeCancel,
@@ -535,6 +661,7 @@ const DECODERS = {
   [MeshWXMessageType.coverage]: decodeCoverage,
   [MeshWXMessageType.request]: decodeRequest,
   [MeshWXMessageType.areaSweep]: decodeAreaSweep,
+  [MeshWXMessageType.radar]: decodeRadar,
 };
 
 /**

@@ -208,6 +208,17 @@ export const ownedReply = ({ source, at, now, timeZone, locale }) =>
 export const quietCaption = ({ source, since, now, timeZone, locale }) =>
   copy('quietCaption', [{ source, since, now, timeZone, locale }])
 
+// Radar (revision 11 §3). A sentence the copy layer cannot word yet is left out, as everything
+// else here is: the card is a picture with a caption, and a caption it cannot write is no caption.
+
+export const radarSummary = (summary, { placeName: name }) =>
+  copy('radarSummary', [summary, { placeName: name }], () => [])
+
+export const radarTime = (picture, { now, timeZone, locale }) =>
+  copy('radarTime', [picture, { now, timeZone, locale }])
+
+export const radarWidthName = (zoom) => copy('radarWidthName', [zoom])
+
 // MARK: - Pages
 //
 // **A pushed screen answers for the page it was opened from** (docs/MESHWX_UI.md §3.1 U-18, P-1),

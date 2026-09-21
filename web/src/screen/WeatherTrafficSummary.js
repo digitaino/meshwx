@@ -5,8 +5,8 @@
 // layer — and this is the half that needs the tables and the words.
 
 import {
-  MeshWXCancelReason, MeshWXNotAvailableReason, MeshWXTables, MeshWXTextSubject, MeshWXWire,
-  decode, hexToBytes,
+  MeshWXCancelReason, MeshWXNotAvailableReason, MeshWXRadar, MeshWXTables, MeshWXTextSubject,
+  MeshWXWire, decode, hexToBytes,
 } from '../meshwx/index.js'
 import { t } from '../l10n.js'
 import { WeatherTrafficEntry } from '../weather/index.js'
@@ -130,6 +130,15 @@ export const WeatherTrafficSummary = Object.freeze({
             message.advisories === true ? t('weather.traffic.detail.advisories') : null,
           ),
         }
+      case 'radar':
+        // "Radar picture · Local · 214 cells with precipitation" (revision 11 design §3). The
+        // width rather than the tile's corner: a tile is two degrees, which is 222 km tall
+        // everywhere and a different width at every latitude, so the corner would be a number
+        // nobody can picture and the width is the thing that was asked for.
+        return {
+          title: t('weather.radar.request.title'),
+          detail: join(radarWidthName(message.zoom), wetCellCount(MeshWXRadar.wetCells(message))),
+        }
       default:
         return { title: t('weather.traffic.title.unreadable'), detail: hexType(entry.dataType) }
     }
@@ -171,6 +180,25 @@ function runCount(runs) {
 function areaCount(count) {
   if (count <= 0) return null
   return count === 1 ? t('weather.traffic.detail.areasOne') : t('weather.traffic.detail.areas', count)
+}
+
+/**
+ * How wide the tile is, in the three words the radar screen's own control uses (design §3):
+ * Local, Regional, Wide for zooms 0, 1 and 2. Zoom 3 exists on the wire and is not offered, so a
+ * tile at that width is left unnamed rather than given a fourth word nothing else says.
+ */
+function radarWidthName(zoom) {
+  switch (zoom) {
+    case 0: return t('weather.radar.width.local')
+    case 1: return t('weather.radar.width.regional')
+    case 2: return t('weather.radar.width.wide')
+    default: return null
+  }
+}
+
+function wetCellCount(count) {
+  if (count <= 0) return null
+  return count === 1 ? t('weather.radar.traffic.cellsOne') : t('weather.radar.traffic.cells', count)
 }
 
 function officeCount(count) {

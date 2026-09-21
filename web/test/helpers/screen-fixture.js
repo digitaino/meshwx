@@ -161,6 +161,54 @@ export function areaRun({ stateIndex, isCounty, start, run }) {
   return { state: stateIndex, county: isCounty, start, run }
 }
 
+/**
+ * One radar tile as the app holds it (`WeatherStoredRadarTile`, spec §7D, revision 11): the
+ * lattice square, the decoded Radar message, when it arrived and where the bot got it.
+ *
+ * `cells` is `[row, col, level]` triples on a dry grid; `size` 16 makes it a coarse tile and
+ * `bounds` (the four-element wire array) a partial one, exactly as the flags are read off the
+ * body on the air.
+ */
+export function storedRadarTile({
+  south = 29,
+  west = -99,
+  zoom = 0,
+  size = 32,
+  cells = [],
+  bounds = null,
+  product = 1,
+  takenMinutes,
+  receivedAt,
+  source = 1,
+} = {}) {
+  const grid = Array.from({ length: size }, () => new Array(size).fill(0))
+  for (const [row, col, level] of cells) grid[row][col] = level
+  const taken = takenMinutes ?? WeatherPhoneFixture.nowMinutes
+  return {
+    tile: { south, west, zoom },
+    radar: {
+      seq: 0,
+      bot: WeatherPhoneFixture.botID,
+      type: 11,
+      name: 'radar',
+      flags: (size === 16 ? 1 : 0) | (bounds == null ? 0 : 2) | (source << 2),
+      taken_min: taken,
+      south,
+      west,
+      zoom,
+      product,
+      coarse: size === 16,
+      partial: bounds != null,
+      bounds,
+      size,
+      rows: grid.map((row) => row.join('')),
+      source,
+    },
+    receivedAt: receivedAt ?? WeatherPhoneFixture.now,
+    source,
+  }
+}
+
 export function botState({ botID, ...rest }) {
   return {
     botID,

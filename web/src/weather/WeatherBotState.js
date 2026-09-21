@@ -401,6 +401,38 @@ export const WeatherAreaSweepAssembly = {
   }
 }
 
+/**
+ * One tile of a radar picture as the app holds it (spec §7D, revision 11).
+ *
+ * - `tile`: the lattice square, `{ south, west, zoom }`. It is what the entry is keyed by — the
+ *   wire carries the same three numbers, so the square a phone holds and the square another
+ *   phone asked for are the same square, and one answer serves both.
+ * - `radar`: the decoded Radar message, cells and all.
+ * - `receivedAt`: phone clock, for the five-minute rule and for ordering two tiles of the same
+ *   picture. Never shown as the picture's age — `radar.taken_min` is, and only it.
+ * - `source`: where the bot got the picture (spec §2.2, revision 7). A tile off the dish is 1.
+ *
+ * One per tile: revision 11 has no animation and no history, so a newer picture of a square
+ * replaces the one held rather than joining it.
+ */
+export const WeatherStoredRadarTile = {
+  make({ tile, radar, receivedAt, source = UNSTATED_SOURCE }) {
+    return { tile, radar, receivedAt, source }
+  },
+
+  decode(json) {
+    return {
+      tile: json.tile,
+      radar: json.radar,
+      receivedAt: json.receivedAt,
+      source: json.source ?? UNSTATED_SOURCE
+    }
+  },
+
+  /** When the radar picture was taken, on the clock printed on the picture itself. */
+  takenAt(stored) { return dateFromUnixMinutes(stored.radar.taken_min) }
+}
+
 // MARK: - Per-bot state
 
 /**
@@ -434,7 +466,8 @@ const SEVERITY_RANK = Object.freeze({ warning: 3, watch: 2, advisory: 1, stateme
  * `recentCancels` by warning identity (`"event.office.etn"`), `observations` by station index,
  * `forecasts` by bundled point index, `unbundledForecasts` by the coordinate asked for, `texts`
  * by text group. `missingFromDigest` is a list of identity triples, `areaSweeps` a list newest
- * first. Every field survives `JSON.parse(JSON.stringify(state))` unchanged.
+ * first, `radarTiles` a list newest `taken` first. Every field survives
+ * `JSON.parse(JSON.stringify(state))` unchanged.
  */
 export const WeatherBotState = {
   make({ botID }) {
@@ -508,7 +541,15 @@ export const WeatherBotState = {
        * and this minute's Texas are both true and both worth holding.
        * `WeatherStateReducer.retainAreaSweeps` is the only thing that drops one.
        */
-      areaSweeps: []
+      areaSweeps: [],
+      /**
+       * The radar tiles this bot sent (spec §7D, revision 11), **newest `taken` first**. Empty
+       * until somebody on the channel asks for one: there is no scheduled radar broadcast.
+       *
+       * One entry per lattice square, replaced by a newer picture of the same square;
+       * `WeatherStateReducer.retainRadarTiles` is the only thing that drops one.
+       */
+      radarTiles: []
     }
   },
 
@@ -566,6 +607,9 @@ export const WeatherBotState = {
     } else {
       state.areaSweeps = []
     }
+    // Revision 11, §7D. Absent in a state file written before it is an empty list, which is
+    // exactly right: nobody had asked for a radar picture, and none had ever been held.
+    state.radarTiles = (json.radarTiles ?? []).map(WeatherStoredRadarTile.decode)
     return state
   },
 

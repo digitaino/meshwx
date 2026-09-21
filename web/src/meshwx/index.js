@@ -42,6 +42,13 @@ export {
   MeshWXAreaSweep,
 } from './MeshWXMessage.js';
 
+export {
+  MeshWXRadar,
+  MeshWXRadarBounds,
+  MeshWXRadarLevel,
+  MeshWXRadarTile,
+} from './MeshWXRadar.js';
+
 export { MeshWXDecodeError, MeshWXDecoder, decode, decodeHeader } from './MeshWXDecoder.js';
 
 export { MeshWXEncodeError, MeshWXEncoder, encode } from './MeshWXEncoder.js';

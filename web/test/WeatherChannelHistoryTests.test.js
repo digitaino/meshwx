@@ -29,6 +29,7 @@ import {
   loadTables,
   observation,
   period,
+  storedRadarTile,
   warning,
 } from './helpers/screen-fixture.js'
 
@@ -270,4 +271,35 @@ test('a warning elsewhere opens its own alert', () => {
 
 test('nothing held is an empty cache', () => {
   assert.equal(cacheOf(botState({ botID })).total, 0)
+})
+
+/**
+ * A radar tile is one row per square of earth held, whatever its width, and it opens nothing: a
+ * cached row knows a tile and not a place, and the radar screen is reached from the card of the
+ * place it is about (design §3).
+ */
+test('every radar tile held is a row of its own, named by its square', () => {
+  const built = state()
+  built.radarTiles = [
+    storedRadarTile({ south: 29, west: -99, zoom: 0, takenMinutes: t0Minutes - 12, receivedAt: t0 - 60_000 }),
+    storedRadarTile({ south: 28, west: -100, zoom: 2, takenMinutes: t0Minutes - 14, receivedAt: t0 - 120_000 }),
+  ]
+  const group = cacheOf(built).groups.find((one) => one.group === 'radarPictures')
+  assert.equal(group.items.length, 2)
+  assert.deepEqual(group.items[0].subject, WeatherChannelSubject.radar({ tile: { south: 29, west: -99, zoom: 0 } }))
+  // The picture's own time, not when the packet arrived.
+  assert.equal(group.items[0].contentAt, (t0Minutes - 12) * 60_000)
+  assert.equal(group.items[0].destination, null)
+  assert.equal(group.items[0].id, `radar-${botID}-0-29--99`)
+  // Last of the groups, as `allCases` orders them.
+  assert.deepEqual(
+    cacheOf(built).groups.map((one) => one.group),
+    ['readings', 'forecasts', 'airportReports', 'warningsElsewhere', 'radarPictures'],
+  )
+
+  // And the same tiles are rows of what the channel carried.
+  const heard = WeatherHeard.make({ states: { [String(botID)]: built }, now: t0 })
+  const row = heard.find((item) => item.subject.kind === 'radar')
+  assert.deepEqual(row.subject.tile, { south: 29, west: -99, zoom: 0 })
+  assert.equal(row.contentAt, (t0Minutes - 12) * 60_000)
 })

@@ -21,6 +21,8 @@ export { WeatherConditionsSection } from './WeatherConditionsSection.js'
 
 export { WeatherForecastSection, WeatherForecastRowView } from './WeatherForecastSection.js'
 
+export { WeatherRadarSection } from './WeatherRadarSection.js'
+
 export { WeatherUpdateControl, updateCaption } from './WeatherUpdateControl.js'
 
 export { WeatherAskButton, WeatherAskFootnotes, WeatherPendingBar, requestKeys } from './WeatherAskControl.js'

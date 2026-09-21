@@ -10,11 +10,17 @@ import { WeatherBot, WeatherChannel } from '../weather/index.js'
 
 const MESHWX_DATA_TYPE = 0xff10
 
-/** Moves every absolute time in a decoded message by `minutes`. Relative fields are left alone. */
+/**
+ * Moves every absolute time in a decoded message by `minutes`. Relative fields are left alone.
+ *
+ * `taken_min` is in here with the rest: a radar picture's own time is what every line about it is
+ * measured from, and a tile replayed with the time it really carried would read as hours old on
+ * a recording that is otherwise minutes old (spec §7D, revision 11).
+ */
 export function shiftTimes(message, minutes) {
   const shifted = structuredClone(message)
   const move = (object, key) => { if (Number.isInteger(object?.[key])) object[key] += minutes }
-  for (const key of ['expires_min', 'issued_min', 'now_min', 'ts_min', 'built_min']) move(shifted, key)
+  for (const key of ['expires_min', 'issued_min', 'now_min', 'ts_min', 'built_min', 'taken_min']) move(shifted, key)
   for (const entry of shifted.entries ?? []) move(entry, 'expires_min')
   return shifted
 }

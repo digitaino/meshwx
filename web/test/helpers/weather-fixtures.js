@@ -250,6 +250,53 @@ export function coverage({ seq, coverage: body = austinCoverage, bot: from = bot
   return { ...header({ seq, type: 8, name: 'coverage', flags, bot: from }), ...body }
 }
 
+/**
+ * A grid for a radar tile: `size` rows of `size` dry cells, with `cells` (`[row, col, level]`)
+ * set. North row first, west column first, as the decoded message carries them (spec §7D).
+ */
+export function radarRows({ size = 32, cells = [] } = {}) {
+  const grid = Array.from({ length: size }, () => new Array(size).fill(0))
+  for (const [row, col, level] of cells) grid[row][col] = level
+  return grid.map((row) => row.join(''))
+}
+
+/**
+ * One radar tile (type 11, spec §7D, revision 11).
+ *
+ * `bounds` is the four-element wire array and makes the packet partial; a 16-row grid makes it
+ * coarse. Both are read off the body rather than passed as flags, exactly as the codec does.
+ */
+export function radar({
+  seq,
+  takenMinutes = t0Minutes,
+  south = 29,
+  west = -99,
+  zoom = 0,
+  product = 1,
+  rows = radarRows(),
+  bounds = null,
+  source = 1,
+  bot: from = botID
+} = {}) {
+  const size = rows.length
+  const isCoarse = size === 16
+  const flags = (isCoarse ? 1 : 0) | (bounds == null ? 0 : 2) | sourceBits(source)
+  return {
+    ...header({ seq, type: 11, name: 'radar', flags, bot: from }),
+    taken_min: takenMinutes,
+    south,
+    west,
+    zoom,
+    product,
+    coarse: isCoarse,
+    partial: bounds != null,
+    bounds,
+    size,
+    rows,
+    source
+  }
+}
+
 export function notAvailable({ seq, letter, reason, bot: from = botID }) {
   return {
     ...header({ seq, type: 7, name: 'not_available', bot: from }),

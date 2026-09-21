@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { MeshWXWire } from '../src/meshwx/index.js'
+import { MeshWXRadar, MeshWXWire } from '../src/meshwx/index.js'
 import {
   InMemoryWeatherStateStore,
   KeyValueWeatherStateStore,
@@ -17,6 +17,7 @@ import {
   WeatherStoredDigest,
   WeatherStoredForecast,
   WeatherStoredObservation,
+  WeatherStoredRadarTile,
   WeatherStoredWarning,
   WeatherTextAssembly,
   dateFromUnixMinutes,
@@ -1526,5 +1527,152 @@ describe('WeatherStateReducer scoped area sweeps', () => {
       F.t0 + 20_000
     )
     assert.ok(resent.some((change) => change.kind === 'areaSweepStored' && change.isComplete))
+  })
+})
+
+// MARK: - Radar tiles (spec §7D, revision 11)
+
+describe('WeatherStateReducer radar tiles', () => {
+  const dallas = { south: 32, west: -98, zoom: 0 }
+  const austin = { south: 29, west: -99, zoom: 0 }
+  const tileFor = (state, tile) => (state.radarTiles ?? []).find(
+    (one) => one.tile.south === tile.south && one.tile.west === tile.west && one.tile.zoom === tile.zoom
+  ) ?? null
+
+  it('a tile is stored under its lattice square, with the source the bot stated', () => {
+    const bot = new Bot()
+    const changes = bot.apply(
+      F.radar({ seq: 1, south: 32, west: -98, rows: F.radarRows({ cells: [[19, 19, 2]] }) }), F.t0
+    )
+    assert.deepStrictEqual(changes, [
+      WeatherStateChange.radarStored(dallas, { takenMinutes: F.t0Minutes })
+    ])
+    const stored = tileFor(bot.state, dallas)
+    assert.deepStrictEqual(stored.tile, dallas)
+    assert.equal(stored.receivedAt, F.t0)
+    assert.equal(stored.source, 1, 'off the dish')
+    assert.equal(WeatherStoredRadarTile.takenAt(stored), dateFromUnixMinutes(F.t0Minutes))
+    assert.equal(MeshWXRadar.level(stored.radar, { row: 19, col: 19 }), 2)
+  })
+
+  it('a newer picture of the same square replaces the one held', () => {
+    const bot = new Bot()
+    bot.apply(F.radar({ seq: 1, south: 32, west: -98 }), F.t0)
+    bot.apply(
+      F.radar({
+        seq: 2, south: 32, west: -98, takenMinutes: F.t0Minutes + 15,
+        rows: F.radarRows({ cells: [[0, 0, 3]] })
+      }),
+      F.t0 + minutes(15)
+    )
+    assert.equal(bot.state.radarTiles.length, 1, 'one picture per square: no history, no animation')
+    assert.equal(tileFor(bot.state, dallas).radar.taken_min, F.t0Minutes + 15)
+  })
+
+  it('an older picture of a square already held changes nothing', () => {
+    const bot = new Bot()
+    bot.apply(F.radar({ seq: 1, south: 32, west: -98, takenMinutes: F.t0Minutes }), F.t0)
+    const changes = bot.apply(
+      F.radar({ seq: 2, south: 32, west: -98, takenMinutes: F.t0Minutes - 15 }), F.t0 + 1000
+    )
+    assert.deepStrictEqual(changes, [
+      WeatherStateChange.radarIgnoredOlder({ takenMinutes: F.t0Minutes - 15 })
+    ])
+    assert.equal(tileFor(bot.state, dallas).radar.taken_min, F.t0Minutes)
+  })
+
+  /**
+   * The coarse tile is the same picture at half the detail, cut because somebody else's request
+   * could not fit the finer one in a packet. Taking it would throw away detail this phone has.
+   */
+  it('a coarse picture never replaces a fine one of the same taken', () => {
+    const bot = new Bot()
+    bot.apply(F.radar({ seq: 1, south: 32, west: -98 }), F.t0)
+    const changes = bot.apply(
+      F.radar({ seq: 2, south: 32, west: -98, rows: F.radarRows({ size: 16 }) }), F.t0 + 1000
+    )
+    assert.deepStrictEqual(changes, [
+      WeatherStateChange.radarIgnoredOlder({ takenMinutes: F.t0Minutes })
+    ])
+    assert.equal(tileFor(bot.state, dallas).radar.coarse, false)
+
+    // The other way round it does replace: the fine tile is more of the same picture.
+    const other = new Bot()
+    other.apply(F.radar({ seq: 1, south: 32, west: -98, rows: F.radarRows({ size: 16 }) }), F.t0)
+    other.apply(F.radar({ seq: 2, south: 32, west: -98 }), F.t0 + 1000)
+    assert.equal(tileFor(other.state, dallas).radar.coarse, false)
+  })
+
+  it('two squares are two tiles, newest taken first', () => {
+    const bot = new Bot()
+    bot.apply(F.radar({ seq: 1, south: 32, west: -98, takenMinutes: F.t0Minutes }), F.t0)
+    bot.apply(F.radar({ seq: 2, south: 29, west: -99, takenMinutes: F.t0Minutes + 15 }), F.t0 + minutes(15))
+    assert.deepStrictEqual(
+      bot.state.radarTiles.map((one) => one.tile), [austin, dallas]
+    )
+  })
+
+  /**
+   * "The bot clock" is read off the pictures themselves: a Radar message carries no other clock,
+   * and a tile drained from the radio's queue at connect is as old as the picture says it is,
+   * whenever the phone heard it.
+   */
+  it('a picture more than three hours behind the newest is dropped', () => {
+    const bot = new Bot()
+    bot.apply(F.radar({ seq: 1, south: 32, west: -98, takenMinutes: F.t0Minutes - 200 }), F.t0)
+    assert.equal(bot.state.radarTiles.length, 1)
+    bot.apply(F.radar({ seq: 2, south: 29, west: -99, takenMinutes: F.t0Minutes }), F.t0 + 1000)
+    assert.deepStrictEqual(bot.state.radarTiles.map((one) => one.tile), [austin])
+
+    // And the other way about: a picture that old arriving now says so and is not kept.
+    const changes = bot.apply(
+      F.radar({ seq: 3, south: 24, west: -100, takenMinutes: F.t0Minutes - 200 }), F.t0 + 2000
+    )
+    assert.deepStrictEqual(changes, [
+      WeatherStateChange.radarIgnoredOlder({ takenMinutes: F.t0Minutes - 200 })
+    ])
+    assert.equal(bot.state.radarTiles.length, 1)
+  })
+
+  it('at most twelve tiles are held, the oldest taken dropped', () => {
+    const bot = new Bot()
+    for (let index = 0; index < 14; index += 1) {
+      bot.apply(
+        F.radar({
+          seq: index + 1,
+          south: 20 + index,
+          west: -98,
+          takenMinutes: F.t0Minutes - 14 + index
+        }),
+        F.t0 + index * 1000
+      )
+    }
+    assert.equal(bot.state.radarTiles.length, WeatherStateReducer.maxRadarTiles)
+    assert.deepStrictEqual(
+      bot.state.radarTiles.map((one) => one.tile.south),
+      [33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22]
+    )
+  })
+
+  it('a tile survives the round trip through persisted JSON', () => {
+    const bot = new Bot()
+    bot.apply(
+      F.radar({
+        seq: 1, south: 24, west: -100, zoom: 1, rows: F.radarRows({ size: 16, cells: [[2, 3, 1]] }),
+        bounds: [0, 9, 0, 15]
+      }),
+      F.t0
+    )
+    const read = WeatherBotState.decode(JSON.parse(JSON.stringify(bot.state)))
+    assert.deepStrictEqual(read.radarTiles, bot.state.radarTiles)
+    assert.deepStrictEqual(read.radarTiles[0].radar.bounds, [0, 9, 0, 15])
+  })
+
+  /** A state file written before revision 11 has no tiles, which is exactly what it held. */
+  it('a state file written before revision 11 reads as holding none', () => {
+    const before = WeatherBotState.make({ botID: F.botID })
+    delete before.radarTiles
+    const read = WeatherBotState.decode(JSON.parse(JSON.stringify(before)))
+    assert.deepStrictEqual(read.radarTiles, [])
   })
 })

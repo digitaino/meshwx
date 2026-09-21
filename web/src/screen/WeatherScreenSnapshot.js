@@ -17,6 +17,7 @@ import { WeatherConditions } from './WeatherConditions.js'
 import { WeatherCoverage, WeatherCoverageVerdict } from './WeatherCoverage.js'
 import { WeatherForecastCard, WeatherOtherPlace } from './WeatherForecastRows.js'
 import { WeatherPage } from './WeatherPages.js'
+import { WeatherRadarCard, WeatherRadarPick } from './WeatherRadar.js'
 import { WeatherPrimaryStation, WeatherStations } from './WeatherStations.js'
 
 /**
@@ -128,8 +129,8 @@ export const WeatherScreenBanner = Object.freeze({
  *
  * A snapshot is
  * `{ page, place, banner, source, knownBotIDs, coverage, alerts, alertStatus, readings,
- * primaryStation, forecast, otherPlaces, texts, heard, cache, requestBlock, sourceQuietSince,
- * now }`.
+ * primaryStation, forecast, radar, radarTiles, otherPlaces, texts, heard, cache, requestBlock,
+ * sourceQuietSince, now }`.
  */
 export const WeatherScreenSnapshot = Object.freeze({
   Banner: WeatherScreenBanner,
@@ -211,6 +212,7 @@ export const WeatherScreenSnapshot = Object.freeze({
     }
     const now = inputs.now
     const coverage = WeatherCoverage.make({ states: inputs.states, tables, now })
+    const radarTiles = WeatherRadarPick.tiles({ states: inputs.states })
     const source = WeatherScreenSnapshot.pickSource(inputs, { coverage })
 
     let banner = null
@@ -294,6 +296,15 @@ export const WeatherScreenSnapshot = Object.freeze({
       readings: WeatherStations.ordered(readings, { leading: WeatherPrimaryStation.index(primaryStation) }),
       primaryStation,
       forecast,
+      // The radar tiles are read across every bot, not from the source alone: a tile is a named
+      // square of the earth cut from a national mosaic, so the bot next door's picture of this
+      // place is this place's picture (spec §7D, revision 11). The ask still goes to the source,
+      // which is what the card's own `tile` is for.
+      radar: WeatherRadarCard.make({ place: inputs.place ?? null, tiles: radarTiles, now }),
+      // The same list, kept: the radar screen's Local / Regional / Wide control asks what is
+      // held for each width in turn (`WeatherRadarCard.width`), and a pushed screen reads the
+      // page's snapshot and never the service's state (§13).
+      radarTiles,
       otherPlaces: WeatherOtherPlace.make({ states: inputs.states, excludingPoint: placePoint, tables, now }),
       texts,
       heard: WeatherHeard.make({ states: inputs.states, now }),

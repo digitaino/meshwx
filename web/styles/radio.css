@@ -281,3 +281,20 @@
 @media (prefers-reduced-motion: reduce) {
   .segmented__option { transition: none; }
 }
+
+/* ---------- The radar screen (revision 11 §3) ---------- */
+
+/* Square, because every tile is: a letterbox would leave the picture floating in a band of
+   basemap. Capped so there is always something below it to scroll the page by — the map takes
+   the drag inside its own box, and a map that filled the screen could not be scrolled past. */
+.radar-screen {
+  aspect-ratio: 1 / 1;
+  max-height: 62vh;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.radar-screen > .map { border-radius: var(--radius); }
+
+/* The three swatches, at full strength. `.legend` on its own is the alert map's wrapping row of
+   event names; radar has three short ones and they read better spread out. */
+.legend--radar { display: flex; flex-wrap: wrap; gap: 6px 20px; }

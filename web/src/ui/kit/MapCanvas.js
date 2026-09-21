@@ -8,6 +8,7 @@
 //   map.setBasemap(basemapJSON)                       // once, shared
 //   map.setPlaces(tables.places)                      // optional city labels
 //   map.setShapes([{ id, rings, tint, fill, stroke, dashed, data }])
+//   map.setCells(rectangles, { unknown })            // radar levels, in degrees
 //   map.setMarkers([{ latitude, longitude, kind, label }])
 //   map.fit('shapes' | 'conus' | { minLatitude, … }, { padding, maxZoom })
 //   map.onTap = ({ shapes, coordinate }) => …
@@ -21,6 +22,9 @@ const MIN_ZOOM = 1.5
 const MAX_ZOOM = 13
 const CONUS = { minLatitude: 24.4, maxLatitude: 49.6, minLongitude: -125, maxLongitude: -66.6 }
 const TAP_SLOP = 8
+// Radar cells are a wash over the ground, not a layer that hides it: the state lines and the
+// place's dot have to stay readable through them (revision 11 §3).
+const CELL_ALPHA = 0.55
 
 // Everything this map draws is American, and America crosses the date line: the western
 // Aleutians and Guam have positive longitudes. They are laid out west of Hawaii, where they are,
@@ -36,6 +40,32 @@ const lonOf = (x) => { const lon = x * 360 - 180; return lon < -180 ? lon + 360 
 const latOf = (y) => (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI
 
 const lonLat = (c) => (Array.isArray(c) ? c : [c.longitude, c.latitude])
+
+/**
+ * A box of the earth in world space: `{ x, y, width, height }`, y growing southwards.
+ *
+ * The radar cells come as degrees (`WeatherRadarCells.rectangles`), and they have to land on the
+ * same Mercator the basemap is drawn in or the echoes sit beside the state lines instead of over
+ * them — so this is the map's own projection and not a second one.
+ *
+ * The width is taken from the degrees rather than from `worldX(east) - worldX(west)`: east of a
+ * tile on the date line is a longitude past 180, and the wrap that lays the Aleutians west of
+ * Hawaii would fold it back to the far side of the world and give the box a negative width.
+ * Exported for the tests, which have no canvas.
+ */
+/**
+ * A box of degrees in the shape `fit` frames: `{ minLatitude, maxLatitude, minLongitude,
+ * maxLongitude }`. Everything that has a south-west and a north-east corner — a radar tile, a
+ * product's frame — is framed through this rather than spelling the four names out again.
+ */
+export function cameraBox({ south, west, north, east }) {
+  return { minLatitude: south, maxLatitude: north, minLongitude: west, maxLongitude: east }
+}
+
+export function worldRectangle({ south, west, north, east }) {
+  const y = worldY(north)
+  return { x: worldX(west), y, width: (east - west) / 360, height: worldY(south) - y }
+}
 
 function pathOf(rings) {
   const path = new Path2D()
@@ -78,6 +108,7 @@ export class MapCanvas {
     this.height = 0
     this.base = null
     this.outlines = null
+    this.cells = null
     this.shapes = []
     this.markers = []
     this.places = null
@@ -131,6 +162,33 @@ export class MapCanvas {
    */
   setOutlines(features) {
     this.outlines = features?.length ? pathOf(features.flatMap((f) => f.rings)).path : null
+    this.draw()
+  }
+
+  /**
+   * The radar cells (revision 11 §3): `[{ level, south, west, north, east }]` in degrees, one
+   * rectangle per run of cells, and `unknown` for the ones a partial picture does not reach.
+   *
+   * Drawn **over the basemap's fill and under everything else**, so the state lines, the alert
+   * outlines, the place's dot and the city labels all read over the weather rather than being
+   * buried by it. One path per level, filled once: neighbouring rectangles in one path merge, and
+   * a fill per rectangle at 55% would print a darker seam everywhere two of them touch.
+   */
+  setCells(cells, { unknown = [] } = {}) {
+    const levels = new Map()
+    for (const cell of cells ?? []) {
+      let path = levels.get(cell.level)
+      if (path == null) levels.set(cell.level, (path = new Path2D()))
+      const box = worldRectangle(cell)
+      path.rect(box.x, box.y, box.width, box.height)
+    }
+    let missing = null
+    for (const cell of unknown ?? []) {
+      missing ??= new Path2D()
+      const box = worldRectangle(cell)
+      missing.rect(box.x, box.y, box.width, box.height)
+    }
+    this.cells = levels.size || missing ? { levels: [...levels].sort((a, b) => a[0] - b[0]), unknown: missing } : null
     this.draw()
   }
 
@@ -303,6 +361,15 @@ export class MapCanvas {
       halo: read('--surface', '#fff'),
       accent: read('--accent', '#0b6b88'),
       tint: (name) => read(`--tint-${name}`, name),
+      // The three radar levels, which are never an event tint: a radar echo is not a warning,
+      // and one palette for both would have a green shower read as a Flood Advisory.
+      radar: [
+        null,
+        read('--radar-light', '#3fa34d'),
+        read('--radar-moderate', '#d99000'),
+        read('--radar-heavy', '#cc2f26'),
+      ],
+      radarUnknown: read('--radar-unknown', '#8a94a0'),
     }
     return this.colors
   }
@@ -327,6 +394,7 @@ export class MapCanvas {
       ctx.fillStyle = colors.land
       ctx.fill(this.base.path, 'evenodd')
     }
+    if (this.cells) this.#paintCells(colors)
     if (this.outlines && this.zoom >= 5.2) {
       ctx.strokeStyle = colors.fine
       ctx.lineWidth = 1 * px
@@ -364,6 +432,43 @@ export class MapCanvas {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     if (this.labels && this.places) this.#paintLabels(colors)
     this.#paintMarkers(colors)
+  }
+
+  /**
+   * The radar cells, in world space, with the transform the caller left set.
+   *
+   * The unknown ones are **hatched**, never drawn the way clear ground is: outside a partial
+   * tile's bounds there is no reading at all, and a dry-looking cell there would tell somebody
+   * their ground is clear on the strength of a picture that stops short of it. The hatch is
+   * clipped to the cells and then drawn in *screen* space, so its lines stay the same width at
+   * every zoom instead of becoming a wash when the map is zoomed out.
+   */
+  #paintCells(colors) {
+    const { ctx, dpr, width, height } = this
+    ctx.globalAlpha = CELL_ALPHA
+    for (const [level, path] of this.cells.levels) {
+      ctx.fillStyle = colors.radar[level] ?? colors.radar[1]
+      ctx.fill(path)
+    }
+    ctx.globalAlpha = 1
+    if (!this.cells.unknown) return
+    ctx.save()
+    ctx.clip(this.cells.unknown)
+    ctx.globalAlpha = 0.16
+    ctx.fillStyle = colors.radarUnknown
+    ctx.fill(this.cells.unknown)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.globalAlpha = 0.5
+    ctx.strokeStyle = colors.radarUnknown
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    for (let x = -height; x < width; x += 7) {
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x + height, height)
+    }
+    ctx.stroke()
+    ctx.restore()
+    ctx.globalAlpha = 1
   }
 
   #paintLabels(colors) {

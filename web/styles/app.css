@@ -40,6 +40,16 @@
   --tint-blue: #1f6fd0;
   --tint-grey: #6b7580;
 
+  /* Radar levels (revision 11 §3). **Never an event tint**: a radar echo is not a warning, and
+     one palette for both would have a green shower read as a Flood Advisory. Three steps of one
+     scale — green, amber, red — laid on the map at 55% and used at full strength only in the
+     legend's swatches, so the same three colours name the same three things in both places. */
+  --radar-light: #2f9e58;
+  --radar-moderate: #cf8b00;
+  --radar-heavy: #cc2f26;
+  /* Cells a partial picture does not reach: grey, hatched, never anything that reads as dry. */
+  --radar-unknown: #7b8792;
+
   --radius: 14px;
   --radius-small: 9px;
   --gutter: 16px;
@@ -91,6 +101,11 @@
     --tint-magenta: #f05bbb;
     --tint-blue: #5aa2ff;
     --tint-grey: #9aa4af;
+    /* Lifted for the dark basemap: the same three steps have to read at 55% over #151a20. */
+    --radar-light: #45d97a;
+    --radar-moderate: #ffc247;
+    --radar-heavy: #fb5d4d;
+    --radar-unknown: #98a3af;
     --shadow-float: 0 10px 32px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
   }
 }
@@ -126,6 +141,10 @@
   --tint-magenta: #f05bbb;
   --tint-blue: #5aa2ff;
   --tint-grey: #9aa4af;
+  --radar-light: #45d97a;
+  --radar-moderate: #ffc247;
+  --radar-heavy: #fb5d4d;
+  --radar-unknown: #98a3af;
   --shadow-float: 0 10px 32px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
 }
 

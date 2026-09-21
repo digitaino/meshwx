@@ -34,6 +34,24 @@ server-side and never reaches the page.
 | Development bridge | The bot's own feed of what it transmits, through the dev server. Requests go out on the real air |
 | Recorded data | `demo/datagrams.json`, what WX-AUS sent one morning, replayed with its times moved to now |
 
+## Radar
+
+A place page's Radar card (revision 11, `../../DigitainoMesh/docs/MESHWX_REV11.md` §3) draws one
+radar tile: a 2° square of the earth as a 32 × 32 grid of cells, each the strongest echo in it,
+cut from the Weather Service mosaics the bot's dish already receives. One tile is one packet, it
+is only ever sent when somebody asks, and the tiles sit on a fixed lattice so a picture the radio
+next door asked for is this place's picture too.
+
+Tapping the card opens the radar screen: the same cells on an interactive map, with this device's
+alerts over them as outlines so neither hides the other, a Light / Moderate / Heavy legend, and a
+Local / Regional / Wide control that asks for the same place at zoom 0, 1 or 2. Cells a partial
+picture does not reach are hatched and never drawn as dry ground.
+
+`?link=demo` replays three real Austin tiles from the squall line of 20 September 2026 — the
+echoes sit in the north-west of the Local tile, which is where Dallas is — and `?open=radar`
+opens the radar screen for the page on arrival (the other values are in `openDeepLink`,
+`src/app/main.js`).
+
 ## Layout
 
 ```

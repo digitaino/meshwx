@@ -258,15 +258,54 @@ export const MeshWXWire = Object.freeze({
    * (spec §7C/§8.2, revision 10). Seconds.
    */
   partsCacheSeconds: 600,
+
+  // MARK: Radar (spec revision 11, §7D)
+  //
+  // A radar answer is one packet, always. Everything below is what makes that true: a fixed
+  // lattice so two phones asking about the same storm ask for the same tile, two bits a cell,
+  // and a quadtree that spends nothing on the dry half of the picture. When even that does not
+  // fit, the bot halves the grid rather than splitting the answer — there is no `>part` for
+  // radar, because half a radar picture is a picture of somewhere else.
+
+  /** Radar flags nibble, bit 0: the grid is 16 × 16, not 32 × 32 (spec §7D). */
+  radarCoarseBit: 0x01,
+  /**
+   * Radar flags nibble, bit 1: the four `bounds` bytes follow the fixed fields. The picture
+   * covers only those rows and columns; every cell outside them is **unknown**, and is level 0
+   * on the wire because the wire has no fifth level. Never draw one as dry.
+   */
+  radarPartialBit: 0x02,
+  /** Cells along one side of a tile. */
+  radarGrid: 32,
+  /** Cells along one side of a coarse tile: each cell the highest of the four it replaces. */
+  radarCoarseGrid: 16,
+  /** A tile spans `2^(zoom + 1)` degrees: 2, 4, 8, 16. */
+  maxRadarZoom: 3,
+  /** `product` is six bits beside the zoom in the `shape` byte. */
+  maxRadarProduct: 63,
+  /**
+   * The Not-available letter of `>radar` (spec §7D, §8.3). **Not** `r`: that is `>rain`, and a
+   * refusal has to say which of the two it refuses. The one request whose letter is not its
+   * first letter, which is why `WeatherRequest.requestLetter` has a case for it.
+   */
+  radarRequestLetter: 'x',
+  /** Header, `taken`, `south`, `west` and `shape`, before the optional bounds and the cells. */
+  radarFixedSize: 12,
+  /** `row0`, `row1`, `col0`, `col1`, u8 each, inclusive, in this packet's own grid. */
+  radarBoundsSize: 4,
+  /** `shape` byte, bits 0-1: the zoom. Bits 2-7 are the product index. */
+  radarZoomMask: 0x03,
+  /** How far up the `shape` byte the product index sits. */
+  radarProductShift: 2,
 });
 
 /**
- * The ten structured message types (spec §2.2, high nibble of the type byte), as
+ * The eleven structured message types (spec §2.2, high nibble of the type byte), as
  * `caseName → raw number`.
  *
- * Type 11 is reserved and 12-15 are free for third-party experiments, so this is
- * deliberately not exhaustive over the nibble: a decoded header keeps the byte and
- * receivers ignore what they do not know.
+ * Types 12-15 are free for third-party experiments, so this is deliberately not
+ * exhaustive over the nibble: a decoded header keeps the byte and receivers ignore what
+ * they do not know.
  */
 export const MeshWXMessageType = Object.freeze({
   warning: 1,
@@ -288,6 +327,12 @@ export const MeshWXMessageType = Object.freeze({
    * eight packets.
    */
   areaSweep: 10,
+  /**
+   * Spec revision 11, §7D: one tile of a radar picture, as a quadtree of 2-bit levels. The
+   * number revision 2 reserved "for a future structured product". Request only — nothing
+   * broadcasts radar on a schedule.
+   */
+  radar: 11,
 });
 
 /**
@@ -305,6 +350,7 @@ export const MeshWXTypeNames = Object.freeze({
   8: 'coverage',
   9: 'request',
   10: 'area_sweep',
+  11: 'radar',
 });
 
 /**

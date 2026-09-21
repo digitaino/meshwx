@@ -112,8 +112,8 @@ async function boot() {
 }
 
 /**
- * `?open=radio|alerts|map|places|connect` opens that screen on arrival (home-screen shortcuts, and
- * looking at one screen from a script). It waits for the page it belongs to.
+ * `?open=radio|alerts|map|radar|places|connect` opens that screen on arrival (home-screen
+ * shortcuts, and looking at one screen from a script). It waits for the page it belongs to.
  */
 async function openDeepLink(app) {
   const wanted = new URLSearchParams(globalThis.location.search).get('open')
@@ -137,6 +137,7 @@ async function openDeepLink(app) {
     radio: radio.WeatherRadioScreen, alerts: radio.WeatherAlertsListScreen, map: radio.WeatherAreaMapScreen,
     fullmap: radio.WeatherAreaFullMapScreen, cached: radio.WeatherCachedScreen, traffic: radio.WeatherTrafficScreen,
     requests: radio.WeatherRequestsScreen, areas: radio.WeatherAreaPickerScreen,
+    radar: radio.WeatherRadarScreen,
   }[wanted]
   if (screen) app.nav.push(screen({ app, page }))
 }

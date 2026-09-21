@@ -30,6 +30,7 @@ import {
 } from '../../screen/index.js'
 import { WeatherConditionsSection } from './WeatherConditionsSection.js'
 import { WeatherForecastSection } from './WeatherForecastSection.js'
+import { WeatherRadarSection } from './WeatherRadarSection.js'
 import {
   alertQualifier, attempt, bannerText, eventName, eventSymbol, eventTint, nowOf, placeNameOf, placeRowText,
   radioRowText, screenFor, sourceNameOf, untilLine, WeatherReportProduct,
@@ -84,6 +85,10 @@ export function WeatherPlacePageView({ app, page, onUseMyLocation }) {
     empty == null && screen.context?.conditions?.kind !== 'noPlace'
       ? WeatherForecastSection({ app, screen })
       : null,
+
+    // Under the forecast (revision 11 §3), and absent altogether for a place with no coordinate:
+    // a radar tile is decided by a coordinate and by nothing else.
+    WeatherRadarSection({ app, screen, onOpen: push.radar }),
 
     reports({ push }),
 
@@ -266,6 +271,10 @@ function pushers({ app, screen, pageID }) {
     radio: () => open(async () => {
       const { WeatherRadioScreen } = await import('../radio/index.js')
       return WeatherRadioScreen({ app, page })
+    }),
+    radar: () => open(async () => {
+      const { WeatherRadarScreen } = await import('../radio/index.js')
+      return WeatherRadarScreen({ app, page })
     }),
   }
 }

@@ -20,7 +20,14 @@ import {
   WeatherScreenSnapshot,
   WeatherSettledOutcome,
 } from '../src/screen/index.js'
-import { loadedGeometry, loadGeometry, loadTables, WeatherPhoneFixture as P } from './helpers/screen-fixture.js'
+import {
+  botState,
+  loadedGeometry,
+  loadGeometry,
+  loadTables,
+  storedRadarTile,
+  WeatherPhoneFixture as P,
+} from './helpers/screen-fixture.js'
 
 const tables = await loadTables()
 await loadGeometry()
@@ -80,6 +87,38 @@ test("the owner's phone at 23:20 reads as it should", () => {
   assert.equal(screen.forecast.value.point.index, 103)
   assert.deepEqual(screen.otherPlaces.map((one) => one.point.index), [304, 1010])
   assert.equal(screen.readings.length, 14)
+  // Nobody has asked for a radar picture, so the section is an ask and names the square a tap
+  // would ask about (spec §7D, revision 11).
+  assert.equal(screen.radar.kind, 'missing')
+  assert.deepEqual(screen.radar.tile, { south: 29, west: -99, zoom: 0 })
+})
+
+/**
+ * The radar card rides in the snapshot exactly as the forecast card does, and it is built from
+ * the tiles of **every** bot: a lattice square is a square of the earth, so the bot next door's
+ * picture of this place is this place's picture.
+ */
+test('a radar tile from any bot becomes the page\'s radar card', () => {
+  const states = {
+    ...P.states(),
+    2: botState({
+      botID: 2,
+      radarTiles: [storedRadarTile({
+        south: 29, west: -99, zoom: 0, cells: [[15, 11, 2]], takenMinutes: P.nowMinutes - 12,
+      })],
+    }),
+  }
+  const screen = snapshot(inputs({ states }))
+  assert.equal(screen.radar.kind, 'held')
+  assert.deepEqual(screen.radar.picture.age, { minutes: 12, isOld: false })
+  assert.equal(screen.radar.picture.isWiderThanAsked, false)
+  assert.equal(screen.radar.picture.summary.here, 0, 'dry over Austin')
+  assert.equal(screen.radar.picture.summary.nearest.level, 2)
+})
+
+/** A place with no coordinate has no radar section at all — absent, not empty. */
+test('a page with no place has no radar section', () => {
+  assert.equal(snapshot(inputs({ place: null })).radar.kind, 'noCoordinate')
 })
 
 test('offline, requests are blocked but the picture stays', () => {

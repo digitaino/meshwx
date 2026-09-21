@@ -68,6 +68,13 @@ export function copy(app, page = null) {
     channelSubject: (subject, tables) => WeatherCopy.channelSubject(subject, { tables }),
     channelTimes: (contentAt, receivedAt) => WeatherCopy.channelTimes({ contentAt, receivedAt, ...when }),
     cacheGroup: (group) => WeatherCopy.cacheGroup(group),
+
+    // Radar (revision 11 §3).
+    /** "Picture from 6:38 PM · 12 min old", from the minute printed on the picture. */
+    radarTime: (picture) => WeatherCopy.radarTime(picture, when),
+    radarSummary: (summary, placeName) => WeatherCopy.radarSummary(summary, { placeName }),
+    radarWidthName: (zoom) => WeatherCopy.radarWidthName(zoom),
+    radarMosaic: (product, tables) => WeatherCopy.radarMosaic(product, { tables }),
     stationLink: (inArea, total, source) => WeatherCopy.stationLink({ inArea, total, source }),
   }
 }

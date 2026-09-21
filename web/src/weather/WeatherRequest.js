@@ -1,5 +1,7 @@
 // Port of MC1Services/Services/Weather/WeatherRequest.swift (docs/PORTING.md).
 
+import { MeshWXRadarTile, MeshWXWire } from '../meshwx/index.js'
+
 /**
  * The MeshWX v5 request grammar (spec §8.2), one case per line of the table, with the text
  * the bot parses and the answer the app should wait for.
@@ -119,6 +121,19 @@ export const WeatherRequest = Object.freeze({
    * the same engine" (owner, 20 September 2026). This asks the same engine the chat asks.
    */
   forecastAt({ latitude, longitude }) { return { kind: 'forecastAt', latitude, longitude } },
+  /**
+   * `>radar 30.270,-97.740` / `>radar 30.270,-97.740 z2` — one tile of a radar picture around a
+   * coordinate (spec §7D, revision 11). One packet, always.
+   *
+   * The coordinate is written the way `>f <lat>,<lon>` writes one, and the zoom is left off at 0
+   * because that is the form the bot's own grammar table leads with: `z0` would be the same
+   * request in bytes nobody else sends. The answer is the tile whose *centre* is nearest the
+   * coordinate on the fixed lattice (`MeshWXRadarTile.containing`), which is what lets one
+   * answer serve everybody in a town rather than one phone each.
+   *
+   * Request only, and never on a timer: revision 11 ships with no scheduled radar at all.
+   */
+  radar({ latitude, longitude, zoom = 0 }) { return { kind: 'radar', latitude, longitude, zoom } },
 
   // MARK: - The scope and the indexes, normalised once
   //
@@ -202,6 +217,12 @@ export const WeatherRequest = Object.freeze({
       case 'parts': return `>part ${request.group} ${WeatherRequest.partIndexes(request.indexes).join(',')}`
       case 'forecastAt':
         return `>f ${WeatherRequest.coordinateText(request.latitude)},${WeatherRequest.coordinateText(request.longitude)}`
+      case 'radar': {
+        // `>radar <lat>,<lon>` at zoom 0, `… z2` otherwise. The longest this can be is
+        // `>radar -30.270,-197.740 z3`, 26 bytes of the 40-byte request budget (spec §7B).
+        const place = `${WeatherRequest.coordinateText(request.latitude)},${WeatherRequest.coordinateText(request.longitude)}`
+        return request.zoom > 0 ? `>radar ${place} z${request.zoom}` : `>radar ${place}`
+      }
       default: throw new Error(`WeatherRequest: unknown kind ${request.kind}`)
     }
   },
@@ -209,8 +230,13 @@ export const WeatherRequest = Object.freeze({
   /**
    * The letter a Not-available reply echoes back (spec §8.3): the ASCII code of the
    * request's first letter after `>`.
+   *
+   * `>radar` is the one exception, and it is `x` (spec §7D, revision 11). `r` is already
+   * `>rain`, and a refusal names no argument: with both sharing a letter, a phone waiting for a
+   * radar tile and a phone waiting for rainfall totals would each take the other's refusal.
    */
   requestLetter(request) {
+    if (request.kind === 'radar') return MeshWXWire.radarRequestLetter
     // `wireText` always starts with `>` followed by a lowercase ASCII letter.
     return WeatherRequest.wireText(request)[1]
   },
@@ -241,6 +267,14 @@ export const WeatherRequest = Object.freeze({
       // back under a bundled index near the coordinate, or under `0xFFFF`. `WeatherService`
       // measures the distance, which needs the tables this type stays free of.
       case 'forecastAt': return WeatherReplyKind.forecast({ point: null })
+      // The tile is worked out here rather than waited for, because the lattice is fixed: the
+      // answer to this coordinate is one named square of the earth, whoever sends it.
+      case 'radar':
+        return WeatherReplyKind.radar({
+          tile: MeshWXRadarTile.containing({
+            latitude: request.latitude, longitude: request.longitude, zoom: request.zoom
+          })
+        })
       default: throw new Error(`WeatherRequest: unknown kind ${request.kind}`)
     }
   },
@@ -270,6 +304,11 @@ export const WeatherRequest = Object.freeze({
     switch (request.kind) {
       case 'forecast': case 'forecastDiscussion': case 'stormReports': case 'rainfall':
       case 'metar': case 'taf': case 'observation': case 'warning': case 'spaceWeather':
+        return true
+      // Revision 11's radar is the clearest case of all: the tile is a named square of the
+      // earth on a fixed lattice, and two bots cutting it from the same national mosaic are
+      // sending the same picture. "Another bot's Radar for the same tile settles it too."
+      case 'radar':
         return true
       default:
         return false
@@ -301,6 +340,10 @@ export const WeatherRequest = Object.freeze({
         // texts alike (spec §7C), so two `>part 212 1` are one request whatever they are called.
         return `${request.kind}:${request.group}:${WeatherRequest.partIndexes(request.indexes).join(',')}`
       case 'forecastAt': return `${request.kind}:${WeatherRequest.coordinateKey(request)}`
+      // The coordinate, not the tile: two coordinates on one tile are one *answer*, which is
+      // what the service's answer slot is keyed by, but they are two questions — and the
+      // pending list, the log and the five-second spacing all key on the question asked.
+      case 'radar': return `${request.kind}:${WeatherRequest.coordinateKey(request)}:z${request.zoom}`
       default: return request.kind
     }
   }
@@ -338,7 +381,16 @@ export const WeatherReplyKind = Object.freeze({
    * text alike. The indexes are not here — the group is what identifies the answer, and the
    * service checks the index against the request it is settling (spec §7C, revision 10).
    */
-  parts({ group }) { return { kind: 'parts', group } }
+  parts({ group }) { return { kind: 'parts', group } },
+  /**
+   * `>radar <lat>,<lon>`: a Radar message for that `MeshWXRadarTile` (spec §7D, revision 11).
+   *
+   * Checked against the tile and against nothing else. Not the picture's time — "a Radar message
+   * for that tile from the bot asked settles the request whatever its `taken`", because a bot
+   * with nothing newer than the picture it already sent answers with that one, and a phone that
+   * went on waiting for a fresher one would wait for the next quarter of an hour.
+   */
+  radar({ tile }) { return { kind: 'radar', tile } }
 })
 
 /**

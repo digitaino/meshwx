@@ -251,3 +251,17 @@
     width: calc(100% - 32px);
   }
 }
+
+/* ---------- The radar card (revision 11 §3) ---------- */
+
+/* A square of the earth in a square on the page: the tile is 2° by 2°, and a letterbox would
+   either crop it or leave the cells floating in the middle of a wide strip. */
+.map--radar { aspect-ratio: 1 / 1; height: auto; border-radius: 0; }
+
+/* The whole picture is the button that opens the radar screen, so the sentences under the map
+   are inside it: a caption that were not part of the target would be the one part of the card
+   that does nothing when it is tapped. */
+.radar-card { display: block; width: 100%; padding: 0; border: 0; background: none; text-align: start; cursor: pointer; }
+.radar-card__body { display: flex; flex-direction: column; gap: 2px; padding: 10px 16px 2px; }
+.radar-card__line { font-size: var(--text-callout); }
+.radar-card:hover .card-map__open { background: var(--surface-hover); }

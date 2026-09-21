@@ -15,6 +15,7 @@ import { t } from '../src/l10n.js'
 import { WeatherPartsKind, WeatherRequest, WeatherRequestOutcome } from '../src/weather/index.js'
 import {
   WeatherAlertFolding,
+  WeatherRadarAge,
   WeatherAlertItems,
   WeatherAlertPlacement,
   WeatherAlertStatus,
@@ -797,5 +798,126 @@ describe('Weather copy', () => {
     // A code no table knows is still the code the radio sent.
     assert.equal(WeatherReferenceNames.stateList(['ZZ']), 'ZZ')
     assert.equal(WeatherStateList.maxNamed, 3)
+  })
+  // MARK: - Radar (revision 11 §3)
+
+  const summary = (here, { nearest = null, heavy = null } = {}) => ({
+    here,
+    nearest,
+    nearestHeavy: heavy,
+  })
+  const reach = (level, kilometres, bearing) => ({ level, kilometres, bearing })
+  const sentences = (one, placeName = 'Austin') =>
+    WeatherCopy.radarSummary(one, { placeName }).map(F.plain)
+
+  it('what is overhead is one sentence, and a dry place names the nearest echo', () => {
+    assert.deepEqual(sentences(summary(1)), ['Light precipitation at Austin.'])
+    assert.deepEqual(sentences(summary(2)), ['Moderate precipitation at Austin.'])
+    assert.deepEqual(sentences(summary(3)), ['Heavy precipitation at Austin.'])
+    assert.deepEqual(
+      sentences(summary(0, { nearest: reach(1, 45.2, MeshWXCompass.northWest) })),
+      ['Dry at Austin.', 'Nearest precipitation 45 km NW.'],
+    )
+    // A separate heavy core is a second sentence, under a dry place and a wet one alike.
+    assert.deepEqual(
+      sentences(summary(0, {
+        nearest: reach(1, 4, MeshWXCompass.west), heavy: reach(3, 80, MeshWXCompass.northWest),
+      })),
+      ['Dry at Austin.', 'Nearest precipitation 4 km W.', 'Heavy precipitation 80 km NW.'],
+    )
+    assert.deepEqual(
+      sentences(summary(1, { heavy: reach(3, 80, MeshWXCompass.northWest) })),
+      ['Light precipitation at Austin.', 'Heavy precipitation 80 km NW.'],
+    )
+  })
+
+  /**
+   * The two sentences that are not about the place's own cell: a picture with nothing on it, and
+   * a picture that stops short of the place. The second says that and nothing else — a `nearest`
+   * measured from ground the mosaic never covered would be a guess dressed as a measurement.
+   */
+  it('an empty picture and one that does not reach the place each say so once', () => {
+    assert.deepEqual(sentences(summary(0)), ['No precipitation on this picture.'])
+    assert.deepEqual(
+      sentences(summary(null, { nearest: reach(2, 30, MeshWXCompass.south) })),
+      ['This picture does not reach Austin.'],
+    )
+  })
+
+  const held = (minutesOld) => ({
+    stored: { radar: { taken_min: Math.floor(F.now / 60_000) - minutesOld } },
+    age: WeatherRadarAge.make({ takenMinutes: Math.floor(F.now / 60_000) - minutesOld, now: F.now }),
+  })
+  const timeLine = (minutesOld) =>
+    F.plain(WeatherCopy.radarTime(held(minutesOld), { now: F.now, timeZone: F.timeZone, locale: F.locale }))
+
+  it("the time line is the picture's own time, how old it is, and the caution", () => {
+    assert.equal(timeLine(12), 'Picture from 11:08 PM · 12 min old')
+    // From thirty minutes the line says what two missed mosaics mean.
+    assert.equal(timeLine(30), 'Picture from 10:50 PM · 30 min old · Precipitation has moved since.')
+    // Under a minute the age is left off: "0 s old" reads as a stopwatch, not as a picture. A
+    // picture from a radio a minute ahead is the same case, never "-1 min old".
+    assert.equal(timeLine(0), 'Picture from 11:20 PM')
+    assert.equal(timeLine(-1), 'Picture from 11:21 PM')
+  })
+
+  /**
+   * Radar is the one request whose refusal carries most of the information: "no recent picture
+   * for this area" and "this radio has no dish at all" ask the reader to do entirely different
+   * things (design §3).
+   */
+  it('a refused radar tile says which of the four refusals it is', () => {
+    const asked = WeatherRequest.radar({ latitude: 30.2672, longitude: -97.7431, zoom: 0 })
+    const refused = (reason) =>
+      request(settled(WeatherRequestOutcome.notAvailable(reason), F.now), { for: asked })
+    assert.equal(refused(MeshWXNotAvailableReason.noData), 'WX-AUS has no recent radar picture for this area.')
+    assert.equal(refused(MeshWXNotAvailableReason.unsupported), 'WX-AUS does not receive radar pictures.')
+    assert.equal(
+      refused(MeshWXNotAvailableReason.rateLimited),
+      'WX-AUS sent this picture a few minutes ago and has nothing newer yet.',
+    )
+    // Reason 1 is the forecast's sentence: the app sends a coordinate, so the radio could not
+    // place it at all.
+    assert.equal(refused(MeshWXNotAvailableReason.unknownLocation), "WX-AUS didn't recognize that place")
+    // Anything else falls back to the wire's own wording rather than inventing a fifth radar one.
+    assert.equal(refused(MeshWXNotAvailableReason.botError), 'WX-AUS had an error')
+    // And the same reason on another request is untouched.
+    assert.equal(
+      request(settled(WeatherRequestOutcome.notAvailable(MeshWXNotAvailableReason.noData), F.now)),
+      'WX-AUS has no data for that yet',
+    )
+  })
+
+  it('a radar tile is named by its width and the centre of its square', () => {
+    assert.equal(WeatherCopy.radarWidthName(0), 'Local')
+    assert.equal(WeatherCopy.radarWidthName(1), 'Regional')
+    assert.equal(WeatherCopy.radarWidthName(2), 'Wide')
+    // Zoom 3 is on the wire and no screen offers it, so it has no name here.
+    assert.equal(WeatherCopy.radarWidthName(3), null)
+
+    // The centre, in the three decimals a request is written in: a square of earth has no name,
+    // and its middle is the one thing about it a reader can place on a map.
+    assert.equal(WeatherCopy.radarCentre({ south: 29, west: -99, zoom: 0 }), '30.000,-98.000')
+    assert.equal(WeatherCopy.radarCentre({ south: 28, west: -100, zoom: 2 }), '32.000,-96.000')
+    assert.equal(WeatherCopy.radarCentre({ south: -34, west: 149, zoom: 0 }), '-33.000,150.000')
+
+    assert.equal(
+      F.plain(WeatherCopy.channelSubject(
+        { kind: 'radar', tile: { south: 29, west: -99, zoom: 0 } }, { tables },
+      )),
+      'Radar picture · Local · 30.000,-98.000',
+    )
+    // Which of the fourteen mosaics the square was cut out of, and nothing for an index this
+    // bundle is too old to know.
+    assert.equal(F.plain(WeatherCopy.radarMosaic(1, { tables })), `Cut from the ${tables.radarProductName({ at: 1 })} mosaic.`)
+    assert.equal(WeatherCopy.radarMosaic(200, { tables }), null)
+    assert.equal(WeatherCopy.cacheGroup('radarPictures'), 'Radar pictures')
+    // The log of this phone's own asks names what was asked about, never the tile it came back as.
+    assert.equal(
+      F.plain(WeatherCopy.requestName(
+        WeatherRequest.radar({ latitude: 30.2672, longitude: -97.7431, zoom: 0 }), { tables },
+      )),
+      'Radar picture · 30.267,-97.743',
+    )
   })
 })

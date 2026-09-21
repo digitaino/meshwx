@@ -25,7 +25,10 @@ import {
   MeshWXRequest,
   MeshWXEncoder,
   MeshWXAreaSweep,
+  MeshWXRadar,
+  MeshWXRadarTile,
 } from '../src/meshwx/index.js';
+import { WeatherRequest } from '../src/weather/index.js';
 import { vectors, fileCount, vector, requestDigestHex, sharedTables } from './helpers/meshwx-vectors.js';
 
 describe('MeshWX vectors', () => {
@@ -51,6 +54,11 @@ describe('MeshWX vectors', () => {
     assert.ok(vectors.some((v) => v.name === 'area_sweep_scoped_packet0'));
     assert.ok(vectors.some((v) => v.name === 'request_parts'));
     assert.ok(vectors.some((v) => v.name === 'request_forecast_at'));
+    // Revision 11's four: a real tile, a coarse and partial one, the request and the refusal.
+    assert.ok(vectors.some((v) => v.name === 'radar_tile'));
+    assert.ok(vectors.some((v) => v.name === 'radar_tile_coarse_partial'));
+    assert.ok(vectors.some((v) => v.name === 'request_radar'));
+    assert.ok(vectors.some((v) => v.name === 'not_available_radar'));
   });
 
   describe('decodesToTheDocumentedFields', () => {
@@ -284,6 +292,85 @@ describe('MeshWX vectors', () => {
         text: message.text,
       }), want);
     }
+  });
+
+  /**
+   * Spec §7D, revision 11: the publisher's own tile, a real one — Dallas under the squall line
+   * of 20 September 2026, 131 bytes for a thousand cells.
+   *
+   * The two claims worth pinning beyond the deep comparison every vector already gets: the
+   * lattice really does put this tile under the coordinate that was asked about, and the cells
+   * are the picture the bot cut rather than an arrangement that happens to round trip.
+   */
+  test('theRadarTileVectorIsTheTileTheSpecDescribes', () => {
+    const entry = vector('radar_tile');
+    assert.ok(entry);
+    const data = hexToBytes(entry.hex);
+    assert.equal(data.length, 131);
+
+    const radar = decode(data);
+    assert.equal(radar.type, MeshWXMessageType.radar);
+    assert.equal(radar.taken_min, 29832458, '2026-09-20 23:38 UTC, printed on the picture');
+    assert.equal(radar.source, 1, 'off the dish');
+    assert.equal(radar.coarse, false);
+    assert.equal(radar.partial, false);
+    // `>radar 32.780,-96.800` is the request vector, and this is the tile it answers.
+    assert.deepStrictEqual(
+      MeshWXRadarTile.containing({ latitude: 32.78, longitude: -96.8, zoom: 0 }),
+      MeshWXRadar.tile(radar),
+    );
+    assert.equal(tables.radarProduct({ at: radar.product }), 'RADSTHPL');
+    // The bot's own count over this tile: a squall line, not a washout.
+    assert.equal(MeshWXRadar.wetCells(radar), 380);
+    assert.equal(MeshWXRadar.level(radar, { row: 19, col: 19 }), 1, 'light rain over Dallas');
+    assert.equal(bytesToHex(encode(radar)), entry.hex);
+  });
+
+  /**
+   * The coarse and partial form, which is the whole of revision 11's answer to a picture that
+   * does not fit: half the detail, never half the answer. Its bounds say the southern rows are
+   * outside the radar picture, and a cell there is unknown rather than dry.
+   */
+  test('theCoarsePartialRadarVectorSaysWhereThePictureStops', () => {
+    const entry = vector('radar_tile_coarse_partial');
+    assert.ok(entry);
+    const radar = decode(hexToBytes(entry.hex));
+    assert.equal(radar.coarse, true);
+    assert.equal(radar.size, 16);
+    assert.deepStrictEqual(radar.bounds, [0, 9, 0, 15]);
+    assert.ok(MeshWXRadar.isKnown(radar, { row: 9, col: 0 }));
+    assert.ok(!MeshWXRadar.isKnown(radar, { row: 10, col: 0 }), 'below the picture, not dry');
+    // Every cell outside the bounds is level 0 on the wire, as the spec requires.
+    for (let row = 10; row < 16; row += 1) {
+      assert.equal(radar.rows[row], '0'.repeat(16));
+    }
+    assert.equal(bytesToHex(encode(radar)), entry.hex);
+  });
+
+  /**
+   * Spec §7D: `>radar` is refused with letter `x`, not `r` — `r` is `>rain`, and a refusal names
+   * no argument, so the letter is the only thing that says which of the two was refused.
+   */
+  test('theRadarRequestAndItsRefusalUseTheLetterX', () => {
+    const request = decode(hexToBytes(vector('request_radar').hex));
+    assert.equal(request.name, 'request');
+    assert.equal(request.text, '>radar 32.780,-96.800');
+    assert.equal(
+      WeatherRequest.wireText(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8 })),
+      request.text,
+      "the app's own request is the publisher's bytes",
+    );
+
+    const refusal = decode(hexToBytes(vector('not_available_radar').hex));
+    assert.equal(refusal.name, 'not_available');
+    assert.equal(refusal.request, MeshWXWire.radarRequestLetter);
+    assert.equal(refusal.request_code, 0x78);
+    assert.equal(refusal.reason, 4, 'this tile of this picture went out in the last five minutes');
+    assert.equal(
+      WeatherRequest.requestLetter(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8 })),
+      refusal.request,
+    );
+    assert.notEqual(WeatherRequest.requestLetter(WeatherRequest.rainfall({ state: 'TX' })), refusal.request);
   });
 
   test('sweepEntriesExpandToTheirUGCCodes', () => {

@@ -296,7 +296,14 @@ function paint(state, drawing, print) {
   state.drawn = print
   map.setShapes(drawing.shapes ?? [])
   map.setMarkers(drawing.markers ?? [])
-  map.fit(drawing.frame ?? drawing.bounds ?? 'conus', { padding: drawing.frame ? 12 : 28 })
+  // The radar layer, when the drawing has one: under the shapes and over the basemap's fill, so
+  // an alert outline and the cells under it can both be read (revision 11 §3).
+  if (drawing.cells != null || drawing.unknownCells != null) {
+    map.setCells(drawing.cells ?? [], { unknown: drawing.unknownCells ?? [] })
+  }
+  map.fit(drawing.frame ?? drawing.bounds ?? 'conus', {
+    padding: drawing.padding ?? (drawing.frame ? 12 : 28),
+  })
 }
 
 /**

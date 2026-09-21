@@ -1,7 +1,7 @@
 // Port of MC1Services/Sources/MeshWX/MeshWXMessage.swift
 //
 // ============================================================================
-// SWIFT FIELD  →  VECTOR KEY, for all ten message types (PORTING §5)
+// SWIFT FIELD  →  VECTOR KEY, for all eleven message types (PORTING §5)
 // ============================================================================
 //
 // A decoded message is *exactly* the `decoded` object of docs/meshwx_v5_vectors.json:
@@ -11,8 +11,8 @@
 // Common header — the first five keys of every decoded message (spec §2.2):
 //   MeshWXHeader.seq              → seq          u8, per-bot sequence number
 //   MeshWXHeader.bot              → bot          u16, first two bytes of the bot's public key
-//   MeshWXHeader.rawType          → type         u8, 1…10 (the high nibble)
-//   MeshWXHeader.type             → name         "warning" … "area_sweep", "unknown"
+//   MeshWXHeader.rawType          → type         u8, 1…11 (the high nibble)
+//   MeshWXHeader.type             → name         "warning" … "radar", "unknown"
 //   MeshWXHeader.flags            → flags        u8, the low nibble, verbatim
 //   MeshWXHeader.dataSource       → source       0 unstated, 1 GOES, 2 internet, 3 mixed.
 //                                                Present on every type that carries weather;
@@ -136,6 +136,20 @@
 //     Entry.isCounty              → county         bit 0 of the wire byte, NOT bit 7
 //     Entry.start                 → start
 //     Entry.run                   → run            carried less one in six bits
+//
+// Type 11, MeshWXRadar (spec §7D, revision 11) — the types are in MeshWXRadar.js:
+//   takenMinutes                  → taken_min      the time printed on the radar picture
+//   south                         → south          i8, whole degrees
+//   west                          → west           i16, whole degrees
+//   zoom                          → zoom           0…3, from the `shape` byte's low two bits
+//   product                       → product        the mosaic's index in `v5.radar.products`
+//   isCoarse                      → coarse         flags bit 0: a 16 × 16 grid, not 32 × 32
+//   (flags bit 1)                 → partial        the four `bounds` bytes are present
+//   bounds                        → bounds         [row0, row1, col0, col1] or null
+//   (derived from `coarse`)       → size           16 or 32, cells along one side
+//   cells                         → rows           `size` strings of the digits 0-3, north row
+//                                                  first, west column first. A cell outside
+//                                                  `bounds` is 0 and means UNKNOWN, not dry.
 //
 // ============================================================================
 

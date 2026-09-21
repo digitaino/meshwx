@@ -5,7 +5,8 @@
 // value, the error, and the service.
 
 import {
-  MeshWXEncoder, MeshWXGeo, MeshWXTables, MeshWXWire, decode as decodeMessage
+  MeshWXEncoder, MeshWXGeo, MeshWXRadar, MeshWXRadarTile, MeshWXTables, MeshWXWire,
+  decode as decodeMessage
 } from '../meshwx/index.js'
 import { WeatherBot } from './WeatherBot.js'
 import { WeatherChannel } from './WeatherChannel.js'
@@ -648,6 +649,13 @@ export class WeatherService {
           ? (message.idx === 0 ? this.#sweepScopeCodes(message) : null)
           : NATIONAL_SWEEP_SCOPE
         if (scope != null) fill(botID, sweepSlot(scope), dateFromUnixMinutes(message.built_min))
+      } else if (change.kind === 'radarStored' && message.name === 'radar') {
+        // Keyed by the tile and filled for **any** bot, because that is how a radar answer is
+        // paired: the lattice square is the question, and two bots cutting it from the same
+        // national mosaic send the same picture. The content time is the picture's own `taken`,
+        // never receipt — a forty-minute-old picture that arrived a minute ago is forty minutes
+        // old, and the bot will refuse to re-send it for five of them anyway (spec §7D, reason 4).
+        fill(null, radarSlot(change.value), dateFromUnixMinutes(message.taken_min))
       } else if (change.kind === 'coverageStored' && message.name === 'coverage') {
         // No content time: the statement describes the bot, not an hour (spec §7A), so the
         // five-minute rule runs from receipt alone and nothing claims it is "as of" anything.
@@ -838,6 +846,16 @@ export class WeatherService {
         const states = WeatherRequest.areaSweepStates(request).join('')
         const scopes = states.length === 0 ? [NATIONAL_SWEEP_SCOPE] : [states, NATIONAL_SWEEP_SCOPE]
         return scopes.map((scope) => answerSlotKey(botID, sweepSlot(scope)))
+      }
+      case 'radar': {
+        // The tile, from any bot: the same square cut from the same mosaic is the same picture,
+        // and the bot refuses to send one twice inside five minutes in any case (spec §7D,
+        // reason 4). Two places on one tile therefore share the slot, which is the whole point
+        // of the lattice — one answer for a town, not one per phone.
+        const tile = MeshWXRadarTile.containing({
+          latitude: request.latitude, longitude: request.longitude, zoom: request.zoom
+        })
+        return one(answerSlotKey(null, radarSlot(tile)))
       }
       case 'parts': case 'forecastAt': return []
       default: return []
@@ -1300,6 +1318,14 @@ export class WeatherService {
       // sweep's own flag and scope say what arrived, which is what the map reads.
       return true
     }
+    if (kind.kind === 'radar' && message.name === 'radar') {
+      // The tile and nothing else. Not `taken`: a bot with nothing newer answers with the
+      // picture it already sent, and a phone that went on waiting for a fresher one would wait
+      // out the quarter of an hour until the next picture is made. Not the bot either — this is
+      // one of the requests any bot's answer settles (`acceptsAnswerFromAnyBot`), because the
+      // lattice square is a square of the earth and the mosaic behind it is the same mosaic.
+      return MeshWXRadarTile.isEqual(MeshWXRadar.tile(message), kind.tile)
+    }
     if (kind.kind === 'parts' && (message.name === 'area_sweep' || message.name === 'text')) {
       // The bot replays the bytes it stamped with that group byte, whichever kind of answer they
       // came from: its cache is keyed by the group alone (spec §7C, revision 10). Only the bot
@@ -1399,6 +1425,11 @@ const NATIONAL_SWEEP_SCOPE = '*'
 /** `areaSweep.TXOK` — the selection, as both sides of the rule spell it. */
 function sweepSlot(scope) {
   return `areaSweep.${scope}`
+}
+
+/** `radar.32,-98,0` — the lattice square, as both sides of the rule spell it (spec §7D). */
+function radarSlot(tile) {
+  return `radar.${MeshWXRadarTile.key(tile)}`
 }
 
 /** `Data` is a `Uint8Array`; hex strings are lower case without separators (PORTING.md §3). */

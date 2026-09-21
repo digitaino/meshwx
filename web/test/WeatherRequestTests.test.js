@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
+import { MeshWXWire } from '../src/meshwx/index.js'
 import { WeatherPartsKind, WeatherReplyKind, WeatherRequest } from '../src/weather/index.js'
 
 const R = WeatherRequest
@@ -38,7 +39,10 @@ describe('WeatherRequest', () => {
       [R.areaSweep({ includesAdvisories: false, states: ['TX', 'OK'] }), '>wmap OKTX'],
       [R.areaSweep({ includesAdvisories: true, states: ['tx', 'ok'] }), '>wmap all OKTX'],
       [R.parts({ group: 212, indexes: [1, 4, 6], of: WeatherPartsKind.areaSweep }), '>part 212 1,4,6'],
-      [R.forecastAt({ latitude: 35.687, longitude: -105.938 }), '>f 35.687,-105.938']
+      [R.forecastAt({ latitude: 35.687, longitude: -105.938 }), '>f 35.687,-105.938'],
+      // Revision 11.
+      [R.radar({ latitude: 30.27, longitude: -97.74 }), '>radar 30.270,-97.740'],
+      [R.radar({ latitude: 30.27, longitude: -97.74, zoom: 2 }), '>radar 30.270,-97.740 z2']
     ]
     for (const [request, text] of expected) {
       assert.equal(R.wireText(request), text)
@@ -64,6 +68,10 @@ describe('WeatherRequest', () => {
     // under the same letter (spec §8.3).
     assert.equal(R.requestLetter(R.areaSweep({ includesAdvisories: false })), 'w')
     assert.equal(R.requestLetter(R.areaSweep({ includesAdvisories: true })), 'w')
+    // Revision 11's exception, and the only one: `>radar` is refused under `x`, because `r` is
+    // already `>rain` and a refusal names no argument (spec §7D).
+    assert.equal(R.requestLetter(R.radar({ latitude: 30.27, longitude: -97.74 })), 'x')
+    assert.equal(R.requestLetter(R.radar({ latitude: 30.27, longitude: -97.74, zoom: 3 })), 'x')
   })
 
   // Spec §7A: a statement describes the bot that sent it, so another bot's — or another
@@ -75,6 +83,9 @@ describe('WeatherRequest', () => {
     // Spec §7C: a sweep is one bot's reading of the country, cut where its own feed runs out.
     assert.equal(R.acceptsAnswerFromAnyBot(R.areaSweep({ includesAdvisories: false })), false)
     assert.equal(R.acceptsAnswerFromAnyBot(R.areaSweep({ includesAdvisories: true })), false)
+    // Spec §7D: a tile is a named square of the earth cut from a national mosaic, so another
+    // bot's picture of it is this question's answer.
+    assert.equal(R.acceptsAnswerFromAnyBot(R.radar({ latitude: 30.27, longitude: -97.74 })), true)
   })
 
   it('expected replies carry the station, point and subject the request named', () => {
@@ -132,6 +143,11 @@ describe('WeatherRequest', () => {
     )
     assert.deepStrictEqual(
       R.expectedReply(R.areaSweep({ includesAdvisories: true })), WeatherReplyKind.areaSweep
+    )
+    // Revision 11: the tile is worked out from the coordinate, because the lattice is fixed.
+    assert.deepStrictEqual(
+      R.expectedReply(R.radar({ latitude: 30.27, longitude: -97.74 })),
+      WeatherReplyKind.radar({ tile: { south: 29, west: -99, zoom: 0 } })
     )
   })
 
@@ -211,5 +227,40 @@ describe('WeatherRequest', () => {
     assert.equal(R.key(R.forecastAt({ latitude: 35.6871, longitude: -105.9384 })), R.key(santaFe))
     assert.deepStrictEqual(R.expectedReply(santaFe), WeatherReplyKind.forecast({ point: null }))
     assert.equal(R.acceptsAnswerFromAnyBot(santaFe), false)
+  })
+
+  // MARK: - Revision 11
+
+  /**
+   * Spec §7D: the zoom is left off at 0, because that is the form the bot's grammar leads with
+   * and `z0` would be the same request in bytes nobody else sends. The longest `>radar` there
+   * is, `>radar -30.270,-197.740 z3`, is 26 of the 40 bytes a Request datagram carries (§7B).
+   */
+  it('a radar request is a coordinate and, past zoom 0, a width', () => {
+    const austin = R.radar({ latitude: 30.27, longitude: -97.74 })
+    assert.equal(R.wireText(austin), '>radar 30.270,-97.740')
+    assert.equal(R.wireText(R.radar({ latitude: 30.27, longitude: -97.74, zoom: 0 })), R.wireText(austin))
+    for (const zoom of [1, 2, 3]) {
+      assert.equal(
+        R.wireText(R.radar({ latitude: 30.27, longitude: -97.74, zoom })),
+        `>radar 30.270,-97.740 z${zoom}`
+      )
+    }
+    const longest = R.wireText(R.radar({ latitude: -30.27, longitude: -197.74, zoom: 3 }))
+    assert.equal(longest, '>radar -30.270,-197.740 z3')
+    assert.ok(new TextEncoder().encode(longest).length <= MeshWXWire.maxRequestTextBytes)
+  })
+
+  /**
+   * Two coordinates on one tile are one *answer* — that is what the service's slot is keyed by —
+   * but two questions: the pending list, the log and the five-second spacing all key on what was
+   * asked, and a width is part of the question.
+   */
+  it('a radar request is keyed by the coordinate and the width', () => {
+    const austin = R.radar({ latitude: 30.27, longitude: -97.74 })
+    assert.equal(R.key(austin), 'radar:30.270,-97.740:z0')
+    assert.equal(R.isEqual(austin, R.radar({ latitude: 30.2701, longitude: -97.7404 })), true)
+    assert.equal(R.isEqual(austin, R.radar({ latitude: 30.27, longitude: -97.74, zoom: 1 })), false)
+    assert.equal(R.isEqual(austin, R.radar({ latitude: 30.51, longitude: -97.68 })), false)
   })
 })

@@ -165,7 +165,7 @@ export class MeshWXTables {
     const wfosFile = files.wfos ?? null;
     const zipsFile = files.zips ?? null;
 
-    /** `protocol.json` `version` — 14 for v5.0 revision 10. */
+    /** `protocol.json` `version` — 15 for v5.0 revision 11. */
     this.protocolVersion = protocolFile?.version ?? 0;
     /** NWS office codes, ordered; the `office` byte indexes this. */
     this.offices = indexFile?.offices ?? [];
@@ -197,6 +197,33 @@ export class MeshWXTables {
     }
     /** Sky code → the bundle's name for it (`"broken"`, `"thunderstorm"`). */
     this.skyNames = sky;
+
+    /**
+     * `protocol.json` `v5.radar` — what the client needs of revision 11's own block.
+     *
+     * The wire shape (the grid, the zooms, the flags) is in `MeshWXWire`, where a decoder can
+     * reach it without the bundle. What is here is what the *bundle* is the authority on and a
+     * newer bot may change under an older app: which mosaic each `product` index names, what dBZ
+     * the three levels start at, and the two limits a screen quotes back to a person — how old a
+     * picture the bot will still serve, and how long it holds one tile down before it sends it
+     * again. An empty block leaves every list empty, which reads as "this bundle says nothing
+     * about radar", never as "radar has no products".
+     */
+    const radarFile = protocolFile?.v5?.radar ?? null;
+    this.radar = Object.freeze({
+      /** Wire `product` index → EMWIN product id, e.g. `"RADSTHPL"`. */
+      products: Object.freeze([...(radarFile?.products ?? [])]),
+      /** The same list as names a person reads, e.g. `"Southern Plains"`. */
+      productNames: Object.freeze([...(radarFile?.product_names ?? [])]),
+      /** Level 1 starts at the first, level 2 at the second, level 3 at the third. */
+      levelsDBZ: Object.freeze([...(radarFile?.levels_dbz ?? [])]),
+      /** Spec §7D: no picture older than this covers a tile, so the answer is a refusal. */
+      maxAgeMinutes: radarFile?.max_age_minutes ?? null,
+      /** Spec §7D: the same tile of the same picture goes out at most this often. Seconds. */
+      cooldownSeconds: radarFile?.cooldown_seconds ?? null,
+      /** `"x"` — the Not-available letter of `>radar`, stated by the bundle as well. */
+      requestLetter: radarFile?.request_letter ?? null,
+    });
 
     /** Forecast points in wire order. */
     this.points = (pointsFile?.points ?? []).map((row, index) => ({
@@ -323,6 +350,22 @@ export class MeshWXTables {
 
   stateCode(index) {
     return index >= 0 && index < this.states.length ? this.states[index] : null;
+  }
+
+  /** The EMWIN id a Radar message's `product` names (`"RADSTHPL"`), or null. */
+  radarProduct({ at: index }) {
+    const products = this.radar.products;
+    return index >= 0 && index < products.length ? products[index] : null;
+  }
+
+  /**
+   * The mosaic's name for a person (`"Southern Plains"`), or null when this bundle is older
+   * than the bot and does not know the index. A screen that cannot name the picture says
+   * nothing about it rather than printing a number nobody can look up.
+   */
+  radarProductName({ at: index }) {
+    const names = this.radar.productNames;
+    return index >= 0 && index < names.length ? names[index] : null;
   }
 
   /** VTEC code for an event byte, e.g. `3` → `"SV.W"`. */

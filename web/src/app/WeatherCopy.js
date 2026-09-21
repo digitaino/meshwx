@@ -2,9 +2,12 @@
 
 import { t } from '../l10n.js'
 import {
+  MeshWXCompass,
   MeshWXDataSource,
   MeshWXGeo,
   MeshWXNotAvailableReason,
+  MeshWXRadarLevel,
+  MeshWXRadarTile,
   MeshWXTables,
   MeshWXTextSubject,
   MeshWXWarning,
@@ -14,6 +17,8 @@ import {
   WeatherAlertRequests,
   WeatherForecastCard,
   WeatherNames,
+  WeatherRadarRefusal,
+  WeatherRadarSummary,
   WeatherTrafficSummary,
   WeatherUpdatePlan,
 } from '../screen/index.js'
@@ -312,6 +317,14 @@ export const WeatherCopy = Object.freeze({
           ? t('weather.request.heardNoAnswer', sourceStart, time(at))
           : t('weather.request.noAnswer', time(at), source)
       case 'notAvailable':
+        // Radar says which of the four refusals it is in its own words: "no recent picture for
+        // this area" and "this bot has no dish at all" ask the reader to do entirely different
+        // things, and one "not available" would leave them tapping for ever (design §3).
+        if (request?.kind === 'radar') {
+          return WeatherCopy.radarRefusal(
+            WeatherRadarRefusal.make({ reason: outcome.value }), { source: sourceStart },
+          )
+        }
         // The map's own rate limit is not the radio being busy and is certainly not an error:
         // the sweep is the one answer the whole channel shares, so a refusal means somebody else
         // has just spent those eight packets and this phone is about to be handed the same map
@@ -348,6 +361,132 @@ export const WeatherCopy = Object.freeze({
       WeatherFormatting.sentenceStart(source),
       WeatherFormatting.clockTime(since, { now, timeZone, locale }),
     )
+  },
+
+  // MARK: - Radar (revision 11 §3)
+
+  /**
+   * The three widths the radar screen offers, by zoom. Never kilometres: a tile is two degrees,
+   * which is 222 km tall everywhere and a different width at every latitude. Zoom 3 exists on the
+   * wire and is not offered, so it has no name here rather than a fourth word nothing else says.
+   */
+  radarWidthName(zoom) {
+    switch (zoom) {
+      case 0: return t('weather.radar.width.local')
+      case 1: return t('weather.radar.width.regional')
+      case 2: return t('weather.radar.width.wide')
+      default: return null
+    }
+  },
+
+  /**
+   * The tile's centre, in the same three decimals a request is written in — a square of earth
+   * has no name, and its middle is the one thing about it a reader can place on a map.
+   *
+   * The centre and not the south-west corner, because the centre is the point the lattice put
+   * the tile around. It is what a cached row and a row of what the channel carried name a tile
+   * by: nothing on the wire says who asked for one.
+   */
+  radarCentre(tile) {
+    const half = MeshWXRadarTile.spanDegrees(tile) / 2
+    return WeatherRequest.coordinateKey({
+      latitude: tile.south + half, longitude: tile.west + half,
+    })
+  },
+
+  /**
+   * "Cut from the Southern Plains mosaic." — which of the fourteen pictures this square came out
+   * of. Null for a product index this bundle does not know: a newer radio, not a bad packet, and
+   * losing the mosaic's name must not lose the picture.
+   */
+  radarMosaic(product, { tables = MeshWXTables.shared } = {}) {
+    const name = tables.radarProductName({ at: product })
+    return name == null ? null : t('weather.radar.mosaic', name)
+  },
+
+  /**
+   * What the picture says about the place, as the sentences the card and the screen print in
+   * order (design §3).
+   *
+   * Three shapes and no fourth:
+   *
+   * - The picture does not reach the place: that, and **nothing else**. There is a `nearest` in
+   *   the summary and it is measured from a place the picture has no reading for, so naming it
+   *   would dress a guess up as a measurement — the true nearest echo could be in the part the
+   *   mosaic never covered.
+   * - Nothing wet anywhere on the tile: one sentence about the picture.
+   * - Otherwise what is overhead, then the nearest echo when the place itself is dry, then a
+   *   separate heavy core when there is one. The pure layer has already dropped that last one
+   *   when it is the cell `nearest` names or when the place is under heavy precipitation.
+   */
+  radarSummary(summary, { placeName }) {
+    const name = placeName ?? ''
+    if (summary.here == null) return [t('weather.radar.here.outside', name)]
+    if (WeatherRadarSummary.isAllDry(summary)) return [t('weather.radar.none')]
+
+    const lines = []
+    switch (summary.here) {
+      case MeshWXRadarLevel.light: lines.push(t('weather.radar.here.light', name)); break
+      case MeshWXRadarLevel.moderate: lines.push(t('weather.radar.here.moderate', name)); break
+      case MeshWXRadarLevel.heavy: lines.push(t('weather.radar.here.heavy', name)); break
+      default:
+        lines.push(t('weather.radar.here.dry', name))
+        if (summary.nearest != null) {
+          lines.push(t('weather.radar.nearest', ...WeatherCopy.radarReach(summary.nearest)))
+        }
+        break
+    }
+    if (summary.nearestHeavy != null) {
+      lines.push(t('weather.radar.nearestHeavy', ...WeatherCopy.radarReach(summary.nearestHeavy)))
+    }
+    return lines
+  },
+
+  /**
+   * The two arguments a reach sentence takes: how far, and which way.
+   *
+   * The tool's own distance formatter and the wire's own compass abbreviation, so a radar
+   * sentence reads in the same units and the same letters as every other distance in the app
+   * (design §3.1: no second copy of either).
+   */
+  radarReach(reach) {
+    return [
+      WeatherFormatting.kilometres(reach.kilometres),
+      MeshWXCompass.abbreviation(reach.bearing),
+    ]
+  },
+
+  /**
+   * "Picture from 6:38 PM · 12 min old", and from 30 minutes "· Precipitation has moved since."
+   *
+   * The age is the **picture's** own, measured from the time printed on it and never from when
+   * the packet arrived: a tile drained from the radio's queue an hour late is an hour older than
+   * it looks. Under a minute the age is left off rather than shown as "0 s old", which reads as
+   * a stopwatch and not as a picture.
+   */
+  radarTime(picture, { now, timeZone, locale }) {
+    const takenAt = picture.stored.radar.taken_min * 60_000
+    const parts = [t('weather.radar.time', WeatherFormatting.clockTime(takenAt, { now, timeZone, locale }))]
+    if (picture.age.minutes >= 1) {
+      parts.push(t('weather.time.old', WeatherFormatting.duration({ seconds: picture.age.minutes * 60 })))
+    }
+    // The caution the tone alone cannot carry: half an hour is two mosaics, and a reader looking
+    // at where a storm was two mosaics ago has to be told that is what they are looking at.
+    if (picture.age.isOld) parts.push(t('weather.radar.moved'))
+    return parts.join(' · ')
+  },
+
+  /** Why the bot would not send a tile, in the ask's own status line (design §3). */
+  radarRefusal(refusal, { source }) {
+    switch (refusal.kind) {
+      case 'noPicture': return t('weather.radar.refused.noPicture', source)
+      case 'unsupported': return t('weather.radar.refused.unsupported', source)
+      case 'sentRecently': return t('weather.radar.refused.recent', source)
+      // The forecast's sentence, unchanged: the app sends a coordinate, so a bot that could not
+      // place it did not recognise the place, which is the same fact and the same words.
+      case 'unknownPlace': return t('weather.request.notAvailable.unknownPlace', source)
+      default: return WeatherCopy.notAvailable(refusal.value, { source })
+    }
   },
 
   // MARK: - Forecast (§9)
@@ -792,6 +931,10 @@ export const WeatherCopy = Object.freeze({
           'weather.requestName.forecastAt',
           WeatherRequest.coordinateKey(request),
         )
+      // The coordinate asked about, which is the only name this square has here: the tile comes
+      // back from the lattice and no place on this phone is claimed to be inside it.
+      case 'radar':
+        return withSubject(t('weather.radar.request.title'), WeatherRequest.coordinateKey(request))
       default:
         return ''
     }
@@ -876,6 +1019,15 @@ export const WeatherCopy = Object.freeze({
           : WeatherCopy.textSubjectName(subject.subject)
       case 'coverage':
         return t('weather.requestName.coverage')
+      // "Radar picture · Local · 30.000,-98.000": the picture, its width and the square it is
+      // of, because that is all a held tile is. Who asked for it is not something this phone can
+      // know, and the lattice means several people may have.
+      case 'radar':
+        return [
+          t('weather.radar.request.title'),
+          WeatherCopy.radarWidthName(subject.tile.zoom),
+          WeatherCopy.radarCentre(subject.tile),
+        ].filter((one) => one != null).join(' · ')
       default:
         return ''
     }
@@ -937,6 +1089,7 @@ export const WeatherCopy = Object.freeze({
       case 'airportReports': return t('weather.cache.airportReports')
       case 'warningNarratives': return t('weather.cache.narratives')
       case 'warningsElsewhere': return t('weather.cache.warningsElsewhere')
+      case 'radarPictures': return t('weather.radar.cached.title')
       default: return group
     }
   },

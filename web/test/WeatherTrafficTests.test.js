@@ -172,6 +172,60 @@ describe('WeatherTrafficSummary', () => {
   })
 
   /**
+   * Spec §7D, revision 11: "Radar picture · Local · 214 cells with precipitation". The width
+   * rather than the tile's corner — a tile is two degrees, which is 222 km tall everywhere and a
+   * different width at every latitude, so the corner is a number nobody can picture.
+   */
+  it('a radar tile says how wide it is and how much of it is wet', () => {
+    const rows = Array.from({ length: 32 }, (_, row) => (row < 2 ? '1'.repeat(32) : '0'.repeat(32)))
+    const radar = (fields) => MeshWXEncoder.radar({
+      seq: 4,
+      bot: BOT,
+      takenMinutes: 29_832_458,
+      south: 32,
+      west: -98,
+      zoom: 0,
+      product: 1,
+      rows,
+      source: 1,
+      ...fields
+    })
+    assert.deepStrictEqual(
+      summary(radar()), { title: 'Radar picture', detail: 'Local · 64 cells with precipitation' },
+    )
+    assert.deepStrictEqual(
+      summary(radar({ zoom: 1, south: 28, west: -100 })),
+      { title: 'Radar picture', detail: 'Regional · 64 cells with precipitation' },
+    )
+    assert.deepStrictEqual(
+      summary(radar({ zoom: 2, south: 28, west: -100 })),
+      { title: 'Radar picture', detail: 'Wide · 64 cells with precipitation' },
+    )
+    // Zoom 3 is on the wire and is not offered on screen, so it is left unnamed rather than
+    // given a fourth word nothing else in the app says.
+    assert.deepStrictEqual(
+      summary(radar({ zoom: 3, south: 24, west: -104 })),
+      { title: 'Radar picture', detail: '64 cells with precipitation' },
+    )
+    // A clear picture is a row of its own on the channel, and says nothing about rain.
+    assert.deepStrictEqual(
+      summary(radar({ rows: Array.from({ length: 32 }, () => '0'.repeat(32)) })),
+      { title: 'Radar picture', detail: 'Local' },
+    )
+    // One wet cell is one cell, not "1 cells".
+    const oneCell = Array.from({ length: 32 }, (_, row) => (row === 0 ? `2${'0'.repeat(31)}` : '0'.repeat(32)))
+    assert.deepStrictEqual(
+      summary(radar({ rows: oneCell })),
+      { title: 'Radar picture', detail: 'Local · 1 cell with precipitation' },
+    )
+    // The refusal of a radar request comes back under `x`, never `r` (which is `>rain`).
+    assert.deepStrictEqual(
+      summary(MeshWXEncoder.notAvailable({ seq: 5, bot: BOT, request: '>x', reason: 4 })),
+      { title: 'Not available', detail: 'x · asked too recently' },
+    )
+  })
+
+  /**
    * An alert that ended says why, when the bytes name a reason this build knows. A nibble it does
    * not is left to the bytes rather than turned into a claim.
    */

@@ -505,6 +505,124 @@ describe('WeatherService answers', () => {
     )
   })
 
+  // MARK: - Radar (spec §7D, revision 11)
+
+  /**
+   * "A Radar message for that tile from the bot asked settles the request whatever its `taken`."
+   * A bot with nothing newer answers with the picture it already sent, and a phone that went on
+   * waiting for a fresher one would wait out the quarter of an hour until the next is made.
+   */
+  it('a radar tile settles the request for its square, however old the picture', async () => {
+    const h = await makeHarness()
+    const pending = await h.service.send(
+      WeatherRequest.radar({ latitude: 30.27, longitude: -97.74 }), { to: F.bot }
+    )
+    assert.deepStrictEqual(h.transport.sent.map((entry) => entry.text), ['>radar 30.270,-97.740'])
+    assert.equal(pending.request.kind, 'radar')
+
+    // The tile Austin's coordinate falls on, with a picture forty minutes old.
+    await h.service.ingest(F.radar({
+      seq: 1, south: 29, west: -99, zoom: 0, takenMinutes: F.t0Minutes - 40
+    }))
+    assert.deepStrictEqual(
+      F.settlements(h.events).map(([, outcome]) => outcome), [WeatherRequestOutcome.answered]
+    )
+    const state = await h.service.state({ for: F.botID })
+    assert.deepStrictEqual(state.radarTiles.map((one) => one.tile), [{ south: 29, west: -99, zoom: 0 }])
+  })
+
+  /** A tile of another square, or of another width, is not the answer to this question. */
+  it('a tile of another square leaves the request on the air', async () => {
+    const h = await makeHarness()
+    await h.service.send(WeatherRequest.radar({ latitude: 30.27, longitude: -97.74 }), { to: F.bot })
+    await h.service.ingest(F.radar({ seq: 1, south: 32, west: -98, zoom: 0 }))
+    assert.equal(h.service.pendingRequests().length, 1, 'that is Dallas')
+    await h.service.ingest(F.radar({ seq: 2, south: 28, west: -100, zoom: 1 }))
+    assert.equal(h.service.pendingRequests().length, 1, 'that is the wider tile')
+    await h.service.ingest(F.radar({ seq: 3, south: 29, west: -99, zoom: 0 }))
+    assert.equal(h.service.pendingRequests().length, 0)
+  })
+
+  /** "Another bot's Radar for the same tile settles it too (the picture is the same picture)." */
+  it("another bot's picture of the same square settles the request", async () => {
+    const h = await makeHarness()
+    await h.service.send(WeatherRequest.radar({ latitude: 30.27, longitude: -97.74 }), { to: F.bot })
+    await h.service.ingest(F.radar({ seq: 1, south: 29, west: -99, zoom: 0, bot: 0x0102 }))
+    assert.deepStrictEqual(
+      F.settlements(h.events).map(([, outcome]) => outcome), [WeatherRequestOutcome.answered]
+    )
+  })
+
+  /**
+   * Spec §7D: the refusal comes back under `x`, not `r`. With both sharing a letter a phone
+   * waiting for a radar tile and one waiting for rainfall totals would take each other's.
+   */
+  it('a refusal under x settles the radar request and nothing else', async () => {
+    const h = await makeHarness()
+    await h.service.send(WeatherRequest.rainfall({ state: 'TX' }), { to: F.bot })
+    await h.clock.advance(6)
+    await h.service.send(WeatherRequest.radar({ latitude: 30.27, longitude: -97.74 }), { to: F.bot })
+
+    await h.service.ingest(F.notAvailable({ seq: 1, letter: 'x', reason: 2 }))
+    assert.deepStrictEqual(
+      F.settlements(h.events).map(([entry, outcome]) => [entry.request.kind, outcome]),
+      [['radar', WeatherRequestOutcome.notAvailable(2)]]
+    )
+    assert.equal(h.service.pendingRequests().length, 1, '`>rain` is still waiting')
+
+  })
+
+  /**
+   * The three reasons a radar refusal carries reach the caller as they arrived (design §3), so a
+   * screen can tell "no recent picture for this area", "does not receive radar pictures" and
+   * "sent this picture a few minutes ago" apart. The app reads none of them as the others: the
+   * second is about the bot for good, and the other two are about this minute.
+   */
+  it('reasons 0, 2 and 4 come back as themselves', async () => {
+    for (const reason of [0, 2, 4]) {
+      const h = await makeHarness()
+      await h.service.send(WeatherRequest.radar({ latitude: 30.27, longitude: -97.74 }), { to: F.bot })
+      await h.service.ingest(F.notAvailable({ seq: 1, letter: 'x', reason }))
+      assert.deepStrictEqual(
+        F.settlements(h.events).map(([, outcome]) => outcome),
+        [WeatherRequestOutcome.notAvailable(reason)]
+      )
+    }
+  })
+
+  /**
+   * The slot is the *tile*, from any bot: two places on one square are one answer, which is what
+   * the lattice is for. The bot refuses to re-send the same picture for five minutes anyway
+   * (reason 4), so asking again would spend a packet to be told so.
+   */
+  it('a tile received in the last five minutes answers a second place on it', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.radar({
+      seq: 1, south: 29, west: -99, zoom: 0, takenMinutes: F.t0Minutes - 5
+    }))
+    await h.clock.advance(60)
+
+    // Buda is 25 km down the road from Austin and on the same zoom 0 tile, 29N to 31N and
+    // 99W to 97W: one answer for the whole town and its neighbours, which is what the lattice
+    // is for.
+    assert.equal(
+      await h.service.send(WeatherRequest.radar({ latitude: 30.085, longitude: -97.842 }), { to: F.bot }),
+      null
+    )
+    assert.deepStrictEqual(F.settlements(h.events).map(([, outcome]) => outcome), [
+      WeatherRequestOutcome.alreadyReceived({
+        receivedAt: F.t0, contentAsOf: dateFromUnixMinutes(F.t0Minutes - 5)
+      })
+    ])
+    assert.deepStrictEqual(h.transport.sent, [])
+
+    // A wider tile of the same place is another square and another question.
+    assert.notEqual(
+      await h.service.send(WeatherRequest.radar({ latitude: 30.27, longitude: -97.74, zoom: 2 }), { to: F.bot }),
+      null
+    )
+  })
+
   // MARK: - Backlog
 
   it('a backlog message updates state but answers nothing and is not hearing the bot', async () => {

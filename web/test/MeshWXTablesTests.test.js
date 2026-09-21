@@ -9,7 +9,7 @@
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MeshWXTables, MeshWXGeo, MeshWXSeverity } from '../src/meshwx/index.js';
+import { MeshWXTables, MeshWXGeo, MeshWXSeverity, MeshWXWire } from '../src/meshwx/index.js';
 import { nodeBundleLoader } from '../src/meshwx/nodeLoader.js';
 import { sharedTables, objectLoader } from './helpers/meshwx-vectors.js';
 
@@ -18,7 +18,7 @@ describe('MeshWX tables', () => {
   before(async () => { tables = await sharedTables(); });
 
   test('bundleLoads', () => {
-    assert.equal(tables.protocolVersion, 14, 'protocol.json version is 14 for v5.0 revision 10');
+    assert.equal(tables.protocolVersion, 15, 'protocol.json version is 15 for v5.0 revision 11');
     assert.equal(tables.offices.length, 127, '125 WFOs, then NHC and WNS (spec rev 3 §9)');
     assert.equal(tables.stations.length, 2237);
     assert.equal(tables.states.length, 78);
@@ -188,10 +188,37 @@ describe('MeshWX tables', () => {
     assert.equal(areas[0].lat, null);
   });
 
+  /**
+   * Spec §7D, revision 11: the bundle is what says which mosaic a `product` index names and
+   * where the three levels start, because a bot one revision ahead may change either.
+   */
+  test('theRadarBlockNamesTheProductsAndTheLevels', () => {
+    assert.equal(tables.radar.products.length, 15);
+    assert.equal(tables.radar.products[0], 'RADREFUS');
+    assert.equal(tables.radarProduct({ at: 1 }), 'RADSTHPL');
+    assert.equal(tables.radarProductName({ at: 1 }), 'Southern Plains');
+    assert.equal(tables.radarProductName({ at: 13 }), 'Puerto Rico');
+    // Guam is in the list and is not calibrated, so no tile is ever cut from it; the index is
+    // still a name this phone can print if a bot one day sends one.
+    assert.equal(tables.radarProductName({ at: 14 }), 'Guam');
+    // A bundle older than the bot loses the *name*, never the picture.
+    assert.equal(tables.radarProduct({ at: 63 }), null);
+    assert.equal(tables.radarProductName({ at: 63 }), null);
+    assert.deepStrictEqual([...tables.radar.levelsDBZ], [20, 35, 50]);
+    assert.equal(tables.radar.maxAgeMinutes, 60);
+    assert.equal(tables.radar.cooldownSeconds, 300);
+    assert.equal(tables.radar.requestLetter, MeshWXWire.radarRequestLetter);
+  });
+
   test('missingResourcesLoadEmptyRatherThanCrashing', () => {
     // A resource that did not copy must not take the app down on launch.
     const empty = new MeshWXTables({});
     assert.equal(empty.protocolVersion, 0);
+    // A bundle that says nothing about radar says nothing, rather than claiming there are no
+    // products: `radarProductName` answers null and the screen leaves the picture unnamed.
+    assert.equal(empty.radar.products.length, 0);
+    assert.equal(empty.radarProductName({ at: 1 }), null);
+    assert.equal(empty.radar.maxAgeMinutes, null);
     assert.equal(empty.offices.length, 0);
     assert.equal(empty.officeCode(35), null);
     assert.equal(empty.officeLabel(35), 'unknown (#35)');

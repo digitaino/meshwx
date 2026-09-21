@@ -20,6 +20,7 @@ export { WeatherAreaPickerScreen } from './WeatherAreaPickerView.js'
 export { WeatherTrafficScreen, WeatherTrafficDetailScreen } from './WeatherTrafficView.js'
 export { WeatherRequestsScreen, RequestRow } from './WeatherRequestsView.js'
 export { WeatherCachedScreen } from './WeatherCachedView.js'
+export { WeatherRadarScreen, radarDrawing, radarPrint, RADAR_WIDTHS } from './WeatherRadarView.js'
 export { WeatherAlertNotificationsScreen } from './WeatherAlertNotificationsView.js'
 export { RadioPill } from './RadioPill.js'
 

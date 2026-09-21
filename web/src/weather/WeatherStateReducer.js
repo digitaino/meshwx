@@ -13,7 +13,7 @@
 // `message.type`, `message.flags`, `message.name` for the payload kind, `message.source` for the
 // header's data source, and the payload's own fields flat on the same object.
 
-import { MeshWXWire } from '../meshwx/index.js'
+import { MeshWXRadar, MeshWXRadarTile, MeshWXWire } from '../meshwx/index.js'
 import {
   UNASKED_FORECAST_KEY,
   UNSTATED_SOURCE,
@@ -24,6 +24,7 @@ import {
   WeatherStoredDigest,
   WeatherStoredForecast,
   WeatherStoredObservation,
+  WeatherStoredRadarTile,
   WeatherStoredWarning,
   WeatherTextAssembly,
   dateFromUnixMinutes,
@@ -99,6 +100,13 @@ export const WeatherStateChange = Object.freeze({
    * it changed nothing.
    */
   areaSweepIgnoredOlder({ builtMinutes }) { return { kind: 'areaSweepIgnoredOlder', builtMinutes } },
+  /** A radar tile landed (spec §7D). `value` is the lattice square it is of. */
+  radarStored(tile, { takenMinutes }) { return { kind: 'radarStored', value: tile, takenMinutes } },
+  /**
+   * A picture of a square this phone already holds a newer one of — or the coarse half of the
+   * same picture, behind the fine one. Either way the tile on screen stands.
+   */
+  radarIgnoredOlder({ takenMinutes }) { return { kind: 'radarIgnoredOlder', takenMinutes } },
   notAvailable(notAvailable) { return { kind: 'notAvailable', value: notAvailable } },
   unknownType({ rawType }) { return { kind: 'unknownType', rawType } }
 })
@@ -172,7 +180,8 @@ export const WeatherStateReducer = {
       forecasts: { ...to.forecasts },
       unbundledForecasts: { ...(to.unbundledForecasts ?? {}) },
       texts: { ...to.texts },
-      areaSweeps: [...(to.areaSweeps ?? [])]
+      areaSweeps: [...(to.areaSweeps ?? [])],
+      radarTiles: [...(to.radarTiles ?? [])]
     }
 
     const changes = []
@@ -249,6 +258,9 @@ export const WeatherStateReducer = {
         break
       case 'area_sweep':
         changes.push(storeAreaSweep(message, { state, receivedAt, source }))
+        break
+      case 'radar':
+        changes.push(storeRadar(message, { state, receivedAt, source }))
         break
       case 'not_available':
         changes.push(WeatherStateChange.notAvailable(message))
@@ -454,6 +466,47 @@ export const WeatherStateReducer = {
       if (!isSaidAlready) kept.push(sweep)
     }
     return kept.slice(0, WeatherStateReducer.maxAreaSweeps)
+  },
+
+  // MARK: - Radar tiles
+  //
+  // Revision 11, §7D. One picture per square, and the squares are cheap to hold and expensive to
+  // fetch — one packet each, request only — so the rules here drop a tile only when it is either
+  // superseded or too old to draw.
+
+  /** Tiles one bot may hold at once, oldest `taken` dropped (design §2). */
+  maxRadarTiles: 12,
+  /**
+   * How far behind the bot's clock a picture may be and still be kept. Minutes.
+   *
+   * Well past the two hours `WeatherRadarPick` will draw one within, on purpose: a tile past
+   * that is not shown, but it is still the last radar this phone has of that square, and the
+   * Cached screen says so.
+   */
+  radarRetentionMinutes: 3 * 60,
+
+  /**
+   * The tiles worth holding, newest `taken` first (design §2).
+   *
+   * "The bot clock" is read off the pictures themselves — the newest `taken` held — because a
+   * Radar message carries no other clock, and the phone's own is the wrong one to judge a
+   * backlog by: a tile drained from the radio's queue is as old as its picture says it is,
+   * whenever the phone heard it. A tile more than `radarRetentionMinutes` behind that goes, and
+   * then the list is capped.
+   */
+  retainRadarTiles(tiles) {
+    const ordered = [...tiles].sort((lhs, rhs) => {
+      const left = lhs.radar.taken_min
+      const right = rhs.radar.taken_min
+      if (left !== right) return right - left
+      if (lhs.receivedAt !== rhs.receivedAt) return rhs.receivedAt - lhs.receivedAt
+      return MeshWXRadarTile.key(lhs.tile) < MeshWXRadarTile.key(rhs.tile) ? -1 : 1
+    })
+    if (ordered.length === 0) return ordered
+    const newest = ordered[0].radar.taken_min
+    return ordered
+      .filter((stored) => newest - stored.radar.taken_min <= WeatherStateReducer.radarRetentionMinutes)
+      .slice(0, WeatherStateReducer.maxRadarTiles)
   },
 
   // MARK: - Bot-chosen forecasts
@@ -908,6 +961,48 @@ function storeAreaSweep(sweep, { state, receivedAt, source }) {
   return WeatherStateChange.areaSweepStored({
     group: sweep.group, index: sweep.idx, isComplete: WeatherAreaSweepAssembly.isComplete(assembly)
   })
+}
+
+// MARK: - Radar
+
+/**
+ * Spec §7D: one picture per lattice square, the newest kept.
+ *
+ * Two rules, and the second is the reason the first is not just "newest wins". A picture of a
+ * square replaces the one held when its `taken` is the same or newer — the same because a bot
+ * that re-cut the same picture sent the same picture, and there is nothing to choose between
+ * them. But a **coarse** tile never replaces a fine one of the same `taken`: the coarse tile is
+ * the same picture at half the detail, sent because somebody's request could not fit the finer
+ * one in a packet, and taking it would throw away detail this phone already has.
+ *
+ * A tile arriving for a square nothing is held for is simply stored, however old it is;
+ * `retainRadarTiles` is what decides whether it survives, and `WeatherRadarPick` whether it is
+ * drawn.
+ */
+function storeRadar(radar, { state, receivedAt, source }) {
+  const tile = MeshWXRadar.tile(radar)
+  const key = MeshWXRadarTile.key(tile)
+  const held = state.radarTiles.find((one) => MeshWXRadarTile.key(one.tile) === key) ?? null
+  if (held != null) {
+    const isOlder = radar.taken_min < held.radar.taken_min
+    const isCoarserOfTheSame = radar.taken_min === held.radar.taken_min
+      && radar.coarse === true && held.radar.coarse !== true
+    if (isOlder || isCoarserOfTheSame) {
+      return WeatherStateChange.radarIgnoredOlder({ takenMinutes: radar.taken_min })
+    }
+  }
+
+  const stored = WeatherStoredRadarTile.make({ tile, radar, receivedAt, source })
+  const merged = held == null
+    ? [stored, ...state.radarTiles]
+    : state.radarTiles.map((one) => (one === held ? stored : one))
+  state.radarTiles = WeatherStateReducer.retainRadarTiles(merged)
+  if (!state.radarTiles.includes(stored)) {
+    // Older than everything else held by more than the retention window: a backlog drained at
+    // connect, a picture of a morning that is over.
+    return WeatherStateChange.radarIgnoredOlder({ takenMinutes: radar.taken_min })
+  }
+  return WeatherStateChange.radarStored(tile, { takenMinutes: radar.taken_min })
 }
 
 /** JSON with every object's keys in sorted order, so two equal values render identically. */

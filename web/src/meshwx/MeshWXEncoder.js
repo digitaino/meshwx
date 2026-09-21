@@ -16,6 +16,7 @@
 
 import { MeshWXWire, MeshWXMessageType } from './MeshWXWire.js';
 import { roundHalfToEven, MeshWXCompass } from './MeshWXMessage.js';
+import { MeshWXRadarBounds } from './MeshWXRadar.js';
 
 /**
  * Why a value could not be put on the wire.
@@ -26,7 +27,8 @@ import { roundHalfToEven, MeshWXCompass } from './MeshWXMessage.js';
  * screen.
  *
  * `kind` is one of `outOfRange`, `oversize`, `badCount`, `partialObservationAges`,
- * `polygonDeltaTooLarge`, `textTooLong`, `codePointTooLarge`, `emptyRequest`.
+ * `polygonDeltaTooLarge`, `textTooLong`, `codePointTooLarge`, `emptyRequest`,
+ * `radarCellOutsideBounds`, `radarBoundsOutsideGrid`.
  */
 export class MeshWXEncodeError extends Error {
   constructor(kind, details = {}, message = kind) {
@@ -82,6 +84,26 @@ export class MeshWXEncodeError extends Error {
     );
   }
 
+  /**
+   * A Radar tile carried an echo in a cell its own `bounds` say the picture never covered
+   * (spec §7D). Outside the bounds a cell is *unknown* and is encoded as level 0, so a wet cell
+   * out there is a tile that contradicts itself and there is no way to put it on the wire.
+   */
+  static radarCellOutsideBounds({ row, col }) {
+    return new MeshWXEncodeError(
+      'radarCellOutsideBounds', { row, col },
+      `radar cell ${row},${col} is outside the bounds and is not dry`,
+    );
+  }
+
+  /** A Radar tile's `bounds` named rows or columns its own grid does not have (spec §7D). */
+  static radarBoundsOutsideGrid({ row0, row1, col0, col1, size }) {
+    return new MeshWXEncodeError(
+      'radarBoundsOutsideGrid', { row0, row1, col0, col1, size },
+      `radar bounds ${row0},${row1},${col0},${col1} are not inside a ${size} x ${size} grid`,
+    );
+  }
+
   /** Text needed more than `MeshWXWire.maxTextChunks` chunks. */
   static textTooLong({ chunks }) {
     return new MeshWXEncodeError(
@@ -121,6 +143,10 @@ class Writer {
   u16(value) {
     this.bytes.push(value & 0xff, (value >>> 8) & 0xff);
     return this;
+  }
+
+  i8(value) {
+    return this.u8(value < 0 ? value + 0x100 : value);
   }
 
   i16(value) {
@@ -803,6 +829,141 @@ export function areaSweep({
   return writer.done('area sweep');
 }
 
+// MARK: - Radar (type 11, spec §7D)
+
+/**
+ * The cells as a quadtree, most significant bit first, padded with zero bits to the end of the
+ * last byte.
+ *
+ * Greedy and uniform-first: a square all of one level costs one bit and two, whatever its size,
+ * so the dry half of a picture is nearly free and the squall line is where the bytes go. The
+ * order of the four children — north-west, north-east, south-west, south-east — is the wire's,
+ * and reversing any two of them would still round trip through this file alone, which is why
+ * the vectors are the test and not a round trip.
+ */
+function packRadarCells(rows) {
+  const bits = [];
+  const put = (value, width) => {
+    for (let shift = width - 1; shift >= 0; shift -= 1) bits.push((value >> shift) & 1);
+  };
+
+  const node = (row, col, size) => {
+    const first = rows[row][col];
+    if (size === 1) {
+      put(first, 2);
+      return;
+    }
+    let isUniform = true;
+    for (let y = row; y < row + size && isUniform; y += 1) {
+      for (let x = col; x < col + size; x += 1) {
+        if (rows[y][x] !== first) { isUniform = false; break; }
+      }
+    }
+    if (isUniform) {
+      put(0, 1);
+      put(first, 2);
+      return;
+    }
+    put(1, 1);
+    const half = size / 2;
+    node(row, col, half);
+    node(row, col + half, half);
+    node(row + half, col, half);
+    node(row + half, col + half, half);
+  };
+
+  node(0, 0, rows.length);
+  const out = new Uint8Array(Math.ceil(bits.length / 8));
+  for (let index = 0; index < bits.length; index += 1) {
+    if (bits[index]) out[index >> 3] |= 1 << (7 - (index & 7));
+  }
+  return out;
+}
+
+/**
+ * One tile of a radar picture (spec §7D, revision 11).
+ *
+ * `rows` is the grid, north row first, west column first, each cell 0-3: `MeshWXWire.radarGrid`
+ * rows of that many for a fine tile, `radarCoarseGrid` for a coarse one, and **which it is is
+ * what sets the coarse flag** — there is no separate argument, because a 16 × 16 grid sent
+ * without the flag would be read as the north-west quarter of the tile.
+ *
+ * `bounds` is `{ row0, row1, col0, col1 }` or the four-element wire array, inclusive, in this
+ * grid's own numbering: the part of the tile the picture covers. Cells outside it must be level
+ * 0, and a level outside them is refused rather than dropped, because on the wire that cell
+ * means *unknown* and an echo there is a contradiction the receiver cannot see.
+ *
+ * Throws `oversize` when a fine tile does not fit the packet. The bot's answer to that is to
+ * coarsen and encode again; nothing in the app ever encodes one at all, but the vectors are a
+ * round trip and a test needs a squall line without waiting for one.
+ */
+export function radar({
+  seq,
+  bot,
+  takenMinutes,
+  south,
+  west,
+  zoom,
+  product,
+  rows,
+  bounds = null,
+  source = 0,
+}) {
+  const grid = rows.map((row) => (typeof row === 'string'
+    ? [...row].map((digit) => digit.charCodeAt(0) - 48)
+    : [...row]));
+  const size = grid.length;
+  if (size !== MeshWXWire.radarGrid && size !== MeshWXWire.radarCoarseGrid) {
+    throw MeshWXEncodeError.badCount({
+      what: 'radar rows', count: size, allowed: [MeshWXWire.radarCoarseGrid, MeshWXWire.radarGrid],
+    });
+  }
+  for (const row of grid) {
+    if (row.length !== size) {
+      throw MeshWXEncodeError.badCount({ what: 'radar row', count: row.length, allowed: [size, size] });
+    }
+    for (const level of row) {
+      if (!(level >= 0 && level <= 3)) {
+        throw MeshWXEncodeError.outOfRange({ field: 'radar level', value: level });
+      }
+    }
+  }
+  requireRange(zoom, 0, MeshWXWire.maxRadarZoom, 'zoom');
+  requireRange(product, 0, MeshWXWire.maxRadarProduct, 'product');
+  requireRange(south, -90, 90, 'south');
+  requireRange(west, -180, 179, 'west');
+
+  let flags = size === MeshWXWire.radarCoarseGrid ? MeshWXWire.radarCoarseBit : 0;
+  let box = null;
+  if (bounds != null) {
+    box = Array.isArray(bounds)
+      ? { row0: bounds[0], row1: bounds[1], col0: bounds[2], col1: bounds[3] }
+      : bounds;
+    if (!MeshWXRadarBounds.isValid(box, { size })) {
+      throw MeshWXEncodeError.radarBoundsOutsideGrid({ ...box, size });
+    }
+    for (let row = 0; row < size; row += 1) {
+      for (let col = 0; col < size; col += 1) {
+        if (grid[row][col] !== 0 && !MeshWXRadarBounds.contains(box, { row, col })) {
+          throw MeshWXEncodeError.radarCellOutsideBounds({ row, col });
+        }
+      }
+    }
+    flags |= MeshWXWire.radarPartialBit;
+  }
+  flags |= sourceBits(source);
+
+  const writer = new Writer();
+  writeHeader(writer, { seq, bot, rawType: MeshWXMessageType.radar, flags });
+  writer.u32(requireRange(takenMinutes, 0, 0xffff_ffff, 'taken_min'));
+  writer.i8(south);
+  writer.i16(west);
+  writer.u8((product << MeshWXWire.radarProductShift) | zoom);
+  if (box != null) for (const value of MeshWXRadarBounds.array(box)) writer.u8(value);
+  writer.push(packRadarCells(grid));
+  return writer.done('radar');
+}
+
 // MARK: - Round trip
 
 /**
@@ -916,6 +1077,22 @@ export function encode(message) {
         scope: message.scope ?? [],
         source,
       });
+    case MeshWXMessageType.radar:
+      // The coarse and partial flags are not passed: both are read back off the *body* — the
+      // grid's own size, and whether there are bounds — so a re-encode cannot disagree with the
+      // cells it is encoding.
+      return radar({
+        seq,
+        bot,
+        takenMinutes: message.taken_min,
+        south: message.south,
+        west: message.west,
+        zoom: message.zoom,
+        product: message.product,
+        rows: message.rows,
+        bounds: message.bounds,
+        source,
+      });
     default:
       throw MeshWXEncodeError.outOfRange({ field: 'type', value: message.type });
   }
@@ -934,5 +1111,6 @@ export const MeshWXEncoder = Object.freeze({
   notAvailable,
   request,
   areaSweep,
+  radar,
   encode,
 });

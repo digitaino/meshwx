@@ -64,10 +64,25 @@ alone from then on, so push new content into it from `render()` yourself
 
 Offline, canvas, no tiles: state outlines from `assets/basemap.json`, city labels from the
 bundle's places, and whatever shapes you give it. `setBasemap`, `setPlaces`, `setOutlines`,
-`setShapes([{ id, rings, tint, fill, stroke, dashed, data }])`, `setMarkers`, `setSelected(id)`,
-`fit('shapes' | 'conus' | box, { padding, maxZoom })`, `onTap = ({ shapes, coordinate }) => …`.
-Rings are arrays of `{ latitude, longitude }` or `[lon, lat]`. `app.basemap` holds the parsed
-basemap once it has loaded.
+`setShapes([{ id, rings, tint, fill, stroke, dashed, data }])`, `setCells`, `setMarkers`,
+`setSelected(id)`, `fit('shapes' | 'conus' | box, { padding, maxZoom })`,
+`onTap = ({ shapes, coordinate }) => …`. Rings are arrays of `{ latitude, longitude }` or
+`[lon, lat]`. `app.basemap` holds the parsed basemap once it has loaded.
+
+A shape with `fill: false` is an **outline only** — how the radar screen draws the alerts it is
+holding, so the cells under them can still be read. `fit` also takes an explicit box,
+`{ minLatitude, maxLatitude, minLongitude, maxLongitude }`; `cameraBox({ south, west, north, east })`
+builds one from the two corners a radar tile names.
+
+**Radar cells.** `setCells(rectangles, { unknown })` takes `[{ level, south, west, north, east }]`
+in degrees — `WeatherRadarCells.rectangles` — and projects each through the map's own Mercator, so
+the echoes land on the state lines rather than beside them. They are drawn over the basemap's fill
+and under the outlines, the shapes, the labels and the markers; filled at 55% with no stroke, one
+path per level so two touching rectangles do not print a seam. `unknown` (the cells a partial tile
+does not reach) is hatched in `--radar-unknown`, never anything that reads as dry ground. The
+three level colours are `--radar-light`, `--radar-moderate`, `--radar-heavy`, which are not, and
+must never be, the `--tint-*` alert colours. `worldRectangle({ south, west, north, east })` is the
+projection on its own, exported for tests that have no canvas.
 
 ## Layout
 
