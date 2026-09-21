@@ -30,8 +30,9 @@ const CLIENT = ['index.html', 'manifest.webmanifest', 'sw.js', 'src', 'styles', 
 /** The bundle the client reads through `data/`, named by the codec so the two cannot drift. */
 const TABLES = MeshWXTables.bundleFiles.map((name) => `${name}.json`)
 const OUTLINES = ['zones.geojson', 'counties.geojson']
-/** Copied in beside them: how to serve the folder, and what it is. */
-const EXTRAS = ['serve.mjs', 'README.md']
+/** Copied in beside them: how to serve the folder, how to start it without a terminal, and what
+ *  it is. `cp` keeps the mode, so `start-macos.command` stays executable and double-clickable. */
+const EXTRAS = ['serve.mjs', 'start-macos.command', 'start-windows.bat', 'README.md']
 
 export async function build({ out, outlines = true, log = () => {} } = {}) {
   const target = resolve(out)

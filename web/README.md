@@ -1,137 +1,73 @@
-# MeshWX web
+# MeshWX
 
-The MeshWX weather client for a computer, in any Chromium browser (Chrome, Edge, Brave,
-Vivaldi): severe weather alerts, current conditions and the forecast from a `WX-` weather bot on the
-`#meshwx` channel, received through a MeshCore companion radio over **Web Bluetooth** or
-**Web Serial**. Nothing is fetched from the internet. After the first visit the page works
-offline.
+Severe weather alerts, current conditions, the forecast and radar on your computer, from a weather
+radio on your MeshCore mesh. It runs in your browser, and it never touches the internet: the maps,
+the place names, the ZIP codes and the words in eleven languages are all in the download.
 
-It is a port, layer for layer, of the weather tool in the iOS app, and follows the same
-documents: the wire spec (`../docs/MeshWX_v5_Spec.md`), the test vectors
-(`../docs/meshwx_v5_vectors.json`) and the screen spec in the app repository
-(`docs/MESHWX_UI.md`). The porting rules are in `docs/PORTING.md`.
+## What you need
 
-## Run it
-
-```
-node tools/dev-server.mjs          # http://localhost:8137
-node --test test/                  # the whole suite
-```
-
-No build step, no dependencies, Node 22 or newer. `http://localhost` is a secure context, which
-Web Bluetooth and Web Serial require; anywhere else it has to be served over https.
-
-The dev server maps `/data/` to `../meshcore_weather/client_data/`, the same bundle the bot
-reads, and proxies `/api/bridge/` to the bot's debug bridge when a token file is present
-(`web/.bridge-token`, ignored by git, or `MESHWX_BRIDGE_TOKEN_FILE`). The token is added
-server-side and never reaches the page. It also takes the page's own account of its radio link
-at `/__devlog` and appends it to `.devlog.jsonl`, which is how a browser tab nobody else can see
-is read while hardware is brought up; the page asks whether that path is there before it posts
-anything, so the same files served by anything else stay quiet.
-
-## Give it to somebody else
-
-They need none of this repository, and nothing the bot needs:
-
-```
-npm run package                    # ../dist/meshwx-web/ and ../dist/meshwx-web.zip
-node tools/package.mjs --no-outlines --zip
-```
-
-`tools/package.mjs` copies this folder and the bundle files it reads into one plain static site:
-`index.html`, `src/`, `styles/`, `strings/`, `assets/`, `demo/`, the tables under `data/`, a
-README for whoever receives it (`tools/package/README.md`, stamped with the date, the commit and
-the bundle version) and a `serve.mjs` that hands the folder to a browser and does nothing else. The test suite has the folder's file list (`test/Package.test.js`): the way this breaks is
-quiet, a client that boots and then cannot find one table.
-
-Nothing is bundled, minified or transpiled. What ships is the source in this repository, file for
-file, which is also what makes the download readable by the person who runs it.
-
-| | Zipped | Unfolded |
-|---|---|---|
-| Everything | 5.7 MB | 20.5 MB |
-| `--no-outlines` | 1.9 MB | 5.8 MB |
-
-The outlines are `zones.geojson` and `counties.geojson`, 15 MB of zone and county polygons for the
-map. A missing bundle file is an empty table to the client, so without them the maps draw the
-basemap and the weather and no shapes.
-
-At the other end: unzip, `node serve.mjs`, open `http://localhost:8137`. Anything that serves a
-folder does as well (`python3 -m http.server 8137`).
-
-The internet is in none of this. There is no absolute URL in the client, every fetch is
-same-origin and relative, and the server listens on 127.0.0.1, so a machine that has never been
-online runs it. The one-time file copy needs no network either: a stick, a card, AirDrop, the LAN,
-or the Pi handing the zip out over plain http, since a download is not what the secure-context
-rule is about. The page that asks for Bluetooth is the one that has to be secure, and it is at
-`localhost`.
-
-This is the client for a computer. A phone is the iOS app's job, and the app needs none of this:
-no folder, no server, no address. Chrome on Android can run these files too, since it has Web
-Bluetooth, but only from an `https://` address, which off-grid means a certificate the phone
-already trusts on the local network. Worth knowing if an Android ever has to be served; not a
-thing anybody unzips onto a phone.
-
-## Three ways to get weather into it
-
-| Link | What it is |
+| | |
 |---|---|
-| Bluetooth, USB | A MeshCore companion radio, firmware 1.15 or newer. A radio has one companion at a time: disconnect it from the phone first |
-| Development bridge | The bot's own feed of what it transmits, through the dev server. Requests go out on the real air |
-| Recorded data | `demo/datagrams.json`, what WX-AUS sent one morning, replayed with its times moved to now |
+| A computer | macOS, Windows, Linux or Chrome OS |
+| Chrome, Edge, Brave or Vivaldi | Safari and Firefox cannot talk to a radio |
+| A MeshCore radio | Firmware 1.15 or newer, on USB or paired over Bluetooth, and not connected to your phone's MeshCore app at the same time |
+| A weather bot in range | Any node named `WX-` something on the `#meshwx` channel |
+| [Node](https://nodejs.org) | One download, the green LTS button. It is what hands the files to your browser |
 
-## Radio settings
+## Start it
 
-A MeshCore radio hears only the radios that are on **exactly** the same frequency, bandwidth,
-spreading factor and coding rate. A factory-fresh one is on the firmware's own default, not on any
-mesh, and from a browser it looks perfect: it connects, it answers, it names itself, and it hears
-nobody. The radio settings screen is where that is set right — the name, the four radio values from
-a preset picker or by hand, transmit power, position, whether the radio adds the contacts it hears,
-an advert, and a restart.
+1. Download **meshwx-web.zip** from the
+   [latest release](https://github.com/digitaino/meshwx/releases/latest), and unzip it.
+2. Double-click **start-macos.command**, or **start-windows.bat** on Windows.
+   The first time, macOS will say it is from an unidentified developer: right-click the file,
+   choose **Open**, then **Open** again. It asks once and never again.
+3. Your browser opens at `http://localhost:8137`. Press **No radio** at the top, then **Connect
+   over Bluetooth** or **Connect over USB**, and pick your radio.
 
-It is pushed from the radio pill (connect sheet → **Radio settings**) and from `?open=radiosettings`,
-and only for a real radio: Bluetooth, USB or `?link=simulated`. Every card owns one write and
-nothing goes out until its own button is tapped; every write re-reads the radio's self info, so
-what the fields show afterwards is what the radio says and not what was typed. The radio card also
-carries the tally of adverts and messages heard since this page connected — "Heard since
-connecting: Nothing" is the cue that the four values are worth checking.
+Add a place, press **Update**, and the weather comes in over the air. Closing the terminal window
+that opened stops MeshWX. Nothing is installed and nothing keeps running.
 
-The preset table is the app's `RadioPresets.swift`, 25 entries grouped by region
-(`src/radio/RadioPresets.js`); the owner's Austin mesh and the weather bot are on `us-ca`,
-910.525 MHz, 62.5 kHz, SF 7, CR 5. Matching a radio to a preset is exact, on the integers the
-firmware persists, where the Swift allows a tolerance: a radio 75 kHz off `us-ca` is deaf to it, and
-calling it "USA/Canada" would hide the failure the screen exists to show.
+On Linux, or if you would rather type it: `node serve.mjs` in the folder, or
+`python3 -m http.server 8137`.
 
-## Radar
+## Nothing is arriving
 
-A place page's Radar card (revision 11, `../../DigitainoMesh/docs/MESHWX_REV11.md` §3) draws one
-radar tile: a 2° square of the earth as a 32 × 32 grid of cells, each the strongest echo in it,
-cut from the Weather Service mosaics the bot's dish already receives. One tile is one packet, it
-is only ever sent when somebody asks, and the tiles sit on a fixed lattice so a picture the radio
-next door asked for is this place's picture too.
+A radio hears only the radios that are on **exactly** the same frequency, bandwidth, spreading
+factor and coding rate, and a radio out of the box is on the firmware's own default rather than on
+your mesh. It still connects, still answers, still names itself, so nothing looks wrong.
 
-Tapping the card opens the radar screen: the same cells on an interactive map, with this device's
-alerts over them as outlines so neither hides the other, a Light / Moderate / Heavy legend, and a
-Local / Regional / Wide control that asks for the same place at zoom 0, 1 or 2. Cells a partial
-picture does not reach are hatched and never drawn as dry ground.
+Press your radio's name at the top, then **Radio settings**. The Radio card shows **Heard since
+connecting**. While that says Nothing, pick your region under **Preset**, press **Apply radio
+settings**, and watch it start counting.
 
-`?link=demo` replays three real Austin tiles from the squall line of 20 September 2026 — the
-echoes sit in the north-west of the Local tile, which is where Dallas is — and `?open=radar`
-opens the radar screen for the page on arrival (the other values are in `openDeepLink`,
-`src/app/main.js`).
+## Have a look without a radio
 
-## Layout
+`http://localhost:8137/?link=demo` replays a stormy Austin morning that a bot really sent: the
+alerts, the conditions, the forecast, the map and three radar tiles. No radio is involved and
+nothing is transmitted.
 
-```
-src/meshwx    wire codec, bundle tables, place names, ZIPs, outlines     (pure)
-src/weather   per-bot state, reducer, requests and retries, the service  (pure)
-src/screen    what a screen says: alerts, conditions, coverage, plans    (pure)
-src/radio     MeshCore companion protocol, Web Bluetooth and Web Serial
-src/link      the service's transports: radio, bridge, replay
-src/app       the tool's model, copy and formatting, the connection, boot
-src/ui        screens; src/ui/kit is the whole UI framework
-strings/      the iOS app's Weather.strings in 11 languages (tools/strings-to-json.mjs)
-assets/       basemap.json, state outlines for the offline map (tools/build-basemap.mjs)
-```
+## Questions
 
-The pure layers run under Node and carry the ported test suites.
+**Does it need the internet?** No, at no point. Everything it draws with is in the folder. A
+laptop that has never been online runs all of it, which is the entire reason this exists.
+
+**Then why does it start a server?** Because a browser will not let a page opened straight from a
+folder load its own code or reach a radio. `serve.mjs` hands the folder to your browser at
+`localhost` and does nothing else: no internet, nothing listening to the network, nothing left
+behind when you close the window.
+
+**Can I use it on my phone?** Not this. On an iPhone, MeshWX is an app, which needs none of this.
+
+**Is anything sent anywhere?** No. There is no account, no analytics, no telemetry and no
+connection to anything but your own radio. The places you add and the weather you receive stay in
+your browser.
+
+**Where does the weather come from?** A weather bot on your mesh, which receives it from the
+Weather Service over a satellite dish. No internet there either. That side is
+[meshcore-weather](../README.md).
+
+## For developers
+
+Running it from a checkout, the packaging tool, the screens and the porting rules are in
+[docs/DEVELOPING.md](docs/DEVELOPING.md), [docs/PORTING.md](docs/PORTING.md) and
+[docs/UI_KIT.md](docs/UI_KIT.md).

@@ -1,29 +1,38 @@
 # MeshWX
 
 Severe weather alerts, current conditions, the forecast and radar on your computer, from a weather
-radio on your MeshCore mesh. There is no internet in this: the weather arrives over LoRa from a `WX-` bot on the
-`#meshwx` channel, through a MeshCore radio connected to this computer by Bluetooth or USB. Every
-name, table and map outline the weather is drawn with is already in this folder.
+radio on your MeshCore mesh. There is no internet in this: the weather arrives over LoRa from a
+`WX-` bot on the `#meshwx` channel, through a MeshCore radio connected to this computer by
+Bluetooth or USB. Every name, table and map outline it is drawn with is already in this folder.
 
 ## What you need
 
 - **A computer, and a Chromium browser on it.** Chrome, Edge, Brave or Vivaldi on macOS, Windows,
-  Linux or Chrome OS. Bluetooth and USB devices are not available to Safari or Firefox. On an
-  iPhone, the MeshWX app is the same weather and needs none of this.
+  Linux or Chrome OS. Safari and Firefox cannot talk to a radio. On an iPhone, the MeshWX app is
+  the same weather and needs none of this.
 - **A MeshCore companion radio**, firmware 1.15 or newer, on Bluetooth or USB. A radio talks to one
   companion at a time, so disconnect it from your phone's MeshCore app first.
 - **A weather bot within reach** on the `#meshwx` channel. Its name starts with `WX-`.
-- **Node 22 or newer, or Python 3**, to hand this folder to the browser. One command, below.
+- **[Node](https://nodejs.org)**, the green LTS button. It is what hands these files to your
+  browser. Nothing else is installed.
 
-You can look around without any of that: see "Try it with recorded weather".
+You can look around without a radio: see "Try it with recorded weather".
 
-## Run it
+## Start it
+
+Double-click **start-macos.command**, or **start-windows.bat** on Windows.
+
+The first time, macOS will say it is from an unidentified developer: right-click the file, choose
+**Open**, then **Open** again. It asks once.
+
+A terminal window opens and your browser goes to **http://localhost:8137**. Closing that window
+stops MeshWX. Nothing keeps running and nothing was installed.
+
+If you would rather type it, or you are on Linux:
 
 ```
 node serve.mjs
 ```
-
-Then open **http://localhost:8137** and press **No radio** at the top of the page.
 
 No Node? Anything that serves a folder will do:
 
@@ -31,9 +40,11 @@ No Node? Anything that serves a folder will do:
 python3 -m http.server 8137
 ```
 
+Then open **http://localhost:8137** yourself.
+
 The address has to be `localhost`. A browser hands Bluetooth and USB only to a page it considers
-secure, which means `https://` or `http://localhost`; the same files opened from the Finder
-(`file://`) or over your LAN address will load and then find no radio.
+secure, which means `https://` or `http://localhost`; these same files opened from the Finder
+(`file://`) will not load at all.
 
 ## The first connect
 
@@ -59,8 +70,7 @@ involved, and nothing is transmitted.
 ## Offline, and on the home screen
 
 After the first visit the browser keeps the whole client, so it works with no network at all. In
-Chrome's menu, **Cast, save and share → Install page as app** (or **Add to Home screen** on
-Android) makes it a window of its own.
+Chrome's menu, **Cast, save and share → Install page as app** makes it a window of its own.
 
 ## There is no internet in any of this
 
@@ -87,6 +97,7 @@ data/                                 the tables the weather is drawn with: plac
 assets/                               the offline basemap and the icons
 demo/                                 the recorded morning
 serve.mjs                             hands this folder to the browser, and nothing else
+start-macos.command, start-windows.bat   double-click either one; they run serve.mjs
 ```
 
 Nothing here calls out to the internet, there is no account, no analytics and no telemetry, and the

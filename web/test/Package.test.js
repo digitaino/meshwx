@@ -3,7 +3,7 @@
 // table and shows a place with no ZIP codes or a map with no outlines.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,11 +18,17 @@ const result = await build({ out: full })
 
 test('the folder is the client, the bundle beside it, and a way to serve it', () => {
   for (const file of ['index.html', 'manifest.webmanifest', 'sw.js', 'serve.mjs', 'README.md',
+    'start-macos.command', 'start-windows.bat',
     'src/app/main.js', 'styles/app.css', 'strings/en.json', 'strings/web.en.json',
     'assets/basemap.json', 'assets/icon.svg', 'demo/datagrams.json']) {
     assert.ok(existsSync(join(full, file)), `missing ${file}`)
   }
   assert.ok(result.bytes > 10e6 && result.files > 100)
+})
+
+test('the macOS launcher is double-clickable, which is a file mode', async () => {
+  const mode = (await stat(join(full, 'start-macos.command'))).mode
+  assert.equal(mode & 0o111, 0o111, 'not executable, so double-clicking it opens a text editor')
 })
 
 test('every table the codec names is in data/, under the name it asks for', () => {

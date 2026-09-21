@@ -102,12 +102,15 @@ this repository, file for file. The download is 5.7 MB, 20.5 MB unfolded,
 most of it the zone and county outlines — `--no-outlines` leaves those out for
 1.9 MB, and the maps then draw without the shapes.
 
-Whoever receives it unzips it and runs one command:
+Whoever receives it unzips it and double-clicks `start-macos.command` or
+`start-windows.bat`, which runs `serve.mjs` and opens the browser. Node is the
+one thing they have to install first. By hand it is `node serve.mjs`, or
+`python3 -m http.server 8137`, and then `http://localhost:8137`.
 
-```bash
-node serve.mjs                     # then open http://localhost:8137
-python3 -m http.server 8137        # or this, if they have no Node
-```
+The built zip is attached to the
+[latest release](https://github.com/digitaino/meshwx/releases/latest), which is
+the link to give people: [`web/README.md`](web/README.md) is written for them
+and says what they need in five lines.
 
 None of this touches the internet, which is the point. The client holds no
 absolute URL, every fetch it makes is same-origin and relative, and `serve.mjs`
