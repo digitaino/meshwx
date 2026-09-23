@@ -21,6 +21,7 @@ The bot therefore keeps a **node profile** in `data/node_profile.json`
 | name, position | self info | `set_name`, `set_coords` |
 | frequency, bandwidth, SF, CR | self info | `set_radio` |
 | TX power | self info | `set_tx_power`, capped at the new board's maximum |
+| path hash size (1, 2 or 3 bytes) | device info, version 10 on | `set_path_hash_mode`; a board whose firmware lacks it stays at 1 byte and says so |
 | contacts (people only, newest 200) | contact table | `add_contact` each |
 
 Channels are not in the profile: the bot creates `#meshwx` on any node
@@ -33,7 +34,7 @@ do not learn a stranger's key under the bot's name) and shows the radio
 under Radio › Hardware as "Different radio" with two choices:
 
 - **Adopt**: write the profile onto it (key, name, position, LoRa
-  settings, TX power, contacts), reboot it, reconnect and check that the
+  settings, TX power, path hash size, contacts), reboot it, reconnect and check that the
   node now reports the profile's key. The result goes into the profile's
   history and shows on the card.
 - **Forget the old node, start a new profile**: keep the radio's own
@@ -103,6 +104,12 @@ Wio-SX1262, Heltec T114 and so on. What changes between boards:
 - **Maximum TX power.** The profile's power is applied up to the new
   board's ceiling (the firmware reports it). A lower ceiling is noted in
   the adoption steps.
+- **Path hash size.** How many bytes each repeater adds to the path of
+  a packet the node originates (Radio › LoRa and transmit). It rides in
+  the profile because a replacement radio comes up at 1 byte, and CoreScope
+  would quietly lose the repeater detail the larger size was set for. A
+  board whose firmware has no such setting refuses it and stays at 1 byte;
+  the adoption steps say so.
 - **Reset on port open.** ESP32 boards reboot when the port is opened
   (DTR/RTS); the bot waits for that. nRF52 boards do not, and answer at
   once.

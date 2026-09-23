@@ -85,7 +85,19 @@ def build_channel_data_payload(secret: bytes, data_type: int, data: bytes) -> by
 
 
 def parse_packet(raw: bytes) -> dict | None:
-    """Split a raw packet into route, payload type, path and payload."""
+    """Split a raw packet into route, payload type, path and payload.
+
+    The byte before the path is not a length. Its low six bits are the
+    number of hops and its top two the size of each repeater's hash, less
+    one: the firmware's path hash mode, 0 for one byte, 1 for two, 2 for
+    three (3 is reserved). A node sets the size on the packets it
+    originates and every repeater appends its own hash at that size, so
+    the path is hops x size bytes. Read as a plain length, one hop at two
+    bytes is 65 and the packet does not parse, which on the bot's own
+    packets means no echo is ever recognised and every one is resent.
+
+    `path_len` is the hop count, as the meshcore library reports it.
+    """
     if len(raw) < 2:
         return None
     hdr = raw[0]
@@ -93,18 +105,23 @@ def parse_packet(raw: bytes) -> dict | None:
     i = 1 + (4 if route in ROUTE_TRANSPORT else 0)
     if i >= len(raw):
         return None
-    plen = raw[i]
-    i += 1
-    path = raw[i:i + plen]
-    payload = raw[i + plen:]
-    if len(path) != plen or not payload:
+    hops, size = raw[i] & 0x3F, (raw[i] >> 6) + 1
+    if size == 4:
         return None
-    return {"route": route, "ptype": ptype, "path_len": plen, "path": path.hex(), "payload": payload}
+    i += 1
+    path = raw[i:i + hops * size]
+    payload = raw[i + hops * size:]
+    if len(path) != hops * size or not payload:
+        return None
+    return {"route": route, "ptype": ptype, "path_len": hops, "hash_size": size,
+            "path": path.hex(), "payload": payload}
 
 
-def fmt_path(path_hex: str) -> str:
-    """'d03a' -> 'D0,3A': the repeater hashes that carried the packet."""
-    return ",".join(path_hex[i:i + 2].upper() for i in range(0, len(path_hex), 2))
+def fmt_path(path_hex: str, size: int = 1) -> str:
+    """'d03a' -> 'D0,3A': the repeater hashes that carried the packet, one
+    per hop at `size` bytes each ('d03a' at two bytes is one hop, 'D03A')."""
+    step = 2 * max(1, size)
+    return ",".join(path_hex[i:i + step].upper() for i in range(0, len(path_hex), step))
 
 
 # -- Tracking ------------------------------------------------------------------------------
@@ -124,6 +141,7 @@ class Outbound:
     attempts: int = 1
     echoed_at: float | None = None
     via: str | None = None
+    via_size: int = 1                            # bytes per hop in `via`
     echo_snr: float | None = None
     acked_at: float | None = None
     skipped: str | None = None
@@ -298,7 +316,7 @@ class DeliveryTracker:
         self.last_repeat_heard_at = now
         ob = self._by_hash.get(packet_hash(pkt["ptype"], pkt["payload"]))
         if ob is not None and ob.echoed_at is None:
-            ob.echoed_at, ob.via, ob.echo_snr = now, pkt["path"], snr
+            ob.echoed_at, ob.via, ob.via_size, ob.echo_snr = now, pkt["path"], pkt["hash_size"], snr
             ob.done.set()
 
     def on_ack(self, code: str) -> None:
@@ -475,7 +493,7 @@ class DeliveryTracker:
         if ob.ev is not None:
             from meshcore_weather.traffic import traffic_log
             traffic_log.update(ob.ev, delivery=d, push=True)
-        logger.info("Delivery %s: %s", ob.kind, d["result"] + (f" via {fmt_path(ob.via)}" if ob.via else "") +
+        logger.info("Delivery %s: %s", ob.kind, d["result"] + (f" via {fmt_path(ob.via, ob.via_size)}" if ob.via else "") +
                     (f" ({d['echo_ms']} ms)" if d.get("echo_ms") is not None else "") +
                     (f", {ob.attempts - 1} retransmit, {d['echo_total_ms']} ms from the first send"
                      if ob.attempts > 1 and d.get("echo_total_ms") is not None else
@@ -531,7 +549,7 @@ class DeliveryTracker:
             result = "no_ack" if ob.kind == "dm" else "no_echo"
         return {"result": result, "echo": ob.echoed_at is not None, "echo_ms": echo_ms,
                 "echo_total_ms": echo_total_ms, "rtt_total_ms": rtt_total_ms,
-                "via": fmt_path(ob.via) if ob.via else None, "snr": ob.echo_snr,
+                "via": fmt_path(ob.via, ob.via_size) if ob.via else None, "snr": ob.echo_snr,
                 "acked": ob.acked_at is not None, "rtt_ms": rtt_ms,
                 "attempts": ob.attempts, "resent": ob.attempts - 1, "skipped": ob.skipped,
                 "lag_given_s": round(ob.lag_given_s, 2) or None,

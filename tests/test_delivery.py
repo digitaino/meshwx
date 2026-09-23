@@ -40,6 +40,29 @@ def test_parse_packet_rejects_garbage():
     assert parse_packet(bytes.fromhex("15 05 aa")) is None    # path longer than the packet
 
 
+def _raw(payload: bytes, hops: int, size: int) -> bytes:
+    """FLOOD GRP_TXT with `hops` repeater hashes of `size` bytes each."""
+    path = bytes(range(0x10, 0x10 + hops * size))
+    return bytes([0x15, ((size - 1) << 6) | hops]) + path + payload
+
+
+def test_the_path_byte_is_hops_and_hash_size_not_a_length():
+    """Low six bits hops, top two the hash size less one (the node's path
+    hash mode). Read as a length, two hops at three bytes would be 130."""
+    payload = b"\x11" * 19
+    for size in (1, 2, 3):
+        pkt = parse_packet(_raw(payload, hops=2, size=size))
+        assert pkt["path_len"] == 2 and pkt["hash_size"] == size
+        assert len(bytes.fromhex(pkt["path"])) == 2 * size and pkt["payload"] == payload
+    assert parse_packet(bytes([0x15, 0xC1]) + b"\xaa" * 4 + payload) is None      # size 4 is reserved
+    assert parse_packet(_raw(payload, hops=0, size=2))["path_len"] == 0          # direct, at any size
+
+
+def test_fmt_path_splits_at_the_hash_size():
+    assert fmt_path("d03a") == "D0,3A"
+    assert fmt_path("d03a1e2f", 2) == "D03A,1E2F" and fmt_path("d03a1e", 3) == "D03A1E"
+
+
 @pytest.fixture
 def fast(monkeypatch):
     monkeypatch.setattr(settings, "retransmit_max", 1)
@@ -81,6 +104,23 @@ def test_echo_within_the_window_means_no_retransmit(fast):
     d = fast.outcome(ob)
     assert sends == [] and d["result"] == "echoed" and d["via"] == "D0,3A" and d["snr"] == 7.5
     assert ob.ev["delivery"]["echo"] is True and fast.stats()["windows"]["1h"]["heard"] == 1
+
+
+def test_an_echo_with_two_byte_hashes_is_still_an_echo(fast):
+    """With the node's path hash size at two bytes, one hop puts 0x41 in the
+    path byte. Read as a length that is 65 bytes of path, the echo did not
+    parse, and every packet the bot sent went out a second time."""
+    sends, payload = [], b"\x11\x00\x00" + b"\x00" * 16
+    ob = _outbound(sends, packet_hash(5, payload), ev={"delivery": None})
+
+    async def run():
+        task = fast.track(ob)
+        await asyncio.sleep(0.01)
+        fast.on_rx_log(bytes([0x15, 0x41, 0xD0, 0x3A]) + payload, snr=6.0)
+        await task
+    asyncio.run(run())
+    d = fast.outcome(ob)
+    assert sends == [] and d["result"] == "echoed" and d["via"] == "D03A"
 
 
 def test_no_echo_means_exactly_one_identical_retransmit(fast):

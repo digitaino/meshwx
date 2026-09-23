@@ -1290,6 +1290,7 @@ class MeshcoreRadio:
             "adv_lon": si.get("adv_lon"),
             "adv_type": si.get("adv_type"),
             "manual_add_contacts": si.get("manual_add_contacts"),
+            "path_hash_size": self.path_hash_size(),
             "battery_mv": None,
             "channels": {"text": self._channel_idx, "data": self._data_channel_idx},
         }
@@ -1443,6 +1444,37 @@ class MeshcoreRadio:
         if res.type != EventType.OK:
             raise RuntimeError(f"radio refused set_radio: {res.payload}")
         mc.self_info.update({"radio_freq": freq_mhz, "radio_bw": bw_khz, "radio_sf": sf, "radio_cr": cr})
+
+    def path_hash_size(self) -> int | None:
+        """Bytes per repeater hash on the paths of packets this node
+        originates (1, 2 or 3), or None when the firmware does not say: its
+        device info carries the setting from version 10 on."""
+        mode = self.device.get("path_hash_mode")
+        return mode + 1 if isinstance(mode, int) and 0 <= mode <= 2 else None
+
+    async def set_path_hash_size(self, size: int) -> int:
+        """Set how many bytes each repeater adds to the path of a packet
+        this node originates, and return what the node reports afterwards.
+
+        More bytes tell repeaters apart: at one byte, 1 in 256 pairs share a
+        hash and a path cannot say which of them carried a packet, which is
+        what an observer feeding CoreScope is for. The cost is a longer
+        path, and a repeater whose firmware predates the setting cannot
+        read one and drops the packet."""
+        mc = self._require()
+        if size not in (1, 2, 3):
+            raise ValueError("path hash size must be 1, 2 or 3 bytes")
+        if self.path_hash_size() is None:
+            raise ValueError("this node's firmware does not report a path hash size, so it has none to set")
+        res = await mc.commands.set_path_hash_mode(size - 1)
+        if res.type != EventType.OK:
+            raise RuntimeError(f"radio refused set_path_hash_mode: {res.payload}")
+        dq = await mc.commands.send_device_query()
+        if dq.type == EventType.DEVICE_INFO:
+            self.device = dict(dq.payload)
+        now = self.path_hash_size()
+        logger.info("Path hash size set to %d byte(s); the node reports %s", size, now)
+        return now if now is not None else size
 
     async def set_tx_power(self, dbm: int) -> None:
         mc = self._require()

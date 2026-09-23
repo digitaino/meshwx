@@ -22,10 +22,11 @@ class FakeRadio:
         self.channels = {0: "public", 1: "#digitaino-wx-bot", 2: "#aus-meshwx-v4"}
         self.adverts = 0
         self.data_sent = []
+        self.path_hash = 1
 
     async def info(self):
         return {"name": self.name, "public_key": "ab" * 32, **self.params, "max_tx_power": 22,
-                "adv_lat": 30.27, "adv_lon": -97.74, "battery_mv": 4100,
+                "adv_lat": 30.27, "adv_lon": -97.74, "battery_mv": 4100, "path_hash_size": self.path_hash,
                 "channels": {"text": self.channel_idx, "data": self.data_channel_idx}}
 
     async def list_channels(self):
@@ -41,6 +42,12 @@ class FakeRadio:
             if getattr(self, a) == idx:
                 return r
         return None
+
+    async def set_path_hash_size(self, size):
+        if size not in (1, 2, 3):
+            raise ValueError("path hash size must be 1, 2 or 3 bytes")
+        self.path_hash = size
+        return size
 
     async def send_channel_data(self, data, data_type=0xFF10, ev=None):
         if not settings.tx_enabled or self.data_channel_idx is None:
@@ -151,6 +158,17 @@ def test_radio_state_and_edits(client):
     assert c.delete("/api/radio/channel/0").status_code == 400
     assert c.delete("/api/radio/channel/1").status_code == 400            # role slot: refuse
     assert c.get("/api/radio/contacts").json()["contacts"][0]["name"] == "Tommy"
+
+
+def test_path_hash_size_is_set_from_the_portal(client):
+    c, bot = client
+    assert c.get("/api/radio").json()["info"]["path_hash_size"] == 1
+    r = c.post("/api/radio/pathhash", json={"bytes": 2}).json()
+    assert r["ok"] and r["bytes"] == 2 and r["note"] == "the node now reports 2 bytes per hop"
+    assert bot.radio.path_hash == 2 and c.get("/api/radio").json()["info"]["path_hash_size"] == 2
+    assert c.post("/api/radio/pathhash", json={"bytes": 4}).status_code == 400
+    assert c.post("/api/radio/pathhash", json={}).status_code == 400
+    assert bot.radio.path_hash == 2                                       # a refusal changes nothing
 
 
 def test_tx_switch_persists_and_gates_adverts(client, tmp_path):

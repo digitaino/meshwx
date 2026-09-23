@@ -790,6 +790,7 @@ var Portal = {
         "Profile: <strong>" + esc(prof.name || "?") + "</strong> " + esc((prof.public_key || "").slice(0, 8)) + "… · " +
         (prof.has_key ? "identity key saved" : '<span class="badge badge-danger">no identity key</span>') + " · " + (prof.contacts || 0) + " contacts · saved " + agoAt(prof.saved_at) +
         (prof.radio ? " · " + prof.radio.freq_mhz + " MHz / " + prof.radio.bw_khz + " kHz / SF" + prof.radio.sf + " / CR" + prof.radio.cr + " / " + prof.tx_power + " dBm" : "") +
+        (prof.path_hash_size ? " · " + prof.path_hash_size + "-byte path hashes" : "") +
         (p.matches === false ? "" : "") + (p.note ? "<br><span class='text-muted'>" + esc(p.note) + "</span>" : "") +
         (la ? "<br>Last adoption " + agoAt(la.t) + ": " + (la.ok ? "ok" : "failed") + (la.note ? " (" + esc(la.note) + ")" : "") + (la.steps && la.steps.length ? " · " + esc(la.steps.join("; ")) : "") : "") +
         " · mode <strong>" + esc(p.mode || "auto") + "</strong>";
@@ -843,6 +844,10 @@ var Portal = {
       setVal("radio-name", info.name); setVal("radio-lat", info.adv_lat); setVal("radio-lon", info.adv_lon);
       setVal("radio-freq", info.radio_freq); setVal("radio-bw", info.radio_bw); setVal("radio-sf", info.radio_sf); setVal("radio-cr", info.radio_cr);
       setVal("radio-txpower", info.tx_power);
+      var ph = $("radio-pathhash"), phKnown = info.path_hash_size != null;
+      if (document.activeElement !== ph) ph.value = phKnown ? String(info.path_hash_size) : "1";
+      ph.disabled = $("radio-pathhash-set").disabled = !conn || !phKnown;
+      if (conn && !phKnown) $("radio-pathhash-hint").textContent = "This node's firmware does not report a path hash size, so it uses 1 byte and has nothing to set.";
       $("radio-pubkey").textContent = info.public_key ? "public key " + info.public_key : "";
       var badge = $("radio-tx-badge");
       badge.textContent = d.tx_enabled ? "ON" : "OFF";
@@ -922,6 +927,9 @@ var Portal = {
       var body = { freq_mhz: parseFloat($("radio-freq").value), bw_khz: parseFloat($("radio-bw").value), sf: parseInt($("radio-sf").value, 10), cr: parseInt($("radio-cr").value, 10) };
       if (!confirm("Set the radio to " + body.freq_mhz + " MHz / " + body.bw_khz + " kHz / SF" + body.sf + " / CR" + body.cr + "? Every node on the mesh must use the same values.")) return;
       this._act(api("/api/radio/params", { method: "POST", body: body }), "Radio parameters applied");
+    },
+    savePathHash: function () {
+      this._act(api("/api/radio/pathhash", { method: "POST", body: { bytes: parseInt($("radio-pathhash").value, 10) } }), "Path hash size set");
     },
     saveTxPower: function () { this._act(api("/api/radio/txpower", { method: "POST", body: { dbm: parseInt($("radio-txpower").value, 10) } }), "TX power set"); },
     toggleTx: function () {

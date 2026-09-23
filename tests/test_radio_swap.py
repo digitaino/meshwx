@@ -60,6 +60,13 @@ class FakeCommands:
     async def add_contact(self, c):
         self.calls.append(("contact", c["public_key"], c["adv_name"])); return _Res(EventType.OK)
 
+    async def set_path_hash_mode(self, mode):
+        self.calls.append(("path_hash", mode))
+        if "path_hash_mode" not in self.node.device:            # firmware without the setting
+            return _Res(EventType.ERROR, {"reason": "unsupported"})
+        self.node.device["path_hash_mode"] = mode
+        return _Res(EventType.OK)
+
     async def reboot(self):
         self.calls.append(("reboot",))
         # The reboot applies the imported key, as the firmware does.
@@ -167,6 +174,58 @@ def test_adopt_writes_everything_and_caps_tx_power_to_the_board(prof_path):
     assert kinds == ["import_key", "name", "coords", "radio", "tx", "contact", "contact"]
     assert ("tx", 20) in mc.commands.calls and any("tops out at 20" in s for s in steps)
     assert "2 contacts restored" in steps
+
+
+# -- path hash size --
+
+def _radio_on(node):
+    r = radio_mod.MeshcoreRadio()
+    r._mc, r._running, r.device = FakeMC(node), True, dict(node.device)
+    return r
+
+
+def test_path_hash_size_is_written_and_read_back_from_the_node():
+    node = FakeNode(PRIV_A, "WX-AUS")
+    node.device["path_hash_mode"] = 0
+    r = _radio_on(node)
+    assert r.path_hash_size() == 1
+    assert asyncio.run(r.set_path_hash_size(3)) == 3 and node.device["path_hash_mode"] == 2
+    assert asyncio.run(r.info())["path_hash_size"] == 3             # what the node said, not what was asked
+    for bad in (0, 4):
+        with pytest.raises(ValueError):
+            asyncio.run(r.set_path_hash_size(bad))
+    assert node.device["path_hash_mode"] == 2
+
+
+def test_firmware_without_the_setting_has_nothing_to_set():
+    node = FakeNode(PRIV_A, "WX-AUS")                               # device info has no path_hash_mode
+    r = _radio_on(node)
+    assert r.path_hash_size() is None and asyncio.run(r.info())["path_hash_size"] is None
+    with pytest.raises(ValueError, match="does not report"):
+        asyncio.run(r.set_path_hash_size(2))
+    assert not any(c[0] == "path_hash" for c in r._mc.commands.calls)   # nothing was sent
+
+
+def test_path_hash_size_rides_in_the_profile_onto_the_next_radio(prof_path):
+    old = FakeNode(PRIV_A, "WX-AUS")
+    old.device["path_hash_mode"] = 1
+    prof = asyncio.run(profile.snapshot(FakeMC(old), old.device))
+    assert prof["path_hash_size"] == 2 and profile.public_summary(prof)["path_hash_size"] == 2
+    new = FakeNode("bb" * 64, "Heltec T114", model="Heltec T114")
+    new.device["path_hash_mode"] = 0
+    steps = asyncio.run(profile.adopt(FakeMC(new), prof))
+    assert new.device["path_hash_mode"] == 1 and "path hash size 2 bytes" in steps
+
+
+def test_a_radio_that_cannot_take_the_size_says_so(prof_path):
+    old = FakeNode(PRIV_A, "WX-AUS")
+    old.device["path_hash_mode"] = 2
+    prof = asyncio.run(profile.snapshot(FakeMC(old), old.device))
+    steps = asyncio.run(profile.adopt(FakeMC(FakeNode("bb" * 64, "Old")), prof))
+    assert "path hash size 3 bytes refused: this firmware stays at 1" in steps
+    prof["path_hash_size"] = 1                                      # one byte is not a failure there
+    steps = asyncio.run(profile.adopt(FakeMC(FakeNode("bb" * 64, "Old")), prof))
+    assert "path hash size 1 byte (this firmware has no other)" in steps
 
 
 # -- adoption through the radio object --

@@ -64,6 +64,7 @@ def public_summary(profile: dict | None) -> dict | None:
         "saved_at": profile.get("saved_at"), "model": profile.get("model"), "fw": profile.get("fw"),
         "adv_lat": profile.get("adv_lat"), "adv_lon": profile.get("adv_lon"),
         "radio": profile.get("radio"), "tx_power": profile.get("tx_power"),
+        "path_hash_size": profile.get("path_hash_size"),
         "contacts": len(profile.get("contacts") or []),
         "history": (profile.get("history") or [])[-5:],
     }
@@ -101,6 +102,9 @@ async def snapshot(mc, device: dict | None = None, previous: dict | None = None)
         "radio": {"freq_mhz": si.get("radio_freq"), "bw_khz": si.get("radio_bw"),
                   "sf": si.get("radio_sf"), "cr": si.get("radio_cr")},
         "tx_power": si.get("tx_power"),
+        # None when the firmware does not report it (device info before version 10).
+        "path_hash_size": (device["path_hash_mode"] + 1
+                           if isinstance(device.get("path_hash_mode"), int) else None),
         "model": device.get("model"), "fw": device.get("ver"),
         "contacts": [],
         "history": list((previous or {}).get("history") or []),
@@ -179,6 +183,17 @@ async def adopt(mc, profile: dict) -> list[str]:
         res = await mc.commands.set_tx_power(dbm)
         steps.append(f"tx power {dbm} dBm" + (f" (profile had {want}, this board tops out at {ceiling})"
                                               if dbm != want else "") + ("" if res.type == EventType.OK else " refused"))
+    size = profile.get("path_hash_size")
+    if size in (1, 2, 3):
+        # Firmware without the setting answers with an error, and one byte is
+        # the only size it has, so a profile that wants one byte has it anyway.
+        res = await mc.commands.set_path_hash_mode(size - 1)
+        if res.type == EventType.OK:
+            steps.append(f"path hash size {size} byte{'s' if size != 1 else ''}")
+        elif size == 1:
+            steps.append("path hash size 1 byte (this firmware has no other)")
+        else:
+            steps.append(f"path hash size {size} bytes refused: this firmware stays at 1")
     restored = failed = 0
     for c in profile.get("contacts") or []:
         try:

@@ -265,6 +265,11 @@
                 <button class="btn" id="radio-tx-toggle" onclick="Portal.radio.toggleTx()">Toggle</button></div>
               <span class="form-hint">Off = receive only: no adverts, replies or broadcasts. Turning it on sends an advert.</span></div>
           </div>
+          <div class="mb-4"><label class="form-label" for="radio-pathhash">Path hash size</label>
+            <div class="input-row" style="max-width:16rem"><select class="input" id="radio-pathhash">
+              <option value="1">1 byte</option><option value="2">2 bytes</option><option value="3">3 bytes</option>
+            </select><button class="btn" id="radio-pathhash-set" onclick="Portal.radio.savePathHash()">Set</button></div>
+            <span class="form-hint" id="radio-pathhash-hint">Bytes each repeater adds to the path of packets this node sends. 2 or 3 tell repeaters apart in CoreScope, where 1 often cannot. A repeater too old to know this setting drops packets that use 2 or 3.</span></div>
           <div class="flex gap-2">
             <button class="btn" onclick="Portal.radio.advert()">Send advert</button>
             <button class="btn btn-danger" onclick="Portal.radio.reboot()">Reboot node</button>

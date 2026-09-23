@@ -184,6 +184,18 @@ async def radio_set_txpower(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "dbm": dbm})
 
 
+@router.post("/radio/pathhash")
+async def radio_set_path_hash(request: Request) -> JSONResponse:
+    body = await _body(request)
+    try:
+        size = int(body["bytes"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "bytes required: 1, 2 or 3")
+    now = await _run(_radio_call(request).set_path_hash_size(size))
+    return JSONResponse({"ok": True, "bytes": now,
+                         "note": f"the node now reports {now} byte{'s' if now != 1 else ''} per hop"})
+
+
 @router.post("/radio/coords")
 async def radio_set_coords(request: Request) -> JSONResponse:
     body = await _body(request)
