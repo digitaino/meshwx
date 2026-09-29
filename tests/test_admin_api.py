@@ -368,6 +368,24 @@ def test_legacy_routes_are_gone(client):
     assert c.get("/").status_code == 200 and "Meshcore Weather" in c.get("/").text
 
 
+def test_the_page_asks_for_its_script_by_what_is_in_it(client, monkeypatch, tmp_path):
+    """After a deploy, a browser kept its copy of portal.js and the new Set
+    button called a function that copy did not have. The URLs now carry a
+    hash of the contents, so changed files are files no browser has."""
+    from meshcore_weather.portal import server
+    c, _ = client
+    page = c.get("/").text
+    version = server.asset_version()
+    assert f'src="/static/portal.js?v={version}"' in page and f'href="/static/portal.css?v={version}"' in page
+    assert c.get(f"/static/portal.js?v={version}").status_code == 200
+    for name in ("portal.js", "portal.css"):
+        (tmp_path / name).write_bytes((server._STATIC_DIR / name).read_bytes())
+    monkeypatch.setattr(server, "_STATIC_DIR", tmp_path)
+    assert server.asset_version() == version
+    (tmp_path / "portal.js").write_bytes(b"// changed")
+    assert server.asset_version() != version
+
+
 # -- Limits and cooldowns ---------------------------------------------------------
 
 

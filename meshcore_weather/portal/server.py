@@ -8,6 +8,7 @@ has no login: keep it on the LAN or put access control at the edge.
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,20 @@ _STATIC_DIR = _PORTAL_DIR / "static"
 _TEMPLATES_DIR = _PORTAL_DIR / "templates"
 
 
+def asset_version() -> str:
+    """A short hash of the portal's script and stylesheet, for their URLs.
+
+    They are served with a Last-Modified and no Cache-Control, so a browser
+    is free to reuse its copy for hours without asking. After a deploy that
+    meant the fresh page calling functions its stale script did not have: a
+    new button that did nothing when pressed. A URL that changes with the
+    contents is a copy no browser has."""
+    digest = hashlib.sha256()
+    for name in ("portal.js", "portal.css"):
+        digest.update((_STATIC_DIR / name).read_bytes())
+    return digest.hexdigest()[:12]
+
+
 def create_app(bot: Any) -> FastAPI:
     """Create a FastAPI app wired to a running bot instance.
 
@@ -41,6 +56,7 @@ def create_app(bot: Any) -> FastAPI:
     )
 
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    templates.env.globals["asset_version"] = asset_version()
     app.state.bot = bot
     app.state.templates = templates
 
