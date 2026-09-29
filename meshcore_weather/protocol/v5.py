@@ -101,6 +101,7 @@ __all__ = [
     "MAX_STATIONS",
     "MAX_STATIONS_WITH_AGES",
     "MAX_ISSUED_BEFORE_EXPIRY",
+    "MAX_BEGINS_BEFORE_EXPIRY",
     "OBS_AGE_STEP_MIN",
     "OBS_AGE_MAX_MIN",
     "MAX_PERIODS",
@@ -326,6 +327,8 @@ OBS_AGE_STEP_MIN = 10
 OBS_AGE_MAX_MIN = 15 * OBS_AGE_STEP_MIN
 #: The largest issue-to-expiry gap the u16 carries (45.5 days), saturating.
 MAX_ISSUED_BEFORE_EXPIRY = 0xFFFF
+# Revision 12: the start, as minutes before `expires`, saturating the same way.
+MAX_BEGINS_BEFORE_EXPIRY = 0xFFFF
 MAX_PERIODS = 14
 # Coverage: both maxima at once are 14 + 24 + 1 + 120 = 159 bytes, inside
 # one packet, so a full office list never costs a zone run or the reverse.
@@ -563,6 +566,7 @@ def encode_warning(
     areas: "list[tuple[int, bool, int, int]] | None" = None,
     update: bool = False,
     issued_min: "int | None" = None,
+    begins_min: "int | None" = None,
     source: int = SOURCE_UNSTATED,
 ) -> bytes:
     """Encode a Warning.
@@ -582,6 +586,14 @@ def encode_warning(
     no real product is, encodes as 0 rather than failing.  The two bytes are
     appended last so that a decoder written before revision 5 stops after the
     area list and never sees them.
+
+    ``begins_min`` is when the product takes effect (revision 12).  It goes on
+    the wire only when there is an issue time and the start is later than it:
+    two more bytes after the issue time, as minutes before ``expires_min``.
+    There is no flag for it (the nibble is full), so a decoder finds it by
+    length, and one written before revision 12 reads the issue time at its
+    fixed place and stops, never seeing it.  A product in effect from its
+    issuance carries no start.
     """
     if not (0 <= tornado <= 3):
         raise ValueError(f"tornado tag must be 0..3, got {tornado}")
@@ -619,7 +631,13 @@ def encode_warning(
         out += _encode_areas(areas)
     if issued_min is not None:
         before = _u32(expires_min, "expires_min") - _u32(issued_min, "issued_min")
-        out += struct.pack("<H", max(0, min(MAX_ISSUED_BEFORE_EXPIRY, before)))
+        issued_before = max(0, min(MAX_ISSUED_BEFORE_EXPIRY, before))
+        out += struct.pack("<H", issued_before)
+        if begins_min is not None and _u32(begins_min, "begins_min") > issued_min:
+            begins_before = max(0, min(MAX_BEGINS_BEFORE_EXPIRY, expires_min - begins_min))
+            # Only a start strictly between the issuance and the expiry is one.
+            if 0 < begins_before < issued_before:
+                out += struct.pack("<H", begins_before)
 
     return _check_size(bytes(out), "warning")
 
@@ -708,6 +726,7 @@ def _decode_warning(data: bytes, hdr: Header) -> dict:
         polygon=None,
         areas=None,
         issued_min=None,
+        begins_min=None,
     )
 
     off = 15
@@ -735,8 +754,16 @@ def _decode_warning(data: bytes, hdr: Header) -> dict:
     # variable blocks.  A decoder that does not know the flag stops above.
     if hdr.flags & FLAG_WARNING_ISSUED:
         _need(data, off + 2, "warning issue time")
-        out["issued_min"] = expires - struct.unpack_from("<H", data, off)[0]
+        issued_before = struct.unpack_from("<H", data, off)[0]
+        out["issued_min"] = expires - issued_before
         off += 2
+        # Revision 12: the start, found by length.  Anything after it belongs
+        # to a later revision and is left alone.
+        if len(data) >= off + 2:
+            begins_before = struct.unpack_from("<H", data, off)[0]
+            if 0 < begins_before < issued_before:
+                out["begins_min"] = expires - begins_before
+            off += 2
 
     return out
 

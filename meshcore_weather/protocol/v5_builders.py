@@ -342,6 +342,22 @@ def issued_min(w: dict) -> int | None:
     return None
 
 
+def begins_min(w: dict) -> int | None:
+    """When the product takes effect, in Unix minutes, when that is later than
+    its issuance, else None (revision 12).
+
+    `onset_at` is the earliest VTEC begin time among the event's active zones
+    (protocol/warnings.py, `EventState.onset_at`). A product in effect from
+    issuance, a continuation issued after it began, or one whose issue time
+    is unknown has no start to send: the wire can only carry one after an
+    issue time."""
+    onset, issued = w.get("onset_at"), issued_min(w)
+    if not isinstance(onset, datetime) or issued is None:
+        return None
+    start = int(onset.timestamp() // 60)
+    return start if start > issued else None
+
+
 def warning_fingerprint(w: dict) -> tuple:
     """What counts as a material change: expiry changed, tags changed, area
     changed. Wording changes do not. A real expiry counts to the minute (a
@@ -352,12 +368,20 @@ def warning_fingerprint(w: dict) -> tuple:
     The issue time is deliberately not here. It is a property of the identity,
     not of the current state, and after a restart it is read from whichever
     products are still in the store, so counting it would resend warnings for
-    no reason a phone could see."""
+    no reason a phone could see.
+
+    The start (revision 12) is here, to the minute, but only when there is one
+    to send: a watch moved from Wednesday evening to Wednesday afternoon has
+    to reach the phone. A product without one keeps the fingerprint it had
+    before revision 12, so the upgrade resends only the warnings that gain a
+    start, which are the ones phones have been showing wrongly."""
     exact = isinstance(w.get("expires_at"), datetime) and not w.get("expires_estimated")
-    return (expires_min(w) if exact else expires_min(w) // 30, int(w.get("hail_qin") or 0),
-            int(w.get("wind_mph") or 0),
-            int(w.get("tornado_tag") or 0), int(w.get("flood_source") or 0), int(w.get("flood_damage") or 0),
-            tuple(sorted(w.get("ugcs") or [])), len(w.get("vertices") or []))
+    fp = (expires_min(w) if exact else expires_min(w) // 30, int(w.get("hail_qin") or 0),
+          int(w.get("wind_mph") or 0),
+          int(w.get("tornado_tag") or 0), int(w.get("flood_source") or 0), int(w.get("flood_damage") or 0),
+          tuple(sorted(w.get("ugcs") or [])), len(w.get("vertices") or []))
+    start = begins_min(w)
+    return fp if start is None else fp + (start,)
 
 
 def _decimate(points: list, n: int) -> list:
@@ -386,11 +410,12 @@ def warning_message(seq: int, bot: int, w: dict, update: bool = False,
                   tornado=int(w.get("tornado_tag") or 0), flood_source=int(w.get("flood_source") or 0),
                   flood_damage=int(w.get("flood_damage") or 0), hail_qin=int(w.get("hail_qin") or 0),
                   wind_mph=int(w.get("wind_mph") or 0), update=update,
-                  issued_min=issued_min(w), source=source)
+                  issued_min=issued_min(w), begins_min=begins_min(w), source=source)
     # Fit into one packet: shed detail in the order a phone can best do without.
-    # The issue time is not in this list: it is two bytes, it is what lets the
-    # phone say when the warning began rather than when the radio heard it, and
-    # a vertex costs twice as much (spec 3, revision 5).
+    # The issue time and the start are not in this list: two bytes each, the
+    # one what lets the phone say when the warning was issued rather than when
+    # the radio heard it, the other whether it is in effect at all, and a
+    # vertex costs twice as much (spec 3, revisions 5 and 12).
     attempts = [
         (polygon[:30], areas[:30]),
         (_decimate(polygon, 16), areas[:30]),

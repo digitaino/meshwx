@@ -57,6 +57,7 @@ def reencode(d: dict) -> bytes:
             areas=areas,
             update=d["update"],
             issued_min=d["issued_min"],
+            begins_min=d.get("begins_min"),
             source=d["source"],
         )
     if name == "cancel":
@@ -1176,7 +1177,11 @@ def test_protocol_json_v5_block():
 
     with open(PROTOCOL_PATH, encoding="utf-8") as fh:
         proto = json.load(fh)
-    assert proto["version"] == 15
+    assert proto["version"] == 16
+    # Revision 12: a warning's start, two bytes after the issue time.
+    assert proto["v5"]["record_sizes"]["warning_begins"] == 2
+    assert proto["v5"]["sentinels"]["warning_begins_saturated"] == v5.MAX_BEGINS_BEFORE_EXPIRY
+    assert "revision 12" in proto["v5"]["notes"]
     assert proto["index_file"] == "index.json"
     # Legacy keys other code still reads are untouched.
     for key in ("messages", "events", "event_names", "sky_codes", "data_types"):
@@ -1367,3 +1372,83 @@ def test_vector_sizes_are_within_budget():
     # WX-AUS's real coverage: 14 fixed + 4 offices + 1 + 5 runs of 4.
     assert sizes["coverage_wx_aus"] == 39
     assert all(n <= v5.MAX_DATA for n in sizes.values())
+
+
+# ---------------------------------------------------------------------------
+# Revision 12: a warning's start
+# ---------------------------------------------------------------------------
+
+def _watch(**kw):
+    args = dict(event=10, office=35, etn=8, expires_min=NOW + 4896,
+                areas=[(42, False, 191, 4)], issued_min=NOW)
+    args.update(kw)
+    return v5.encode_warning(33, 0x4C7A, **args)
+
+
+def test_a_start_after_issuance_rides_after_the_issue_time():
+    without, with_start = _watch(), _watch(begins_min=NOW + 2016)
+    assert len(with_start) == len(without) + 2 and with_start[:-2] == without
+    assert int.from_bytes(with_start[-2:], "little") == 2880           # minutes from start to expiry
+    d = v5.decode(with_start)
+    assert (d["issued_min"], d["begins_min"], d["expires_min"]) == (NOW, NOW + 2016, NOW + 4896)
+    assert v5.decode(without)["begins_min"] is None
+
+
+def test_a_revision_11_decoder_reads_the_same_warning():
+    """Every decoder before revision 12 reads the issue time at its fixed
+    place after the area list and stops. That is what lets the start ride
+    without a flag."""
+    data = _watch(begins_min=NOW + 2016)
+    fixed = 15 + 1 + 4                           # header+body, run count, one run
+    assert int.from_bytes(data[fixed:fixed + 2], "little") == 4896     # the issue time, where it always was
+    old = v5.decode(data[:fixed + 2])
+    assert old["issued_min"] == NOW and old["begins_min"] is None
+
+
+def test_no_start_is_sent_that_is_not_after_issuance_and_before_expiry():
+    for start in (NOW, NOW - 60, NOW + 4896, NOW + 5000):
+        assert len(_watch(begins_min=start)) == len(_watch()), start
+    assert len(_watch(issued_min=None, begins_min=NOW + 2016)) == len(_watch(issued_min=None))
+
+
+def test_a_decoder_ignores_a_start_that_cannot_be_one_and_bytes_after_it():
+    base = bytes(_watch())
+    for bad in (0, 4896, 5000):
+        assert v5.decode(base + bad.to_bytes(2, "little"))["begins_min"] is None, bad
+    later = v5.decode(bytes(_watch(begins_min=NOW + 2016)) + b"\x01\x02\x03")
+    assert later["begins_min"] == NOW + 2016                              # a future revision's bytes
+
+
+def test_the_start_is_a_material_change_but_only_when_there_is_one():
+    from datetime import datetime, timedelta, timezone
+    from meshcore_weather.protocol import v5_builders as b
+    issued = datetime(2026, 9, 29, 14, 24, tzinfo=timezone.utc)
+    w = {"expires_at": issued + timedelta(minutes=4896), "issued_at": issued, "ugcs": ["TXZ191"]}
+    plain = b.warning_fingerprint(w)
+    assert b.begins_min(w) is None
+    assert b.warning_fingerprint({**w, "onset_at": issued}) == plain           # in effect from issuance
+    assert b.warning_fingerprint({**w, "onset_at": issued - timedelta(hours=1)}) == plain
+    wed = b.warning_fingerprint({**w, "onset_at": issued + timedelta(minutes=2016)})
+    moved = b.warning_fingerprint({**w, "onset_at": issued + timedelta(minutes=1800)})
+    assert wed != plain and moved != wed                                      # moved earlier: resend
+    assert b.begins_min({**w, "onset_at": issued + timedelta(minutes=2016)}) == int(issued.timestamp() // 60) + 2016
+
+
+def test_a_warning_narrative_is_not_cut_at_500_characters():
+    """It was, silently, below the eight packets the reply may take; a
+    Flood Watch stopped at "WHEN: From" on the phone."""
+    from meshcore_weather.protocol.warnings import _extract_warning_description
+    body = "\n".join([
+        "* WHAT...Flooding caused by excessive rainfall is possible.",
+        "* WHERE...A portion of south central Texas, including the following counties, " +
+        ", ".join(f"County{i}" for i in range(40)) + ".",
+        "* WHEN...From Wednesday evening through Friday evening.",
+        "* IMPACTS...Excessive runoff may result in flooding of rivers, creeks, streams, and other "
+        "low-lying and flood-prone locations.",
+        "PRECAUTIONARY/PREPAREDNESS ACTIONS...",
+        "You should monitor later forecasts.",
+    ])
+    text = _extract_warning_description(body)
+    assert len(text) > 500 and text.endswith("flood-prone locations.")
+    assert "WHEN: From Wednesday evening through Friday evening." in text
+    assert "monitor later forecasts" not in text                               # the boilerplate still stops it

@@ -59,7 +59,8 @@
           "run": 1
         }
       ],
-      "issued_min": null
+      "issued_min": null,
+      "begins_min": null
     },
     "note": "SV.W.EWX.42 over Travis and Hays counties; expires 01:45 UTC"
   },
@@ -123,7 +124,8 @@
           "run": 1
         }
       ],
-      "issued_min": 29823924
+      "issued_min": 29823924,
+      "begins_min": null
     },
     "note": "SV.W.EWX.42 again, with the revision 5 issue time: 53 bytes, the two trailing bytes hold 21 = minutes between the issuance and the expiry"
   },
@@ -187,9 +189,50 @@
           "run": 1
         }
       ],
-      "issued_min": 29823924
+      "issued_min": 29823924,
+      "begins_min": null
     },
     "note": "type byte 0x16: warning, flags 0x6 = issued (bit 1) + source 1 GOES (bits 2-3); otherwise byte for byte the issued vector"
+  },
+  {
+    "name": "warning_upcoming_watch",
+    "hex": "217a4c160a230800bc26c701010000022abf00042acd00022013400b",
+    "decoded": {
+      "seq": 33,
+      "bot": 19578,
+      "type": 1,
+      "name": "warning",
+      "flags": 6,
+      "event": 10,
+      "office": 35,
+      "etn": 8,
+      "expires_min": 29828796,
+      "tornado": 0,
+      "flood_source": 0,
+      "flood_damage": 0,
+      "hail_qin": 0,
+      "wind_mph": 0,
+      "update": false,
+      "source": 1,
+      "polygon": null,
+      "areas": [
+        {
+          "state": 42,
+          "county": false,
+          "start": 191,
+          "run": 4
+        },
+        {
+          "state": 42,
+          "county": false,
+          "start": 205,
+          "run": 2
+        }
+      ],
+      "issued_min": 29823900,
+      "begins_min": 29825916
+    },
+    "note": "FA.A.EWX.8, not in effect until 33 h 36 min after it was issued: after the issue time (4896 = issued_before) two more bytes, 2880 = minutes from the start to the expiry. A revision 11 decoder stops after the issue time and reads this as a watch in effect from issuance"
   },
   {
     "name": "winter_storm_warning_zones",
@@ -226,7 +269,8 @@
           "run": 1
         }
       ],
-      "issued_min": null
+      "issued_min": null,
+      "begins_min": null
     },
     "note": "WS.W.EWX.7, two runs: zones 191-194 and zone 200"
   },

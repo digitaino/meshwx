@@ -86,6 +86,7 @@ EV_SV_A = 4   # severe thunderstorm watch
 EV_FF_W = 6   # flash flood warning
 EV_FF_A = 7   # flash flood watch
 EV_FA_W = 8   # areal flood warning
+EV_FA_A = 10  # flood watch
 EV_FL_W = 11  # flood warning
 EV_WS_W = 24  # winter storm warning
 EV_WS_A = 25  # winter storm watch
@@ -195,6 +196,31 @@ def build_vectors(index: dict) -> list:
         ),
         "type byte 0x16: warning, flags 0x6 = issued (bit 1) + source 1 GOES "
         "(bits 2-3); otherwise byte for byte the issued vector",
+    )
+
+    # 1d. Revision 12: a watch issued before it takes effect carries its start.
+    #     The 29 September case: a Flood Watch issued at 09:24 on a Tuesday
+    #     for Wednesday 19:00 through Friday 19:00 (both CDT). Zones only.
+    add(
+        "warning_upcoming_watch",
+        v5.encode_warning(
+            33,
+            BOT,
+            event=EV_FA_A,
+            office=ewx,
+            etn=8,
+            expires_min=NOW_MIN + 4896,      # Friday 19:00: 81 h 36 min after issuance
+            areas=v5.areas_from_ugcs(
+                ["TXZ191", "TXZ192", "TXZ193", "TXZ194", "TXZ205", "TXZ206"], states
+            ),
+            issued_min=NOW_MIN,
+            begins_min=NOW_MIN + 2016,       # Wednesday 19:00: 33 h 36 min after issuance
+            source=v5.SOURCE_GOES,
+        ),
+        "FA.A.EWX.8, not in effect until 33 h 36 min after it was issued: after "
+        "the issue time (4896 = issued_before) two more bytes, 2880 = minutes "
+        "from the start to the expiry. A revision 11 decoder stops after the "
+        "issue time and reads this as a watch in effect from issuance",
     )
 
     # 2. Winter storm warning: zone list only (TXZ191-194 and TXZ200).

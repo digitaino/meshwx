@@ -225,7 +225,14 @@ def _extract_warning_description(text: str) -> str:
       * Humidity...As low as 12 percent.
 
     Also grabs WHAT/WHERE/WHEN/IMPACTS blocks from newer NWS format.
-    Returns a compact multiline string, max ~500 chars.
+    Returns a compact multiline string, whole.
+
+    It used to be cut at 500 characters, a v4 limit, which is where a Flood
+    Watch's text stopped at "WHEN: From" on the phone. The one reader is the
+    `>wt` reply, and `text_messages` fits that to the eight packets a reply
+    may take, at a sentence, and flags the cut when it has to make one
+    (spec 8.1). Two limits, the tighter one silent, is how a phone came to
+    show a truncated warning as if it were whole.
     """
     lines: list[str] = []
     in_bullets = False
@@ -264,8 +271,7 @@ def _extract_warning_description(text: str) -> str:
         if s.startswith("PRECAUTIONARY") or s.startswith("&&"):
             break
 
-    result = "\n".join(lines)
-    return result[:500] if result else ""
+    return "\n".join(lines)
 
 
 def _polygon_from_sbw(sbw) -> list[tuple[float, float]]:

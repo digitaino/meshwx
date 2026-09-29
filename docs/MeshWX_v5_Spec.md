@@ -1,8 +1,15 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, revision 11, 2026-09-20. This is the document an app developer
+Version 5.0, revision 12, 2026-09-29. This is the document an app developer
 builds against. It replaces the v3/v4 protocol documents, the April 2026
 iOS brief and the v4 client guide, all of which are now superseded.
+
+Revision 12 adds two bytes to one message: a Warning issued before it
+takes effect now says when it starts (section 3), so a watch issued on
+Tuesday for Wednesday evening through Friday is shown as starting then,
+not as in effect now. The bytes follow the issue time and are found by
+length, so a revision 11 client never reads them and keeps working
+untouched. If you hold revision 11, read section 16.
 
 Revision 11 adds one message: **Radar** (type 11, section 7D), one tile of
 a radar picture as a quadtree of four precipitation levels, always one
@@ -12,7 +19,7 @@ minutes; no internet is involved. It answers the new request `>radar`, is
 never broadcast on a schedule, and its refusals carry the letter `x`, the
 one request whose Not-available letter is not its first. Nothing already
 on the wire changed and unknown types are ignored, so a revision 10 client
-keeps working untouched. If you hold revision 10, read section 16.
+keeps working untouched. If you hold revision 10, read section 16A.
 
 Revision 10 adds three request forms and reinterprets one byte. `>part`
 (section 7C) asks for the packets of a multi-packet answer a phone did not
@@ -22,7 +29,7 @@ entries, and `total` bit 7 says a sweep is scoped. `>f 35.687,-105.938`
 asks for a forecast at a coordinate, so a phone no longer has to know of a
 bundled point to ask. The one byte that changed meaning is the sweep's
 `total`, and it could change because no revision 9 client had shipped to
-anyone. If you hold revision 9, read section 16A.
+anyone. If you hold revision 9, read section 16B.
 
 Revision 9 adds one message: **Area sweep** (type 10, section 7C), the
 national picture of active alerts as runs of UGC numbers, which the phone
@@ -30,7 +37,7 @@ draws on the zone and county outlines it already ships. It answers the new
 requests `>wmap` and `>wmap all`, is never broadcast on a schedule, and is
 limited to one sweep every 5 minutes across all senders. Nothing already
 on the wire changed and unknown types are ignored, so a revision 8 client
-keeps working untouched. If you hold revision 8, read section 16B.
+keeps working untouched. If you hold revision 8, read section 16C.
 
 Revision 8 changes one answer and no byte. `>o KAUS` for a station with
 no fresh report now answers with the nearest station within 40 km of it
@@ -45,7 +52,7 @@ stop guessing whether it is reading satellite data. And a **cut flag** on
 Text (section 8.1) says a narrative was longer than the air allows and the
 tail was dropped; the text now ends at a sentence rather than mid-word.
 A revision 6 client ignores both bits and reads every packet exactly as
-before. If you hold revision 6, read section 16D.
+before. If you hold revision 6, read section 16E.
 
 Revision 5 adds two times, so that a phone can say *when* a number is true
 instead of implying it is true now: a **per-station age** in Observations
@@ -53,7 +60,7 @@ instead of implying it is true now: a **per-station age** in Observations
 appended after everything a revision 4 decoder reads and both are
 announced by a bit in the flags nibble, so a revision 4 client keeps
 decoding every message exactly as before and simply never learns the two
-times. If you hold revision 4, read section 16F.
+times. If you hold revision 4, read section 16G.
 
 Revision 4 adds one message: **Coverage** (type 8, section 7A), the bot's
 own statement of what it carries — centre, radius, NWS offices, and the
@@ -257,7 +264,8 @@ as u32 unless stated.
 
 Sent when a warning, watch or advisory becomes active in the bot's
 coverage, and again when something material changes: the expiry changed
-(to the minute), tags changed, area changed. Not sent for wording-only
+(to the minute), the start changed (to the minute, revision 12), tags
+changed, area changed. Not sent for wording-only
 updates. The one exception to the minute rule is an expiry the bot had to
 invent (a product in force until further notice is given one 12 hours
 ahead): that counts only when it moves by 30 minutes.
@@ -329,6 +337,35 @@ two issue-time bytes are not in that list. They cost less than one vertex
 (4 bytes), and the line the phone draws — *issued 1:29 PM* — is worth more
 than the shape of the eighteenth corner.
 
+Then, if the issue time is present and **two more bytes follow it**, the
+start (new in revision 12):
+
+| Size | Field | Meaning |
+|---|---|---|
+| 2 | `begins_before` | u16 LE, minutes between the moment the product takes effect and `expires`. The start is `expires − begins_before`. 65535 saturates as `issued_before` does |
+
+A watch issued on Tuesday morning for Wednesday evening through Friday
+evening is in the air two days before it is in effect, and without this
+field an app can only show it as in effect now. The bot sends the start
+only when it is **later than the issue time**; a product in effect from
+issuance carries no start and is read exactly as before. The start is the
+earliest VTEC begin time among the product's active zones, so a watch that
+starts at different times in different zones is shown from the first of
+them.
+
+There is no flag bit for it: the flags nibble is full (bits 0 and 1 above,
+2 and 3 the data source since revision 7). It is found by length instead,
+which works because every decoder before revision 12 reads the issue time
+at its fixed place after the area list and stops there, and GRP_DATA
+delivers the message's exact length. A revision 12 decoder reads
+`begins_before` when at least two bytes remain after the issue time, and
+ignores anything after it. A `begins_before` that is 0, or not smaller
+than `issued_before`, is not a start after issuance and is ignored.
+
+Like the issue time, the start is never shed to fit the packet: two bytes,
+and the difference between "from Wed 19:00" and a watch that looks as if it
+has already begun.
+
 The time is the **product's own issuance** — the header time of the NWS
 product that created the event, kept across continuations, so an SVS
 update does not restamp a warning as newly issued. It is not when the bot
@@ -343,7 +380,8 @@ name the counties under it; otherwise fill the listed zones or counties
 from `zones.geojson` / `counties.geojson`.
 
 Typical size: a severe thunderstorm warning with 6 vertices and 2
-counties is 15 + 27 + 9 = 51 bytes, or 53 with the issue time.
+counties is 15 + 27 + 9 = 51 bytes, or 53 with the issue time, and 55 with
+a start.
 
 ## 4. Cancel (type 2)
 
@@ -1175,9 +1213,12 @@ then `C` or `Z`, then the 3-digit number. `TXC453` is in `counties.json`,
 Louisiana parishes, Alaska boroughs and Virginia's independent cities are
 all "counties" here, as in the NWS products.
 
-Bundle versioning: `protocol.json` `version` (15 since revision 11),
+Bundle versioning: `protocol.json` `version` (16 since revision 12),
 `index.json` `version` (2 since revision 3) and `pfm_points.json`
-`version` (2 since revision 10). Revision 11 changed one bundle file,
+`version` (2 since revision 10). Revision 12 changed one bundle file,
+`protocol.json`: `record_sizes.warning_begins` (2),
+`sentinels.warning_begins_saturated` (65535) and a sentence in `notes`.
+Revision 11 changed one bundle file,
 `protocol.json`, which gained the Radar type, its two flags, and the
 `v5.radar` block: the grid sizes, the zoom range and spans, the dBZ
 thresholds and level names, the `shape` masks, the request letter, the
@@ -1306,9 +1347,23 @@ NWS conventions for the common ones:
 | Anything else | by significance | `exclamationmark.triangle` |
 
 Show the tags when non-zero: "Hail 1.00 in", "Wind 60 mph", "Tornado:
-radar indicated", "Flash flood damage: considerable". Show "expires in
-42 min" from `expires` and the phone's clock. Sort by severity then
+radar indicated", "Flash flood damage: considerable". Sort by severity then
 expiry.
+
+Say when it applies from `expires`, the start (revision 12) and the
+phone's clock:
+
+- **Not in effect yet** (a start later than now): "from Wed 19:00 until
+  Fri 19:00". Nothing counts down to an expiry that has not begun.
+- **In effect, ending within 12 hours**: "until 23:41 · 40 min left". The
+  countdown is for what is happening now and ends soon.
+- **In effect, ending later**: "until Fri 19:00". Eighty-one hours is not a
+  countdown anybody reads; the day and the time are.
+
+Name a time by the clock alone when it is today or within 12 hours, by the
+weekday within a week, and by the date beyond that, in the phone's own
+12- or 24-hour format. With no start on the wire the product is in effect
+from issuance, which is what every revision 11 bot says.
 
 When the issue time is present (flags bit 1, section 3), label it
 **issued**: "issued 1:29 PM". Never label the arrival of the packet that
@@ -1396,6 +1451,9 @@ interchangeable:
   station measured, when it measured it.
 - **issued** — a warning, from `expires − issued_before` (section 3), and
   a forecast, from `issued` (section 7). When NWS published it.
+- **from** — a warning that is not in effect yet, from
+  `expires − begins_before` (section 3, revision 12). When it starts to
+  apply, which for a watch can be days after it was issued.
 
 Neither is ever the time the packet arrived. A phone that has been out of
 range shows old data; saying so is the feature.
@@ -1537,6 +1595,10 @@ range shows old data; saying so is the feature.
     the quadtree most significant bit first, read `bounds` before reading a
     0 as dry, show `taken` with every tile, and pair a `>radar` refusal by
     the letter `x`.
+15. For a warning's start (3, revision 12): read two bytes after the issue
+    time when two remain, ignore 0 or a value not below `issued_before`,
+    and show a product that has not started as **from** its start
+    **until** its expiry.
 
 ## 15. What changed from v4
 
@@ -1549,7 +1611,29 @@ event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
 
-## 16. Changes in revision 11
+## 16. Changes in revision 12
+
+Revision 12 adds one field. No byte moved and no type was added.
+
+| Section | Revision 11 | Revision 12 |
+|---|---|---|
+| 3 | A Warning said when it was issued and when it expires, and nothing about when it takes effect, so a watch issued two days ahead of its start was indistinguishable from one in effect | After the issue time, when the product takes effect later than it was issued: `begins_before`, u16, minutes from the start to `expires`. Found by length: read it when two bytes remain after the issue time |
+| 3 | A material change was an expiry, tags or area change | The start, to the minute, is one too |
+| 9 | `protocol.json` `version` 15 | `version` 16: `record_sizes.warning_begins`, `sentinels.warning_begins_saturated`, and a note on the start |
+| 10.2, 10.5 | Show "expires in 42 min" | A product not yet in effect is shown **from** its start **until** its expiry; the countdown is for what is in effect and ends soon |
+
+Why: on 29 September a Flood Watch issued at 09:24 for "Wednesday evening
+through Friday evening" showed on a phone as *until Oct 2 at 19:00 · in
+81 h 28 min*, as if it were already in force. The bot had the start all
+along — its text replies already said "Flood Watch Wed 7PM–Fri 7PM" — and
+v4 carried it on the wire; v5 dropped it, and nothing recorded why.
+
+To adopt revision 12: after reading the issue time, read two more bytes if
+two remain, and compute the start as `expires − begins_before`; ignore a
+value of 0 or one not smaller than `issued_before`. Decode the new vector
+`warning_upcoming_watch`. Nothing else changes.
+
+## 16A. Changes in revision 11
 
 Revision 11 adds one message, one request and one Not-available letter. No
 field moved, no index moved, and no existing message changed.
@@ -1595,7 +1679,7 @@ tiles with `floor(x / step + 0.5)`; keep tiles by `(south, west, zoom)` with
 the newest `taken`; honour `bounds`; show `taken`. An app that adopts none
 of it ignores type 11 like any unknown type and loses nothing it had.
 
-## 16A. Changes in revision 10
+## 16B. Changes in revision 10
 
 Revision 10 adds three request forms and reinterprets one byte. No field
 moved, no index moved, and no message body changed.
@@ -1653,7 +1737,7 @@ every request it knows how to send; what it cannot do is read a **scoped**
 sweep, whose `total` it would take for 129 packets. It should therefore
 not send `>wmap` with states until it has read this section.
 
-## 16B. Changes in revision 9
+## 16C. Changes in revision 9
 
 Revision 9 adds one message: **Area sweep** (type 10, section 7C), the
 national picture of active alerts as runs of UGC numbers. Nothing already
@@ -1696,7 +1780,7 @@ is not an area with nothing in it. An app that does not implement type 10
 ignores it, as section 2.2 says of every unknown type, and should not send
 `>wmap`.
 
-## 16C. Changes in revision 8
+## 16D. Changes in revision 8
 
 Revision 8 changes what one request answers. No byte, field or index
 moved.
@@ -1717,7 +1801,7 @@ station within 40 km of the one named, from the bot asked. A revision 7
 app already stores the reading, since every Observations message is filed
 by its own indices; it only fails to count it as the answer.
 
-## 16D. Changes in revision 7
+## 16E. Changes in revision 7
 
 Revision 7 adds two flag bits and moves no byte. Nothing in any body
 changed, no field grew, and no index moved.
@@ -1744,7 +1828,7 @@ To adopt revision 7: read two bits out of the flags nibble everywhere but
 Cancel, read bit 0 of a Text chunk, and stop drawing a cut narrative as
 damage. Nothing else needs touching.
 
-## 16E. Changes in revision 6
+## 16F. Changes in revision 6
 
 Revision 6 adds one message and changes no existing byte: **Request
 (type 9, section 7B)**, an app's `>` request flooded on `#meshwx` as a
@@ -1752,7 +1836,7 @@ datagram. The DM and channel-text forms of section 8.2 still work; a
 revision 5 bot ignores type 9 and a revision 5 app never sends it.
 Sections 8.2, 12 and 13 say where the datagram fits.
 
-## 16F. Changes in revision 5
+## 16G. Changes in revision 5
 
 Revision 5 adds two times and nothing else. Both are appended after
 everything revision 4 reads, both are announced by a flags-nibble bit, and
