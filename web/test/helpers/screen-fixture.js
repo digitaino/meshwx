@@ -98,6 +98,7 @@ export function warning({
   polygon = null,
   areas = null,
   issuedMinutes = null,
+  beginsMinutes = null,
 }) {
   return {
     event,
@@ -114,6 +115,7 @@ export function warning({
     polygon,
     areas,
     issued_min: issuedMinutes,
+    begins_min: beginsMinutes,
   }
 }
 

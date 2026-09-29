@@ -111,6 +111,7 @@ export function warning({
   hailQuarterInches = 0,
   windMph = 0,
   issuedMinutes = null,
+  beginsMinutes = null,
 }) {
   return {
     seq: 0,
@@ -132,6 +133,7 @@ export function warning({
     polygon,
     areas,
     issued_min: issuedMinutes,
+    begins_min: beginsMinutes,
   }
 }
 

@@ -38,8 +38,12 @@ export function copy(app, page = null) {
     age: (date) => (date == null ? null : WeatherFormatting.age(date, { now })),
     /** "40 min", from seconds. */
     duration: (seconds) => WeatherFormatting.duration({ seconds }),
-    /** "until 9:41 PM · in 40 min". */
-    until: (expiresAt) => WeatherFormatting.untilLine({ expiresAt, ...when }),
+    /**
+     * "from Wed 7:00 PM until Fri 7:00 PM", "until 9:41 PM · 40 min left", "until Fri 7:00 PM"
+     * (spec §10.2, revision 12). `beginsAt` is the alert's start (`WeatherAlertItem.beginsAt`), or null.
+     */
+    alertWindow: ({ beginsAt = null, expiresAt }) =>
+      WeatherFormatting.alertWindow({ beginsAt, expiresAt, ...when }),
     eventName: (event, tables) => WeatherFormatting.eventName(event, { tables }),
     symbol: (event, tables) => WeatherFormatting.symbol({ for: event, tables }),
     tint: (event, tables) => WeatherFormatting.tint({ for: event, tables }),

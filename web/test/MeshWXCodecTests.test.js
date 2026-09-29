@@ -719,6 +719,99 @@ describe('MeshWX codec', () => {
     assert.throws(() => decode(data), truncated('warning issue time', 17, 16));
   });
 
+  // MARK: - Warning start (spec §3, revision 12)
+
+  const watch = ({ issued = 29_823_900, begins, expires = 29_823_900 + 4896 } = {}) =>
+    MeshWXEncoder.warning({
+      seq: 33,
+      bot: 19578,
+      identity: svw,
+      expiresMinutes: expires,
+      areas: [{ state: 42, county: false, start: 191, run: 4 }],
+      issuedMinutes: issued,
+      beginsMinutes: begins,
+    });
+  const append = (data, tail) => Uint8Array.from([...data, ...tail]);
+
+  /**
+   * Two bytes after the issue time, minutes from the start to the expiry, and no flag: the
+   * nibble is full, so it is found by the message's length.
+   */
+  test('theStartIsTwoBytesAfterTheIssueTimeAndNeedsNoFlag', () => {
+    const without = watch({ begins: null });
+    const withStart = watch({ begins: 29_823_900 + 2016 });
+    assert.equal(withStart.length, without.length + MeshWXWire.warningBeginsSize);
+    assert.deepStrictEqual(withStart.subarray(0, without.length), without, 'nothing before the start moved');
+    assert.deepStrictEqual(withStart.subarray(withStart.length - 2), Uint8Array.from([0x40, 0x0b]),
+      '2880 minutes, little-endian');
+    assert.equal(withStart[3], without[3], 'the same flags nibble');
+
+    const warning = decode(withStart);
+    assert.equal(MeshWXWarning.beginsBeforeMinutes(warning), 2880);
+    assert.equal(MeshWXWarning.beginsMinutes(warning), 29_823_900 + 2016);
+    assert.equal(warning.begins_min, 29_823_900 + 2016);
+    assert.deepStrictEqual(encode(decode(withStart)), withStart);
+    const plain = decode(without);
+    assert.equal(MeshWXWarning.beginsBeforeMinutes(plain), null);
+    assert.equal(MeshWXWarning.beginsMinutes(plain), null);
+  });
+
+  /**
+   * The bot's own conditions: only with an issue time, and only a start strictly between the
+   * issuance and the expiry. A product in effect from issuance carries nothing new.
+   */
+  test('theEncoderWritesAStartOnlyStrictlyBetweenIssuanceAndExpiry', () => {
+    const bare = watch({ begins: null }).length;
+    assert.equal(watch({ begins: 29_823_900 }).length, bare, 'in effect from issuance');
+    assert.equal(watch({ begins: 29_823_900 - 60 }).length, bare, 'a start before issuance');
+    assert.equal(watch({ begins: 29_823_900 + 4896 }).length, bare, 'a start at the expiry');
+    assert.equal(watch({ begins: 29_823_900 + 5000 }).length, bare, 'a start after the expiry');
+    assert.equal(watch({ begins: 29_823_900 + 1 }).length, bare + 2, 'a minute after issuance is one');
+    assert.equal(watch({ begins: 29_823_900 + 4895 }).length, bare + 2, 'a minute before expiry is one');
+    // No issue time, no start: the start rides after it and is measured against it.
+    assert.equal(
+      watch({ issued: null, begins: 29_823_900 + 2016 }).length, watch({ issued: null, begins: null }).length,
+    );
+    // An issue time that saturated leaves room for a start inside the u16; a start that would
+    // saturate too is not below it and stays off the wire.
+    const ancient = 29_823_900 + 4896 - 200_000;
+    assert.equal(decode(watch({ issued: ancient, begins: 29_823_900 + 4796 })).begins_min, 29_823_900 + 4796);
+    assert.equal(watch({ issued: ancient, begins: 29_823_900 + 4896 - 100_000 }).length, bare);
+  });
+
+  /**
+   * A value that is not a start after issuance is ignored as if absent, so an invalid one never
+   * reaches the app: 0, one equal to the issue gap, one beyond it (which is also every saturated
+   * value, since the issue gap cannot exceed the u16).
+   */
+  test('aStartThatIsNotBetweenIssuanceAndExpiryIsIgnored', () => {
+    const base = watch({ begins: null });
+    for (const bad of [0, 4896, 4897, MeshWXWire.beginsBeforeSaturatedMinutes]) {
+      const warning = decode(append(base, [bad & 0xff, bad >> 8]));
+      assert.equal(MeshWXWarning.beginsBeforeMinutes(warning), null, `begins_before ${bad}`);
+      assert.equal(MeshWXWarning.beginsMinutes(warning), null, `begins_before ${bad}`);
+      assert.equal(MeshWXWarning.issuedBeforeMinutes(warning), 4896, 'the issue time is read as before');
+    }
+  });
+
+  /**
+   * Found by length: one stray byte is not a start and is not an error, and bytes after a start
+   * belong to a later revision and are left alone.
+   */
+  test('theStartIsReadOnlyWhenTwoBytesRemainAndLaterBytesAreIgnored', () => {
+    const short = decode(append(watch({ begins: null }), [0x40]));
+    assert.equal(MeshWXWarning.beginsBeforeMinutes(short), null);
+    assert.equal(MeshWXWarning.issuedBeforeMinutes(short), 4896);
+
+    const warning = decode(append(watch({ begins: 29_823_900 + 2016 }), [0x01, 0x02, 0x03]));
+    assert.equal(MeshWXWarning.beginsMinutes(warning), 29_823_900 + 2016);
+
+    // Without the issue-time flag the trailing bytes are never read as either time.
+    const unflagged = decode(append(watch({ issued: null, begins: null }), [0x40, 0x0b]));
+    assert.equal(MeshWXWarning.issuedBeforeMinutes(unflagged), null);
+    assert.equal(MeshWXWarning.beginsBeforeMinutes(unflagged), null);
+  });
+
   // MARK: - Coverage (type 8, spec §7A)
 
   /** The two flags are separate bits and each one alone is enough to stop a denial. */

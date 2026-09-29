@@ -31,6 +31,11 @@ export const MeshWXWire = Object.freeze({
   warningFixedSize: 15,
   /** The issue time a revision 5 warning appends after the polygon and the areas (spec §3). */
   warningIssuedSize: 2,
+  /**
+   * The start a revision 12 warning appends after the issue time (spec §3). There is no flag for
+   * it — the nibble is full — so it is found by length: present when this many bytes remain.
+   */
+  warningBeginsSize: 2,
   cancelSize: 8,
   digestFixedSize: 10,
   digestEntrySize: 6,
@@ -139,6 +144,12 @@ export const MeshWXWire = Object.freeze({
    * at this value the product was issued *at or before* `expires − 65535`.
    */
   issuedBeforeSaturatedMinutes: 0xffff,
+  /**
+   * The largest start-to-expiry gap the u16 carries (revision 12), saturated as the issue time's
+   * is. A start is only a start when it is strictly between the issuance and the expiry
+   * (`0 < begins_before < issued_before`), so a saturated value never passes the decoder.
+   */
+  beginsBeforeSaturatedMinutes: 0xffff,
 
   // MARK: Warning tag byte (spec §3)
 

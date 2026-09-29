@@ -92,6 +92,29 @@ describe('Weather state store', () => {
     assert.equal(decoded.warnings[identityKey(warning)].issuedAt, issued)
   })
 
+  // Spec §3, revision 12. State saved before the phone could read a warning's start decodes with
+  // no start: in effect from issuance, which is what the phone believed when it saved.
+  it("a warning's start round-trips, and a blob from before revision 12 decodes with it absent", () => {
+    const state = WeatherBotState.make({ botID: 7 })
+    const warning = F.warning({ seq: 1 })
+    state.warnings[identityKey(warning)] = WeatherStoredWarning.make({
+      warning, receivedAt: 1_789_440_000 * 1000, seq: 1, issuedAt: 1_789_436_700 * 1000
+    })
+
+    const old = JSON.parse(JSON.stringify(state))
+    delete old.warnings[identityKey(warning)].beginsAt
+    delete old.warnings[identityKey(warning)].warning.begins_min
+    const fromOldBlob = WeatherBotState.decode(old)
+    assert.equal(fromOldBlob.warnings[identityKey(warning)].beginsAt, null)
+    assert.equal(fromOldBlob.warnings[identityKey(warning)].issuedAt, 1_789_436_700 * 1000)
+
+    const begins = 1_789_556_000 * 1000
+    state.warnings[identityKey(warning)].beginsAt = begins
+    const decoded = WeatherBotState.decode(JSON.parse(JSON.stringify(state)))
+    assert.deepStrictEqual(decoded, state)
+    assert.equal(decoded.warnings[identityKey(warning)].beginsAt, begins)
+  })
+
   // Spec §7A. A blob written before the bot could state its coverage is still the last picture
   // it sent: the field decodes as absent, which falls back to the station footprint.
   it('a coverage statement round-trips, and a blob from before it decodes with it absent', () => {

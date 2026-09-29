@@ -150,6 +150,33 @@ test("of two bots' copies the active one wins, then the later expiry", () => {
   assert.equal(three[0].warning.expires_min, longer.warning.expires_min)
 })
 
+// Spec §3, revision 12: an alert carries its start from the stored copy, and a copy from a bot
+// that said nothing about the start does not make a watch read as begun. The start changes
+// nothing about where it sorts or whether it covers the place (docs/MESHWX_REV12.md §3).
+test("an alert carries its start, from another bot's copy when the shown one has none", () => {
+  const begins = P.now + 10 * 3600 * 1000
+  const upcoming = { ...stored({ event: 3, etn: 42, minutes: 58 * 60 }), beginsAt: begins }
+  const silent = stored({ event: 3, etn: 42, minutes: 58 * 60 + 30 }) // later expiry: the shown copy
+
+  const one = items({ [String(P.botID)]: stateWith([upcoming]) })[0]
+  assert.equal(one.beginsAt, begins)
+  assert.equal(one.placement.kind, 'here')
+  assert.deepEqual(one.kind, { kind: 'active' }, 'a watch that has not started is still an alert about the place')
+
+  const two = items({ 1: stateWith([upcoming], 0x0001), 2: stateWith([silent], 0x0002) })[0]
+  assert.equal(two.warning.expires_min, silent.warning.expires_min, 'the later expiry is the copy shown')
+  assert.equal(two.beginsAt, begins, "the other bot's start stands in")
+
+  assert.equal(items({ [String(P.botID)]: stateWith([silent]) })[0].beginsAt, null)
+
+  // Order is untouched: the start does not move a row.
+  const withStart = items({ [String(P.botID)]: stateWith([upcoming, stored({ event: 1, etn: 12, polygonAt: 30.57 })]) })
+  const without = items({
+    [String(P.botID)]: stateWith([stored({ event: 3, etn: 42, minutes: 58 * 60 }), stored({ event: 1, etn: 12, polygonAt: 30.57 })]),
+  })
+  assert.deepEqual(withStart.map((item) => item.identity), without.map((item) => item.identity))
+})
+
 test('an upgrade marker stands in only when no bot holds the warning', () => {
   const copy = stored({ event: 3, etn: 42 })
   const marker = { warning: copy.warning, cancelledAt: P.now - 600 * 1000 }

@@ -18,7 +18,7 @@ describe('MeshWX tables', () => {
   before(async () => { tables = await sharedTables(); });
 
   test('bundleLoads', () => {
-    assert.equal(tables.protocolVersion, 15, 'protocol.json version is 15 for v5.0 revision 11');
+    assert.equal(tables.protocolVersion, 16, 'protocol.json version is 16 for v5.0 revision 12');
     assert.equal(tables.offices.length, 127, '125 WFOs, then NHC and WNS (spec rev 3 §9)');
     assert.equal(tables.stations.length, 2237);
     assert.equal(tables.states.length, 78);

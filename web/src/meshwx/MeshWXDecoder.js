@@ -235,6 +235,7 @@ function decodeWarning(bytes, header) {
     polygon: null,
     areas: null,
     issued_min: null,
+    begins_min: null,
   };
 
   let offset = MeshWXWire.warningFixedSize;
@@ -254,7 +255,19 @@ function decodeWarning(bytes, header) {
   // that reaches the packet limit, and cannot drift: both ends of the subtraction ride here.
   if (header.flags & MeshWXWire.flagWarningIssued) {
     need(bytes, offset + MeshWXWire.warningIssuedSize, 'warning issue time');
-    out.issued_min = expires - u16(bytes, offset);
+    const issuedBefore = u16(bytes, offset);
+    out.issued_min = expires - issuedBefore;
+    offset += MeshWXWire.warningIssuedSize;
+    // Revision 12 (spec §3): the start, when the product takes effect later than it was issued.
+    // The flags nibble is full, so it is found by length — two more bytes after the issue time —
+    // which works because every earlier decoder stops above and GRP_DATA delivers the exact
+    // length. Anything after it is a later revision's and is left alone. A value that is not
+    // strictly between the issuance and the expiry is not a start after issuance, and is read
+    // as absent, so an invalid one never reaches anything that shows it.
+    if (bytes.length >= offset + MeshWXWire.warningBeginsSize) {
+      const beginsBefore = u16(bytes, offset);
+      if (beginsBefore > 0 && beginsBefore < issuedBefore) out.begins_min = expires - beginsBefore;
+    }
   }
   return out;
 }

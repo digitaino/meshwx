@@ -115,7 +115,7 @@ element of its array). So Swift `stored.warning.expiresMinutes` is JS
 at the top of `src/meshwx/MeshWXMessage.js`; read it before touching a message.
 
 Everything around the message keeps Swift names: `WeatherStoredWarning` is
-`{ warning, receivedAt, updateCount, seq, issuedAt, source }`.
+`{ warning, receivedAt, updateCount, seq, issuedAt, source, beginsAt }`.
 
 `source` is the spec's number (0 unstated, 1 GOES, 2 internet, 3 mixed).
 

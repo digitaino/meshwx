@@ -297,6 +297,12 @@ function encodeAreas(areas, { what = 'area runs', allowingEmpty = false } = {}) 
  * `MeshWXWire.issuedBeforeSaturatedMinutes`; a warning issued after its own expiry, which no
  * real product is, encodes as 0 rather than failing. The two bytes are appended last so that a
  * decoder written before revision 5 stops after the area list and never sees them.
+ *
+ * `beginsMinutes` is when the product takes effect (revision 12), in Unix minutes. It goes on the
+ * wire under the bot's own conditions: only after an issue time, and only when
+ * `0 < begins_before < issued_before` — a start strictly between the issuance and the expiry.
+ * Otherwise nothing is written, which is how a product in effect from issuance reads. There is no
+ * flag for it (the nibble is full): a decoder finds the two bytes by length.
  */
 export function warning({
   seq,
@@ -312,6 +318,7 @@ export function warning({
   areas = null,
   isUpdate = false,
   issuedMinutes = null,
+  beginsMinutes = null,
   source = 0,
 }) {
   let tags = ((requireRange(tornado, 0, 3, 'tornado') << 6)
@@ -344,8 +351,22 @@ export function warning({
   // rather than wrapping, and a product issued after its own expiry — which no real one is —
   // encodes as 0 rather than failing the message over a bad clock.
   if (issuedMinutes != null) {
-    const before = expiresMinutes - issuedMinutes;
-    writer.u16(Math.max(0, Math.min(MeshWXWire.issuedBeforeSaturatedMinutes, before)));
+    const issuedBefore = Math.max(
+      0, Math.min(MeshWXWire.issuedBeforeSaturatedMinutes, expiresMinutes - issuedMinutes),
+    );
+    writer.u16(issuedBefore);
+    // Revision 12: the start, after the issue time and never without one. Saturated the same
+    // way, and written only when it is a start after issuance and before the expiry.
+    if (beginsMinutes != null) {
+      const beginsBefore = Math.max(
+        0,
+        Math.min(
+          MeshWXWire.beginsBeforeSaturatedMinutes,
+          expiresMinutes - requireRange(beginsMinutes, 0, 0xffff_ffff, 'begins_min'),
+        ),
+      );
+      if (beginsBefore > 0 && beginsBefore < issuedBefore) writer.u16(beginsBefore);
+    }
   }
   return writer.done('warning');
 }
@@ -999,6 +1020,8 @@ export function encode(message) {
         // Resolved and subtracted back: `expires − (expires − before)` is the same two bytes,
         // saturation included, so the round trip stays byte-identical.
         issuedMinutes: message.issued_min,
+        // Absolute like the issue time, and subtracted back the same way (revision 12).
+        beginsMinutes: message.begins_min ?? null,
         source,
       });
     case MeshWXMessageType.cancel:

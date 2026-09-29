@@ -212,13 +212,19 @@ export const WeatherAlertItemKind = Object.freeze({
 
 /**
  * One alert as the screen lists it: the union across bots, placed and ranked.
- * `{ identity, warning, kind, placement, rank, botIDs, receivedAt }`.
+ * `{ identity, warning, kind, placement, rank, botIDs, receivedAt, beginsAt }`.
+ *
+ * `beginsAt` is when it takes effect (spec §3, revision 12), from the stored copy rather than
+ * recomputed from the wire's expiry-relative field. Null when it is in effect from its issuance —
+ * or the bot did not say — which is every warning before revision 12. A start still ahead is what
+ * makes an alert read "from Wed 19:00 until Fri 19:00" instead of counting down to an end that has
+ * not begun; it changes nothing about where the alert sorts or whether it covers the place.
  */
 export const WeatherAlertItem = Object.freeze({
   Kind: WeatherAlertItemKind,
 
-  make({ identity, warning, kind, placement, rank, botIDs, receivedAt }) {
-    return { identity, warning, kind, placement, rank, botIDs, receivedAt }
+  make({ identity, warning, kind, placement, rank, botIDs, receivedAt, beginsAt = null }) {
+    return { identity, warning, kind, placement, rank, botIDs, receivedAt, beginsAt }
   },
 
   id(item) {
@@ -271,10 +277,14 @@ export const WeatherAlertItems = Object.freeze({
         const key = MeshWXWarningIdentity.key(WeatherStoredWarning.identity(stored))
         const held = candidates.get(key)
         if (held == null) {
-          candidates.set(key, { stored, kind, botIDs: new Set([botID]) })
+          // `anyBeginsAt`: the start from the first bot, in bot order, whose copy states one. The
+          // shown copy's own wins below; this stands in when that copy came from a bot that said
+          // nothing (revision 12).
+          candidates.set(key, { stored, kind, botIDs: new Set([botID]), anyBeginsAt: stored.beginsAt ?? null })
           continue
         }
         held.botIDs.add(botID)
+        held.anyBeginsAt = held.anyBeginsAt ?? stored.beginsAt ?? null
         if (prefers(stored, kind, held.stored, held.kind)) {
           held.stored = stored
           held.kind = kind
@@ -288,7 +298,11 @@ export const WeatherAlertItems = Object.freeze({
       if (state == null) continue
       for (const [key, pending] of Object.entries(state.pendingUpgrades ?? {})) {
         if (candidates.has(key)) continue
-        const stored = WeatherStoredWarning.make({ warning: pending.warning, receivedAt: pending.cancelledAt })
+        const stored = WeatherStoredWarning.make({
+          warning: pending.warning,
+          receivedAt: pending.cancelledAt,
+          beginsAt: pending.warning.begins_min == null ? null : pending.warning.begins_min * 60000,
+        })
         const kind = WeatherAlertItemKind.upgradedAwaitingReplacement({ cancelledAt: pending.cancelledAt })
         const held = markers.get(key)
         if (held == null) {
@@ -321,6 +335,9 @@ export const WeatherAlertItems = Object.freeze({
           rank: WeatherAlertPriority.rank(candidate.stored.warning, { tables }),
           botIDs: [...candidate.botIDs].sort((lhs, rhs) => lhs - rhs),
           receivedAt: candidate.stored.receivedAt,
+          // The shown copy's start, else another bot's: a start is a fact about the product, and a
+          // copy from a bot older than revision 12 saying nothing is not a copy saying it began.
+          beginsAt: candidate.stored.beginsAt ?? candidate.anyBeginsAt ?? null,
         }),
       )
     }

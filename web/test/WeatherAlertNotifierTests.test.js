@@ -21,6 +21,8 @@ import { t } from '../src/l10n.js'
 import {
   DefaultsWeatherAlertPostLedger,
   DefaultsWeatherAlertWatchStore,
+  WeatherAlertDefaultCopy,
+  WeatherAlertNotificationCopyRegistry,
   WeatherAlertNotifier,
   WeatherBotState,
   WeatherLastPositionStore,
@@ -155,7 +157,9 @@ function makeHarness({ watch, geometryLoaded = box(true), loadGeometry = async (
 }
 
 /** Puts a warning in the bot's state and hands the notifier the change the reducer reported. */
-async function deliver(message, harness, { botID = F.botID, isBacklog = false, replacedExisting = false } = {}) {
+async function deliver(
+  message, harness, { botID = F.botID, isBacklog = false, replacedExisting = false, beginsAt = null } = {}
+) {
   const key = String(botID)
   const state = harness.states.value[key] ?? WeatherBotState.make({ botID })
   const identity = { event: message.event, office: message.office, etn: message.etn }
@@ -163,7 +167,8 @@ async function deliver(message, harness, { botID = F.botID, isBacklog = false, r
   state.warnings[identityKey(identity)] = WeatherStoredWarning.make({
     warning: message,
     receivedAt: harness.clock.now,
-    updateCount: existing == null ? 0 : existing.updateCount + 1
+    updateCount: existing == null ? 0 : existing.updateCount + 1,
+    beginsAt
   })
   harness.states.value[key] = state
   await harness.notifier.apply({
@@ -296,6 +301,40 @@ describe('Weather alert notifier', () => {
     assert.equal(Object.keys(h.ledger.value).length, 1)
   })
 
+  // Revision 12: a warning that has not started says so, from its start until its end, and a
+  // notification never counts down (docs/MESHWX_REV12.md §2).
+  it('a warning that has not started is posted from its start until its end', async () => {
+    const h = makeHarness({ watch: watchOf([here()]) })
+    await deliver(
+      warning({ vtec: 'TO.W', expiresMinutes: F.t0Minutes + 4896, tornado: 2 }), h,
+      { beginsAt: (F.t0Minutes + 2016) * 60_000 }
+    )
+    const posted = h.poster.last
+    assert.notEqual(posted, null)
+    assert.ok(posted.content.body.startsWith('Austin · from '), posted.content.body)
+    assert.ok(posted.content.body.includes(' until '), posted.content.body)
+    assert.ok(!posted.content.body.includes('left'), posted.content.body)
+  })
+
+  // The fallback's words, on fixed clocks: the app's `alertWindow` without the countdown.
+  it('the fallback names a start and an end the way the app does', () => {
+    // Tuesday 29 September 2026, 09:24 in Austin: the Flood Watch of the owner's report.
+    const now = 1_790_691_840 * 1000
+    const begins = now + 2016 * 60_000 // Wednesday 19:00
+    const expires = now + 4896 * 60_000 // Friday 19:00
+    for (const [locale, want] of [
+      ['en-GB', ['from Wed 19:00 until Fri 19:00', 'until Fri 19:00', 'until 19:00']],
+      ['en-US', ['from Wed 7:00 PM until Fri 7:00 PM', 'until Fri 7:00 PM', 'until 7:00 PM']]
+    ]) {
+      const window = (moment) => WeatherAlertDefaultCopy.window({
+        beginsAt: begins, expiresAt: expires, now: moment, timeZone: 'America/Chicago', locale
+      }).replace(/\u202f/g, ' ')
+      assert.equal(window(now), want[0], `${locale}, Tuesday morning`)
+      assert.equal(window(begins), want[1], `${locale}, Wednesday 19:00`)
+      assert.equal(window(expires - 12 * 3_600_000), want[2], `${locale}, Friday 07:00`)
+    }
+  })
+
   it('a warning that covers one watched place and not another posts once, for that one', async () => {
     const h = makeHarness({ watch: watchOf([here(), faraway()]) })
     await deliver(warning({ vtec: 'SV.W' }), h)
@@ -320,6 +359,43 @@ describe('Weather alert notifier', () => {
     await deliver(warning({ vtec: 'FL.W', etn: 43 }), h)
     assert.equal(h.poster.posted.length, 1)
     assert.equal(h.poster.posted[0].sound, false)
+  })
+
+  // Not in the Swift's tests, but its rule: the subject carries the stored start, and when the
+  // copy being notified came from a bot that said nothing about one, another bot's start stands
+  // in — a bot older than revision 12 saying nothing is not a bot saying the warning has begun.
+  it('the subject carries the stored start, or another bot\'s', async () => {
+    const seen = []
+    WeatherAlertNotificationCopyRegistry.install({
+      get myLocationLabel() { return WeatherAlertDefaultCopy.myLocationLabel },
+      content(subject, options) {
+        seen.push(subject)
+        return WeatherAlertDefaultCopy.content(subject, options)
+      }
+    })
+    try {
+      const h = makeHarness({ watch: watchOf([here()], { notifiesOtherWarnings: true }) })
+      const beginsAt = F.t0 + 600 * 60_000
+      await deliver(warning({ vtec: 'FL.W', expiresMinutes: F.t0Minutes + 3000 }), h, { beginsAt })
+      assert.equal(h.poster.posted.length, 1)
+      assert.equal(seen.at(-1).beginsAt, beginsAt)
+
+      await deliver(warning({ vtec: 'FL.W', etn: 43 }), h)
+      assert.equal(seen.at(-1).beginsAt, null, 'in effect from issuance')
+
+      // The same flood warning from a second bot that says nothing about its start.
+      const other = makeHarness({ watch: watchOf([here()], { notifiesOtherWarnings: true }) })
+      const river = warning({ vtec: 'FL.W', etn: 44, expiresMinutes: F.t0Minutes + 3000 })
+      other.states.value[String(F.botID + 1)] = WeatherBotState.make({ botID: F.botID + 1 })
+      other.states.value[String(F.botID + 1)].warnings[identityKey(river)] = WeatherStoredWarning.make({
+        warning: river, receivedAt: other.clock.now, beginsAt
+      })
+      await deliver(river, other)
+      assert.equal(other.poster.posted.length, 1)
+      assert.equal(seen.at(-1).beginsAt, beginsAt, "the other bot's start stands in")
+    } finally {
+      WeatherAlertNotificationCopyRegistry.install(null)
+    }
   })
 
   it('a tornado warning nearby arrives only with its toggle, and says how far', async () => {

@@ -41,6 +41,10 @@
 //   issuedMinutes                 → issued_min     absolute Unix minutes, or null
 //   issuedBeforeMinutes           → (not carried)  = expires_min − issued_min; see
 //                                                  MeshWXWarning.issuedBeforeMinutes()
+//   beginsMinutes                 → begins_min     absolute Unix minutes, or null (revision 12);
+//                                                  null too when the wire value was not valid
+//   beginsBeforeMinutes           → (not carried)  = expires_min − begins_min; see
+//                                                  MeshWXWarning.beginsBeforeMinutes()
 //
 // Type 2, MeshWXCancel (spec §4) — the one type with no `source`:
 //   identity.event                → event
@@ -495,6 +499,7 @@ export const MeshWXWarning = Object.freeze({
     polygon = null,
     areas = null,
     issuedMinutes = null,
+    beginsMinutes = null,
     source = 0,
     seq = 0,
     bot = 0,
@@ -525,6 +530,7 @@ export const MeshWXWarning = Object.freeze({
       polygon,
       areas,
       issued_min: issuedMinutes,
+      begins_min: beginsMinutes,
     };
   },
 
@@ -560,6 +566,32 @@ export const MeshWXWarning = Object.freeze({
    */
   isIssueTimeSaturated(warning) {
     return MeshWXWarning.issuedBeforeMinutes(warning) === MeshWXWire.issuedBeforeSaturatedMinutes;
+  },
+
+  /**
+   * Minutes between the moment the product takes effect and `expires_min`, exactly as the wire
+   * carries it (spec §3, revision 12); null when the message carried no start, or one that was
+   * not strictly between the issuance and the expiry — the decoder drops those, so an invalid
+   * value never reaches anything that shows it.
+   *
+   * The twin of `issuedBeforeMinutes`: the vector JSON resolves the two bytes to an absolute
+   * time, so this subtracts them back.
+   */
+  beginsBeforeMinutes(warning) {
+    if (warning.begins_min == null) return null;
+    return (warning.expires_min - warning.begins_min) & 0xffff;
+  },
+
+  /**
+   * When the product takes effect, in Unix minutes: `expires − begins_before` (spec §3,
+   * revision 12). Null when it is in effect from issuance, which is also what every bot before
+   * revision 12 says.
+   *
+   * A watch issued on Tuesday morning for Wednesday evening is in the air two days before it is
+   * in effect; without this the phone can only show it as in effect now.
+   */
+  beginsMinutes(warning) {
+    return warning.begins_min ?? null;
   },
 
   /**

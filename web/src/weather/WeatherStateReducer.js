@@ -639,7 +639,13 @@ function storeWarning(warning, { state, receivedAt, seq, source }) {
     issuedAt: warning.issued_min != null
       ? dateFromUnixMinutes(warning.issued_min)
       : (existing?.issuedAt ?? null),
-    source
+    source,
+    // Spec §3, revision 12: the start, resolved once on arrival for the same reason as the issue
+    // time — a digest may extend the expiry it is stated against. A later copy without one (a
+    // second bot older than revision 12) does not erase it.
+    beginsAt: warning.begins_min != null
+      ? dateFromUnixMinutes(warning.begins_min)
+      : (existing?.beginsAt ?? null)
   })
   state.missingFromDigest = state.missingFromDigest.filter((held) => identityKey(held) !== key)
   // The replacement for an upgraded warning comes from the same office over the same

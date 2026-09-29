@@ -72,10 +72,13 @@ export const WeatherAlertNotificationKeys = Object.freeze({
  * - `botName`: the bot's advertised name where the phone knows it, "WX-AUS".
  * - `isLate`: the message was drained from the radio's queue at connect, so the warning was sent
  *   while the radio was out of range.
+ * - `beginsAt`: when the warning takes effect, where that is later than its issuance (spec §3,
+ *   revision 12) — the stored copy's `WeatherStoredWarning.beginsAt`, not the message's own, which
+ *   a later copy from an older bot may lack. Null for a product in effect from issuance.
  */
 export const WeatherAlertNotificationSubject = {
-  make({ warning, placeLabel, placement, botName = null, isLate = false, now }) {
-    return { warning, placeLabel, placement, botName, isLate, now }
+  make({ warning, placeLabel, placement, botName = null, isLate = false, now, beginsAt = null }) {
+    return { warning, placeLabel, placement, botName, isLate, now, beginsAt }
   },
 
   expiresAt(subject) { return dateFromUnixMinutes(subject.warning.expires_min) }
@@ -113,7 +116,11 @@ export const WeatherAlertDefaultCopy = {
     } else {
       parts.push(place)
     }
-    parts.push(t('weather.notifications.until', clockTime(WeatherAlertNotificationSubject.expiresAt(subject))))
+    parts.push(window({
+      beginsAt: subject.beginsAt ?? null,
+      expiresAt: WeatherAlertNotificationSubject.expiresAt(subject),
+      now: subject.now
+    }))
     // One tag, the one the warning is being called for: a lock screen is not the place for the
     // whole line the alerts card carries.
     const tag = firstTag(subject.warning)
@@ -135,8 +142,20 @@ export const WeatherAlertDefaultCopy = {
    */
   shortName,
 
-  /** "9:41 PM" on the phone's clock. */
-  clockTime,
+  /**
+   * "until 9:41 PM", or "from Wed 7:00 PM until Fri 7:00 PM" for a watch that has not started
+   * (spec §3, revision 12): the app's `WeatherFormatting.alertWindow` with `countdown: false`,
+   * which is what a notification says. The weather layer cannot import the app's formatting, so
+   * this is its own copy of the rule, as the Swift's fallback is.
+   */
+  window,
+
+  /**
+   * The app's `WeatherFormatting.alertClock`, on the locale's own 12- or 24-hour clock: the time
+   * alone today or within twelve hours ahead, the weekday and time within the six days after
+   * today, the date and time beyond.
+   */
+  clock,
 
   /**
    * The one tag worth a line in a notification: what the warning is being called for, in the
@@ -154,8 +173,33 @@ function shortName(label) {
   return comma <= 0 ? label : label.slice(0, comma)
 }
 
-function clockTime(date) {
-  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(date))
+function window({ beginsAt = null, expiresAt, now, timeZone, locale }) {
+  const until = clock(expiresAt, { now, timeZone, locale })
+  if (beginsAt == null || !(beginsAt > now)) return t('weather.alerts.untilOnly', until)
+  return t('weather.alerts.fromUntil', clock(beginsAt, { now, timeZone, locale }), until)
+}
+
+function clock(date, { now, timeZone, locale } = {}) {
+  const ahead = date - now
+  const days = civilDay(date, timeZone) - civilDay(now, timeZone)
+  // Two-digit hours on a 24-hour clock ("08:00"), bare on a 12-hour one ("8:00 AM"), in every
+  // form alike, as the app's `alertFormatter` chooses them.
+  const cycle = new Intl.DateTimeFormat(locale, { hour: 'numeric' }).resolvedOptions().hourCycle
+  const hour = cycle === 'h23' || cycle === 'h24' ? '2-digit' : 'numeric'
+  const format = (fields) =>
+    new Intl.DateTimeFormat(locale, { ...fields, hour, minute: '2-digit', timeZone }).format(new Date(date))
+  if (days === 0 || (ahead > 0 && ahead <= 12 * 3_600_000)) return format({})
+  if (ahead > 0 && days < 7) return format({ weekday: 'short' })
+  return format({ month: 'short', day: 'numeric' })
+}
+
+/** The civil day of `date` in `timeZone`, as whole days since the epoch. */
+function civilDay(date, timeZone) {
+  const fields = {}
+  const parts = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'numeric', day: 'numeric', timeZone })
+    .formatToParts(new Date(date))
+  for (const part of parts) fields[part.type] = Number(part.value)
+  return Math.floor(Date.UTC(fields.year, fields.month - 1, fields.day) / 86_400_000)
 }
 
 function distance(placement) {

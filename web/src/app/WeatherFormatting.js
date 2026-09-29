@@ -67,15 +67,13 @@ export const WeatherFormatting = Object.freeze({
     return t('weather.time.old', WeatherFormatting.duration({ seconds: (now - date) / 1000 }))
   },
 
-  /** "in 40 min", "in 1 h 20 min", "in 2 h". */
-  countdown({ minutes: raw }) {
+  /** "40 min", "1 h 20 min", "2 h": how long is left on an alert, in whole minutes. */
+  timeLeft({ minutes: raw }) {
     const minutes = Math.max(0, raw)
-    if (minutes < 60) return t('weather.time.within', t('weather.unit.minutes', minutes))
+    if (minutes < 60) return t('weather.unit.minutes', minutes)
     const hours = Math.floor(minutes / 60)
     const rest = minutes % 60
-    const words =
-      rest === 0 ? t('weather.unit.hours', hours) : t('weather.unit.hoursMinutes', hours, rest)
-    return t('weather.time.within', words)
+    return rest === 0 ? t('weather.unit.hours', hours) : t('weather.unit.hoursMinutes', hours, rest)
   },
 
   /** "45 min" or "5 h", for how long a feed has been quiet. */
@@ -85,14 +83,65 @@ export const WeatherFormatting = Object.freeze({
       : t('weather.unit.hours', Math.floor(minutes / 60))
   },
 
-  /** "until 11:41 PM · in 40 min". */
-  untilLine({ expiresAt, now, timeZone, locale }) {
+  // MARK: - When an alert applies (spec §10.2, revision 12; docs/MESHWX_UI.md §3.1 U-49)
+
+  /**
+   * The longest an alert can have left and still count down: twelve hours. Past it, the day and
+   * the time say when it ends and a count of hours says nothing more.
+   */
+  alertCountdownMinutes: 12 * 60,
+
+  /**
+   * A moment an alert starts or ends. **Today, or within 12 hours ahead:** the time alone
+   * ("19:00", "7:00 PM"). **Within 7 days ahead:** the abbreviated weekday and the time
+   * ("Fri 19:00", "Fri 7:00 PM"). **Beyond:** the abbreviated month, day and time, the form
+   * `clockTime` uses for another day. Always the locale's own 12- or 24-hour clock, never a
+   * pattern (see `alertFormatter` for the hour's width).
+   *
+   * "Within 12 hours" is the countdown's own bound, `≤ 720` minutes, so a line that counts
+   * down never names a weekday for the moment it counts down to. "Within 7 days" is by the
+   * calendar — the next six days — because a weekday a whole week ahead is today's name, and
+   * "Tue 8:00 AM" said on a Tuesday means this one.
+   */
+  alertClock(date, { now, timeZone, locale } = {}) {
+    const days = civilDay(date, timeZone) - civilDay(now, timeZone)
+    const soon = date > now && date - now <= WeatherFormatting.alertCountdownMinutes * 60_000
+    if (days === 0 || soon) return alertFormatter('time', locale, timeZone).format(date)
+    if (days >= 1 && days < 7) return alertFormatter('weekday', locale, timeZone).format(date)
+    return alertFormatter('date', locale, timeZone).format(date)
+  },
+
+  /**
+   * When an alert applies, everywhere a screen or a notification says so (spec §10.2):
+   *
+   * - **Not in effect yet** (`beginsAt` later than now): "from Wed 19:00 until Fri 19:00".
+   *   Nothing counts down to an expiry that has not begun.
+   * - **In effect, ending within 12 hours**, with `countdown`: "until 23:41 · 40 min left".
+   * - **In effect, ending later**, or without `countdown`: "until Fri 19:00".
+   *
+   * Replaces the revision 11 `untilLine`, which put "in 81 h 28 min" beside a date that already
+   * said when a Flood Watch ends, and showed that watch — issued Tuesday 09:24 for "Wednesday
+   * evening through Friday evening" — as in force two days before it began. Notifications pass
+   * `countdown: false`: "40 min left" in a notification centre is stale the moment it is read.
+   *
+   * `beginsAt` is the alert's start (`WeatherAlertItem.beginsAt`), null when the product is in
+   * effect from issuance. The time left is rounded up to the minute, so an alert in effect is
+   * never said to have none.
+   */
+  alertWindow({ beginsAt = null, expiresAt, now, timeZone, locale, countdown = true }) {
+    const clock = (date) => WeatherFormatting.alertClock(date, { now, timeZone, locale })
+    if (beginsAt != null && beginsAt > now) {
+      return t('weather.alerts.fromUntil', clock(beginsAt), clock(expiresAt))
+    }
     const minutes = Math.ceil((expiresAt - now) / 60000)
-    return t(
-      'weather.alerts.until',
-      WeatherFormatting.clockTime(expiresAt, { now, timeZone, locale }),
-      WeatherFormatting.countdown({ minutes }),
-    )
+    if (countdown && minutes <= WeatherFormatting.alertCountdownMinutes) {
+      return t(
+        'weather.alerts.until',
+        clock(expiresAt),
+        t('weather.alerts.left', WeatherFormatting.timeLeft({ minutes })),
+      )
+    }
+    return t('weather.alerts.untilOnly', clock(expiresAt))
   },
 
   // MARK: - Distance
@@ -360,6 +409,29 @@ function dateTimeFormatter(locale, timeZone) {
       timeZone,
     }),
   )
+}
+
+/**
+ * `alertClock`'s three forms — the time, the weekday and time, the month, day and time — with
+ * one hour style between them, the locale's own.
+ *
+ * On a 24-hour clock the hour is two digits ("08:00", "Wed 08:00", "6 Oct, 08:00"), as the phone
+ * writes it; on a 12-hour clock it is bare ("8:00 AM"). Asked for a `numeric` hour, ICU pads it
+ * beside a weekday and not alone, so one line could read "from 0:30 until Wed 08:01"; the width
+ * is chosen from the locale's `hourCycle` instead, and nothing is spelled as a pattern.
+ */
+function alertFormatter(form, locale, timeZone) {
+  return cached(`a${form}|${locale ?? ''}|${timeZone ?? ''}`, () => {
+    const fields = { hour: alertHourWidth(locale), minute: '2-digit', timeZone }
+    if (form === 'weekday') fields.weekday = 'short'
+    if (form === 'date') Object.assign(fields, { month: 'short', day: 'numeric' })
+    return new Intl.DateTimeFormat(locale, fields)
+  })
+}
+
+function alertHourWidth(locale) {
+  const cycle = new Intl.DateTimeFormat(locale, { hour: 'numeric' }).resolvedOptions().hourCycle
+  return cycle === 'h23' || cycle === 'h24' ? '2-digit' : 'numeric'
 }
 
 function partsFormatter(locale, timeZone) {

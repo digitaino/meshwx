@@ -106,8 +106,13 @@ export function WeatherAlertDetailScreen({ app, page, identity }) {
             page?.placeName != null
               ? h('p', { class: 'detail-head__covers' }, words.coversLine(item.placement, page.placeName))
               : null,
+            // "from Wed 19:00 until Fri 19:00" for a watch not yet in effect (spec §10.2,
+            // revision 12); the countdown only for what is in effect and ends soon.
             item.kind?.kind === 'active'
-              ? h('p', null, words.until(WeatherAlertItem.expiresAt(item)))
+              ? h('p', null, words.alertWindow({
+                beginsAt: item.beginsAt ?? null,
+                expiresAt: WeatherAlertItem.expiresAt(item),
+              }))
               : Line(words.alertQualifier(item, null), { warn: true }),
             // Since revision 5 the wire carries when NWS issued the warning, and that is the
             // time worth showing: a radio out of range for three hours still says *issued

@@ -61,16 +61,25 @@ export function identityKey(identity) {
  *   back off the warning because a digest may later extend the expiry and the instant a warning
  *   was issued never moves.
  * - `source`: where the bot got this warning (spec §2.2, revision 7).
+ * - `beginsAt`: when the product takes effect, where that is later than its issuance (spec §3,
+ *   revision 12). Null for a product in effect from issuance and for one from a bot older than
+ *   revision 12. Stored and resolved once, exactly like `issuedAt` and for the same reason: the
+ *   wire says it as minutes before the expiry, a digest can extend the expiry, and a start read
+ *   back against the new one would walk forward.
  */
 export const WeatherStoredWarning = {
-  make({ warning, receivedAt, updateCount = 0, seq = null, issuedAt = null, source = UNSTATED_SOURCE }) {
-    return { warning, receivedAt, updateCount, seq, issuedAt, source }
+  make({
+    warning, receivedAt, updateCount = 0, seq = null, issuedAt = null, source = UNSTATED_SOURCE,
+    beginsAt = null
+  }) {
+    return { warning, receivedAt, updateCount, seq, issuedAt, source, beginsAt }
   },
 
   /**
    * A record read back from persisted JSON. `source` arrived with revision 7, so a state file
    * written before it reads as unstated rather than failing: the warning is still the last one
-   * the bot sent.
+   * the bot sent. `beginsAt` arrived with revision 12 and reads the same way, as no start: what
+   * the phone believed when it saved.
    */
   decode(json) {
     return {
@@ -79,7 +88,8 @@ export const WeatherStoredWarning = {
       updateCount: json.updateCount ?? 0,
       seq: json.seq ?? null,
       issuedAt: json.issuedAt ?? null,
-      source: json.source ?? UNSTATED_SOURCE
+      source: json.source ?? UNSTATED_SOURCE,
+      beginsAt: json.beginsAt ?? null
     }
   },
 

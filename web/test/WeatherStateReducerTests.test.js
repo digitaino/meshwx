@@ -139,6 +139,48 @@ describe('WeatherStateReducer', () => {
     assert.equal(stored.warning.issued_min, F.t0Minutes - 21)
   })
 
+  // Spec §3, revision 12: a watch issued before it takes effect carries its start, stored once
+  // like the issue time. A later copy without one — a second bot older than revision 12 — does
+  // not erase it, and a moved start replaces it.
+  it("a warning's start is stored, kept across a later copy without one, and replaced by a moved one", () => {
+    const bot = new Bot()
+    const watch = (seq, beginsMinutes, isUpdate = false) => F.warning({
+      seq, isUpdate, expiresMinutes: F.t0Minutes + 4896, issuedMinutes: F.t0Minutes, beginsMinutes
+    })
+    bot.apply(watch(1, F.t0Minutes + 2016), F.t0)
+    let stored = held(bot.state, F.svw42)
+    assert.equal(stored.beginsAt, dateFromUnixMinutes(F.t0Minutes + 2016))
+
+    bot.apply(watch(2, null, true), F.t0 + minutes(1))
+    stored = held(bot.state, F.svw42)
+    assert.equal(stored.beginsAt, dateFromUnixMinutes(F.t0Minutes + 2016), 'a copy without a start keeps it')
+    assert.equal(stored.warning.begins_min, null, 'the message itself carried none')
+
+    bot.apply(watch(3, F.t0Minutes + 1800, true), F.t0 + minutes(2))
+    assert.equal(held(bot.state, F.svw42).beginsAt, dateFromUnixMinutes(F.t0Minutes + 1800))
+
+    // A warning in effect from issuance has none, and says so.
+    const other = new Bot()
+    other.apply(F.warning({ seq: 1, issuedMinutes: F.t0Minutes - 21 }), F.t0)
+    assert.equal(held(other.state, F.svw42).beginsAt, null)
+  })
+
+  // The start is stated against the expiry just as the issue time is, so a digest extending the
+  // expiry must not move it.
+  it('a digest extending the expiry leaves the start where it was', () => {
+    const bot = new Bot()
+    bot.apply(
+      F.warning({
+        seq: 1, expiresMinutes: F.t0Minutes + 45, issuedMinutes: F.t0Minutes - 21, beginsMinutes: F.t0Minutes + 10
+      }),
+      F.t0
+    )
+    bot.apply(F.digest({ seq: 2, nowMinutes: F.t0Minutes, entries: [[F.svw42, 120]] }), F.t0)
+    const stored = held(bot.state, F.svw42)
+    assert.equal(stored.warning.expires_min, F.t0Minutes + 120, 'the digest extended it')
+    assert.equal(stored.beginsAt, dateFromUnixMinutes(F.t0Minutes + 10))
+  })
+
   it('a cancel removes the identity and says why', () => {
     const bot = new Bot()
     bot.apply(F.warning({ seq: 1 }), F.t0)

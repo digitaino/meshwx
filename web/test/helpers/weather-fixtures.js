@@ -37,7 +37,8 @@ function header({ seq, type, name, flags = 0, bot: from = botID }) {
 /**
  * `issuedMinutes` puts the warning into the revision 5 form (spec §3): flags nibble bit 1 and
  * the issue time, which the wire carries as the gap back from `expires_min` and the decoder
- * resolves to the absolute minute.
+ * resolves to the absolute minute. `beginsMinutes` is the revision 12 start, resolved the same
+ * way; it has no flag bit.
  */
 export function warning({
   seq,
@@ -46,6 +47,7 @@ export function warning({
   isUpdate = false,
   windMph = 60,
   issuedMinutes = null,
+  beginsMinutes = null,
   source = 0,
   polygon = [[30.52, -97.98], [30.61, -97.62], [30.38, -97.41]],
   areas = [{ state: 42, county: true, start: 453, run: 1 }],
@@ -68,7 +70,8 @@ export function warning({
     source,
     polygon,
     areas,
-    issued_min: issuedMinutes
+    issued_min: issuedMinutes,
+    begins_min: beginsMinutes
   }
 }
 

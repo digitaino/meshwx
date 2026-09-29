@@ -59,6 +59,8 @@ describe('MeshWX vectors', () => {
     assert.ok(vectors.some((v) => v.name === 'radar_tile_coarse_partial'));
     assert.ok(vectors.some((v) => v.name === 'request_radar'));
     assert.ok(vectors.some((v) => v.name === 'not_available_radar'));
+    // Revision 12's one: a watch issued a day and a half before it takes effect.
+    assert.ok(vectors.some((v) => v.name === 'warning_upcoming_watch'));
   });
 
   describe('decodesToTheDocumentedFields', () => {
@@ -187,6 +189,45 @@ describe('MeshWX vectors', () => {
     const oldWarning = decode(oldBytes);
     assert.equal(MeshWXWarning.issuedBeforeMinutes(oldWarning), null);
     assert.equal(MeshWXWarning.issuedMinutes(oldWarning), null);
+  });
+
+  /**
+   * Spec §3, revision 12: FA.A.EWX.8, issued at `NOW`, takes effect 2016 minutes later
+   * (33 h 36 min) and expires 4896 minutes after issuance. The start is the last two bytes —
+   * 2880 minutes before the expiry — after the issue time, with no flag bit of its own.
+   */
+  test('theUpcomingWatchVectorCarriesItsStartAfterTheIssueTime', () => {
+    const entry = vector('warning_upcoming_watch');
+    assert.ok(entry);
+    const data = hexToBytes(entry.hex);
+    assert.equal(data.length, 28);
+    assert.deepStrictEqual(data.subarray(data.length - 4), Uint8Array.from([0x20, 0x13, 0x40, 0x0b]),
+      '4896 then 2880, little-endian');
+
+    const watch = decode(data);
+    assert.deepStrictEqual({ event: watch.event, office: watch.office, etn: watch.etn }, { event: 10, office: 35, etn: 8 });
+    assert.equal(tables.vtec({ for: watch.event }), 'FA.A');
+    assert.equal(tables.officeCode(watch.office), 'EWX');
+    assert.equal(watch.flags & MeshWXWire.flagWarningIssued, MeshWXWire.flagWarningIssued);
+    assert.equal(MeshWXWarning.issuedBeforeMinutes(watch), 4896);
+    assert.equal(MeshWXWarning.beginsBeforeMinutes(watch), 2880);
+    assert.equal(MeshWXWarning.issuedMinutes(watch), 29_823_900);
+    assert.equal(MeshWXWarning.beginsMinutes(watch), 29_823_900 + 2016, '33 h 36 min after issuance');
+    assert.equal(watch.begins_min, entry.decoded.begins_min);
+    assert.equal(watch.expires_min, 29_823_900 + 4896);
+    assert.deepStrictEqual(encode(watch), data);
+
+    // What a revision 11 app saw: the same message ending at the issue time.
+    const old = decode(data.subarray(0, data.length - 2));
+    assert.equal(old.begins_min, null);
+    assert.equal(old.issued_min, watch.issued_min);
+
+    // Every other warning vector says it was in effect from issuance.
+    for (const other of vectors) {
+      if (other.decoded.type !== MeshWXMessageType.warning || other.name === entry.name) continue;
+      assert.equal(other.decoded.begins_min, null, other.name);
+      assert.equal(decode(hexToBytes(other.hex)).begins_min, null, other.name);
+    }
   });
 
   /**

@@ -62,7 +62,7 @@ test('the development scaffolding stays behind', async () => {
 test('the README says which build it is', async () => {
   const readme = await readFile(join(full, 'README.md'), 'utf8')
   const stamp = readme.split('\n')[2]
-  assert.match(stamp, /^\*MeshWX \d{4}-\d{2}-\d{2},.*protocol bundle 15\.\*$/)
+  assert.match(stamp, /^\*MeshWX \d{4}-\d{2}-\d{2},.*protocol bundle 16\.\*$/)
   assert.doesNotMatch(readme, /without the zone and county outlines/)
 })
 

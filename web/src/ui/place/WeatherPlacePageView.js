@@ -33,7 +33,7 @@ import { WeatherForecastSection } from './WeatherForecastSection.js'
 import { WeatherRadarSection } from './WeatherRadarSection.js'
 import {
   alertQualifier, attempt, bannerText, eventName, eventSymbol, eventTint, nowOf, placeNameOf, placeRowText,
-  radioRowText, screenFor, sourceNameOf, untilLine, WeatherReportProduct,
+  radioRowText, screenFor, sourceNameOf, alertWindow, WeatherReportProduct,
 } from './support.js'
 
 /**
@@ -153,11 +153,13 @@ export function WeatherWarningBannerSection({ app, screen, banner, onOpen }) {
   const symbol = eventSymbol({ for: event, tables })
   const name = eventName(event, { tables }) ?? ''
 
-  // "until 9:41 PM · in 40 min" for a live warning; for one that just ended, or an upgrade whose
-  // replacement never came, what became of it instead.
+  // "until 9:41 PM · 40 min left" for a live warning, "from Wed 7:00 PM until Fri 7:00 PM" for a
+  // watch not yet in effect (spec §10.2, revision 12); for one that just ended, or an upgrade
+  // whose replacement never came, what became of it instead.
   const now = nowOf(screen, app)
   const qualifier = alertQualifier(item, { placeName: placeNameOf(screen), now })
-    ?? untilLine({
+    ?? alertWindow({
+      beginsAt: item.beginsAt ?? null,
       expiresAt: attempt(() => WeatherAlertItem.expiresAt(item)),
       now,
       timeZone: app?.timeZone,

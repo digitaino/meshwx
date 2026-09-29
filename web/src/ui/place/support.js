@@ -90,8 +90,10 @@ export const ago = (date, { now } = {}) => format('ago', [date, { now }])
 
 export const age = (date, { now } = {}) => format('age', [date, { now }])
 
-export const untilLine = ({ expiresAt, now, timeZone, locale }) =>
-  format('untilLine', [{ expiresAt, now, timeZone, locale }], () => plainTime(expiresAt, timeZone, locale))
+/** When an alert applies (spec §10.2, revision 12). The fallback is the end's bare clock time. */
+export const alertWindow = ({ beginsAt = null, expiresAt, now, timeZone, locale, countdown = true }) =>
+  format('alertWindow', [{ beginsAt, expiresAt, now, timeZone, locale, countdown }],
+    () => plainTime(expiresAt, timeZone, locale))
 
 export const condition = (sky) => format('condition', [sky])
 

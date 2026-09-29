@@ -216,7 +216,11 @@ export class WeatherAlertNotifier {
         placement,
         botName: await this.#name(held.botID),
         isLate: decision.isLate,
-        now
+        now,
+        // Revision 12: the copy's own start, else another bot's, as the alerts list reads it
+        // (`WeatherAlertItems.make`): a bot older than revision 12 saying nothing is not a bot
+        // saying the watch has begun.
+        beginsAt: held.stored.beginsAt ?? firstStatedStart(identity, { in: states })
       })
       await this.poster.post(WeatherAlertNotification.make({
         identifier,
@@ -371,4 +375,18 @@ export class WeatherAlertNotifier {
     this.queue = run.then(() => undefined, () => undefined)
     return run
   }
+}
+
+/**
+ * The start stated by the first bot, in bot order, whose copy of `identity` carries one (spec §3,
+ * revision 12), or null. The Swift's `states.keys.sorted()` walk.
+ */
+function firstStatedStart(identity, { in: states }) {
+  const key = identityKey(identity)
+  const botIDs = Object.keys(states ?? {}).map(Number).sort((lhs, rhs) => lhs - rhs)
+  for (const botID of botIDs) {
+    const beginsAt = states[String(botID)]?.warnings?.[key]?.beginsAt
+    if (beginsAt != null) return beginsAt
+  }
+  return null
 }
