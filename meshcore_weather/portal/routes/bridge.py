@@ -146,18 +146,16 @@ async def bridge_request(request: Request) -> JSONResponse:
     logger.info("Bridge: %s requested %r -> %s", client, text[:40], outcome)
 
     if outcome == "rate limited":
-        from meshcore_weather.protocol.broadcaster import PER_SENDER_S
         return JSONResponse({"ok": False, "accepted": False, "outcome": "rate_limited",
-                             "retry_after": PER_SENDER_S, "detail": outcome})
-    if outcome == "hourly budget spent":
+                             "retry_after": float(settings.app_sender_gap_s), "detail": outcome})
+    if outcome.startswith("hourly budget spent"):           # with or without the "busy" it was told
         return JSONResponse({"ok": False, "accepted": False, "outcome": "budget_spent",
                              "detail": outcome})
     # A `>part` whose every packet went out again in the last 30 s (spec 7C.2).
     # Nothing was sent, so there is nothing for a client to confirm.
     if outcome == "already resent":
-        from meshcore_weather.protocol.broadcaster import PART_RESEND_FLOOR_S
         return JSONResponse({"ok": False, "accepted": False, "outcome": "already_resent",
-                             "retry_after": PART_RESEND_FLOOR_S, "detail": outcome})
+                             "retry_after": float(settings.part_resend_floor_s), "detail": outcome})
     m = _OUTCOME_SENT.match(outcome)
     return JSONResponse({
         "ok": True, "accepted": True, "outcome": "sent",

@@ -289,6 +289,47 @@ def test_env_settings_apply_live_where_possible(client, tmp_path, monkeypatch):
     assert "MCW_TIMEZONE=America/New_York" in (tmp_path / ".env").read_text()
 
 
+def test_the_limits_are_set_from_the_portal_and_apply_at_once(client, tmp_path, monkeypatch):
+    """2026-10-01: the app budget ran out at 13:35 and nobody could change it
+    without a deploy. Every limit is a setting now, saved to .env and live."""
+    c, bot = client
+    for key in ("app_packets_per_hour", "app_sender_gap_s", "sweep_window_s", "text_replies_per_hour"):
+        monkeypatch.setattr(settings, key, getattr(settings, key))       # restored after the test
+    r = c.post("/api/settings/env", json={"MCW_APP_PACKETS_PER_HOUR": "500", "MCW_APP_SENDER_GAP_S": "1.5",
+                                          "MCW_SWEEP_WINDOW_S": "120", "MCW_TEXT_REPLIES_PER_HOUR": "800"}).json()
+    assert sorted(r["applied"]) == ["MCW_APP_PACKETS_PER_HOUR", "MCW_APP_SENDER_GAP_S",
+                                    "MCW_SWEEP_WINDOW_S", "MCW_TEXT_REPLIES_PER_HOUR"]
+    assert r["restart_needed"] == []
+    assert (settings.app_packets_per_hour, settings.app_sender_gap_s) == (500, 1.5)
+    assert settings.sweep_window_s == 120 and settings.text_replies_per_hour == 800
+    assert "MCW_APP_PACKETS_PER_HOUR=500" in (tmp_path / ".env").read_text()
+    # The card says what is in force.
+    bot._broadcaster = SimpleNamespace(_sent=[], _last_by_sender={}, _last_sweep_at=0.0)
+    by_id = {r["id"]: r for r in c.get("/api/limits").json()["rows"]}
+    assert by_id["budget"]["rule"].startswith("500 packets an hour") and by_id["budget"]["cap"] == 500
+    assert "every 1.5 s" in by_id["sender"]["rule"] and "every 2 min" in by_id["sweep"]["rule"]
+    assert by_id["text"]["rule"].startswith("800 an hour in all")
+    # A budget of nothing is switching the bot off, which is another setting.
+    assert c.post("/api/settings/env", json={"MCW_APP_PACKETS_PER_HOUR": "0"}).status_code == 400
+    assert c.post("/api/settings/env", json={"MCW_APP_SENDER_GAP_S": "soon"}).status_code == 400
+
+
+def test_the_limit_defaults_are_the_documented_ones():
+    from meshcore_weather.config import Settings
+    from meshcore_weather.main import WeatherBot
+    from meshcore_weather.protocol import broadcaster as bc
+    d = Settings.model_fields
+    assert d["app_packets_per_hour"].default == bc.PER_HOUR
+    assert d["app_sender_gap_s"].default == bc.PER_SENDER_S
+    assert d["sweep_window_s"].default == bc.SWEEP_COOLDOWN_S
+    assert d["radar_window_s"].default == bc.RADAR_COOLDOWN_S
+    assert d["part_resend_floor_s"].default == bc.PART_RESEND_FLOOR_S
+    assert d["text_replies_per_sender_per_hour"].default == WeatherBot.REPLIES_PER_SENDER_PER_HOUR
+    assert d["text_replies_per_hour"].default == WeatherBot.REPLIES_PER_HOUR
+    assert d["stranger_replies_per_hour"].default == WeatherBot.CHANNEL_REPLY_PER_HOUR
+    assert d["stranger_reply_gap_s"].default == WeatherBot.CHANNEL_REPLY_PER_SENDER_S
+
+
 def test_mutations_need_the_portal_header(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(settings, "tx_enabled", False)       # the Pi's .env has TX on
@@ -407,7 +448,7 @@ def test_limits_are_visible_and_resettable(client, monkeypatch):
     now = time.time()
     bot._broadcaster = SimpleNamespace(
         _sent=[now - 60] * bc.PER_HOUR,
-        _last_by_sender={"abc": now - 1.0},
+        _last_by_sender={"abc": now - 0.5},
         _last_sweep_at=now - 60,
     )
     rows = c.get("/api/limits").json()["rows"]

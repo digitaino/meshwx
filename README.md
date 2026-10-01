@@ -176,8 +176,9 @@ send channel datagrams (`CMD_SEND_CHANNEL_DATA`, 0x3E).
 | `>sat` | The bot's GOES receiver, one line of Text |
 | `>cov` | What this bot covers: centre, radius, NWS offices, zone runs. One packet, also broadcast every 3 h |
 
-Limits: one request per sender every 5 s and 60 answer packets per hour
-across all senders. A `>` sent as a DM also counts against the text-command
+Limits: one request per sender every 2 s and 240 answer packets per hour
+across all senders, then "busy" (Not available, reason 4); the operator sets
+both on the portal's Text bot page. A `>` sent as a DM also counts against the text-command
 limits; a Request datagram and a `>` line on the channel do not. One phone
 is one sender however it asks: the six key bytes in a datagram are the same
 prefix its DMs carry. A resend (the same sender, text and timestamp) is
@@ -721,8 +722,10 @@ started on the channel continues by DM. A paging session lasts 15 minutes.
 Limits: one reply per sender every 5 seconds (2 seconds for `more`), at most
 40 per sender and 400 in total per hour; a `>` request sent by DM counts
 too. A `>` request that arrives as a Request datagram or as channel text does
-not: it meets only the app limits (5 s per sender, 60 answer packets an
-hour). Anything over a limit gets no reply. A resend of a request is never
+not: it meets only the app limits (2 s per sender, 240 answer packets an
+hour, then "busy"). Anything else over a limit gets no reply. Every number
+here is a setting, changed live on the portal's Text bot page under Limits
+and cooldowns. A resend of a request is never
 held to the 5 seconds and costs nothing unless something is sent for it; a
 `>` request sent again, by datagram or by DM, is answered again only 12
 seconds after the last answer went out.
@@ -860,7 +863,7 @@ right.
 - **Channel isolation**: the radio driver never transmits on channel 0 (public) and sends only on the bot's configured text and data channel slots.
 - **Receive-only switch**: `MCW_TX_ENABLED=false` turns every advert, reply, datagram and resend into a logged no-op.
 - **Text reply limits**: 5 seconds per sender, 40 per sender and 400 in total per hour; a sender the bot cannot DM gets at most one channel reply per 10 minutes, 12 per hour overall, and only within the hop limit.
-- **App request limits**: 5 seconds per sender and 60 answer packets per hour, checked before an answer is built.
+- **App request limits**: 2 seconds per sender and 240 answer packets per hour, checked before an answer is built; over the budget, one "busy" a minute per radio. Every limit is a setting (`MCW_APP_PACKETS_PER_HOUR`, `MCW_APP_SENDER_GAP_S`, `MCW_SWEEP_WINDOW_S`, `MCW_RADAR_WINDOW_S`, `MCW_PART_RESEND_FLOOR_S`, `MCW_TEXT_REPLIES_PER_HOUR`, `MCW_TEXT_REPLIES_PER_SENDER_PER_HOUR`, `MCW_STRANGER_REPLIES_PER_HOUR`, `MCW_STRANGER_REPLY_GAP_S`), set live on the portal.
 - **Resend limits**: one resend per packet by default, 30 per hour, none while no repeater has been heard for 10 minutes.
 - **Input sanitization**: control characters are stripped, messages cut to 200 characters and places to 50.
 - **Admin authentication**: admin commands only by DM, matched on the sender's public key, not their name.

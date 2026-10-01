@@ -85,6 +85,40 @@
           <button class="btn btn-mini" onclick="Portal.limits.refresh()">Refresh</button>
         </div>
         <div id="limits-body" class="limits"></div>
+        <div class="mt-4">
+          <label class="form-label">App answers</label>
+          <div class="grid grid-3 mb-2">
+            <div><label class="form-label" for="env-MCW_APP_PACKETS_PER_HOUR">Packets per hour, every app together</label>
+              <input class="input" type="number" min="1" max="5000" id="env-MCW_APP_PACKETS_PER_HOUR"></div>
+            <div><label class="form-label" for="env-MCW_APP_SENDER_GAP_S">One app's requests, at most every (s)</label>
+              <input class="input" type="number" min="0.5" max="60" step="0.5" id="env-MCW_APP_SENDER_GAP_S"></div>
+            <div><label class="form-label" for="env-MCW_PART_RESEND_FLOOR_S">The same missing packet again after (s)</label>
+              <input class="input" type="number" min="0" max="600" id="env-MCW_PART_RESEND_FLOOR_S"></div>
+            <div><label class="form-label" for="env-MCW_SWEEP_WINDOW_S">Alert map of the same area again after (s)</label>
+              <input class="input" type="number" min="0" max="3600" id="env-MCW_SWEEP_WINDOW_S"></div>
+            <div><label class="form-label" for="env-MCW_RADAR_WINDOW_S">The same radar tile again after (s)</label>
+              <input class="input" type="number" min="0" max="3600" id="env-MCW_RADAR_WINDOW_S"></div>
+          </div>
+          <label class="form-label">Text replies</label>
+          <div class="grid grid-3 mb-2">
+            <div><label class="form-label" for="env-MCW_TEXT_REPLIES_PER_HOUR">Per hour, everyone</label>
+              <input class="input" type="number" min="1" max="10000" id="env-MCW_TEXT_REPLIES_PER_HOUR"></div>
+            <div><label class="form-label" for="env-MCW_TEXT_REPLIES_PER_SENDER_PER_HOUR">Per hour, one person</label>
+              <input class="input" type="number" min="1" max="1000" id="env-MCW_TEXT_REPLIES_PER_SENDER_PER_HOUR"></div>
+          </div>
+          <label class="form-label">Channel replies to strangers (reply mode DM only)</label>
+          <div class="grid grid-3 mb-2">
+            <div><label class="form-label" for="env-MCW_STRANGER_REPLIES_PER_HOUR">Per hour</label>
+              <input class="input" type="number" min="1" max="1000" id="env-MCW_STRANGER_REPLIES_PER_HOUR"></div>
+            <div><label class="form-label" for="env-MCW_STRANGER_REPLY_GAP_S">The same person again after (s)</label>
+              <input class="input" type="number" min="0" max="86400" id="env-MCW_STRANGER_REPLY_GAP_S"></div>
+          </div>
+          <span class="form-hint mb-4">Saved to .env and applied at once. Every answer floods the mesh, so a higher limit spends other people's airtime. The apps space their own requests 5 s apart. Once the app packets are spent, a request is answered "busy", once a minute per radio; a radar request gets no reply, because both apps read a radar refusal as "sent a few minutes ago".</span>
+          <div class="flex gap-2 mb-2 mt-2" style="align-items:center">
+            <button class="btn btn-primary" onclick="Portal.limits.save(this)">Save limits</button>
+            <span id="limits-status" class="text-small text-muted"></span>
+          </div>
+        </div>
       </div>
 
       <div class="grid grid-2">

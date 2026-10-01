@@ -44,6 +44,13 @@ ENV_WRITABLE = {
     "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN",
 }
 
+# The limits on what the bot spends answering (config.py), set on the Text bot
+# page's "Limits and cooldowns" card and applied live.
+LIMIT_KEYS = ("MCW_APP_PACKETS_PER_HOUR", "MCW_APP_SENDER_GAP_S", "MCW_SWEEP_WINDOW_S", "MCW_RADAR_WINDOW_S",
+              "MCW_PART_RESEND_FLOOR_S", "MCW_TEXT_REPLIES_PER_SENDER_PER_HOUR", "MCW_TEXT_REPLIES_PER_HOUR",
+              "MCW_STRANGER_REPLIES_PER_HOUR", "MCW_STRANGER_REPLY_GAP_S")
+ENV_WRITABLE |= set(LIMIT_KEYS)
+
 # Radio presets an operator can apply with one click.
 RADIO_PRESETS = {
     "us_meshcore": {"label": "US MeshCore default", "freq_mhz": 910.525, "bw_khz": 62.5, "sf": 7, "cr": 5},
@@ -507,12 +514,12 @@ def _limit_rows(bot) -> list[dict]:
 
     if responder is not None:
         sent = [t for t in getattr(responder, "_sent", []) if now - t <= 3600]
-        cap = getattr(bc, "PER_HOUR", 60)
+        cap = settings.app_packets_per_hour
         spent = len(sent) >= cap
         rows.append({
             "id": "budget",
             "name": "App answer budget",
-            "rule": f"{cap} packets an hour, all app requests together",
+            "rule": f"{cap} packets an hour, all app requests together; then \"busy\"",
             "detail": f"{len(sent)} of {cap} packets in the last hour",
             "used": len(sent), "cap": cap,
             "state": "spent" if spent else "ready",
@@ -520,13 +527,13 @@ def _limit_rows(bot) -> list[dict]:
             "resettable": True,
         })
 
-        floor = getattr(bc, "PER_SENDER_S", 5.0)
+        floor = settings.app_sender_gap_s
         waiting = {k: v for k, v in getattr(responder, "_last_by_sender", {}).items()
                    if now - v < floor}
         rows.append({
             "id": "sender",
             "name": "Per-sender floor",
-            "rule": f"one request every {floor:.0f} s from the same radio",
+            "rule": f"one request every {floor:g} s from the same radio",
             "detail": (f"{_radios(len(waiting))} inside the window"
                        if waiting else "nobody waiting"),
             "used": len(waiting), "cap": None,
@@ -538,7 +545,7 @@ def _limit_rows(bot) -> list[dict]:
         last_sweep = 0.0
         for attr in ("_last_sweep_at", "_last_sweep", "_sweep_at"):
             last_sweep = getattr(responder, attr, 0.0) or last_sweep
-        cooldown = getattr(bc, "SWEEP_COOLDOWN_S", 300.0)
+        cooldown = settings.sweep_window_s
         left = max(0.0, cooldown - (now - last_sweep)) if last_sweep else 0.0
         # Since revision 10 the window is per state, so the national figure is
         # only half the story: a scoped sweep of Texas holds Texas and nothing
@@ -551,7 +558,7 @@ def _limit_rows(bot) -> list[dict]:
         rows.append({
             "id": "sweep",
             "name": "Alert map sweep",
-            "rule": f"one sweep of the same ground every {cooldown / 60:.0f} min, whoever asks",
+            "rule": f"one sweep of the same ground every {_span(cooldown)}, whoever asks",
             "detail": ("never sent" if not last_sweep else
                        f"last national sweep {_ago(now - last_sweep)} ago")
                       + (f", {_states(len(cooling_states))} inside their own window"
@@ -574,7 +581,7 @@ def _limit_rows(bot) -> list[dict]:
                 "name": "Missing packet resends",
                 "rule": (f"the last {getattr(bc, 'PARTS_CACHE_GROUPS', 8)} multi-packet answers, "
                          f"kept {getattr(bc, 'PARTS_CACHE_S', 600.0) / 60:.0f} min; "
-                         f"one resend of a packet every {getattr(bc, 'PART_RESEND_FLOOR_S', 30.0):.0f} s"),
+                         f"one resend of a packet every {_span(settings.part_resend_floor_s)}"),
                 "detail": ("nothing held" if not held else
                            f"{held} group{'' if held == 1 else 's'} held "
                            f"({status['packets']} packets), oldest {_ago(status['oldest_age_s'])}"),
@@ -592,7 +599,7 @@ def _limit_rows(bot) -> list[dict]:
             from meshcore_weather.radar import service as radar_service
             radar = radar_service.shared().status()
             cooling = responder.radar_cooldowns(now)
-            window = getattr(bc, "RADAR_COOLDOWN_S", 300.0)
+            window = settings.radar_window_s
             products = radar.get("products") or {}
             fresh = [p for p, info in products.items()
                      if info.get("calibrated") and info.get("age_min", 999) <= 30]
@@ -600,7 +607,7 @@ def _limit_rows(bot) -> list[dict]:
                 "id": "radar",
                 "name": "Radar tiles",
                 "rule": (f"one packet an answer; the same tile of the same picture once "
-                         f"every {window / 60:.0f} min, whoever asks"),
+                         f"every {_span(window)}, whoever asks"),
                 "detail": ("no radar pictures: this bot has no dish directory" if not radar.get("available")
                            else f"{len(fresh)} of {len(products)} pictures under 30 min old"
                                 + (f", {len(cooling)} tile{'' if len(cooling) == 1 else 's'} inside the window"
@@ -612,15 +619,34 @@ def _limit_rows(bot) -> list[dict]:
             })
 
     replies = [t for t in getattr(bot, "_channel_replies", []) if now - t <= 3600]
-    per_hour = getattr(type(bot), "CHANNEL_REPLY_PER_HOUR", 12)
-    per_sender = getattr(type(bot), "CHANNEL_REPLY_PER_SENDER_S", 600)
+    # People's text commands: one budget per person and one for everyone.
+    hour_ago = time.time() - 3600
+    all_replies = [t for t in getattr(bot, "_all_replies", []) if t > hour_ago]
+    per_person = {k: len([t for t in v if t > hour_ago]) for k, v in getattr(bot, "_reply_history", {}).items()}
+    full = [k for k, n in per_person.items() if n >= settings.text_replies_per_sender_per_hour]
+    total_spent = len(all_replies) >= settings.text_replies_per_hour
+    rows.append({
+        "id": "text",
+        "name": "Text replies",
+        "rule": (f"{settings.text_replies_per_hour} an hour in all, "
+                 f"{settings.text_replies_per_sender_per_hour} to any one person"),
+        "detail": (f"{len(all_replies)} of {settings.text_replies_per_hour} this hour"
+                   + (f", {len(full)} {'person' if len(full) == 1 else 'people'} at their limit" if full else "")),
+        "used": len(all_replies), "cap": settings.text_replies_per_hour,
+        "state": "spent" if total_spent or full else "ready",
+        "opens_in_s": int(3600 - (now - min(all_replies))) if total_spent and all_replies else 0,
+        "resettable": bool(total_spent or full),
+    })
+
+    per_hour = settings.stranger_replies_per_hour
+    per_sender = settings.stranger_reply_gap_s
     holding = {k: v for k, v in getattr(bot, "_channel_reply_by_sender", {}).items()
                if now - v < per_sender}
     spent = len(replies) >= per_hour
     rows.append({
         "id": "channel",
         "name": "Channel replies to strangers",
-        "rule": f"{per_hour} an hour, and one per radio every {per_sender // 60} min",
+        "rule": f"reply mode DM only: {per_hour} an hour, and one per radio every {_span(per_sender)}",
         "detail": (f"{len(replies)} of {per_hour} this hour"
                    + (f", {_radios(len(holding))} inside their own window" if holding else "")),
         "used": len(replies), "cap": per_hour,
@@ -630,6 +656,16 @@ def _limit_rows(bot) -> list[dict]:
         "resettable": bool(replies or holding),
     })
     return rows
+
+
+def _span(seconds: float) -> str:
+    """'5 min', '90 s', '2 h': a window as the operator set it."""
+    seconds = float(seconds)
+    if seconds >= 3600 and seconds % 3600 == 0:
+        return f"{seconds / 3600:g} h"
+    if seconds >= 60 and seconds % 60 == 0:
+        return f"{seconds / 60:g} min"
+    return f"{seconds:g} s"
 
 
 def _radios(n: int) -> str:
@@ -679,6 +715,9 @@ async def limits_reset(request: Request) -> JSONResponse:
         responder._parts.clear_floors()
     elif which == "radar" and hasattr(responder, "clear_radar_cooldowns"):
         responder.clear_radar_cooldowns()
+    elif which == "text":
+        getattr(bot, "_all_replies", []).clear()
+        getattr(bot, "_reply_history", {}).clear()
     elif which == "channel":
         getattr(bot, "_channel_replies", []).clear()
         getattr(bot, "_channel_reply_by_sender", {}).clear()
@@ -881,14 +920,18 @@ _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADI
               "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
               "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE", "MCW_SDR_DASHBOARD_URL",
               "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
-              "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN"}
+              "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN"} | set(LIMIT_KEYS)
 
 # Value checks, run before anything touches .env: a bad value must never be
 # persisted, because the next start would refuse the file.
 _INT_KEYS = {"MCW_SERIAL_BAUD", "MCW_HOME_RADIUS_KM", "MCW_SDR_POLL_INTERVAL", "MCW_CHANNEL_REPLY_MAX_HOPS",
              "MCW_ADVERT_INTERVAL_HOURS", "MCW_CONTACT_KEEP_FREE", "MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR",
-             "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_RX_SILENT_MIN"}
-_FLOAT_KEYS = {"MCW_ECHO_WINDOW_S"}
+             "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_RX_SILENT_MIN"} | (set(LIMIT_KEYS) - {"MCW_APP_SENDER_GAP_S"})
+_FLOAT_KEYS = {"MCW_ECHO_WINDOW_S", "MCW_APP_SENDER_GAP_S"}
+# A budget of 0 would refuse everything: that is switching the bot off, which
+# is MCW_TX_ENABLED's job.
+_MIN_ONE_KEYS = {"MCW_APP_PACKETS_PER_HOUR", "MCW_TEXT_REPLIES_PER_SENDER_PER_HOUR", "MCW_TEXT_REPLIES_PER_HOUR",
+                 "MCW_STRANGER_REPLIES_PER_HOUR"}
 _BOOL_KEYS = {"MCW_TX_ENABLED", "MCW_CONTACT_HOUSEKEEPING"}
 _CHOICES = {"MCW_REPLY_MODE": ("dm", "channel", "dm_only"), "MCW_EMWIN_SOURCE": ("sdr", "internet"),
             "MCW_LOG_LEVEL": ("DEBUG", "INFO", "WARNING", "ERROR"), "MCW_SCOPE_MODE": ("stats", "decide"),
@@ -905,6 +948,8 @@ def _validate_updates(updates: dict[str, str]) -> None:
             raise HTTPException(400, f"{key}: must be a whole number")
         if key in _INT_KEYS and int(val) < 0:
             raise HTTPException(400, f"{key}: must not be negative")
+        if key in _MIN_ONE_KEYS and int(val) < 1:
+            raise HTTPException(400, f"{key}: must be 1 or more")
         if key in _FLOAT_KEYS:
             try:
                 if float(val) <= 0:
@@ -967,6 +1012,8 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
             coverage_changed = True
         elif key in ("MCW_SERIAL_PORT", "MCW_SERIAL_BAUD"):
             setattr(settings, key[4:].lower(), int(val) if key.endswith("BAUD") else val)
+        elif key in LIMIT_KEYS:
+            setattr(settings, key[4:].lower(), float(val) if key in _FLOAT_KEYS else int(val))
         applied.append(key)
     if coverage_changed:
         try:

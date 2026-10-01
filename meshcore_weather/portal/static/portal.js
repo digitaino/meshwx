@@ -421,11 +421,15 @@ var Portal = {
   // airtime; until this card they were invisible, so a refused request and a
   // lost one looked the same from here.
   limits: {
-    _timer: null, _rows: [], _at: 0,
+    _timer: null, _rows: [], _at: 0, _orig: {},
+    _keys: ["MCW_APP_PACKETS_PER_HOUR", "MCW_APP_SENDER_GAP_S", "MCW_PART_RESEND_FLOOR_S", "MCW_SWEEP_WINDOW_S",
+            "MCW_RADAR_WINDOW_S", "MCW_TEXT_REPLIES_PER_HOUR", "MCW_TEXT_REPLIES_PER_SENDER_PER_HOUR",
+            "MCW_STRANGER_REPLIES_PER_HOUR", "MCW_STRANGER_REPLY_GAP_S"],
 
     start: function () {
       var self = this;
       this.refresh();
+      this.loadSettings();
       if (this._timer) clearInterval(this._timer);
       this._timer = setInterval(function () { self.tick(); }, 1000);
     },
@@ -472,6 +476,34 @@ var Portal = {
           '<div class="text-small text-mono">' + esc(when) + "</div>" +
           "<div>" + btn + "</div></div>";
       }).join("");
+    },
+
+    // The fields under the rows: what is in force, from the settings.
+    loadSettings: function () {
+      var self = this;
+      api("/api/system").then(function (sy) {
+        var s = sy.settings || {};
+        self._keys.forEach(function (k) {
+          var v = s[k.slice(4).toLowerCase()];
+          self._orig[k] = v == null ? "" : String(v);
+          setVal("env-" + k, v);
+        });
+      }).catch(function () {});
+    },
+
+    save: function (btn) {
+      var self = this, body = {};
+      this._keys.forEach(function (k) {
+        var v = $("env-" + k).value.trim();
+        if (v !== (self._orig[k] == null ? "" : self._orig[k])) body[k] = v;
+      });
+      var st = $("limits-status");
+      if (!Object.keys(body).length) { st.textContent = "Nothing changed"; return; }
+      btn.disabled = true; st.textContent = "Saving…";
+      api("/api/settings/env", { method: "POST", body: body }).then(function (d) {
+        st.textContent = d.note; Portal.ui.toast("Limits saved"); self.loadSettings(); self.refresh();
+      }).catch(function (e) { st.textContent = e.message; Portal.ui.toast(e.message, false); })
+        .finally(function () { btn.disabled = false; });
     },
 
     // Resetting spends airtime the rule was holding back, so it says so.

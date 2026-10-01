@@ -39,7 +39,7 @@ Every reply costs the mesh. Budgets, all enforced before a reply is built:
   goes again only when a resend of its request arrives;
 - a `>` request sent again, by datagram or by DM, is answered again only
   12 s after the last answer went out;
-- app `>` requests: one per sender per 5 s, and 60 answer packets per hour
+- app `>` requests: one per sender per 2 s, and 240 answer packets per hour
   across all senders (packets, not requests). A `>` request sent as a DM
   first passes the text limits above and counts against them; a Request
   datagram (spec 7B) and a `>` line on the channel do not;

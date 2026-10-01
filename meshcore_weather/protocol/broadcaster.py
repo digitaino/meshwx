@@ -16,6 +16,7 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
+from meshcore_weather.config import settings
 from meshcore_weather.geodata import resolver
 from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.parser.weather import WeatherStore
@@ -26,8 +27,13 @@ from meshcore_weather.protocol.warnings import extract_active_warnings
 
 logger = logging.getLogger(__name__)
 
-PER_SENDER_S = 5.0
-PER_HOUR = 60                    # packets, not requests: a `>w` answer can be 7
+# The defaults of the operator's limits (config.py, set on the portal and
+# applied live): every check below reads `settings`, never these.
+PER_SENDER_S = 2.0               # settings.app_sender_gap_s
+PER_HOUR = 240                   # settings.app_packets_per_hour; packets, not requests: a `>w` can be 7
+# Told "busy" (Not available, reason 4) once the hour's packets are spent, at
+# most this often per radio: the app shows it instead of waiting for nothing.
+BUSY_REPLY_PER_SENDER_S = 60.0
 MAX_WARNINGS_PER_REQUEST = 6
 # `>wmap` is the one answer that can take eight packets at once, so it gets a
 # limit of its own on top of everything else: one sweep of the same ground
@@ -36,14 +42,14 @@ MAX_WARNINGS_PER_REQUEST = 6
 # It is never scheduled; it only ever answers. The name is the portal's: its
 # limits panel reads this constant, `_last_sweep` and `_last_sweep_state` to
 # show when the next sweep may go out.
-SWEEP_COOLDOWN_S = 300.0            # one sweep per state per 5 minutes, whoever asks (owner, 2026-09-20)
+SWEEP_COOLDOWN_S = 300.0            # settings.sweep_window_s; one sweep per state per 5 min, whoever asks (owner, 2026-09-20)
 
 # `>radar` (spec 7D, revision 11): one packet, so the hourly budget is limit
 # enough, with one exception. The same tile cut from the same picture is the
 # same bytes, and everyone in range already got them: inside this window the
 # answer is the 6-byte Not available instead. It is keyed on the picture's own
 # time as well as the tile, so a newer picture is never held back by an older.
-RADAR_COOLDOWN_S = 300.0
+RADAR_COOLDOWN_S = 300.0            # settings.radar_window_s
 
 # `>part` (spec 7C/8.1, revision 10): the packets of the last few multi-packet
 # answers, kept so a phone that heard 4 of 7 can ask for the other 3 instead of
@@ -53,7 +59,7 @@ PARTS_CACHE_S = 600.0
 PARTS_CACHE_GROUPS = 8
 # One resend of the same packet every 30 s, whoever asks: ten phones that all
 # missed packet 3 of one sweep cost one packet, not ten.
-PART_RESEND_FLOOR_S = 30.0
+PART_RESEND_FLOOR_S = 30.0          # settings.part_resend_floor_s
 
 
 class PartsCache:
@@ -65,10 +71,10 @@ class PartsCache:
     """
 
     def __init__(self, groups: int = PARTS_CACHE_GROUPS, seconds: float = PARTS_CACHE_S,
-                 floor: float = PART_RESEND_FLOOR_S):
+                 floor: float | None = None):
         self._max_groups = groups
         self._seconds = seconds
-        self._floor = floor
+        self._fixed_floor = floor              # None: the operator's setting, read each time
         # group byte -> {"at": when the first packet went out, "type": message
         # type, "packets": {idx: bytes}, "sent": {idx: when it was last resent}}
         self._groups: dict[int, dict] = {}
@@ -85,6 +91,10 @@ class PartsCache:
             for old in sorted(self._groups, key=lambda g: self._groups[g]["at"])[:-self._max_groups]:
                 del self._groups[old]
         held["packets"][idx] = bytes(data)
+
+    @property
+    def _floor(self) -> float:
+        return self._fixed_floor if self._fixed_floor is not None else float(settings.part_resend_floor_s)
 
     def lookup(self, group: int, indexes: list[int], now: float | None = None
                ) -> tuple[list[bytes], list[int], list[int]]:
@@ -164,7 +174,11 @@ class AppResponder:
         self._scheduler = Scheduler(store=store, radio=radio, ready=ready, parts=self._parts)
         self._render_text = render_text          # the text bot's renderer, for narrative products
         self._last_by_sender: dict[str, float] = {}
-        self._sent: deque[float] = deque(maxlen=PER_HOUR * 2)
+        # When each answer packet went out, the last hour of them. Unbounded:
+        # the budget can be raised live, and a bounded deque would then stop
+        # counting below it.
+        self._sent: deque[float] = deque()
+        self._busy_told: dict[str, float] = {}
         # When the last national Area sweep actually went on air, and whether
         # it carried advisories. Not when one was asked for: a sweep that was
         # built and never sent must not lock the next five minutes out (7C).
@@ -205,7 +219,7 @@ class AppResponder:
     async def handle_request(self, text: str, sender_key: str, ev: dict | None = None) -> str:
         """Answer one `>` request. Returns a short outcome for the log."""
         now = time.time()
-        if now - self._last_by_sender.get(sender_key, 0.0) < PER_SENDER_S:
+        if now - self._last_by_sender.get(sender_key, 0.0) < settings.app_sender_gap_s:
             return "rate limited"
         while self._sent and now - self._sent[0] > 3600:
             self._sent.popleft()
@@ -223,10 +237,21 @@ class AppResponder:
             msg = b.not_available(seq.next(), self._scheduler.bot_id(), cmd, v5.REASON_NO_DATA)
             await self._scheduler.transmit([msg], f"not ready for {text.strip()[:24]!r}")
             return "starting up"
-        # Before building: an answer that will not be sent must cost nothing.
-        if len(self._sent) >= PER_HOUR:
-            logger.warning("App request budget spent this hour; ignoring %r", text)
-            return "hourly budget spent"
+        # Before building: an answer that will not be sent must cost nothing
+        # but the 6-byte "busy" that says so, which is off the budget. Until
+        # 2026-10-01 this was silence, and an app waited on an answer that was
+        # never coming. A radar refusal stays silent: reason 4 under `x` means
+        # "this picture went out minutes ago", which would not be true.
+        if len(self._sent) >= settings.app_packets_per_hour:
+            logger.warning("App request budget spent this hour; %r told busy", text)
+            if cmd == "radar" or now - self._busy_told.get(sender_key, 0.0) < BUSY_REPLY_PER_SENDER_S:
+                return "hourly budget spent"
+            self._busy_told[sender_key] = now
+            if len(self._busy_told) > 500:
+                self._busy_told = {k: v for k, v in self._busy_told.items() if now - v < BUSY_REPLY_PER_SENDER_S}
+            msg = b.not_available(b.SeqCounter().next(), self._scheduler.bot_id(), cmd, v5.REASON_RATE_LIMITED)
+            await self._scheduler.transmit([msg], f"busy for {text.strip()[:24]!r}", ev=ev)
+            return "hourly budget spent, told busy"
         # Scratch numbering: Scheduler.transmit stamps the real seq on air.
         seq, bot = b.SeqCounter(), self._scheduler.bot_id()
         # `>part` sends bytes that already went out once, so it neither builds
@@ -289,7 +314,7 @@ class AppResponder:
         if not packets:
             # Not an error: the answer is already on the air for everyone.
             logger.info("`>part` for group %d: %s resent inside the last %.0fs; sending nothing",
-                        group, waiting, PART_RESEND_FLOOR_S)
+                        group, waiting, self._parts._floor)
             return "already resent"
         n, nbytes = await self._scheduler.transmit(
             packets,
@@ -320,15 +345,15 @@ class AppResponder:
 
     def _stamp_radar(self, radar: dict, now: float) -> None:
         self._last_radar[self._radar_key(radar)] = now
-        for key in [k for k, t in self._last_radar.items() if now - t > RADAR_COOLDOWN_S]:
+        for key in [k for k, t in self._last_radar.items() if now - t > settings.radar_window_s]:
             del self._last_radar[key]
 
     def radar_cooldowns(self, now: float | None = None) -> list[dict]:
         """Tiles still inside their window, for the portal's limits card."""
         now = time.time() if now is None else now
         return [{"south": k[0], "west": k[1], "zoom": k[2], "taken_min": k[3],
-                 "remaining_s": max(0, int(RADAR_COOLDOWN_S - (now - t)))}
-                for k, t in sorted(self._last_radar.items()) if now - t < RADAR_COOLDOWN_S]
+                 "remaining_s": max(0, int(settings.radar_window_s - (now - t)))}
+                for k, t in sorted(self._last_radar.items()) if now - t < settings.radar_window_s]
 
     def clear_radar_cooldowns(self) -> None:
         self._last_radar.clear()
@@ -361,9 +386,9 @@ class AppResponder:
             return [b.not_available(seq.next(), bot, "radar", v5.REASON_NO_DATA)]
         tile, picture, frame = found
         key = (tile.south, tile.west, tile.zoom, int(picture.taken.timestamp() // 60))
-        if time.time() - self._last_radar.get(key, 0.0) < RADAR_COOLDOWN_S:
+        if time.time() - self._last_radar.get(key, 0.0) < settings.radar_window_s:
             logger.info("Radar tile %s asked for again inside the %.0fs window; rate limited",
-                        key, RADAR_COOLDOWN_S)
+                        key, settings.radar_window_s)
             return [b.not_available(seq.next(), bot, "radar", v5.REASON_RATE_LIMITED)]
         msg = b.radar_message(seq.next(), bot, tile, picture, frame)
         if msg is None:
@@ -399,11 +424,11 @@ class AppResponder:
         a higher one? A national request asks about the country, so only a
         national sweep answers it: two scoped sweeps do not add up to one."""
         if not states:
-            return (now - self._last_sweep < SWEEP_COOLDOWN_S
+            return (now - self._last_sweep < settings.sweep_window_s
                     and (self._last_sweep_advisories or not advisories))
         for code in states:
             at, had_advisories = self._last_sweep_state.get(code, (0.0, False))
-            if now - at >= SWEEP_COOLDOWN_S or (advisories and not had_advisories):
+            if now - at >= settings.sweep_window_s or (advisories and not had_advisories):
                 return False        # this one has not been covered: build it
         return True
 
@@ -464,20 +489,20 @@ class AppResponder:
             advisories, states = parsed
             if self._sweep_is_cooling(states, advisories, time.time()):
                 logger.info("Area sweep of %s asked for inside the %.0fs window; rate limited",
-                            " ".join(states) or "the country", SWEEP_COOLDOWN_S)
+                            " ".join(states) or "the country", settings.sweep_window_s)
                 return [b.not_available(seq.next(), bot, cmd, v5.REASON_RATE_LIMITED)]
             # A national sweep is eight packets until it is built, so it is
             # refused before the work; a scoped one is usually one or two, so
             # it is built first and measured against what the hour has left.
-            if not states and len(self._sent) + v5.MAX_SWEEP_PACKETS > PER_HOUR:
+            if not states and len(self._sent) + v5.MAX_SWEEP_PACKETS > settings.app_packets_per_hour:
                 logger.info("Area sweep needs %d packets and %d remain this hour; rate limited",
-                            v5.MAX_SWEEP_PACKETS, PER_HOUR - len(self._sent))
+                            v5.MAX_SWEEP_PACKETS, settings.app_packets_per_hour - len(self._sent))
                 return [b.not_available(seq.next(), bot, cmd, v5.REASON_RATE_LIMITED)]
             msgs = b.area_sweep_messages(seq, bot, self.store, advisories=advisories,
                                          states=states, source=store_source)
-            if states and len(self._sent) + len(msgs) > PER_HOUR:
+            if states and len(self._sent) + len(msgs) > settings.app_packets_per_hour:
                 logger.info("Area sweep of %s is %d packets and %d remain this hour; rate limited",
-                            " ".join(states), len(msgs), PER_HOUR - len(self._sent))
+                            " ".join(states), len(msgs), settings.app_packets_per_hour - len(self._sent))
                 return [b.not_available(seq.next(), bot, cmd, v5.REASON_RATE_LIMITED)]
             return msgs
 

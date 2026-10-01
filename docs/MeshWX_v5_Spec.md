@@ -691,9 +691,8 @@ again, from the bot's cache, only once its previous answer finished going
 out at least 12 s earlier; a quicker copy gets nothing, so a resend can
 never double the airtime of an answer.
 
-**Limits.** A Request datagram meets the app limits of section 8.2 — one
-request per sender every 5 s, 60 answer packets an hour across all senders
-— and not the limiter for people's text commands, exactly like a `>` line
+**Limits.** A Request datagram meets the app limits of section 8.2 — the
+per-sender spacing and the hourly packet budget — and not the limiter for people's text commands, exactly like a `>` line
 sent as channel text.
 
 **What the app does (section 13).** Send once. If no answer arrived after
@@ -862,8 +861,8 @@ not change, so the packets file under the assembly they belong to. Not
 available, request letter `p`, reason 0 when the bot no longer holds that
 group or none of the indexes exist in it.
 
-Limits. The per-sender 5 s rule applies and every resent packet comes out
-of the hourly 60-packet budget. The sweep cooldown does **not** apply and
+Limits. The per-sender rule applies and every resent packet comes out
+of the hourly packet budget (section 8.2). The sweep cooldown does **not** apply and
 is not restarted: a resend is not a new sweep. The same `(group, idx)` is
 resent at most once every **30 seconds** whoever asks, so ten phones that
 all missed packet 3 cost one packet. A request whose every index is inside
@@ -1001,8 +1000,8 @@ tile there is answered Not available, reason 0, until it is.
 
 ### 7D.3 Limits
 
-An answer is one packet, so the hourly budget of 60 packets and the
-per-sender 5 s rule (section 8.2) are limit enough, with one addition. The
+An answer is one packet, so the hourly packet budget and the per-sender
+rule (section 8.2) are limit enough, with one addition. The
 same tile cut from the same picture is the same bytes, and everyone in
 range already received them: asked for again within **5 minutes** it is
 answered Not available, letter `x`, reason 4. The window is keyed on
@@ -1103,13 +1102,19 @@ ZIP+4, `78701-1234`) is a ZIP and 1-4 digits is a point index. A ZIP also
 works wherever a place does (`>metar 78701`, `>taf 78701`, `>hwo 78701`);
 `>w` and `>o` take no ZIP (the app resolves one to UGCs and stations itself).
 
-Rules the bot applies:
+Rules the bot applies. The numbers are the operator's, set on the bot's
+portal and applied live; these are the defaults from 1 October 2026, when
+the old ones (5 seconds, 60 packets) were found turning requests away:
 
-- One request per sender every 5 seconds.
-- A budget of 60 answer **packets** per hour across all senders (packets,
+- One request per sender every 2 seconds. An app spaces its own requests
+  5 seconds apart (section 13), and the mesh delivers some of them closer.
+- A budget of 240 answer **packets** per hour across all senders (packets,
   not requests: a bare `>w` can take 7). It is checked before an answer is
-  built. Once 60 packets went out in the last hour, requests get no reply;
-  the answer that crosses 60 still goes out whole.
+  built, and the answer that crosses it still goes out whole. Once it is
+  spent, a request is answered Not available reason 4 (busy, try again
+  later), at most once a minute per sender, and that 6-byte packet is not
+  counted. A `>radar` request gets no reply instead, because reason 4 under
+  `x` means the same picture went out minutes ago (7D.3).
 - A `>` request sent **as a DM** first passes the limiter for people's
   text commands: one reply per sender every 5 seconds, at most 40 per
   sender per hour and 400 per hour in total, counted together with text
@@ -1117,8 +1122,9 @@ Rules the bot applies:
   the two limits above.
 - A request the bot cannot serve gets a Not available message.
 
-Every limit is enforced silently: a throttled request produces no reply at
-all (see 8.3).
+The per-sender rule is enforced silently: a request inside it produces no
+reply at all (see 8.3). Until 1 October 2026 the hourly budget was silent
+too, and an app waited on an answer that was never coming.
 
 There is no cache. Every answer is built from the bot's state at the
 moment it replies, so a Digest you receive is always current and can be

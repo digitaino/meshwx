@@ -606,10 +606,11 @@ def test_state_file_without_a_seq_keeps_the_clock_start(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_spent_hourly_budget_builds_nothing_and_uses_no_seq(monkeypatch):
+async def test_spent_hourly_budget_builds_nothing_and_says_busy_once(monkeypatch):
     import meshcore_weather.schedule.scheduler as sched_mod
     from meshcore_weather.parser.weather import WeatherStore
     from meshcore_weather.protocol.broadcaster import PER_HOUR, AppResponder
+    from meshcore_weather.protocol import v5
     monkeypatch.setattr(sched_mod, "TX_SPACING", 0)
     radio = MagicMock()
     radio.send_channel_data = AsyncMock(return_value=True)
@@ -618,9 +619,19 @@ async def test_spent_hourly_budget_builds_nothing_and_uses_no_seq(monkeypatch):
     monkeypatch.setattr(r, "_answer", lambda *a: built.append(a) or [])
     r._sent.extend([time.time()] * PER_HOUR)
     start = r.scheduler.next_seq
+    # Nothing is built; the one packet is the 6-byte "busy", off the budget.
+    assert await r.handle_request(">d", "a") == "hourly budget spent, told busy"
+    assert built == [] and r.scheduler.next_seq == start + 1 and len(r._sent) == PER_HOUR
+    sent = radio.send_channel_data.await_args.args[-1]
+    busy = v5.decode(bytes(sent))
+    assert busy["name"] == "not_available" and busy["reason"] == v5.REASON_RATE_LIMITED
+    # Told once a minute per radio: the next refusal is silent.
+    r._last_by_sender.clear()
     assert await r.handle_request(">d", "a") == "hourly budget spent"
-    assert built == [] and r.scheduler.next_seq == start
-    radio.send_channel_data.assert_not_awaited()
+    assert r.scheduler.next_seq == start + 1
+    # A radar refusal is never "busy": reason 4 there means "sent minutes ago".
+    assert await r.handle_request(">radar 30.27,-97.74", "b") == "hourly budget spent"
+    assert r.scheduler.next_seq == start + 1
 
 
 def _product(awips: str, text: str, age_min: int = 10, seq: int = 1) -> dict:

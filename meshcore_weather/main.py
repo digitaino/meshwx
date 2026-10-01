@@ -487,6 +487,8 @@ class WeatherBot:
         return True
 
     # Channel-reply budget for senders we cannot DM: per sender and overall.
+    # The defaults; the checks read settings.stranger_reply_gap_s and
+    # settings.stranger_replies_per_hour, which the portal sets live.
     CHANNEL_REPLY_PER_SENDER_S = 600
     CHANNEL_REPLY_PER_HOUR = 12
 
@@ -504,13 +506,13 @@ class WeatherBot:
                 return
             self._channel_replies = [ts for ts in getattr(self, "_channel_replies", []) if now - ts < 3600]
             last = self._channel_reply_by_sender.get(sender, 0.0)
-            if now - last < self.CHANNEL_REPLY_PER_SENDER_S:
+            if now - last < settings.stranger_reply_gap_s:
                 logger.info("Channel command from %s: no DM path, channel reply already sent %ds ago — ignoring",
                             sender, int(now - last))
                 traffic_log.record("dropped", reason=f"no DM path, channel reply {int(now - last)}s ago",
                                    req=req, sender=sender)
                 return
-            if len(self._channel_replies) >= self.CHANNEL_REPLY_PER_HOUR:
+            if len(self._channel_replies) >= settings.stranger_replies_per_hour:
                 logger.warning("Channel command from %s: no DM path and the hourly channel-reply budget is spent — ignoring", sender)
                 traffic_log.record("dropped", reason="hourly channel-reply budget spent", req=req, sender=sender)
                 return
@@ -1248,7 +1250,9 @@ class WeatherBot:
 
     # Reply budgets: one every 5 s per sender, at most this many per sender
     # and in total per hour. Every reply costs airtime; a script hammering
-    # the channel must not be able to spend the mesh's.
+    # the channel must not be able to spend the mesh's. The defaults; the
+    # checks read settings.text_replies_per_sender_per_hour and
+    # settings.text_replies_per_hour, which the portal sets live.
     REPLIES_PER_SENDER_PER_HOUR = 40
     REPLIES_PER_HOUR = 400
 
@@ -1268,11 +1272,11 @@ class WeatherBot:
         hour_ago = now - 3600
         hist = [ts for ts in self._reply_history.get(sender_key, []) if ts > hour_ago]
         self._reply_history[sender_key] = hist
-        if len(hist) >= self.REPLIES_PER_SENDER_PER_HOUR:
+        if len(hist) >= settings.text_replies_per_sender_per_hour:
             logger.warning("Rate limit: %s has had %d replies this hour — ignoring", sender_key[:20], len(hist))
             return False
         self._all_replies = [ts for ts in self._all_replies if ts > hour_ago]
-        if len(self._all_replies) >= self.REPLIES_PER_HOUR:
+        if len(self._all_replies) >= settings.text_replies_per_hour:
             logger.warning("Rate limit: %d replies this hour overall — ignoring", len(self._all_replies))
             return False
         if not copy:

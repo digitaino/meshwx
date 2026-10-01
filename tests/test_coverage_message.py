@@ -247,8 +247,8 @@ async def test_cov_meets_the_per_sender_spacing_and_the_hourly_budget(monkeypatc
     n = len(sent)
     assert await r.handle_request(">cov", "a") == "rate limited" and len(sent) == n
     r._sent.extend([time.time()] * PER_HOUR)
-    assert await r.handle_request(">cov", "b") == "hourly budget spent"
-    assert len(sent) == n
+    assert await r.handle_request(">cov", "b") == "hourly budget spent, told busy"
+    assert len(sent) == n + 1                     # the "busy", and nothing built
 
 
 @pytest.mark.asyncio

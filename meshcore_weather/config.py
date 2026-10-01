@@ -64,6 +64,20 @@ class Settings(BaseSettings):
     echo_window_s: float = 8.0
     retransmit_per_hour: int = 30
     mesh_quiet_s: int = 600               # no repeat heard from anyone for this long: don't bother
+    # What the bot spends answering, and how often. Set on the portal (Text bot,
+    # Limits and cooldowns) and applied live. On 2026-10-01 the app budget, then
+    # 60 packets, ran out at 13:35 and requests went unanswered for half an
+    # hour, and the 5 s gap dropped requests the apps had spaced 5 s apart but
+    # the mesh delivered 4 s apart; both were raised.
+    app_packets_per_hour: int = 240       # app answers, every sender together; then "busy"
+    app_sender_gap_s: float = 2.0         # one app request per radio this often
+    sweep_window_s: int = 300             # alert map: the same ground once per window, whoever asks
+    radar_window_s: int = 300             # radar: the same tile of one picture once per window
+    part_resend_floor_s: int = 30         # a missing packet resent at most this often, whoever asks
+    text_replies_per_sender_per_hour: int = 40
+    text_replies_per_hour: int = 400
+    stranger_replies_per_hour: int = 12   # reply mode dm: channel replies to people with no DM path
+    stranger_reply_gap_s: int = 600       # ... and one per person this often
     # Optional CoreScope instance (internet): "stats" annotates each reply with
     # who heard it; "decide" also skips a retransmit the mesh observed. Empty = off.
     scope_url: str = ""

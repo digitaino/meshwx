@@ -231,12 +231,12 @@ def test_a_request_is_answered_on_the_air_and_therefore_on_the_feed(client):
 
 
 def test_the_bridge_client_is_just_another_sender(client):
-    """Same five-second spacing per sender, same hourly packet budget."""
+    """Same spacing per sender, same hourly packet budget."""
     c, bot, _ = client
     assert c.post("/api/bridge/request", json={"text": ">cov", "client": "sim"}).json()["ok"]
     again = c.post("/api/bridge/request", json={"text": ">cov", "client": "sim"}).json()
     assert again == {"ok": False, "accepted": False, "outcome": "rate_limited",
-                     "retry_after": 5.0, "detail": "rate limited"}
+                     "retry_after": 2.0, "detail": "rate limited"}
     assert datagram_feed.cursor == 1                              # nothing more went out
 
     other = c.post("/api/bridge/request", json={"text": ">cov", "client": "other"}).json()
@@ -246,8 +246,11 @@ def test_the_bridge_client_is_just_another_sender(client):
     bot._broadcaster._sent.extend([time.time()] * PER_HOUR)
     spent = c.post("/api/bridge/request", json={"text": ">cov", "client": "third"}).json()
     assert spent == {"ok": False, "accepted": False, "outcome": "budget_spent",
-                     "detail": "hourly budget spent"}
-    assert datagram_feed.cursor == 2
+                     "detail": "hourly budget spent, told busy"}
+    # The one thing on air is the 6-byte "busy" (Not available, reason 4).
+    assert datagram_feed.cursor == 3
+    busy = v5.decode(bytes.fromhex(c.get("/api/bridge/datagrams?since=2").json()["datagrams"][0]["hex"]))
+    assert busy["name"] == "not_available" and busy["reason"] == v5.REASON_RATE_LIMITED
 
 
 def test_a_part_already_on_the_air_is_not_a_delivery(client):
