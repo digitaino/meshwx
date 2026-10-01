@@ -146,6 +146,12 @@ class TestObservation:
 
 
 class TestForecast:
+    @pytest.fixture(autouse=True)
+    def _clock(self, monkeypatch):
+        # The fixture was issued 13 Sep 18:51Z, and the days before "today"
+        # are left out of a forecast: today is that day.
+        monkeypatch.setattr(services, "_now", lambda: datetime(2026, 9, 13, 19, 0, tzinfo=timezone.utc))
+
     @pytest.fixture
     def store(self):
         raw = (FIXTURES / "PFMEWX_20260913_1851Z.txt").read_bytes().decode("utf-8")
@@ -177,6 +183,43 @@ class TestForecast:
         assert f"{p0['high_f']}/{p0['low_f']}" in text
         assert len(wire["periods"]) == 7
         assert len(text) <= render_text.MAX_DM
+        assert "issued" not in text                  # a current forecast does not say its age
+
+    # 2026-10-01: the dish was down through two issuances, the newest Austin
+    # forecast was 34 hours old, and "forecast lockhart TX" was told there was
+    # no forecast point within 80 km.
+
+    def test_a_forecast_is_kept_through_missed_issuances(self):
+        from meshcore_weather.emwin.retention import is_expired
+        now = datetime(2026, 10, 1, 16, 0, tzinfo=timezone.utc)
+        assert not is_expired("PFM", now - timedelta(hours=34), now)
+        assert is_expired("PFM", now - timedelta(hours=49), now)
+        assert is_expired("AFD", now - timedelta(hours=13), now)    # everything else as before
+
+    def test_an_old_forecast_starts_today_and_says_when_it_was_issued(self, store, monkeypatch):
+        loc = resolver.resolve("Lockhart TX")
+        current = services.forecast_for(store, loc)
+        # 36 hours on: two of its days have gone by.
+        later = datetime(2026, 9, 15, 7, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(services, "_now", lambda: later)
+        fc = services.forecast_for(store, loc)
+        assert fc.stale and not current.stale
+        assert fc.start_date.date() == later.date()
+        assert [p["period_id"] for p in fc.periods] == list(range(len(fc.periods)))
+        same_day = (fc.start_date - current.start_date).days
+        assert same_day > 0 and fc.periods[0]["high_f"] == current.periods[same_day]["high_f"]
+        text = render_text.forecast(loc, fc)
+        assert text.startswith("Lockhart, TX (Austin Bergstrom 34km, issued Sun 1:51PM): Tue ")
+        assert text.count("|") == 3                  # four days, so it still fits one packet
+        assert len(text) <= render_text.MAX_DM
+
+    def test_a_point_nearby_with_no_forecast_held_is_not_called_far(self):
+        empty = WeatherStore()
+        loc = resolver.resolve("Lockhart TX")
+        assert render_text.forecast(loc, services.forecast_for(empty, loc)) == \
+            "Lockhart, TX: no recent forecast received"
+        at_sea = dict(loc, lat=25.0, lon=-140.0)
+        assert render_text.forecast(at_sea, None).endswith(": no forecast point within 80km")
 
 
 class TestWarnings:

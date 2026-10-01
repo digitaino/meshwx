@@ -638,18 +638,29 @@ Every message is derived from an official NWS product received over EMWIN. Parsi
 | AFD (Area Forecast Discussion) | `>afd` |
 | SWPC products (3-Day Forecast, Daily Indices, alerts) | `space`; `>space` |
 
-Warnings carry VTEC event tracking across product segments (`protocol/vtec_events.py`), polygons, county (`TXC453`) and zone (`TXZ192`) codes, and absolute expiry times. Warning-class products stay in the store for 48 h and storm reports for 24 h, so the VTEC expiry and the report time decide what is current (`emwin/retention.py`).
+Warnings carry VTEC event tracking across product segments (`protocol/vtec_events.py`), polygons, county (`TXC453`) and zone (`TXZ192`) codes, and absolute expiry times. Warning-class products stay in the store for 48 h and storm reports for 24 h, so the VTEC expiry and the report time decide what is current (`emwin/retention.py`). Point forecasts (PFM) also stay 48 h: one is issued about every 12 h, and a dish that misses an issuance (rain fade, an outage) would otherwise have no forecast at all.
 
 ## Text commands for people
 
 Anyone can send these on `#meshwx` or by DM. A message that is not a
 command is read as a place: `austin tx` means `wx austin tx`.
 
+People talk on `#meshwx` too, and the bot leaves that alone. On the channel
+a message with no command word is answered only when it is a ZIP or a
+`city ST` that names a place (`austin tx`, `78644`); a bare word is not
+enough, because nice, cool and hope are towns and lol and hey are airports.
+A word people also use in sentences (`weather`, `forecast`, `warn`,
+`radar`, `outlook`, `rain`, `storm`, `more`) followed by a sentence that
+names no place gets no reply either: `forecast looks bad tonight`. Emoji and
+`@[Name]` replies to somebody else are never requests. A mention of the bot
+is dropped, so `@[WX-AUS] wx austin tx` works. These go in the traffic log
+as dropped, "conversation, not a request". By DM every message is a request.
+
 | Command | Example | Reply |
 |---------|---------|-------|
 | `wx <city ST, station or ZIP>` | `wx Austin TX`, `wx KAUS`, `wx AUS`, `wx 78701` | Current conditions, today's high/low, active warnings |
 | `wx`, `wx <state>` | `wx TX`, `TX`, `wx texas` | National or state overview |
-| `forecast <city ST or ZIP>` | `forecast Miami FL`, `forecast 02134` | Daily forecast from the nearest PFM point |
+| `forecast <city ST or ZIP>` | `forecast Miami FL`, `forecast 02134` | Daily forecast from the nearest PFM point, from today on. One more than 13 h old (the dish missed an issuance) gives its issue time and four days: `Lockhart, TX (San Marcos Airport 19km, issued Wed 1:33AM): Thu …`. With a point nearby and no forecast held: `no recent forecast received` |
 | `warn`, `warn <ST>`, `warn <city ST or ZIP>` | `warn KS`, `warn 78701` | Active watches, warnings and advisories: national, a state, or a place |
 | `outlook <city ST or ZIP>` | `outlook Des Moines IA` | Hazardous weather outlook |
 | `storm [ST or city ST]` | `storm SD` | Storm reports from the last 6 hours (the home state without an argument) |
@@ -663,7 +674,8 @@ command is read as a place: `austin tx` means `wx austin tx`.
 | `more` | `more` | The next page of the last long reply |
 | `help` | `help` | The command list |
 
-Aliases: `warning`, `warnings` and `wanr` for `warn`; `storms` for `storm`;
+Aliases: `weather` for `wx` (on its own, and with `here`, `now` or
+`today`, the help line: the bot cannot know where "here" is); `warning`, `warnings` and `wanr` for `warn`; `storms` for `storm`;
 `swx` and `solar` for `space`; `satellite`, `goes` and `signal` for `sat`;
 `coverage` and `covers` for `cov`. The receiver and coverage words count
 only on their own, so `satellite beach fl` and `cove tx` are still places. `<command> more` (or `next`) also means `more`. Both 3-letter

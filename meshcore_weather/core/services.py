@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 
+import dataclasses
 import logging
 import math
 from dataclasses import dataclass, field
@@ -34,6 +35,10 @@ logger = logging.getLogger(__name__)
 OBS_MAX_AGE_MIN = 120
 # A forecast point farther than this is not "your" forecast.
 FORECAST_MAX_KM = 80.0
+# A forecast is issued about every 12 hours. One older than this is a copy
+# kept through a missed issuance (emwin/retention.py), and the text reply says
+# when it was issued.
+FORECAST_CURRENT_HOURS = 13
 # A station farther than this is not "your" observation (Guam's nearest
 # entry in stations.json was Hawaii, 5,966 km away).
 STATION_MAX_KM = 150.0
@@ -136,6 +141,7 @@ class Forecast:
     periods: list[dict] = field(default_factory=list)   # pack_forecast period dicts
     start_date: datetime | None = None                    # local date of period 0
     wfo: str = ""
+    stale: bool = False                # issued more than FORECAST_CURRENT_HOURS ago
 
     @property
     def issued_hours_ago(self) -> int:
@@ -193,14 +199,26 @@ def nearest_pfm_point(
     return best
 
 
-def forecast_for(store: WeatherStore, loc: dict, max_days: int = 7) -> Forecast | None:
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def forecast_for(store: WeatherStore, loc: dict, max_days: int = 7,
+                 now: datetime | None = None) -> Forecast | None:
     found = nearest_pfm_point(store, loc["lat"], loc["lon"])
     if not found:
         return None
     pt, prod, km = found
-    daily = downsample_to_daily(pt, max_days=max_days)
+    now = now or _now()
+    # A forecast kept through a missed issuance starts on a day that has gone
+    # by: those days are left out, so the first one is always today or later
+    # at the point. One just issued has none to leave out.
+    today = pt.local_date(now)
+    daily = [d for d in downsample_to_daily(pt, max_days=max_days + 3) if d.local_date >= today]
+    daily = [dataclasses.replace(d, day_offset=i) for i, d in enumerate(daily[:max_days])]
     if not daily:
         return None
+    issued = pt.issue_time or prod.timestamp
     # Period 0's date comes from the downsampler itself, so labels can never
     # drift from the numbers (Minneapolis showed Tuesday's 70/51 under "Mon"
     # when Monday was a partial day, 2026-09-14).
@@ -209,12 +227,35 @@ def forecast_for(store: WeatherStore, loc: dict, max_days: int = 7) -> Forecast 
         point_name=pt.name,
         point_zone=pt.zone,
         distance_km=round(km, 1),
-        issued_at=pt.issue_time or prod.timestamp,
+        issued_at=issued,
         source="PFM",
         periods=[p.to_encoder_dict() for p in daily],
         start_date=start,
         wfo=pt.wfo or prod.office,
+        stale=issued is not None and now - issued > timedelta(hours=FORECAST_CURRENT_HOURS),
     )
+
+
+_forecast_points: list | None = None
+
+
+def forecast_point_near(lat: float, lon: float, max_km: float = FORECAST_MAX_KM) -> str | None:
+    """The name of the nearest NWS forecast point within `max_km`, from the
+    fixed list every client ships (client_data/pfm_points.json), whether or
+    not a forecast for it is held. It tells "no point near here" apart from
+    "no forecast received for the point near here"."""
+    global _forecast_points
+    if _forecast_points is None:
+        import json
+        from pathlib import Path
+        path = Path(__file__).resolve().parent.parent / "client_data" / "pfm_points.json"
+        _forecast_points = json.loads(path.read_text())["points"]
+    best = None
+    for name, _wfo, plat, plon, _zone in _forecast_points:
+        d = _haversine_km(lat, lon, plat, plon)
+        if d <= max_km and (best is None or d < best[1]):
+            best = (name, d)
+    return best[0] if best else None
 
 
 # -- Warnings ---------------------------------------------------------------------

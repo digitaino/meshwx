@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from meshcore_weather.config import settings
-from meshcore_weather.core.services import Forecast, Observation
+from meshcore_weather.core.services import Forecast, Observation, forecast_point_near
 from meshcore_weather.core.vtec_names import short_name
 from meshcore_weather.geodata.names import place_name
 
@@ -170,7 +170,16 @@ def observation(loc: dict, ob: Observation | None) -> str:
 
 def forecast(loc: dict, fc: Forecast | None, days: int = 5) -> str:
     if fc is None:
+        # A point nearby with nothing held for it is a forecast the dish
+        # missed, not a place NWS does not forecast for (2026-10-01: Lockhart).
+        if loc.get("lat") is not None and forecast_point_near(loc["lat"], loc["lon"]):
+            return _cap(f"{place_label(loc)}: no recent forecast received")
         return _cap(f"{place_label(loc)}: no forecast point within 80km")
+    # A copy kept through a missed issuance says when it was issued, and gives
+    # a day less so the reply still fits one packet.
+    issued = f", issued {_when(fc.issued_at, tz_for_loc(loc))}" if fc.stale and fc.issued_at else ""
+    if issued:
+        days = min(days, 4)
     parts = []
     for i, p in enumerate(fc.periods[:days]):
         day = "?"
@@ -184,7 +193,7 @@ def forecast(loc: dict, fc: Forecast | None, days: int = 5) -> str:
         if sky >= 8:
             seg += f" {_SKY.get(sky, '')}"
         parts.append(seg)
-    head = f"{place_label(loc)} ({fc.point_name.split('-')[0].strip()} {fc.distance_km:.0f}km):"
+    head = f"{place_label(loc)} ({fc.point_name.split('-')[0].strip()} {fc.distance_km:.0f}km{issued}):"
     return _cap(head + " " + " | ".join(parts))
 
 

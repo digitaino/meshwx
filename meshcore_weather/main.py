@@ -14,7 +14,7 @@ from meshcore_weather.emwin.fetcher import create_source
 from meshcore_weather.geodata import resolver, zip_code
 from meshcore_weather.meshcore.delivery import DM_MAX_BYTES, DmReply, DmRequests, dm_outbox
 from meshcore_weather.meshcore.radio import MeshcoreRadio
-from meshcore_weather.nlp import parse_intent
+from meshcore_weather.nlp import is_conversation, parse_intent, strip_mentions
 from meshcore_weather.core.pages import split_pages
 from meshcore_weather.core.render_text import MAX_DM
 from meshcore_weather.parser.weather import WeatherStore
@@ -420,6 +420,13 @@ class WeatherBot:
 
         arrived = self._clock()
         req = traffic_log.record("channel_in", sender=sender, text=text, hops=hops)
+        # People talk on the channel too, and a reply to that is noise flooded
+        # across the mesh (nlp.is_conversation). Recorded, not answered.
+        if is_conversation(text, resolve=resolver.resolve, states=VALID_STATES):
+            logger.info("Channel msg from %s is conversation, not a request: no reply", sender)
+            traffic_log.record("dropped", reason="conversation, not a request", req=req)
+            return
+        text = strip_mentions(text)
         command, location = await self._parse(text)
         traffic_log.update(req, command=command, location=location)
         if not self._rate_check(sender, follow_up=(command == "more")):

@@ -183,7 +183,10 @@ def _say(bot, text, who):
     return bot.radio.channel_sent[-1][1]
 
 
-def test_zip_commands_by_text_end_to_end(bot):
+def test_zip_commands_by_text_end_to_end(bot, monkeypatch):
+    # The San Juan forecast fixture was issued 14 Sep 18:32Z: that is today.
+    from meshcore_weather.core import services
+    monkeypatch.setattr(services, "_now", lambda: datetime(2026, 9, 14, 19, 0, tzinfo=timezone.utc))
     out = _say(bot, "wx 78701", "A")
     assert out.startswith("Austin, TX 78701: ") and "(KATT 6km)" in out, out
     assert _say(bot, "78701-1234", "B").startswith("Austin, TX 78701: ")        # a bare ZIP is a place
