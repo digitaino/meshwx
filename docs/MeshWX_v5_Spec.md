@@ -86,6 +86,11 @@ The reference encoder and decoder is `meshcore_weather/protocol/v5.py`
 (pure Python, standard library only). Test vectors are in
 `docs/meshwx_v5_vectors.json`; a client implementation is correct when it
 decodes every vector to the JSON shown and re-encodes it to the same hex.
+Two of them, `text_warning_narrative_chunk0` (165 bytes) and
+`area_sweep_national_packet0` (163), are full packets as a bot sent them
+before 1 October 2026: a decoder must read them, and an encoder held to
+the 157-byte send limit (section 2.1) refuses to build them, as the
+reference encoder does.
 
 The JSON keys in the vectors are the reference decoder's, and they are
 friendlier than the wire field names used in the tables below. The wire's
@@ -161,6 +166,30 @@ datagram; it carries nothing for the app).
 `data` is at most **165 bytes**. Every message in this spec fits in one
 packet; there is no fragmentation except the text message, which carries
 its own chunk numbers.
+
+**A bot sends at most 157 bytes.** Since 1 October 2026 the bot builds no
+message with more than 157 bytes of `data`, and every maximum in the
+sections below is what fits in 157. The reason is how the bot knows a
+packet got out: it listens for a repeater passing the packet on, and the
+companion firmware reports a packet it hears to the bot only when the raw
+packet plus 3 bytes fits its 172-byte frame (`MAX_FRAME_SIZE`), so never
+above 169 raw bytes. The cipher text is `data` plus its 3 bytes of type and
+length, padded to a multiple of 16, and a repeater's copy adds a header
+byte, a path length byte and one path hash (2 bytes on this mesh) to the
+payload. 157 bytes of `data` encrypt to 160 and come back as 167 raw
+bytes, which is reported; 158 to 165 encrypt to 176 and come back as 183,
+which never is. The bot heard no echo at all for its 161 to 165 byte
+packets and sent most of them again for nothing. A full packet is also 16
+bytes shorter on the air. One exception: a Digest of 25 entries is 160
+bytes and still goes out, because 25 entries is how an app knows the list
+may have been cut (section 5).
+
+**A decoder still reads 165.** A bot before 1 October 2026 filled packets
+to 165 bytes, with the larger counts that allowed: 157 text bytes a chunk,
+38 sweep entries a packet, 14 stations, 24 coverage offices. No layout changed, so read every message by its own count and
+length and never reject one for being longer than this bot sends. Where a
+maximum below changed, the older figure is given beside it.
+`protocol.json` has both: `v5.max_data` is 165, `v5.max_send` is 157.
 
 ### 2.2 Common header (4 bytes)
 
@@ -425,6 +454,12 @@ remove it, with one exception. The digest lists at most 25 identities, the
 In that case keep a held identity whose expiry is at or after the last
 listed entry's; it may simply not have fitted.
 
+A full digest is 10 + 6 × 25 = 160 bytes, the one message a bot sends past
+157 (section 2.1). It stays at 25 because 25 is the "may have been cut"
+signal released apps act on: cut at 24, they would read a cut list as
+whole and drop warnings that are still active. Its sender cannot hear a
+repeater's copy of it; only an observer network can say it was carried.
+
 `feed_health` measures one office's quietness, not the satellite link. The
 home office is the one resolved from the bot's home coordinate unless the
 operator listed offices explicitly; for WX-AUS it is EWX. A calm night at
@@ -445,16 +480,17 @@ does not speed observations up during severe weather.
 
 The station list is not fixed either. It is recomputed for every batch:
 stations inside the coverage radius that have filed a METAR in the last
-120 minutes, nearest first, at most 14 (13 when the batch carries the ages
-below). Stations drop out when they stop reporting, so do not treat the
-batch as a stable description of what the bot covers.
+120 minutes, nearest first, at most 13 (12 when the batch carries the ages
+below, and this bot's batches always do). Stations drop out when they stop
+reporting, so do not treat the batch as a stable description of what the
+bot covers.
 
 Flags nibble: bit 0 = per-station ages present (new in revision 5).
 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
 | 4 | 4 | `ts` | u32 Unix minutes of the newest report in the batch, by the report's own `DDHHMMZ` group — not when the bot's feed received the collective it came in, which is one time for every station in it. Each station's report may be up to 120 minutes older than `ts`; with flag bit 0 set, each station says by how much |
-| 8 | 1 | `n` | Station count, 1 to 14 (1 to 13 with the ages) |
+| 8 | 1 | `n` | Station count, 1 to 13 (1 to 12 with the ages). A bot before 1 October 2026 sent up to 14 (13 with the ages) |
 | 9 | 11 × n | stations | Below |
 | 9 + 11 × n | ceil(n / 2) | ages | Only when flags bit 0 is set. Below |
 
@@ -515,11 +551,13 @@ than 4 minutes fresher than it is, and never more than 5 minutes older.
 The newest station in the batch always reads 0, because `ts` is its own
 time.
 
-**Why a nibble, and why 13 stations.** A batch of 14 stations is already
-9 + 11 × 14 = **163 bytes**, two under the limit. A byte of minutes per
-station would need 14 more (177); nibbles need 7 (170). Neither fits, so
-the ages cost the fourteenth station: a full batch with ages is
-9 + 11 × 13 + 7 = **159 bytes**. The bot drops the *farthest* station,
+**Why a nibble, and why 12 stations.** A batch of 13 stations is already
+9 + 11 × 13 = **152 bytes**, five under the send limit. A byte of minutes
+per station would need 13 more (165); nibbles need 7 (159). Neither fits,
+so the ages cost the thirteenth station: a full batch with ages is
+9 + 11 × 12 + 6 = **147 bytes**. (Against the 165-byte limit a bot used
+before 1 October 2026 the same sum gave 14 stations, and 13 with the ages
+in 159 bytes.) The bot drops the *farthest* station,
 since the list is nearest first, and never the ages — a batch that told
 the truth about some stations and left the rest to be guessed at would be
 worse than one that says nothing.
@@ -601,8 +639,8 @@ cut (see **Truncation** below).
 | 4 | 3 | `lat` | i24 LE, degrees × 10000. The centre of the coverage circle, which is the bot's home point |
 | 7 | 3 | `lon` | i24 LE, degrees × 10000 |
 | 10 | 2 | `radius` | u16 LE kilometres. 0 = no circle stated; the area is then whatever the runs list |
-| 12 | 1 | `stations` | The most stations one hourly Observations packet can carry (13 for this bot: 14 fit without the per-station ages of revision 5, 13 with them, section 6.1). 0 = this bot broadcasts no observations for its area. A cap, not a count: the batch is rebuilt every hour (section 6), so a count would describe this hour, not the coverage |
-| 13 | 1 | `n` | Office count, 0 to 24 |
+| 12 | 1 | `stations` | The most stations one hourly Observations packet can carry (12 for this bot: 13 fit in the 157 bytes it sends without the per-station ages of revision 5, 12 with them, section 6.1; 13 before 1 October 2026). 0 = this bot broadcasts no observations for its area. A cap, not a count: the batch is rebuilt every hour (section 6), so a count would describe this hour, not the coverage |
+| 13 | 1 | `n` | Office count, 0 to 22 (0 to 24 from a bot before 1 October 2026) |
 | 14 | `n` | offices | One u8 each, index into `index.json` `offices`, ascending. Every office whose zones the bot covers, plus any the operator named outright. An office the bundle does not list is left out rather than sent as 0 |
 | 14+`n` | 1 | `k` | Zone-run count, 0 to 30 |
 | 15+`n` | 4 × `k` | runs | Exactly the runs a Warning's area list uses (section 3): `state` u8 (bit 7 = 1 for a county, 0 for a forecast zone; bits 6-0 = index into `index.json` `states`), `start` u16 LE, `run` u8. The run covers UGC numbers `start` … `start + run − 1` |
@@ -611,18 +649,21 @@ WX-AUS is **39 bytes**: 14 fixed, 4 offices (EWX, FWD, HGX, SJT), then 36
 zones that sort into 5 runs — TXZ155-160, TXZ170-175, TXZ186-197,
 TXZ205-211, TXZ221-225 — inside 120 km of 30.2672, -97.7431, with the
 hourly cap of 13 stations. The vector `coverage_wx_aus` in
-`meshwx_v5_vectors.json` is that exact packet.
+`meshwx_v5_vectors.json` is that exact packet as the bot sent it before
+1 October 2026; it states 12 stations since, in the same 39 bytes.
 
 This bot covers public forecast zones, so every run it sends has the county
 bit clear. The bit is there because the encoding is the warning's; a bot
 configured by county may use it, and a client must read it either way.
 
 **Truncation.** The two caps are chosen so a full list never costs the
-other one: 24 offices and 30 runs together are 159 bytes, inside the
-packet. A coverage set larger than that is cut, in the spirit of the
+other one: 22 offices and 30 runs together are 14 + 22 + 1 + 120 = 157
+bytes, the send limit exactly. The offices gave up the room when the limit
+came in, because a bot's zone runs are cut far more often than its
+offices. A coverage set larger than that is cut, in the spirit of the
 warning area truncation in section 3. The bot keeps the runs that account
 for the most zones (then puts them back in ascending order) and sets flag
-bit 0; it keeps the 24 lowest office indices and sets flag bit 1.
+bit 0; it keeps the 22 lowest office indices and sets flag bit 1.
 
 **Read a cut list as incomplete, never as a denial.** With flag bit 0 set,
 a zone absent from the runs may still be covered: say "not listed" or
@@ -743,7 +784,7 @@ source (section 2.2.1).
 | 8 | 1 | `group` | The same value on every packet of one sweep: the `seq` its first packet went out with, exactly as Text does it (section 8.1) |
 | 9 | 1 | `idx` | Packet number, from 0 |
 | 10 | 1 | `total` | Bits 0-3: packets in this sweep, 1 to 8. Bit 7: **scoped** (revision 10, below). Bits 4-6 are 0 |
-| 11 | ≤152 | `entries` | 4 bytes each, at most 38 per packet, scope entries included |
+| 11 | ≤144 | `entries` | 4 bytes each, at most 36 per packet, scope entries included: 11 + 4 × 36 = 155 bytes. A bot before 1 October 2026 sent up to 38 (163 bytes) |
 
 One entry is one run of consecutive UGC numbers in one state:
 
@@ -760,8 +801,8 @@ sweep entry carries an event code that one does not, and pays for it by
 capping the run at 64. Decode them with different code.
 
 Reassemble by `(bot, group)` in `idx` order, as with Text. A sweep is at
-most 8 packets and so at most 304 entries, scope entries (section 7C.1)
-included.
+most 8 packets and so at most 288 entries, scope entries (section 7C.1)
+included (304 from a bot before 1 October 2026).
 
 **Ordering.** Entries are sorted most severe first (warning, then watch,
 then advisory, by the significance letter of the event code), then by
@@ -769,7 +810,7 @@ state, then by `start`. This is what makes a cut sweep useful: what
 survives is the worst of it.
 
 **The cut flag (bit 0).** More runs were active than the sweep could hold
-(304, less one for each scope entry) and the least severe were dropped. It is set on **every** packet, not only the last, so
+(288, less one for each scope entry) and the least severe were dropped. It is set on **every** packet, not only the last, so
 a phone that loses a packet still knows it is not holding the whole
 picture. Read a cut sweep as incomplete, never as a denial: an area absent
 from it may still be under something.
@@ -823,9 +864,9 @@ state asked for:
 | `run` | 1 |
 
 That is `XXZ000`, the Weather Service's own way of writing "all of state
-XX". Scope entries sort before every alert entry and count toward the 38 a
-packet holds, so a sweep of 15 states carries 289 alert entries rather
-than 304. They ride on packet 0 alone; the other packets carry bit 7 and
+XX". Scope entries sort before every alert entry and count toward the 36 a
+packet holds, so a sweep of 15 states carries 273 alert entries rather
+than 288. They ride on packet 0 alone; the other packets carry bit 7 and
 nothing else about the scope.
 
 **A state with no alert entries is an answer**, not an omission: nothing
@@ -948,7 +989,7 @@ source (section 2.2.1; a picture off the dish is 1).
 | 9 | 2 | `west` | i16 LE: the tile's western edge, whole degrees, -180 to 179 |
 | 11 | 1 | `shape` | bits 0-1 `zoom`; bits 2-7 `product`, an index into `v5.radar.products`: which mosaic the tile was cut from |
 | 12 | 4 | `bounds` | **Only when the partial flag is set**: `row0`, `row1`, `col0`, `col1`, one byte each, inclusive, in this packet's own grid |
-| 12 or 16 | 1 to 153 | `cells` | A quadtree of levels, most significant bit first, zero bits to the end of the last byte |
+| 12 or 16 | 1 to 145 | `cells` | A quadtree of levels, most significant bit first, zero bits to the end of the last byte. Up to 153 from a bot before 1 October 2026 |
 
 **The quadtree.** `node(size)`:
 
@@ -962,9 +1003,10 @@ on it is the three bits `0 00` and one byte; the whole packet is 13. Reject
 a packet whose bits run out before the tree is complete. Bits left over
 after it, fewer than eight and all zero, are padding.
 
-**Coarse (bit 0).** The 32 x 32 tree did not fit the 165 bytes, so the bot
-sent the same tile as 16 x 16, each cell the highest of the four it
-replaces. A coarse tree is at most 75 bytes and always fits, which is what
+**Coarse (bit 0).** The 32 x 32 tree did not fit the 157 bytes a bot
+sends (165 before 1 October 2026), so the bot sent the same tile as
+16 x 16, each cell the highest of the four it replaces. A coarse tree is
+at most 75 bytes and always fits, which is what
 makes "one packet, always" true. It takes a picture with echo texture
 across most of the tile to need it; the squall line in the vector did not.
 
@@ -1027,7 +1069,7 @@ on a schedule.
 | 5 | 1 | `group` | Same value for every chunk of one reply: the `seq` its first chunk was transmitted with |
 | 6 | 1 | `idx` | Chunk number, from 0 |
 | 7 | 1 | `total` | Chunks in this reply, 1 to 8 |
-| 8 | ≤157 | `text` | UTF-8, never split inside a code point |
+| 8 | ≤149 | `text` | UTF-8, never split inside a code point. A bot before 1 October 2026 sent up to 157 |
 
 Flags nibble bit 0 (**cut**, new in revision 7): the product was longer
 than the air allows and the tail was dropped. Bits 2 and 3 are the data
@@ -1039,8 +1081,8 @@ that chunk with `>part <group> <idx>` (section 7C.2) rather than for the
 whole reply again: it is one packet instead of eight, and the chunk comes
 back under the same `group`.
 
-**The cut flag.** A reply holds at most 8 chunks of 157 bytes, so 1256
-bytes of UTF-8 is the ceiling, and a forecast discussion is routinely
+**The cut flag.** A reply holds at most 8 chunks of 149 bytes, so 1192
+bytes of UTF-8 is the ceiling (1256 before 1 October 2026), and a forecast discussion is routinely
 longer. When the bot has to drop the tail it trims at the last sentence
 boundary that fits — a `.`, `!` or `?` followed by a space — or, failing
 that, at the last word boundary. The text is never cut inside a word and
@@ -1054,7 +1096,7 @@ is an excerpt.
 Show a cut reply as an excerpt — the text, then a quiet line saying the
 rest did not fit, and a way to ask the bot again for the parts that
 matter. Do not show it as a transmission fault or a missing chunk: every
-chunk arrived, and asking again gets the same 1256 bytes. `cut` and a
+chunk arrived, and asking again gets the same 1192 bytes. `cut` and a
 missing `idx` are different things and should not share a marker.
 
 ### 8.2 Request grammar (app side)
@@ -1221,7 +1263,14 @@ all "counties" here, as in the NWS products.
 
 Bundle versioning: `protocol.json` `version` (16 since revision 12),
 `index.json` `version` (2 since revision 3) and `pfm_points.json`
-`version` (2 since revision 10). Revision 12 changed one bundle file,
+`version` (2 since revision 10). The send limit of 1 October 2026
+(section 2.1) changed `protocol.json` without a new `version`, since no
+layout changed: `v5.max_send` (157) joined `v5.max_data` (165), which
+keeps its meaning, and the counts in `v5.limits` became what fits in 157
+(`stations` 13, `stations_with_ages` 12,
+`text_bytes_per_chunk` 149, `coverage_offices` 22,
+`sweep_entries_per_packet` 36, `sweep_entries` 288, `radar_cells_bytes`
+145). Revision 12 changed one bundle file,
 `protocol.json`: `record_sizes.warning_begins` (2),
 `sentinels.warning_begins_saturated` (65535) and a sentence in `notes`.
 Revision 11 changed one bundle file,
@@ -1574,7 +1623,8 @@ range shows old data; saying so is the feature.
 ## 14. Build checklist
 
 1. Add `#meshwx`; confirm firmware ≥ 1.15 on the radio.
-2. Decode `GRP_DATA` with `data_type 0xFF10`; run the test vectors.
+2. Decode `GRP_DATA` with `data_type 0xFF10`, up to 165 bytes although a
+   bot sends at most 157 (section 2.1); run the test vectors.
 3. Track `(bot, seq)`; dedupe; detect gaps → `>d`.
 4. Warnings keyed by `(event, office, etn)`; apply Cancel and Digest (mind a full digest, section 5).
 5. Render from the bundle tables; never from strings on the wire. Hide unknown fields.

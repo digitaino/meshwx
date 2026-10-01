@@ -61,7 +61,7 @@ def test_coverage_round_trips_centre_radius_offices_and_runs():
         {"state": 42, "county": True, "start": 453, "run": 1},
     ]
     assert d["zones_cut"] is False and d["offices_cut"] is False
-    assert len(data) == 14 + 4 + 1 + 8 <= v5.MAX_DATA
+    assert len(data) == 14 + 4 + 1 + 8 <= v5.MAX_SEND
 
 
 def test_a_bare_coverage_is_fifteen_bytes_and_the_cut_flags_ride_in_the_nibble():
@@ -85,18 +85,18 @@ def test_southern_and_eastern_coordinates_and_a_truncated_packet():
 def test_both_lists_full_still_fit_one_packet():
     """The caps are chosen so a full office list never costs a zone run."""
     data = v5.encode_coverage(
-        1, BOT, lat=30.0, lon=-97.0, radius_km=400, stations=14,
+        1, BOT, lat=30.0, lon=-97.0, radius_km=400, stations=12,
         offices=list(range(v5.MAX_COVERAGE_OFFICES)),
         areas=[(42, False, 100 + i, 1) for i in range(v5.MAX_COVERAGE_RUNS)],
     )
-    assert len(data) == 159 <= v5.MAX_DATA
+    assert len(data) == 14 + 22 + 1 + 4 * 30 == 157 == v5.MAX_SEND
     d = v5.decode(data)
-    assert len(d["offices"]) == 24 and len(d["areas"]) == 30
+    assert len(d["offices"]) == 22 and len(d["areas"]) == 30
 
 
 def test_encode_rejects_more_than_the_caps():
-    with pytest.raises(ValueError, match="at most 24 offices"):
-        v5.encode_coverage(1, BOT, lat=0, lon=0, offices=list(range(25)))
+    with pytest.raises(ValueError, match="at most 22 offices"):
+        v5.encode_coverage(1, BOT, lat=0, lon=0, offices=list(range(23)))
     with pytest.raises(ValueError, match=r"0\.\.30 runs"):
         v5.encode_coverage(1, BOT, lat=0, lon=0,
                            areas=[(42, False, 100 + i, 1) for i in range(31)])
@@ -124,7 +124,7 @@ def test_wx_aus_real_coverage_is_five_runs_in_one_thirty_nine_byte_packet():
     assert f["office_idx"] == [35, 40, 51, 113]
     assert f["areas"] == [(tx, False, 155, 6), (tx, False, 170, 6), (tx, False, 186, 12),
                           (tx, False, 205, 7), (tx, False, 221, 5)]
-    assert f["radius_km"] == 120 and f["stations"] == 13
+    assert f["radius_km"] == 120 and f["stations"] == 12
     assert not f["zones_cut"] and not f["offices_cut"]
 
     msg = b.coverage_message(17, BOT, _wx_aus(), None, 120)
@@ -176,9 +176,9 @@ def test_an_office_list_too_big_is_cut_to_the_lowest_indices_and_flagged():
     f = b.coverage_facts(cov, AUSTIN, 120)
     assert f["offices_cut"] is True
     assert f["office_idx"] == list(range(v5.MAX_COVERAGE_OFFICES))
-    assert len(f["offices"]) == 25                      # the text reply keeps them all
+    assert len(f["offices"]) == 23                      # the text reply keeps them all
     d = v5.decode(b.coverage_message(1, BOT, cov, AUSTIN, 120))
-    assert d["offices_cut"] is True and len(d["offices"]) == 24
+    assert d["offices_cut"] is True and len(d["offices"]) == 22
     # No zone fell inside a circle, so no circle is claimed and no observations.
     assert d["radius_km"] == 0 and d["stations"] == 0
 
@@ -186,7 +186,7 @@ def test_an_office_list_too_big_is_cut_to_the_lowest_indices_and_flagged():
 def test_a_big_real_coverage_still_fits_one_packet():
     cov = _coverage(states=["TX", "OK", "NM"])
     msg = b.coverage_message(1, BOT, cov, AUSTIN, 120)
-    assert len(msg) <= v5.MAX_DATA
+    assert len(msg) <= v5.MAX_SEND
     d = v5.decode(msg)
     assert len(d["offices"]) <= v5.MAX_COVERAGE_OFFICES
     assert len(d["areas"]) <= v5.MAX_COVERAGE_RUNS
@@ -323,7 +323,7 @@ def test_cov_says_the_area_the_offices_the_stations_and_the_alert_list():
     reply = bot._process_command("cov", "")
     assert reply == (
         "Coverage: 36 NWS zones within 120 km of Austin, TX; "
-        "offices EWX, FWD, HGX, SJT; up to 13 stations hourly; alert list every 3 h"
+        "offices EWX, FWD, HGX, SJT; up to 12 stations hourly; alert list every 3 h"
     )
     assert len(reply) <= render_text.MAX_DM               # one message, no paging needed
     assert "| cov |" in HELP_TEXT_DM and len(HELP_TEXT) <= render_text.MAX_DM

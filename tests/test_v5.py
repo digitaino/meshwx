@@ -168,8 +168,28 @@ def reencode(d: dict) -> bytes:
 def roundtrip(data: bytes) -> dict:
     decoded = v5.decode(data)
     assert reencode(decoded) == data
-    assert len(data) <= v5.MAX_DATA
+    assert len(data) <= v5.MAX_SEND
     return decoded
+
+
+#: What a bot before 1 October 2026 filled a packet to: the transport limit,
+#: and the counts it allowed.  Every decoder still reads such a packet; only
+#: what a bot sends shrank to ``v5.MAX_SEND``.
+OLDER_BOT_LIMITS = dict(
+    MAX_SEND=v5.MAX_DATA,
+    MAX_TEXT_BYTES=157,
+    MAX_DIGEST_ENTRIES=25,
+    MAX_STATIONS=14,
+    MAX_SWEEP_ENTRIES_PER_PACKET=38,
+    MAX_COVERAGE_OFFICES=24,
+)
+
+
+def as_an_older_bot(monkeypatch) -> None:
+    """Let the encoders build what an older bot sent, to make fixtures for
+    the decoders.  The bot itself never does this."""
+    for name, value in OLDER_BOT_LIMITS.items():
+        monkeypatch.setattr(v5, name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +200,7 @@ def roundtrip(data: bytes) -> dict:
 def test_transport_constants():
     assert v5.DATA_TYPE == 0xFF10
     assert v5.MAX_DATA == 165
+    assert v5.MAX_SEND == 157
     assert (
         v5.TYPE_WARNING,
         v5.TYPE_CANCEL,
@@ -338,10 +359,10 @@ def test_warning_polygon_delta_overflow():
     assert v5.decode(ok)["polygon"][1] == [30.0, -129.767]
 
 
-def test_warning_over_max_data_raises():
+def test_warning_over_the_send_limit_raises():
     ring = [(30.0 + i * 0.01, -97.0 - i * 0.01) for i in range(30)]
     areas = [(42, False, 100 + i, 1) for i in range(30)]
-    with pytest.raises(ValueError, match="over the 165-byte limit"):
+    with pytest.raises(ValueError, match="over the 157-byte send limit"):
         v5.encode_warning(
             1, BOT, event=3, office=1, etn=1, expires_min=NOW,
             polygon=ring, areas=areas,
@@ -417,7 +438,7 @@ def test_warning_issue_time_survives_a_polygon_that_has_to_go():
     time must not be the thing that makes the packet too big to send."""
     ring = [(30.0 + i * 0.01, -97.0 - i * 0.01) for i in range(30)]
     areas = [(42, False, 100 + i, 1) for i in range(30)]
-    with pytest.raises(ValueError, match="over the 165-byte limit"):
+    with pytest.raises(ValueError, match="over the 157-byte send limit"):
         v5.encode_warning(
             1, BOT, event=3, office=1, etn=1, expires_min=NOW,
             polygon=ring, areas=areas, issued_min=NOW - 30,
@@ -426,7 +447,7 @@ def test_warning_issue_time_survives_a_polygon_that_has_to_go():
         1, BOT, event=3, office=1, etn=1, expires_min=NOW,
         polygon=ring[:8], areas=areas[:12], issued_min=NOW - 30,
     )
-    assert len(data) <= v5.MAX_DATA
+    assert len(data) <= v5.MAX_SEND
     assert v5.decode(data)["issued_min"] == NOW - 30
     assert len(v5.decode(data)["polygon"]) == 8
 
@@ -486,6 +507,10 @@ def test_digest_empty_and_limit():
     big = [(3, 1, i, NOW + 10) for i in range(26)]
     with pytest.raises(ValueError, match="at most 25 entries"):
         v5.encode_digest(1, BOT, now_min=NOW, feed_health=0, entries=big)
+    # The one message past the send limit: 25 entries is how an app knows the
+    # list may have been cut, and released apps act on exactly that.
+    full = v5.encode_digest(1, BOT, now_min=NOW, feed_health=0, entries=big[:25])
+    assert len(full) == 10 + 6 * 25 == 160 and v5.MAX_SEND < len(full) <= v5.MAX_DATA
 
 
 # ---------------------------------------------------------------------------
@@ -550,12 +575,12 @@ def test_obs_calm_is_direction_zero():
 
 
 def test_obs_count_limits():
-    with pytest.raises(ValueError, match="1..14 stations"):
+    with pytest.raises(ValueError, match="1..13 stations"):
         v5.encode_obs(1, BOT, ts_min=NOW, stations=[])
-    with pytest.raises(ValueError, match="1..14 stations"):
-        v5.encode_obs(1, BOT, ts_min=NOW, stations=[_station()] * 15)
-    full = v5.encode_obs(1, BOT, ts_min=NOW, stations=[_station()] * 14)
-    assert len(full) == 9 + 11 * 14 == 163 <= v5.MAX_DATA
+    with pytest.raises(ValueError, match="1..13 stations"):
+        v5.encode_obs(1, BOT, ts_min=NOW, stations=[_station()] * 14)
+    full = v5.encode_obs(1, BOT, ts_min=NOW, stations=[_station()] * 13)
+    assert len(full) == 9 + 11 * 13 == 152 <= v5.MAX_SEND
 
 
 def test_obs_pressure_out_of_range():
@@ -630,15 +655,15 @@ def test_obs_without_the_age_flag_is_the_old_form_byte_for_byte():
     assert all(s["age_min"] is None for s in v5.decode(old)["stations"])
 
 
-def test_obs_ages_cost_the_fourteenth_station():
-    """A full batch is 163 bytes already: the ages do not fit beside it, and
-    the encoder says so rather than sending a packet the radio will refuse."""
+def test_obs_ages_cost_the_thirteenth_station():
+    """A full batch is 152 bytes already: the ages do not fit beside it, and
+    the encoder says so rather than sending a packet no echo can confirm."""
     full = [_station(station=200 + i, age_min=0) for i in range(v5.MAX_STATIONS)]
-    with pytest.raises(ValueError, match="over the 165-byte limit"):
+    with pytest.raises(ValueError, match="over the 157-byte send limit"):
         v5.encode_obs(1, BOT, ts_min=NOW, stations=full)
     fits = v5.encode_obs(1, BOT, ts_min=NOW, stations=full[:v5.MAX_STATIONS_WITH_AGES])
-    assert v5.MAX_STATIONS_WITH_AGES == 13
-    assert len(fits) == 9 + 11 * 13 + 7 == 159 <= v5.MAX_DATA
+    assert v5.MAX_STATIONS_WITH_AGES == 12
+    assert len(fits) == 9 + 11 * 12 + 6 == 147 <= v5.MAX_SEND
 
 
 def test_obs_truncated_age_block_raises():
@@ -739,14 +764,14 @@ def test_text_roundtrip():
 
 
 def test_text_chunk_limit():
-    with pytest.raises(ValueError, match="over the 157-byte limit"):
+    with pytest.raises(ValueError, match="over the 149-byte limit"):
         v5.encode_text(
-            1, BOT, subject=0, group=1, idx=0, total=1, text="x" * 158
+            1, BOT, subject=0, group=1, idx=0, total=1, text="x" * 150
         )
     full = v5.encode_text(
-        1, BOT, subject=0, group=1, idx=0, total=1, text="x" * 157
+        1, BOT, subject=0, group=1, idx=0, total=1, text="x" * 149
     )
-    assert len(full) == v5.MAX_DATA
+    assert len(full) == v5.MAX_SEND
 
 
 def test_text_chunks_split_and_number():
@@ -759,11 +784,11 @@ def test_text_chunks_split_and_number():
     assert [d["idx"] for d in decoded] == [0, 1, 2]
     assert {d["total"] for d in decoded} == {3}
     assert "".join(d["text"] for d in decoded) == body
-    assert [len(c) for c in chunks] == [165, 165, 8 + 400 - 314]
+    assert [len(c) for c in chunks] == [157, 157, 8 + 400 - 298]
 
 
 def test_text_chunks_never_split_a_code_point():
-    # Three-byte code points: 157 is not a multiple of 3, so a naive split
+    # Three-byte code points: 149 is not a multiple of 3, so a naive split
     # would cut one in half.
     body = "☃" * 200
     chunks = v5.text_chunks(0, BOT, subject=v5.SUBJECT_GENERAL, text=body)
@@ -781,7 +806,7 @@ def test_text_chunks_seq_wraps():
 
 def test_text_chunks_too_long():
     with pytest.raises(ValueError, match="over the 8-chunk limit"):
-        v5.text_chunks(0, BOT, subject=0, text="C" * (157 * 8 + 1))
+        v5.text_chunks(0, BOT, subject=0, text="C" * (149 * 8 + 1))
 
 
 def test_text_chunks_empty_text():
@@ -1188,7 +1213,13 @@ def test_protocol_json_v5_block():
         assert key in proto
     block = proto["v5"]
     assert block["data_type"] == v5.DATA_TYPE == 65296
-    assert block["max_data"] == v5.MAX_DATA
+    # What a decoder reads, and beside it what a bot sends: the meaning of
+    # `max_data` did not change when the send limit came in.
+    assert block["max_data"] == v5.MAX_DATA == 165
+    assert block["max_send"] == v5.MAX_SEND == 157
+    assert block["limits"]["text_bytes_per_chunk"] == v5.MAX_TEXT_BYTES
+    assert block["limits"]["digest_entries"] == [0, v5.MAX_DIGEST_ENTRIES]
+    assert block["limits"]["stations"] == [1, v5.MAX_STATIONS]
     assert block["types"] == {
         "warning": 1, "cancel": 2, "digest": 3, "observations": 4,
         "forecast": 5, "text": 6, "not_available": 7, "coverage": 8,
@@ -1209,7 +1240,7 @@ def test_protocol_json_v5_block():
     assert radar["max_age_minutes"] == MAX_AGE_MIN
     assert radar["cooldown_seconds"] == bc.RADAR_COOLDOWN_S
     assert block["record_sizes"]["radar_fixed"] == 12 and block["record_sizes"]["radar_bounds"] == 4
-    assert block["limits"]["radar_cells_bytes"] == [1, v5.MAX_DATA - 12]
+    assert block["limits"]["radar_cells_bytes"] == [1, v5.MAX_SEND - 12]
     assert block["flags"]["coverage"] == {
         "zones_truncated": v5.FLAG_COVERAGE_ZONES_CUT,
         "offices_truncated": v5.FLAG_COVERAGE_OFFICES_CUT,
@@ -1301,11 +1332,17 @@ def test_vectors_cover_every_message_type():
 
 
 @pytest.mark.parametrize("vector", _vectors(), ids=lambda v: v["name"])
-def test_vector_decodes_and_reencodes(vector):
+def test_vector_decodes_and_reencodes(vector, monkeypatch):
     data = bytes.fromhex(vector["hex"])
     assert len(data) <= v5.MAX_DATA
     decoded = v5.decode(data)
     assert decoded == vector["decoded"]
+    if len(data) > v5.MAX_SEND:
+        # A packet an older bot filled past the send limit: every decoder
+        # reads it, and this bot's encoder refuses to build it.
+        with pytest.raises(ValueError):
+            reencode(decoded)
+        as_an_older_bot(monkeypatch)
     assert reencode(decoded).hex() == vector["hex"]
 
 
@@ -1372,6 +1409,69 @@ def test_vector_sizes_are_within_budget():
     # WX-AUS's real coverage: 14 fixed + 4 offices + 1 + 5 runs of 4.
     assert sizes["coverage_wx_aus"] == 39
     assert all(n <= v5.MAX_DATA for n in sizes.values())
+    # Two vectors keep what a bot sent before the send limit, so every
+    # client's decoder is held to the full 165 bytes.
+    assert {name for name, n in sizes.items() if n > v5.MAX_SEND} == {
+        "text_warning_narrative_chunk0", "area_sweep_national_packet0",
+    }
+
+
+# ---------------------------------------------------------------------------
+# The send limit: a bot sends 157 bytes, a decoder reads 165
+# ---------------------------------------------------------------------------
+
+
+def test_a_decoder_reads_every_packet_an_older_bot_filled_to_the_transport_limit(monkeypatch):
+    """Bots before 1 October 2026 filled packets to 165 bytes, the counts
+    with them. The send limit shrank what a bot builds, never what a decoder
+    takes: every one of these decodes, and none of them can be built now."""
+    north_half_noisy = [
+        [(r * 5 + c * 3) % 4 if r < 16 else 0 for c in range(32)] for r in range(32)
+    ]
+    with monkeypatch.context() as m:
+        as_an_older_bot(m)
+        full = {
+            "text": v5.encode_text(
+                1, BOT, subject=0, group=1, idx=0, total=1, text="x" * 157),
+            "area_sweep": v5.encode_area_sweep(
+                1, BOT, built_min=NOW, group=1, idx=0, total=1,
+                entries=[(3, 42, True, n, 1) for n in range(38)]),
+            "observations": v5.encode_obs(
+                1, BOT, ts_min=NOW, stations=[_station(station=200 + i) for i in range(14)]),
+            "observations_with_ages": v5.encode_obs(
+                1, BOT, ts_min=NOW,
+                stations=[_station(station=200 + i, age_min=10) for i in range(13)]),
+            "coverage": v5.encode_coverage(
+                1, BOT, lat=30.0, lon=-97.0, radius_km=400, stations=13,
+                offices=list(range(24)),
+                areas=[(42, False, 100 + i, 1) for i in range(30)]),
+            "radar": v5.encode_radar(
+                1, BOT, taken_min=NOW, south=30, west=-98, zoom=0, product=1,
+                rows=north_half_noisy),
+        }
+    assert {name: len(data) for name, data in full.items()} == {
+        "text": 165, "area_sweep": 163, "observations": 163,
+        "observations_with_ages": 159, "coverage": 159, "radar": 163,
+    }
+    for name, data in full.items():
+        assert v5.MAX_SEND < len(data) <= v5.MAX_DATA, name
+        decoded = v5.decode(data)
+        with pytest.raises(ValueError):
+            reencode(decoded)
+        full[name] = decoded
+    assert len(full["text"]["text"]) == 157
+    assert len(full["area_sweep"]["entries"]) == 38
+    assert len(full["observations"]["stations"]) == 14
+    assert [s["age_min"] for s in full["observations_with_ages"]["stations"]] == [10] * 13
+    assert (len(full["coverage"]["offices"]), len(full["coverage"]["areas"])) == (24, 30)
+    assert full["radar"]["rows"] == ["".join(map(str, r)) for r in north_half_noisy]
+
+
+def test_every_encoder_refuses_more_than_the_send_limit():
+    """The check every encoder ends in is the send limit, not the transport's."""
+    with pytest.raises(ValueError, match="158 bytes, over the 157-byte send limit"):
+        v5._check_size(bytes(158), "test")
+    assert v5._check_size(bytes(157), "test") == bytes(157)
 
 
 # ---------------------------------------------------------------------------

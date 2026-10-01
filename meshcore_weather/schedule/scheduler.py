@@ -250,7 +250,7 @@ class Scheduler:
         return n
 
     async def transmit(self, msgs: list[bytes], label: str, ev: dict | None = None,
-                       keep_groups: bool = False) -> tuple[int, int]:
+                       keep_groups: bool = False, not_before: float = 0.0) -> tuple[int, int]:
         """Send v5 messages on the data channel with spacing. Returns
         (packets sent, bytes).
 
@@ -263,7 +263,14 @@ class Scheduler:
         `keep_groups` is the `>part` case: these packets went out once
         already, so they take a fresh seq and keep the `group` they were
         assembled under. They are not remembered again either — a resend must
-        not extend the ten minutes the original answer is held for."""
+        not extend the ten minutes the original answer is held for.
+
+        `not_before` (time.monotonic): the first packet waits for it, outside
+        the lock, so an answer held back for a relayed request keeps no other
+        batch waiting (main.reply_not_before)."""
+        wait = not_before - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
         async with self._tx_lock:
             # Saved past the batch before it starts: killed part-way, the bot comes back ahead of
             # every number it may have put on air (apps see a gap), never behind them (apps would

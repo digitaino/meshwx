@@ -41,7 +41,7 @@ ENV_WRITABLE = {
     "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
     "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE",
     "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
-    "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN",
+    "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN", "MCW_RELAYED_REPLY_DELAY_S",
 }
 
 # The limits on what the bot spends answering (config.py), set on the Text bot
@@ -920,7 +920,8 @@ _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADI
               "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
               "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE", "MCW_SDR_DASHBOARD_URL",
               "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
-              "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN"} | set(LIMIT_KEYS)
+              "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN",
+              "MCW_RELAYED_REPLY_DELAY_S"} | set(LIMIT_KEYS)
 
 # Value checks, run before anything touches .env: a bad value must never be
 # persisted, because the next start would refuse the file.
@@ -928,6 +929,7 @@ _INT_KEYS = {"MCW_SERIAL_BAUD", "MCW_HOME_RADIUS_KM", "MCW_SDR_POLL_INTERVAL", "
              "MCW_ADVERT_INTERVAL_HOURS", "MCW_CONTACT_KEEP_FREE", "MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR",
              "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_RX_SILENT_MIN"} | (set(LIMIT_KEYS) - {"MCW_APP_SENDER_GAP_S"})
 _FLOAT_KEYS = {"MCW_ECHO_WINDOW_S", "MCW_APP_SENDER_GAP_S"}
+_SECONDS_KEYS = {"MCW_RELAYED_REPLY_DELAY_S"}          # 0 allowed: off
 # A budget of 0 would refuse everything: that is switching the bot off, which
 # is MCW_TX_ENABLED's job.
 _MIN_ONE_KEYS = {"MCW_APP_PACKETS_PER_HOUR", "MCW_TEXT_REPLIES_PER_SENDER_PER_HOUR", "MCW_TEXT_REPLIES_PER_HOUR",
@@ -956,6 +958,12 @@ def _validate_updates(updates: dict[str, str]) -> None:
                     raise ValueError
             except ValueError:
                 raise HTTPException(400, f"{key}: must be a number above 0")
+        if key in _SECONDS_KEYS:
+            try:
+                if not 0 <= float(val) <= 10:
+                    raise ValueError
+            except ValueError:
+                raise HTTPException(400, f"{key}: must be a number of seconds from 0 to 10")
         if key == "MCW_SCOPE_URL" and not val.startswith(("http://", "https://")):
             raise HTTPException(400, f"{key}: must start with http:// or https://")
         if key in _BOOL_KEYS and val.lower() not in _TRUE + _FALSE:
@@ -998,6 +1006,8 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
             setattr(settings, key[4:].lower(), max(1, int(val)) if key == "MCW_SCOPE_MIN_OBSERVERS" else int(val))
         elif key == "MCW_ECHO_WINDOW_S":
             settings.echo_window_s = float(val)
+        elif key == "MCW_RELAYED_REPLY_DELAY_S":
+            settings.relayed_reply_delay_s = float(val)
         elif key == "MCW_SCOPE_URL":
             settings.scope_url = val
         elif key == "MCW_SCOPE_MODE":
@@ -1102,9 +1112,12 @@ async def radio_health(request: Request) -> JSONResponse:
     from meshcore_weather.meshcore.health import firmware_check
     radio = _radio(request)
     device = getattr(radio, "device", {}) or {}
+    drops = [d for d in getattr(_bot(request), "link_drops", []) if time.time() - d[0] < 86400]
     out = {
         "connected": radio.connected,
         "health": _health_verdict(),
+        "link_drops": {"24h": len(drops), "last_at": drops[-1][0] if drops else None,
+                       "last_reason": drops[-1][1] if drops else None},
         "firmware": firmware_check(device.get("ver")),
         "device": device,
         "delivery": delivery_tracker.stats()["windows"],

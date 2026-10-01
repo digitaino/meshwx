@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import random
 import re
 import signal
 import sys
@@ -12,7 +13,7 @@ from pathlib import Path
 from meshcore_weather.config import settings
 from meshcore_weather.emwin.fetcher import create_source
 from meshcore_weather.geodata import resolver, zip_code
-from meshcore_weather.meshcore.delivery import DM_MAX_BYTES, DmReply, DmRequests, dm_outbox
+from meshcore_weather.meshcore.delivery import DM_MAX_BYTES, DmReply, DmRequests, clip_bytes, dm_outbox
 from meshcore_weather.meshcore.radio import MeshcoreRadio
 from meshcore_weather.nlp import is_conversation, parse_intent, strip_mentions
 from meshcore_weather.core.pages import split_pages
@@ -60,19 +61,42 @@ VALID_STATES = set(STATE_NAMES.values())
 
 def channel_fit(text: str, budget: int) -> str:
     """One channel message: the whole reply if it fits, else the reply cut at
-    a list boundary with a note. Never cut mid-word, never overflow."""
+    a list boundary with a note. Never cut mid-word, never overflow.
+    `budget` is UTF-8 bytes (radio.channel_text_budget)."""
     text = text.replace("\n", " ").strip()
-    if len(text) <= budget:
+    if len(text.encode()) <= budget:
         return text
     note = " … DM me for all"
-    room = budget - len(note)
-    cut = text[:room]
+    cut = clip_bytes(text, budget - len(note.encode()))
+    room = len(cut)
     for sep in ("; ", " | ", ", ", " "):
         i = cut.rfind(sep)
         if i > room * 3 // 5:
             cut = cut[:i]
             break
     return cut.rstrip(" ;|,") + note
+
+
+def reply_not_before(hops: int | None, t0: float | None = None) -> float:
+    """When the answer to a request heard at `t0` (time.monotonic) may go
+    out. A request that came through repeaters is still being passed on
+    when it reaches us, and an answer sent straight away goes out under the
+    repeaters' own copies of it: on 1 October 12 of 35 answers sent within a
+    third of a second of a relayed request lost their first copy, and none
+    of the 8 sent later did. A request heard direct (or of unknown route) is
+    answered at once."""
+    t0 = time.monotonic() if t0 is None else t0
+    delay = settings.relayed_reply_delay_s
+    if not hops or delay <= 0:
+        return t0
+    return t0 + delay + random.uniform(0, delay / 2)
+
+
+async def wait_until(t: float) -> None:
+    """Sleep until time.monotonic() reaches `t`."""
+    wait = t - time.monotonic()
+    if wait > 0:
+        await asyncio.sleep(wait)
 
 
 async def _cancel(task: asyncio.Task | None) -> None:
@@ -104,6 +128,9 @@ class WeatherBot:
         self._backlog_task: asyncio.Task | None = None
         self._restart_task: asyncio.Task | None = None
         self._radio_last_error: str | None = None
+        # (time, reason) of each lost link: on 2026-10-01 the radio and the
+        # dish receiver fell off USB together four times in five minutes.
+        self.link_drops: list[tuple[float, str]] = []
         self._started_at: float = time.time()
         # Set until start() clears it: a bot built by a test, the CLI or the
         # portal owns whatever is in its store from the first call. On a real
@@ -229,6 +256,7 @@ class WeatherBot:
         """The radio reports its link is gone: reconnect in the background
         (a swapped board is adopted on the way) and keep serving meanwhile."""
         self._radio_last_error = f"link lost: {reason}"
+        self.link_drops = [d for d in self.link_drops if time.time() - d[0] < 86400][-99:] + [(time.time(), reason)]
         logger.warning("Reconnecting to the radio after a lost link (%s)", reason)
         self._radio_task = asyncio.create_task(self.reconnect_radio())
 
@@ -533,9 +561,12 @@ class WeatherBot:
             logger.info("Channel command from %s: no DM path, replying on our channel (flood)", sender)
         else:
             logger.info("Channel command from %s: reply_mode=channel, replying on our channel (flood)", sender)
+        await wait_until(reply_not_before(hops, (req or {}).get("_t0")))
         ev = traffic_log.record("reply_channel", text=chunk, chars=len(chunk), req=req, sender=sender,
                                 command=command, location=location, ok=settings.tx_enabled)
-        await self.radio.send_channel_message(self.radio.channel_idx, chunk[:160], ev=ev)
+        sent = await self.radio.send_channel_message(self.radio.channel_idx, chunk, ev=ev)
+        if sent is False and settings.tx_enabled:
+            traffic_log.update(ev, ok=False, reason="the node did not send it", push=True)
         if not forced and await self.radio.advert_if_stale():
             logger.info("Adverted so %s can DM us next time", sender)
 
@@ -873,6 +904,9 @@ class WeatherBot:
         if req is None:
             req = traffic_log.record("data_request", sender=sender_name, key=sender_key if transport == "dm" else None,
                                      text=text[:40], transport=transport, hops=hops)
+        # From now, not from `req`: a later copy of the request arrives with
+        # the first copy's event and is as fresh on the air as the first was.
+        not_before = reply_not_before(hops)
         if not self._broadcaster:
             traffic_log.record("dropped", reason="broadcasts off: no data channel", req=req, sender=sender_name)
             if dreq is not None:
@@ -884,7 +918,7 @@ class WeatherBot:
         # outcome (echo, observers) lands on it; the feed used to show only the request, as if
         # the bot had never answered. A refusal turns the row into the dropped it is.
         rev = traffic_log.record("reply_data", req=req, sender=sender_name, transport="channel_data")
-        outcome = await self._broadcaster.handle_request(text, sender_key, ev=rev)
+        outcome = await self._broadcaster.handle_request(text, sender_key, ev=rev, not_before=not_before)
         logger.info("App request from %s: %s -> %s", sender_name, text[:40], outcome)
         # "already resent": a `>part` whose every packet went out again in the
         # last 30 seconds (spec 7C.2). Nothing was sent, so the row is the
@@ -1089,8 +1123,13 @@ class WeatherBot:
             self._paging = {k: self._paging[k] for _, k in live[: self.PAGE_SESSIONS_MAX]}
 
     def _pages(self, response: str) -> list[str]:
-        """Pages fit both transports and a DM's 156 UTF-8 bytes."""
-        return split_pages(response, self.page_budget(), max_bytes=DM_MAX_BYTES)
+        """Pages fit both transports: a DM's 156 UTF-8 bytes and the bytes of
+        a channel message whose echo the node can report."""
+        try:
+            max_bytes = min(DM_MAX_BYTES, int(self.radio.channel_text_budget()))
+        except Exception:
+            max_bytes = DM_MAX_BYTES
+        return split_pages(response, self.page_budget(), max_bytes=max_bytes)
 
     def _start_session(self, key: str, command: str, response: str) -> list[str]:
         pages = self._pages(response)

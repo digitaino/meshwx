@@ -216,8 +216,11 @@ class AppResponder:
     def is_request(text: str) -> bool:
         return text.strip().startswith(">")
 
-    async def handle_request(self, text: str, sender_key: str, ev: dict | None = None) -> str:
-        """Answer one `>` request. Returns a short outcome for the log."""
+    async def handle_request(self, text: str, sender_key: str, ev: dict | None = None,
+                             not_before: float = 0.0) -> str:
+        """Answer one `>` request. Returns a short outcome for the log.
+        Nothing goes out before `not_before` (time.monotonic; see
+        main.reply_not_before)."""
         now = time.time()
         if now - self._last_by_sender.get(sender_key, 0.0) < settings.app_sender_gap_s:
             return "rate limited"
@@ -235,7 +238,7 @@ class AppResponder:
         if self._ready is not None and not self._ready.is_set():
             seq = b.SeqCounter()
             msg = b.not_available(seq.next(), self._scheduler.bot_id(), cmd, v5.REASON_NO_DATA)
-            await self._scheduler.transmit([msg], f"not ready for {text.strip()[:24]!r}")
+            await self._scheduler.transmit([msg], f"not ready for {text.strip()[:24]!r}", not_before=not_before)
             return "starting up"
         # Before building: an answer that will not be sent must cost nothing
         # but the 6-byte "busy" that says so, which is off the budget. Until
@@ -250,7 +253,7 @@ class AppResponder:
             if len(self._busy_told) > 500:
                 self._busy_told = {k: v for k, v in self._busy_told.items() if now - v < BUSY_REPLY_PER_SENDER_S}
             msg = b.not_available(b.SeqCounter().next(), self._scheduler.bot_id(), cmd, v5.REASON_RATE_LIMITED)
-            await self._scheduler.transmit([msg], f"busy for {text.strip()[:24]!r}", ev=ev)
+            await self._scheduler.transmit([msg], f"busy for {text.strip()[:24]!r}", ev=ev, not_before=not_before)
             return "hourly budget spent, told busy"
         # Scratch numbering: Scheduler.transmit stamps the real seq on air.
         seq, bot = b.SeqCounter(), self._scheduler.bot_id()
@@ -258,7 +261,7 @@ class AppResponder:
         # an answer nor lets the stamping step touch `group`. It also has a
         # silence of its own (below), which `_answer` has no way to say.
         if cmd == "part":
-            return await self._resend_parts(arg, seq, bot, now, ev)
+            return await self._resend_parts(arg, seq, bot, now, ev, not_before)
         try:
             if cmd == "radar":
                 # Decoding a GIF is a few hundred milliseconds on a Pi, which is
@@ -272,7 +275,8 @@ class AppResponder:
             msgs = [b.not_available(seq.next(), bot, cmd, v5.REASON_BOT_ERROR)]
         if not msgs:
             msgs = [b.not_available(seq.next(), bot, cmd, v5.REASON_NO_DATA)]
-        n, nbytes = await self._scheduler.transmit(msgs, f"app request {text.strip()[:24]!r}", ev=ev)
+        n, nbytes = await self._scheduler.transmit(msgs, f"app request {text.strip()[:24]!r}", ev=ev,
+                                                   not_before=not_before)
         self._sent.extend([now] * n)
         # The five-minute window starts when the sweep went out, so it is
         # stamped here and only when the radio took at least one packet. Only
@@ -292,7 +296,7 @@ class AppResponder:
         return f"{n} packet(s), {nbytes} B"
 
     async def _resend_parts(self, arg: str, seq: b.SeqCounter, bot: int,
-                            now: float, ev: dict | None) -> str:
+                            now: float, ev: dict | None, not_before: float = 0.0) -> str:
         """`>part <group> <idx>[,<idx>…]`: the named packets of a multi-packet
         answer again, identical but for a fresh `seq` (spec 7C, revision 10).
 
@@ -305,12 +309,12 @@ class AppResponder:
         ask = b.parse_parts_request(arg)
         if ask is None:
             logger.info("Could not read a `>part` request: %r", arg)
-            return await self._send_not_available(seq, bot, "p", v5.REASON_NO_DATA, now, ev)
+            return await self._send_not_available(seq, bot, "p", v5.REASON_NO_DATA, now, ev, not_before)
         group, indexes = ask
         packets, waiting, unknown = self._parts.lookup(group, indexes)
         if not packets and not waiting:
             logger.info("`>part` for group %d: %s not held", group, unknown)
-            return await self._send_not_available(seq, bot, "p", v5.REASON_NO_DATA, now, ev)
+            return await self._send_not_available(seq, bot, "p", v5.REASON_NO_DATA, now, ev, not_before)
         if not packets:
             # Not an error: the answer is already on the air for everyone.
             logger.info("`>part` for group %d: %s resent inside the last %.0fs; sending nothing",
@@ -320,7 +324,7 @@ class AppResponder:
             packets,
             f"app request '>part {group} {','.join(str(i) for i in indexes)}'"
             f" ({self._parts.kind(group)})",
-            ev=ev, keep_groups=True)
+            ev=ev, keep_groups=True, not_before=not_before)
         self._sent.extend([now] * n)
         # Stamped once the radio took something, the way the sweep window is.
         # A batch the radio refused outright leaves the floor open, so the
@@ -330,10 +334,10 @@ class AppResponder:
         return f"{n} packet(s), {nbytes} B"
 
     async def _send_not_available(self, seq: b.SeqCounter, bot: int, letter: str,
-                                  reason: int, now: float, ev: dict | None) -> str:
+                                  reason: int, now: float, ev: dict | None, not_before: float = 0.0) -> str:
         msg = b.not_available(seq.next(), bot, letter, reason)
         n, nbytes = await self._scheduler.transmit(
-            [msg], f"not available for {letter!r}", ev=ev)
+            [msg], f"not available for {letter!r}", ev=ev, not_before=not_before)
         self._sent.extend([now] * n)
         return f"{n} packet(s), {nbytes} B"
 

@@ -34,11 +34,11 @@ OBS_MAX_AGE_MIN = 120
 # within this distance of it that has a report (spec 8.2, revision 8). The same
 # 40 km the app will still show a reading from, attributed to its station.
 OBS_SUBSTITUTE_KM = 40.0
-MAX_OBS_STATIONS = 14
+MAX_OBS_STATIONS = v5.MAX_STATIONS
 # What an hourly batch really carries since revision 5: the per-station ages (spec 6.1)
-# do not fit beside 14 stations, so the builder drops the farthest. Coverage states this one.
-OBS_STATIONS_WITH_AGES = 13
-MAX_DIGEST = 25
+# do not fit beside 13 stations, so the builder drops the farthest. Coverage states this one.
+OBS_STATIONS_WITH_AGES = v5.MAX_STATIONS_WITH_AGES
+MAX_DIGEST = v5.MAX_DIGEST_ENTRIES
 POINT_MATCH_KM = 1.5
 
 
@@ -576,10 +576,10 @@ def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str],
     the right temperature instead of stamping the whole batch with one time
     that is true of one station.
 
-    The ages are all or nothing, and they do not fit beside fourteen stations
-    (163 bytes already). A full batch therefore drops its farthest station —
-    the list arrives nearest first — rather than leave the phone to guess which
-    readings the timestamp describes.
+    The ages are all or nothing, and they do not fit beside thirteen stations
+    (152 bytes already, 159 with them, over the 157 a bot sends). A full batch
+    therefore drops its farthest station — the list arrives nearest first —
+    rather than leave the phone to guess which readings the timestamp describes.
 
     A batch is aggregated from many products, so `source` defaults to the
     store-wide answer: `mixed` whenever the store holds both kinds (spec
@@ -944,7 +944,7 @@ def _fits(text: str) -> bool:
 
     Asked of v5 itself rather than computed here: the chunker backs off to
     UTF-8 code point boundaries, so the answer is not simply the byte count
-    over 157.
+    over 149.
     """
     try:
         v5.text_chunks(0, 0, subject=0, text=text)
@@ -956,7 +956,7 @@ def _fits(text: str) -> bool:
 def fit_text(text: str) -> tuple[str, bool]:
     """Trim `text` to what eight chunks hold, and say whether it was cut.
 
-    The ceiling is real — 8 x 157 bytes — so the only question is where to
+    The ceiling is real — 8 x 149 bytes — so the only question is where to
     stop. A forecast discussion cut mid-word reads as a transmission fault;
     cut after a full stop it reads as an excerpt, which is what it is. So:
     the last sentence boundary (a `.`, `!` or `?` followed by a space) that

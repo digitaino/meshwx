@@ -44,14 +44,20 @@ def parse_version(ver: str | None) -> tuple[int, ...] | None:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
 
 
+def _carried(row) -> bool:
+    """No echo, but CoreScope saw a repeater's copy: it got out."""
+    return len(row) > 6 and isinstance(row[6], dict) and bool(row[6].get("carried"))
+
+
 def unheard_streak(outcomes: list[tuple]) -> int:
-    """Consecutive most recent channel sends with neither echo nor ACK."""
+    """Consecutive most recent channel sends with neither echo nor ACK, nor
+    a repeat an observer reported."""
     n = 0
     for row in reversed(outcomes):
-        t, kind, echoed, acked, resent, echo_ms = row[:6]     # a DM reply row carries a 7th field
+        t, kind, echoed, acked, resent, echo_ms = row[:6]     # a 7th field: a DM reply's, a channel row's extras
         if kind not in CHANNEL_KINDS:
             continue
-        if echoed or acked:
+        if echoed or acked or _carried(row):
             break
         n += 1
     return n
@@ -64,7 +70,8 @@ def assess(*, outcomes: list[tuple], last_rx_at: float, last_repeat_heard_at: fl
     streak = unheard_streak(outcomes)
     rx_age = (now - last_rx_at) if last_rx_at else (now - started_at)
     mesh_alive = bool(last_repeat_heard_at) and now - last_repeat_heard_at < MESH_ALIVE_S
-    last_heard_send = next((r[0] for r in reversed(outcomes) if r[1] in CHANNEL_KINDS and (r[2] or r[3])), None)
+    last_heard_send = next((r[0] for r in reversed(outcomes)
+                            if r[1] in CHANNEL_KINDS and (r[2] or r[3] or _carried(r))), None)
     sends = [r for r in outcomes if r[1] in CHANNEL_KINDS]
 
     if rx_age >= rx_silent_s and (rx_frames or now - started_at >= rx_silent_s):

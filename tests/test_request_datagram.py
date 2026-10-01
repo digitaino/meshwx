@@ -56,7 +56,7 @@ class Responder:
         self.calls: list[tuple[str, str]] = []
         self.outcome = outcome
 
-    async def handle_request(self, text, sender_key, ev=None):
+    async def handle_request(self, text, sender_key, ev=None, not_before=0.0):
         self.calls.append((text, sender_key))
         return self.outcome(text) if callable(self.outcome) else self.outcome
 

@@ -35,6 +35,19 @@ radio is back; the broadcaster then starts again and the sequence number
 continues from `data/warning_state.json`. The same retry loop covers a bot
 started with no radio plugged in.
 
+A packet waiting for its resend when the link goes is not resent and not
+counted as one: its outcome says "radio unavailable". Radio › Health shows
+the drops of the last 24 hours ("Link drops") and the last reason.
+
+On 2026-10-01 the radio (`usb 1-1.4`, Espressif) and the dish's RTL-SDR
+(`usb 1-1.3`) disconnected at the same instant four times between 12:27 and
+12:32, each 1.3 to 2.6 s after the bot transmitted, while
+`vcgencmd get_throttled` reported no undervoltage. Two devices on one hub
+dropping together on transmit points at the current the USB ports supply,
+not at the radio: a powered USB hub for the radio and the SDR, or a
+stronger supply, is the fix to try. `journalctl -k | grep -i usb` shows
+the disconnects.
+
 A radio that answers with a different key is a replacement board: see
 `docs/Radio_Swap.md`.
 

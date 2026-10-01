@@ -83,7 +83,7 @@ def test_packet_roundtrips_and_a_full_packet_fits():
     data = v5.encode_area_sweep(
         7, BOT, built_min=NOW, group=7, idx=0, total=8, entries=entries
     )
-    assert len(data) == 163 <= v5.MAX_DATA
+    assert len(data) == 11 + 4 * 36 == 155 <= v5.MAX_SEND
     d = v5.decode(data)
     assert d["name"] == "area_sweep" and d["seq"] == 7 and d["bot"] == BOT
     assert (d["group"], d["idx"], d["total"]) == (7, 0, 8)
@@ -119,7 +119,7 @@ def test_flags_are_independent():
         {"entries": [_entry(3, 1, False, 1024, 1)]},       # start over 10 bits
         {"entries": [_entry(3, 1, False, 1, 65)]},         # run over 6 bits
         {"entries": [_entry(3, 1, False, 1, 0)]},          # a run is at least 1
-        {"entries": [_entry(3, 1, False, 1, 1)] * 39},     # over 38 a packet
+        {"entries": [_entry(3, 1, False, 1, 1)] * 37},     # over 36 a packet
     ],
 )
 def test_encode_range_checks(kw):
@@ -160,7 +160,7 @@ def test_sweep_packets_number_themselves_like_text():
     assert {d["group"] for d in decoded} == {254}         # the first packet's seq
     assert [d["idx"] for d in decoded] == [0, 1, 2]
     assert {d["total"] for d in decoded} == {3}
-    assert [len(d["entries"]) for d in decoded] == [38, 38, 24]
+    assert [len(d["entries"]) for d in decoded] == [36, 36, 28]
     assert v5.sweep_packets(1, BOT, built_min=NOW, entries=[]) == []
 
 
@@ -201,8 +201,8 @@ def test_the_scoped_bit_rides_every_packet_and_the_scope_rides_packet_zero():
     decoded = [v5.decode(m) for m in msgs]
     assert all(d["scoped"] for d in decoded)
     assert [d["scope"] for d in decoded] == [[35, 42]] + [[]] * (len(msgs) - 1)
-    # The scope costs packet 0 two of its 38 entries and no other packet any.
-    assert [len(d["entries"]) for d in decoded] == [36, 38, 38, 7]
+    # The scope costs packet 0 two of its 36 entries and no other packet any.
+    assert [len(d["entries"]) for d in decoded] == [34, 36, 36, 13]
     assert sum(len(d["entries"]) for d in decoded) == len(entries)
 
 
@@ -223,9 +223,9 @@ def test_the_scope_comes_out_of_the_sweeps_own_ceiling():
     decoded = [v5.decode(m) for m in msgs]
     assert len(msgs) == v5.MAX_SWEEP_PACKETS
     kept = sum(len(d["entries"]) for d in decoded)
-    assert kept == v5.MAX_SWEEP_ENTRIES - 3 == 301
+    assert kept == v5.MAX_SWEEP_ENTRIES - 3 == 285
     assert all(d["cut"] for d in decoded)
-    assert all(len(m) <= v5.MAX_DATA for m in msgs)
+    assert all(len(m) <= v5.MAX_SEND for m in msgs)
 
 
 def test_a_sweep_names_at_most_fifteen_states():
@@ -233,11 +233,15 @@ def test_a_sweep_names_at_most_fifteen_states():
     v5.encode_area_sweep(1, BOT, scope=list(range(15)), **args)
     with pytest.raises(ValueError):
         v5.encode_area_sweep(1, BOT, scope=list(range(16)), **args)
-    # The scope and the entries share the 38 a packet holds.
+    # The scope and the entries share the 36 a packet holds.
+    v5.encode_area_sweep(
+        1, BOT, built_min=NOW, group=1, idx=0, total=1, scope=[1, 2],
+        entries=[_entry(3, 1, False, 1, 1)] * 34,
+    )
     with pytest.raises(ValueError):
         v5.encode_area_sweep(
             1, BOT, built_min=NOW, group=1, idx=0, total=1, scope=[1, 2],
-            entries=[_entry(3, 1, False, 1, 1)] * 37,
+            entries=[_entry(3, 1, False, 1, 1)] * 35,
         )
 
 
@@ -246,12 +250,12 @@ def test_sweep_packets_cut_beyond_eight_packets():
     msgs = v5.sweep_packets(1, BOT, built_min=NOW, entries=entries)
     decoded = [v5.decode(m) for m in msgs]
     assert len(msgs) == v5.MAX_SWEEP_PACKETS == 8
-    assert sum(len(d["entries"]) for d in decoded) == v5.MAX_SWEEP_ENTRIES == 304
+    assert sum(len(d["entries"]) for d in decoded) == v5.MAX_SWEEP_ENTRIES == 288
     # Set on EVERY packet, so losing the last one does not lose the fact.
     assert all(d["cut"] for d in decoded)
     # What was kept is the head of the list the caller ordered.
     kept = [e["start"] for d in decoded for e in d["entries"]]
-    assert kept == [e[3] for e in entries[:304]]
+    assert kept == [e[3] for e in entries[:288]]
 
 
 # ---------------------------------------------------------------------------
@@ -725,7 +729,7 @@ async def test_a_scoped_sweep_is_built_first_and_measured_against_the_hour(monke
 
 @pytest.mark.asyncio
 async def test_a_national_sweep_is_capped_at_eight_packets_and_flagged_cut(monkeypatch):
-    """450 runs do not fit in 304 entries; the least severe are what go."""
+    """450 runs do not fit in 288 entries; the least severe are what go."""
     active = [
         _warning("SV", "W", [f"TXC{n:03d}" for n in range(1, 300, 2)]),   # 150
         _warning("SV", "A", [f"OKC{n:03d}" for n in range(1, 600, 2)]),   # 300
@@ -737,10 +741,10 @@ async def test_a_national_sweep_is_capped_at_eight_packets_and_flagged_cut(monke
     assert all(p["cut"] for p in packets)
     assert {p["total"] for p in packets} == {8}
     entries = [e for p in packets for e in p["entries"]]
-    assert len(entries) == v5.MAX_SWEEP_ENTRIES == 304
-    assert all(len(m) <= v5.MAX_DATA for m in sent)
+    assert len(entries) == v5.MAX_SWEEP_ENTRIES == 288
+    assert all(len(m) <= v5.MAX_SEND for m in sent)
     # Every warning survived; the watches were cut from the tail.
     sv_w, sv_a = b.tables.event_code("SV.W"), b.tables.event_code("SV.A")
     assert sum(1 for e in entries if e["event"] == sv_w) == 150
-    assert sum(1 for e in entries if e["event"] == sv_a) == 154
+    assert sum(1 for e in entries if e["event"] == sv_a) == 138
     assert [e["event"] for e in entries[:150]] == [sv_w] * 150

@@ -173,7 +173,7 @@ def test_corescope_only_vetoes_a_resend_when_repeats_were_observed(fast, monkeyp
     monkeypatch.setattr(settings, "scope_min_observers", 2)
     answers = []
 
-    async def fake_lookup(url, h, ptype):
+    async def fake_lookup(url, h, ptype, since=None):
         return answers.pop(0)
     monkeypatch.setattr(delivery, "scope_lookup", fake_lookup)
 
@@ -342,7 +342,7 @@ def test_the_resend_decision_probe_never_becomes_the_observer_count(fast, monkey
     monkeypatch.setattr(settings, "scope_min_observers", 2)
     thin = {"observers": 1, "repeated_by": 0, "direct_by": 1, "paths": []}
 
-    async def fake_lookup(url, h, ptype):
+    async def fake_lookup(url, h, ptype, since=None):
         return thin
     monkeypatch.setattr(delivery, "scope_lookup", fake_lookup)
     sends = []

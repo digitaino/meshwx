@@ -17,8 +17,18 @@ from meshcore_weather.traffic import traffic_log
 @pytest.fixture(autouse=True)
 def _no_dm_reply_pause(monkeypatch):
     """Handler tests run on the real clock, where the 2 s pause before a DM
-    reply would really wait. The tests of the pause set it themselves."""
+    reply (and the pause before answering a relayed request) would really
+    wait. The tests of the pauses set them themselves."""
     monkeypatch.setattr(settings, "dm_reply_delay_s", 0.0)
+    monkeypatch.setattr(settings, "relayed_reply_delay_s", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _no_gap_between_sends(monkeypatch):
+    """The radio keeps 2 s between transmissions on the real clock; the test
+    of the gap sets its own."""
+    from meshcore_weather.meshcore import radio as radio_mod
+    monkeypatch.setattr(radio_mod, "TX_GAP_S", 0.0)
 
 
 @pytest.fixture(autouse=True)

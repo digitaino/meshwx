@@ -82,7 +82,10 @@ class Settings(BaseSettings):
     # who heard it; "decide" also skips a retransmit the mesh observed. Empty = off.
     scope_url: str = ""
     scope_mode: str = "stats"
-    scope_min_observers: int = 2          # observers that heard a REPEATED copy before it counts
+    # Observers that heard a REPEATED copy before a resend is skipped. One is
+    # proof enough: on 2026-10-01 a threshold of two sent 8 packets again
+    # that a repeater had already carried.
+    scope_min_observers: int = 1
     # DM requests. A sender's app sends a DM again when it hears no ACK, with
     # the same text and the same or a new timestamp. Such a copy of a request
     # is never answered twice: same sender, timestamp and text within
@@ -93,6 +96,11 @@ class Settings(BaseSettings):
     # A DM reply leaves no earlier than this after its request arrived, so
     # the node's own ACK of the request clears the first repeater first.
     dm_reply_delay_s: float = 2.0
+    # An answer to a request that came through repeaters waits this long, plus
+    # up to half as much again at random, so it does not go out while the
+    # repeaters are still passing the request on (main.reply_not_before).
+    # A request heard direct is answered at once. 0 = never wait.
+    relayed_reply_delay_s: float = 1.0
     # Radio hardware swaps. The bot keeps a profile of its node (identity key,
     # name, position, LoRa parameters, TX power, contacts) in
     # data/node_profile.json. When a different radio answers on the port:

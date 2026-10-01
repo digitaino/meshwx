@@ -5,6 +5,7 @@ Listens for incoming channel messages and DMs, sends responses.
 """
 
 import asyncio
+import contextlib
 import glob
 import logging
 import os
@@ -24,8 +25,10 @@ from meshcore_weather.meshcore.delivery import (
     Outbound,
     build_channel_data_payload,
     build_channel_payload,
+    clip_bytes,
     delivery_tracker,
     dm_outbox,
+    echo_visible,
     packet_hash,
 )
 from meshcore_weather.mqtt import MqttPublisher
@@ -42,6 +45,12 @@ CMD_SEND_CHANNEL_DATA = 62
 PATH_FLOOD = 0xFF
 # The firmware clips a channel datagram's data at this many bytes.
 MAX_CHANNEL_DATA = 165
+# Seconds between the end of one transmission command and the next, whatever
+# is sent: a packet of an answer, a resend, a text reply, a DM, an advert. Sent
+# back to back, the bot talks over the repeater still passing its last packet
+# on. (The scheduler spaces the packets of a batch the same way; this holds
+# for everything else that goes out between them.)
+TX_GAP_S = 2.0
 
 
 # Opening the USB serial port toggles DTR/RTS, which resets the ESP32 on
@@ -205,12 +214,11 @@ class MeshcoreRadio:
         self.pending_adoption: dict | None = None   # a radio that is not the node in the profile
         self.adoption: dict | None = None      # the last adoption attempt (ok, steps, note)
         self.profile_note: str | None = None   # why the profile could not be refreshed, if so
-        # Shared send lock — prevents the scheduler and on-demand
-        # request handler from interleaving messages on the data channel.
-        # Without this, a client DM triggering respond_to_data_request
-        # while the scheduler is mid-tick sending radar chunks would
-        # cause mixed messages on the wire.
+        # One transmission at a time, TX_GAP_S apart (see on_air): batches,
+        # resends, text replies, DMs and adverts all queue here.
         self.send_lock: asyncio.Lock = asyncio.Lock()
+        self._last_air = 0.0
+        self._last_text_ts = 0                 # channel text timestamps, never twice the same
 
     def on_channel_message(self, handler: Callable) -> None:
         """Register handler: async def handler(channel, sender_name, text)"""
@@ -678,44 +686,80 @@ class MeshcoreRadio:
 
     # -- Sending --
 
-    async def send_channel_message(self, channel: int, text: str, ev: dict | None = None) -> None:
+    @contextlib.asynccontextmanager
+    async def on_air(self):
+        """Hold the transmitter: one command at a time, TX_GAP_S after the last."""
+        async with self.send_lock:
+            wait = self._last_air + TX_GAP_S - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                yield
+            finally:
+                self._last_air = time.monotonic()
+
+    def _link_up(self) -> bool:
+        """False once the link to this node is lost: a resend queued then
+        goes nowhere and must not be counted as sent."""
+        return self._mc is not None and not self._lost
+
+    async def send_channel_message(self, channel: int, text: str, ev: dict | None = None) -> bool:
         """Send a message on our dedicated channel (never on ch 0) and watch
         for a repeater's echo; without one it goes out once more, byte for
-        byte the same, so nobody sees it twice (see delivery.py)."""
+        byte the same, so nobody sees it twice (see delivery.py). False when
+        nothing went out."""
         if not settings.tx_enabled:
             logger.info("TX disabled — suppressed channel message on ch %s", channel)
-            return
+            return False
         if not self._mc:
             logger.error("Cannot send - not connected")
-            return
+            return False
         if channel == 0 or channel != self._channel_idx:
             logger.warning("Blocked send on ch %d (our ch is %d)", channel, self._channel_idx)
-            return
+            return False
         budget = self.channel_text_budget()
-        if len(text) > budget:
-            logger.warning("Channel text of %d chars exceeds the %d-char budget; clipping", len(text), budget)
-            text = text[:budget]
-        ts = int(time.time())
+        if len(text.encode()) > budget:
+            logger.warning("Channel text of %d bytes exceeds the %d-byte budget; clipping", len(text.encode()), budget)
+            text = clip_bytes(text, budget)
+        # Two replies with the same text in the same second would be the same
+        # packet, and every node would drop the second as a copy of the first.
+        ts = self._last_text_ts = max(int(time.time()), self._last_text_ts + 1)
         ts_bytes = ts.to_bytes(4, "little")
         secret = await self._channel_secret(channel)
         name = self._mc.self_info.get("name") or ""
-        h = packet_hash(5, build_channel_payload(secret, name, text, ts)) if secret and name else None
+        payload = build_channel_payload(secret, name, text, ts) if secret and name else None
+        h = packet_hash(5, payload) if payload else None
         try:
-            await self._mc.commands.send_chan_msg(channel, text, timestamp=ts_bytes)
-            logger.info("Sent on ch %d (flood): %s", channel, text[:80])
+            async with self.on_air():
+                res = await self._mc.commands.send_chan_msg(channel, text, timestamp=ts_bytes)
         except Exception:
             logger.exception("Failed to send channel message")
-            return
+            return False
+        if res is None or res.type == EventType.ERROR:
+            logger.warning("Channel message refused by the node on ch %d: %s", channel, getattr(res, "payload", None))
+            return False
+        logger.info("Sent on ch %d (flood): %s", channel, text[:80])
 
-        async def resend(attempt: int) -> bool:
-            if not settings.tx_enabled or not self._mc:
+        async def resend(attempt: int) -> bool | None:
+            if not settings.tx_enabled or not self._link_up():
                 return False
-            await self._mc.commands.send_chan_msg(channel, text, timestamp=ts_bytes)
+            async with self.on_air():
+                if delivery_tracker.heard(h):
+                    return None
+                if not self._link_up():
+                    return False
+                res = await self._mc.commands.send_chan_msg(channel, text, timestamp=ts_bytes)
+            if res is None or res.type == EventType.ERROR:
+                logger.warning("Resend refused by the node on ch %d: %s", channel, getattr(res, "payload", None))
+                return False
+            delivery_tracker.on_tx(h)
             logger.info("No echo heard: sent again on ch %d (attempt %d): %s", channel, attempt + 1, text[:60])
             return True
 
         delivery_tracker.track(Outbound(kind="channel_text", hash=h, resend=resend, ev=ev,
-                                        window_s=settings.echo_window_s))
+                                        window_s=settings.echo_window_s,
+                                        echo_visible=payload is None or echo_visible(len(payload), self.path_hash_size())))
+        return True
 
     async def send_channel_data(self, data: bytes, data_type: int = 0xFF10,
                                 ev: dict | None = None) -> bool:
@@ -747,36 +791,48 @@ class MeshcoreRadio:
             return False
         frame = bytes([CMD_SEND_CHANNEL_DATA, idx, PATH_FLOOD]) + data_type.to_bytes(2, "little") + data
         secret = await self._channel_secret(idx)
-        h = packet_hash(PAYLOAD_GRP_DATA, build_channel_data_payload(secret, data_type, data)) if secret else None
-        async with self.send_lock:
-            try:
+        payload = build_channel_data_payload(secret, data_type, data) if secret else None
+        h = packet_hash(PAYLOAD_GRP_DATA, payload) if payload else None
+        visible = payload is None or echo_visible(len(payload), self.path_hash_size())
+        if not visible:
+            logger.warning("A %d-byte datagram is too long for the node to report a repeater's copy: "
+                           "no echo can confirm it", len(data))
+        try:
+            async with self.on_air():
                 result = await self._mc.commands.send(frame, [EventType.OK, EventType.ERROR])
-            except Exception:
-                logger.exception("Failed to send data on ch %d", idx)
-                return False
-            if result.type == EventType.ERROR:
-                logger.warning("Data send failed on ch %d: %s", idx, result.payload)
-                return False
+        except Exception:
+            logger.exception("Failed to send data on ch %d", idx)
+            return False
+        if result is None or result.type == EventType.ERROR:
+            logger.warning("Data send failed on ch %d: %s", idx, getattr(result, "payload", None))
+            return False
         logger.info("Sent data on ch %d: %d bytes (type 0x%04X)", idx, len(data), data_type)
         # The debug bridge's feed: the stamped bytes, once per transmission
         # (see bridge.py). This is the only place they are published, so a
         # builder can never put something on the feed that never went out.
         datagram_feed.publish(data, data_type)
 
-        async def resend(attempt: int) -> bool:
-            if not settings.tx_enabled or not self._mc:
+        async def resend(attempt: int) -> bool | None:
+            if not settings.tx_enabled or not self._link_up():
                 return False
-            async with self.send_lock:
+            async with self.on_air():
+                if delivery_tracker.heard(h):
+                    return None
+                if not self._link_up():
+                    return False
                 res = await self._mc.commands.send(frame, [EventType.OK, EventType.ERROR])
-            if res.type == EventType.ERROR:
+            if res is None or res.type == EventType.ERROR:
+                logger.warning("Resend refused by the node on ch %d: %s", idx, getattr(res, "payload", None))
                 return False
+            delivery_tracker.on_tx(h)
             logger.info("No echo heard: sent data again on ch %d (attempt %d, %d bytes)",
                         idx, attempt + 1, len(data))
             datagram_feed.publish(data, data_type, resend=True, attempt=attempt + 1)
             return True
 
         delivery_tracker.track(Outbound(kind="channel_data", hash=h, resend=resend, ev=ev,
-                                        window_s=settings.echo_window_s, ptype=PAYLOAD_GRP_DATA))
+                                        window_s=settings.echo_window_s, ptype=PAYLOAD_GRP_DATA,
+                                        echo_visible=visible))
         return True
 
     _beacon_deprecation_logged = False
@@ -805,11 +861,12 @@ class MeshcoreRadio:
             logger.error("Cannot send DM - not connected")
             return None
         try:
-            result = await self._mc.commands.send_msg(pubkey_prefix, text, timestamp=ts, attempt=attempt)
+            async with self.on_air():
+                result = await self._mc.commands.send_msg(pubkey_prefix, text, timestamp=ts, attempt=attempt)
         except Exception:
             logger.exception("Failed to send DM to %s", pubkey_prefix[:8])
             return None
-        if result.type == EventType.ERROR:
+        if result is None or result.type == EventType.ERROR:
             logger.warning("DM to %s failed: %s", pubkey_prefix[:8], result.payload)
             return None
         sent = result.payload or {}
@@ -1181,7 +1238,8 @@ class MeshcoreRadio:
             logger.info("Advert held: this radio is not the node in the profile yet")
             return
         try:
-            await self._mc.commands.send_advert(flood=True)
+            async with self.on_air():
+                await self._mc.commands.send_advert(flood=True)
             self.last_advert_at = time.time()
             logger.info("Sent advertisement (flood)")
             from meshcore_weather.traffic import traffic_log
@@ -1498,7 +1556,8 @@ class MeshcoreRadio:
         if not settings.tx_enabled:
             return False
         mc = self._require()
-        res = await mc.commands.send_advert(flood=flood)
+        async with self.on_air():
+            res = await mc.commands.send_advert(flood=flood)
         ok = res.type == EventType.OK
         if ok:
             self.last_advert_at = time.time()
@@ -1564,13 +1623,16 @@ class MeshcoreRadio:
         return out
 
     def channel_text_budget(self) -> int:
-        """Characters of text that survive in one channel message.
+        """UTF-8 bytes of text in one channel message the node can report a
+        repeater's copy of.
 
         Firmware (BaseChatMesh.cpp): plaintext = timestamp(4) + txt_type(1)
-        + "<name>: " + text, clipped at 160 bytes. So the text gets
-        160 - 5 - len(name) - 2 = 153 - len(name): 147 for "WX-AUS". A DM
-        has no name (timestamp + flags + text, 160) so its budget is 155;
-        replies are rendered to 147 and fit either way.
+        + "<name>: " + text, the name and text together clipped at 160
+        bytes. Encrypted in 16-byte blocks, a plaintext of up to 160 bytes
+        is a 163-byte payload, whose echo the node reports; one block more
+        and it never does (see delivery.echo_visible). So the text gets
+        160 - 5 - len(name) - 2 = 153 - len(name) bytes: 147 for "WX-AUS".
+        A DM has no name (timestamp + flags + text) and more room.
         """
         name = ((self._mc.self_info if self._mc else None) or {}).get("name") or "WX-XXX"
         return max(100, 153 - len(name.encode()))

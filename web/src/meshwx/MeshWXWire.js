@@ -20,6 +20,14 @@ export const MeshWXWire = Object.freeze({
   /** Largest `data` payload the transport accepts, in bytes. */
   maxData: 165,
 
+  /**
+   * Largest `data` payload a bot sends since 1 October 2026 (spec §2). A bot confirms a send by
+   * hearing a repeater's copy, and the companion firmware reports a heard packet only up to 169 raw
+   * bytes: 157 bytes of data echo as 167, 158 to 165 as 183. Decoders still take `maxData`, which
+   * older bots filled.
+   */
+  maxSend: 157,
+
   /** Size of the common header (spec §2.2). */
   headerSize: 4,
 

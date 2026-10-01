@@ -135,7 +135,7 @@ def test_every_grid_round_trips():
 def test_the_worst_coarse_tile_still_fits():
     rows = [[(r * 7 + c * 3) % 4 for c in range(16)] for r in range(16)]
     assert len(v5.encode_radar(1, BOT, taken_min=5, south=0, west=0, zoom=0, product=0,
-                               rows=rows, bounds=(0, 15, 0, 15))) <= v5.MAX_DATA
+                               rows=rows, bounds=(0, 15, 0, 15))) <= v5.MAX_SEND
 
 
 def test_partial_tiles_carry_their_bounds_and_nothing_outside_them():
@@ -305,7 +305,7 @@ def test_a_tile_too_busy_for_a_packet_goes_out_coarse():
     tile.rows = [[(r * 5 + c * 3) % 4 for c in range(32)] for r in range(32)]
     data = b.radar_message(9, BOT, tile, picture, frame)
     out = v5.decode(data)
-    assert out["coarse"] and out["size"] == 16 and len(data) <= v5.MAX_DATA
+    assert out["coarse"] and out["size"] == 16 and len(data) <= v5.MAX_SEND
     assert out["rows"] == ["".join(map(str, r)) for r in v5.radar_coarsen(tile.rows)]
 
 

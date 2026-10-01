@@ -22,6 +22,12 @@ spent, when no repeater has been heard from anyone recently (nothing would
 change), and, optionally, when a CoreScope instance says the packet was
 observed. Every outcome is written back to the traffic event so the feed
 and the counters can show it.
+
+What the node cannot report: the stock companion firmware pushes a heard
+packet to the bot only when it fits its 172-byte serial frame with three
+bytes to spare (examples/companion_radio/MyMesh.cpp, `len + 3 <=
+MAX_FRAME_SIZE`). A repeater's copy of anything longer never arrives, so
+such a packet can never be confirmed by an echo; see `echo_visible`.
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ import statistics
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -48,6 +55,9 @@ logger = logging.getLogger(__name__)
 PAYLOAD_GRP_TXT = 5
 PAYLOAD_GRP_DATA = 6
 ROUTE_TRANSPORT = (0, 3)             # header route types that carry 4 transport bytes
+#: The longest raw packet the companion node reports (its 172-byte frame
+#: less the 3-byte RX log header).
+MAX_REPORTED_RAW = 169
 
 
 # -- Packet bytes ----------------------------------------------------------------------
@@ -56,6 +66,14 @@ ROUTE_TRANSPORT = (0, 3)             # header route types that carry 4 transport
 def packet_hash(payload_type: int, payload: bytes) -> str:
     """The hash every MeshCore node dedupes on (Packet::calculatePacketHash)."""
     return hashlib.sha256(bytes([payload_type]) + payload).digest()[:8].hex()
+
+
+def echo_visible(payload_len: int, hash_size: int | None = None) -> bool:
+    """Can the node report the first repeater's copy of a packet with this
+    payload? That copy is header, path byte, one repeater hash and the
+    payload. A GRP_DATA datagram of up to 157 data bytes (a 163-byte
+    payload) is; one of 158 to 165 (179) never is."""
+    return 2 + (hash_size or 2) + payload_len <= MAX_REPORTED_RAW
 
 
 def channel_hash_byte(secret: bytes) -> int:
@@ -149,6 +167,12 @@ class Outbound:
     probe: dict | None = None                    # what CoreScope said at resend-decision time, seconds in
     lag_given_s: float = 0.0                     # window extended by a blocked loop
     last_tx_at: float = 0.0                      # the transmission an echo is timed against
+    echo_visible: bool = True                    # False: the node cannot report a repeater's copy
+    carried: str | None = None                   # "scope": no echo, but CoreScope saw a repeat
+    late: bool = False                           # the echo came after the outcome was written
+    finished: bool = False
+    part: int | None = None                      # its place among the packets of one traffic event
+    row: list | None = field(default=None, repr=False)
     done: asyncio.Event = field(default_factory=asyncio.Event)
 
     def __post_init__(self) -> None:
@@ -165,6 +189,14 @@ OUTCOMES_KEEP_S = 86400
 #: over several seconds, so an answer taken during the echo wait is far too
 #: early to put on the record.
 SCOPE_LATE_S = 45
+#: A packet's hash stays registered this long after its outcome is written,
+#: so an echo that comes in after the wait still counts (late). On
+#: 1 October ABBA's copies of a resend arrived up to 9 s after it.
+LATE_ECHO_S = 60.0
+#: CoreScope observations stamped earlier than the send by more than this
+#: belong to an earlier packet with the same bytes: a fixed-content packet
+#: repeats its hash each time the 1-byte seq comes round again.
+SCOPE_SLACK_S = 120.0
 
 
 class LoopLag:
@@ -317,7 +349,24 @@ class DeliveryTracker:
         ob = self._by_hash.get(packet_hash(pkt["ptype"], pkt["payload"]))
         if ob is not None and ob.echoed_at is None:
             ob.echoed_at, ob.via, ob.via_size, ob.echo_snr = now, pkt["path"], pkt["hash_size"], snr
-            ob.done.set()
+            if ob.finished:
+                self._late_echo(ob)
+            else:
+                ob.done.set()
+
+    def on_tx(self, hash_hex: str | None) -> None:
+        """The radio put a tracked packet on the air again: an echo from now
+        on is timed from this transmission. Not after an echo: that one
+        answered the transmission before."""
+        ob = self._by_hash.get(hash_hex) if hash_hex else None
+        if ob is not None and ob.echoed_at is None:
+            ob.last_tx_at = time.time()
+
+    def heard(self, hash_hex: str | None) -> bool:
+        """Has a repeater's copy of this packet come back? A resend waiting
+        for its turn on the air asks, and stays home if so."""
+        ob = self._by_hash.get(hash_hex) if hash_hex else None
+        return ob is not None and ob.heard
 
     def on_ack(self, code: str) -> None:
         ob = self._by_ack.get(code)
@@ -385,6 +434,13 @@ class DeliveryTracker:
     # -- tracking one send --
 
     def track(self, ob: Outbound) -> asyncio.Task:
+        if ob.ev is not None:
+            # One traffic event can carry several packets (a multi-packet
+            # answer): each gets its own slot, so the last to finish no longer
+            # stands for all of them.
+            parts = ob.ev.setdefault("_parts", [])
+            ob.part = len(parts)
+            parts.append(None)
         self._register(ob)
         task = asyncio.create_task(self._watch(ob))
         self._tasks.add(task)
@@ -397,11 +453,20 @@ class DeliveryTracker:
         if ob.ack:
             self._by_ack[ob.ack] = ob
 
-    def _unregister(self, ob: Outbound) -> None:
-        if ob.hash and self._by_hash.get(ob.hash) is ob:
+    def _unregister(self, ob: Outbound, keep_hash: bool = False) -> None:
+        if ob.hash and not keep_hash and self._by_hash.get(ob.hash) is ob:
             del self._by_hash[ob.hash]
         if ob.ack and self._by_ack.get(ob.ack) is ob:
             del self._by_ack[ob.ack]
+
+    def _hold_for_late_echo(self, ob: Outbound) -> None:
+        """Keep the hash a while after the outcome, for a late echo."""
+        if not ob.hash:
+            return
+        try:
+            asyncio.get_running_loop().call_later(LATE_ECHO_S, self._unregister, ob)
+        except RuntimeError:
+            self._unregister(ob)
 
     def _why_not_resend(self, ob: Outbound) -> str | None:
         now = time.time()
@@ -452,47 +517,61 @@ class DeliveryTracker:
                     # still reporting, so it is only ever good enough to veto
                     # a resend. It never becomes the observer count on the
                     # record: that comes from the settled read in _finish.
-                    ob.probe = await scope_lookup(settings.scope_url, ob.hash, ob.ptype)
+                    ob.probe = await scope_lookup(settings.scope_url, ob.hash, ob.ptype, since=ob.sent_at)
                     logger.info("CoreScope probe %s after %.1fs: %s", ob.hash, time.time() - ob.sent_at,
-                                ob.probe or "no answer (packet not in the page, or the lookup failed)")
+                                ob.probe or "not observed yet (or the lookup failed)")
                     # Only a repeated copy proves a repeater carried it; an
                     # observer next door hearing us direct proves nothing.
-                    if ob.probe and ob.probe["repeated_by"] >= settings.scope_min_observers:
-                        ob.skipped = f"CoreScope: {ob.probe['repeated_by']} observers heard a repeat"
+                    # One is enough: on 1 October a threshold of two let 8
+                    # packets go out again that a repeater had already carried.
+                    if ob.probe and ob.probe["repeated_by"] >= max(1, settings.scope_min_observers):
+                        n = ob.probe["repeated_by"]
+                        ob.skipped = f"CoreScope: {n} observer{'s' if n != 1 else ''} heard a repeat"
+                        ob.carried = "scope"
                         break
+                elif not ob.echo_visible:
+                    # No echo could ever come, so its absence says nothing.
+                    ob.skipped = "too long for the node to report an echo"
+                    break
                 await asyncio.sleep(random.uniform(0.5, 2.0))
                 if ob.heard:
                     break
                 ob.done.clear()
-                self._resends.append(time.time())
+                tx_before = ob.last_tx_at
                 try:
                     res = await ob.resend(ob.attempts)
                 except Exception as e:
                     logger.warning("Retransmit failed: %s", e)
                     res = False
-                if res is not False:
-                    ob.last_tx_at = time.time()
-                ob.attempts += 1
-                if res is False:
+                if res is None:                  # heard while it waited for its turn on the air
                     break
+                if res is False:                 # nothing went out: neither a resend nor the budget's
+                    ob.skipped = "radio unavailable"
+                    break
+                self._resends.append(time.time())
+                if ob.last_tx_at == tx_before and ob.echoed_at is None:
+                    ob.last_tx_at = time.time()  # a sender that does not report its transmission
+                ob.attempts += 1
                 if isinstance(res, str):
                     if ob.ack:
                         self._by_ack.pop(ob.ack, None)
                     ob.ack = res
                     self._by_ack[res] = ob
         finally:
-            self._unregister(ob)
+            self._unregister(ob, keep_hash=True)
             await self._finish(ob)
 
     async def _finish(self, ob: Outbound) -> None:
         now = time.time()
+        ob.finished = True
+        self._hold_for_late_echo(ob)
         d = self.outcome(ob)
-        self._outcomes.append((now, ob.kind, ob.echoed_at is not None, ob.acked_at is not None,
-                               ob.attempts - 1, d.get("echo_ms")))
+        ob.row = [now, ob.kind, ob.echoed_at is not None, ob.acked_at is not None, ob.attempts - 1, d.get("echo_ms")]
+        if ob.carried:
+            ob.row.append({"carried": ob.carried})
+        self._outcomes.append(ob.row)
         self.outcomes_changed()
-        if ob.ev is not None:
-            from meshcore_weather.traffic import traffic_log
-            traffic_log.update(ob.ev, delivery=d, push=True)
+        self._publish(ob, d)
         logger.info("Delivery %s: %s", ob.kind, d["result"] + (f" via {fmt_path(ob.via, ob.via_size)}" if ob.via else "") +
                     (f" ({d['echo_ms']} ms)" if d.get("echo_ms") is not None else "") +
                     (f", {ob.attempts - 1} retransmit, {d['echo_total_ms']} ms from the first send"
@@ -519,15 +598,50 @@ class DeliveryTracker:
         several seconds, so later is normally better, but a lookup that
         half-failed must not erase what we already knew."""
         await asyncio.sleep(SCOPE_LATE_S)
-        late = await scope_lookup(settings.scope_url, ob.hash, ob.ptype)
+        late = await scope_lookup(settings.scope_url, ob.hash, ob.ptype, since=ob.sent_at)
         if not late:
             return
         if late.get("observers", 0) < (ob.observed or {}).get("observers", 0):
             return
         ob.observed = late
-        if ob.ev is not None:
-            from meshcore_weather.traffic import traffic_log
-            traffic_log.update(ob.ev, delivery=self.outcome(ob), push=True)
+        if late.get("repeated_by") and not ob.heard and not ob.carried:
+            ob.carried = "scope"
+            self._mark_row(ob, carried="scope")
+        self._publish(ob)
+
+    def _late_echo(self, ob: Outbound) -> None:
+        """A repeater's copy after the outcome was written: the packet got
+        out after all. The record and the feed say so."""
+        ob.late = True
+        d = self.outcome(ob)
+        if ob.row is not None:
+            ob.row[2], ob.row[5] = True, d.get("echo_ms")
+        self._mark_row(ob, late=True)
+        self._publish(ob, d)
+        logger.info("Delivery %s: late echo via %s, %s ms after the last send", ob.kind,
+                    fmt_path(ob.via, ob.via_size) if ob.via else "?", d.get("echo_ms"))
+
+    def _mark_row(self, ob: Outbound, **extra) -> None:
+        """Add to a channel row's extras (the 7th field), and save soon."""
+        if ob.row is None:
+            return
+        if len(ob.row) < 7:
+            ob.row.append({})
+        ob.row[6].update(extra)
+        self.outcomes_changed()
+
+    def _publish(self, ob: Outbound, d: dict | None = None) -> None:
+        """Write the outcome to the traffic event: the packet's own outcome
+        when the event has one packet, a summary of all of them when it has
+        several."""
+        if ob.ev is None:
+            return
+        from meshcore_weather.traffic import traffic_log
+        d = d or self.outcome(ob)
+        parts = ob.ev.get("_parts")
+        if parts and ob.part is not None and ob.part < len(parts):
+            parts[ob.part] = d
+        traffic_log.update(ob.ev, delivery=d if not parts or len(parts) == 1 else batch_summary(parts), push=True)
 
     @staticmethod
     def outcome(ob: Outbound) -> dict:
@@ -535,7 +649,7 @@ class DeliveryTracker:
         # first one: a resent packet is byte-identical, so measuring from the
         # original reported the echo window and the back-off as if they were
         # mesh latency (10.8 s for a mesh that answered in under a second).
-        echo_ms = int((ob.echoed_at - ob.last_tx_at) * 1000) if ob.echoed_at else None
+        echo_ms = max(0, int((ob.echoed_at - ob.last_tx_at) * 1000)) if ob.echoed_at else None
         rtt_ms = int((ob.acked_at - ob.last_tx_at) * 1000) if ob.acked_at else None
         echo_total_ms = int((ob.echoed_at - ob.sent_at) * 1000) if ob.echoed_at else None
         rtt_total_ms = int((ob.acked_at - ob.sent_at) * 1000) if ob.acked_at else None
@@ -552,6 +666,7 @@ class DeliveryTracker:
                 "via": fmt_path(ob.via, ob.via_size) if ob.via else None, "snr": ob.echo_snr,
                 "acked": ob.acked_at is not None, "rtt_ms": rtt_ms,
                 "attempts": ob.attempts, "resent": ob.attempts - 1, "skipped": ob.skipped,
+                "late": ob.late or None, "carried": ob.carried, "echo_visible": ob.echo_visible,
                 "lag_given_s": round(ob.lag_given_s, 2) or None,
                 "observed_by": (ob.observed or {}).get("observers"),
                 "observed_repeats": (ob.observed or {}).get("repeated_by"),
@@ -564,7 +679,7 @@ class DeliveryTracker:
         out: dict = {"rx_frames": self.rx_frames, "rx_repeats": self.rx_repeats,
                      "last_repeat_heard_at": self.last_repeat_heard_at or None,
                      "last_rx_at": self.last_rx_at or None,
-                     "pending": len(self._by_hash) + len(self._by_ack),
+                     "pending": sum(1 for ob in self._by_hash.values() if not ob.finished) + len(self._by_ack),
                      "loop_lag": loop_lag.stats(), "windows": {}}
         rows = list(self._outcomes)
         for label, secs in (("1h", 3600), ("24h", 86400)):
@@ -575,37 +690,71 @@ class DeliveryTracker:
             out["windows"][label] = {
                 "sent": len(sel), "heard": len(heard), "echoed": sum(1 for r in sel if r[2]),
                 "acked": sum(1 for r in sel if r[3]), "resent": sum(r[4] for r in sel),
+                "carried": sum(1 for r in sel if not (r[2] or r[3]) and row_extra(r).get("carried")),
                 "heard_pct": int(100 * len(heard) / len(sel)) if sel else None,
                 "echo_median_ms": int(statistics.median(delays)) if delays else None,
             }
         return out
 
 
-async def scope_lookup(url: str, hash_hex: str, ptype: int, timeout: float = 3.0) -> dict | None:
-    """Ask a CoreScope instance who heard the packet and how. The search
-    parameter does not match hashes, so this pulls a page of this packet
-    type and matches on our side. NB the server ignores `timeRange`: a
-    "15m" query returns packets days old. What saves it is the ordering,
-    newest first, so a packet seconds old sits at the top of the page and
-    `limit` is what really governs the reach. Then it reads every
-    observation:
+def row_extra(row) -> dict:
+    """The dict a row may carry as its 7th field (a channel row's extras, a DM reply's fields)."""
+    return row[6] if len(row) > 6 and isinstance(row[6], dict) else {}
+
+
+def batch_summary(parts: list[dict | None]) -> dict:
+    """The outcome of an answer of several packets: how many the mesh is
+    known to have carried (echo, or a repeat CoreScope saw), what was sent
+    again, and each packet's own result in order (None: still waiting)."""
+    done = [p for p in parts if p is not None]
+
+    def heard(p: dict) -> bool:
+        return bool(p.get("echo") or p.get("acked") or p.get("carried") or p.get("observed_repeats"))
+
+    return {"result": "batch", "packets": len(parts), "pending": len(parts) - len(done),
+            "heard": sum(1 for p in done if heard(p)), "echoed": sum(1 for p in done if p.get("echo")),
+            "resent": sum(p.get("resent") or 0 for p in done),
+            "parts": [None if p is None else
+                      {"result": p.get("result"), "heard": heard(p), "echo_ms": p.get("echo_ms"),
+                       "via": p.get("via"), "resent": p.get("resent"), "skipped": p.get("skipped"),
+                       "late": p.get("late"), "observed_repeats": p.get("observed_repeats")}
+                      for p in parts]}
+
+
+def _obs_time(o: dict) -> float | None:
+    t = o.get("timestamp")
+    if not isinstance(t, str):
+        return None
+    try:
+        return datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+async def scope_lookup(url: str, hash_hex: str, ptype: int, since: float | None = None,
+                       timeout: float = 3.0) -> dict | None:
+    """Ask a CoreScope instance who heard the packet and how: one request by
+    hash with every observation, a few kB (it used to page through the 300
+    newest packets of the type, 450 kB a time). Observations from before
+    `since` (less SCOPE_SLACK_S) are an earlier packet with the same bytes.
     `observers` = distinct observers, `repeated_by` = distinct observers
     whose copy had at least one repeater in its path (the only ones that
-    prove a repeat), `direct_by` = observers that heard us zero-hop. Fail-soft."""
+    prove a repeat), `direct_by` = observers that heard us zero-hop. None
+    when nobody has reported it (yet) or the lookup failed. Fail-soft."""
     try:
         import httpx
         base = url.rstrip("/")
         async with httpx.AsyncClient(timeout=timeout) as c:
-            r = await c.get(base + "/api/packets", params={"timeRange": "15m", "type": str(ptype), "limit": "300"})
+            r = await c.get(base + "/api/packets", params={"hash": hash_hex, "expand": "observations", "limit": "5"})
             r.raise_for_status()
-            page = r.json().get("packets", [])
-            hit = next((p for p in page if p.get("hash") == hash_hex), None)
-            if hit is None:
-                logger.debug("CoreScope: %s not in the %d newest type-%d packets", hash_hex, len(page), ptype)
+            obs = [o for p in r.json().get("packets") or [] if p.get("hash") == hash_hex
+                   for o in p.get("observations") or []]
+            if since is not None:
+                obs = [o for o in obs if (_obs_time(o) or since) >= since - SCOPE_SLACK_S]
+            if not obs:
+                logger.debug("CoreScope: no observation of %s (type %d) yet", hash_hex, ptype)
                 return None
-            r = await c.get(f"{base}/api/packets/{hit['id']}")
-            r.raise_for_status()
-            return summarize_observations(r.json().get("observations") or [])
+            return summarize_observations(obs)
     except Exception as e:
         logger.debug("CoreScope lookup failed: %s", e)
     return None

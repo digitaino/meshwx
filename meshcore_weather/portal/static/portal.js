@@ -63,14 +63,37 @@ function ago(s) {
 
 function agoAt(t) { return t ? ago(Date.now() / 1000 - t) : "–"; }
 
+// One answer of several packets: how many the mesh is known to have carried,
+// with every packet's own result in the tooltip. Each packet used to write
+// its result over the last one's, so the row showed whichever finished last.
+function batchBadge(d) {
+  var lines = (d.parts || []).map(function (p, i) {
+    var n = (i + 1) + ": ";
+    if (!p) return n + "waiting";
+    var r = p.result === "echoed" ? "echo " + (p.echo_ms != null ? (p.echo_ms / 1000).toFixed(1) + " s" : "") + (p.via ? " via " + p.via : "") + (p.late ? " (late)" : "")
+      : p.result === "skipped" ? "no echo, not resent: " + p.skipped
+      : p.result === "no_echo" ? "no echo" : p.result;
+    if (p.resent) r += ", resent";
+    if (p.observed_repeats) r += ", repeat heard by " + p.observed_repeats;
+    return n + r;
+  });
+  var cls = d.pending ? "badge-muted" : d.heard === d.packets ? "badge-success" : d.heard ? "badge-warning" : "badge-danger";
+  var b = ' <span class="badge ' + cls + '" title="' + esc(lines.join("\n")) + '">heard ' + d.heard + " of " + d.packets +
+    (d.pending ? " · " + d.pending + " waiting" : "") + "</span>";
+  if (d.resent) b += ' <span class="badge badge-warning">resent ×' + d.resent + "</span>";
+  return b;
+}
+
 function deliveryBadge(d) {
   if (!d) return "";
+  if (d.result === "batch") return batchBadge(d);
   var b = "";
   if (d.acked) b += ' <span class="badge badge-success" title="the recipient acknowledged it">ack ' + (d.rtt_ms != null ? (d.rtt_ms / 1000).toFixed(1) + " s" : "") + "</span>";
   else if (d.echo) {
     var tip = "a repeater repeated it, timed from the transmission that was echoed";
     if (d.resent && d.echo_total_ms != null) tip += ". " + (d.echo_total_ms / 1000).toFixed(1) + " s since the first send; the resend is byte-identical so we cannot tell which copy came back";
-    b += ' <span class="badge badge-success" title="' + tip + '">echo ' + (d.echo_ms != null ? (d.echo_ms / 1000).toFixed(1) + " s" : "") + (d.via ? " via " + esc(d.via) : "") + "</span>";
+    if (d.late) tip += ". It came in after the wait was over";
+    b += ' <span class="badge badge-success" title="' + tip + '">echo ' + (d.echo_ms != null ? (d.echo_ms / 1000).toFixed(1) + " s" : "") + (d.via ? " via " + esc(d.via) : "") + (d.late ? " (late)" : "") + "</span>";
   }
   else if (d.result === "skipped") b += ' <span class="badge badge-warning">no echo · not resent: ' + esc(d.skipped) + "</span>";
   else b += ' <span class="badge badge-danger">' + (d.result === "no_ack" ? "no ack" : "no echo") + "</span>";
@@ -80,7 +103,7 @@ function deliveryBadge(d) {
   // exactly the replies the mesh had in fact carried.
   if (d.observed_by) {
     var rep = d.observed_repeats || 0, direct = d.observed_by - rep;
-    b += rep ? ' <span class="badge ' + (rep >= 2 ? "badge-success" : "badge-muted") + '" title="CoreScope: observers whose copy came through a repeater' + (d.observed_paths ? ": " + esc(d.observed_paths.join(" | ")) : "") + '">repeat heard by ' + rep + " observer" + (rep === 1 ? "" : "s") + "</span>" : "";
+    b += rep ? ' <span class="badge badge-success" title="CoreScope: observers whose copy came through a repeater' + (d.observed_paths ? ": " + esc(d.observed_paths.join(" | ")) : "") + '">repeat heard by ' + rep + " observer" + (rep === 1 ? "" : "s") + "</span>" : "";
     if (direct) b += ' <span class="badge badge-muted" title="CoreScope: heard us at zero hops, proves no repeat">direct only: ' + direct + "</span>";
   }
   return b;
@@ -354,7 +377,7 @@ var Portal = {
       var since = lt.since ? new Date(lt.since * 1000).toLocaleDateString() : "";
       var dv = ((st.delivery || {}).windows || {})["24h"] || {};
       var dvVal = dv.sent ? dv.heard_pct + "%" : "–";
-      var dvHint = dv.sent ? dv.heard + " of " + dv.sent + " replies heard back" + (dv.echo_median_ms != null ? " · echo " + (dv.echo_median_ms / 1000).toFixed(1) + " s" : "") + (dv.resent ? " · " + dv.resent + " resent" : "") : "no replies yet";
+      var dvHint = dv.sent ? dv.heard + " of " + dv.sent + " replies heard back" + (dv.carried ? " · " + dv.carried + " more seen by CoreScope" : "") + (dv.echo_median_ms != null ? " · echo " + (dv.echo_median_ms / 1000).toFixed(1) + " s" : "") + (dv.resent ? " · " + dv.resent + " resent" : "") : "no replies yet";
       $("traffic-stats").innerHTML =
         tile("Requests · 24 h", w24.requests, w1.requests + " in the last hour" + (top ? " · " + top : "") + " · since " + since + ": " + lt.requests) +
         tile("Heard back · 24 h", dvVal, dvHint, dv.sent ? (dv.heard_pct >= 80 ? "ok" : dv.heard_pct >= 50 ? "warn" : "bad") : "dim") +
@@ -376,7 +399,7 @@ var Portal = {
           break;
         case "reply_dm": case "reply_channel":
           cls = "badge-success";
-          body = esc(ev.text) + ' <span class="text-muted">' + (ev.chars || 0) + " ch" + (ev.ms != null ? " · " + ev.ms + " ms" : "") + (ev.ok === false ? " · TX off" : "") + "</span>" + deliveryBadge(ev.delivery);
+          body = esc(ev.text) + ' <span class="text-muted">' + (ev.chars || 0) + " ch" + (ev.ms != null ? " · " + ev.ms + " ms" : "") + (ev.ok === false ? " · " + esc(ev.reason || "TX off") : "") + "</span>" + deliveryBadge(ev.delivery);
           break;
         case "dropped":
           cls = "badge-warning";
@@ -521,7 +544,7 @@ var Portal = {
   textbot: {
     _loaded: false, _orig: {},
     _keys: ["MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
-            "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR"],
+            "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_RELAYED_REPLY_DELAY_S"],
 
     onEnter: function () {
       if (!this._loaded) {
@@ -560,7 +583,7 @@ var Portal = {
         var s = sy.settings || {};
         self._orig.MCW_ADVERT_INTERVAL_HOURS = String(s.advert_interval_hours); setVal("env-MCW_ADVERT_INTERVAL_HOURS", s.advert_interval_hours);
         self._orig.MCW_PEER_BOT_PREFIX = s.peer_bot_prefix || ""; setVal("env-MCW_PEER_BOT_PREFIX", s.peer_bot_prefix);
-        ["MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR"].forEach(function (k) {
+        ["MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_RELAYED_REPLY_DELAY_S"].forEach(function (k) {
           var v = s[k.slice(4).toLowerCase()]; self._orig[k] = v == null ? "" : String(v); setVal("env-" + k, v);
         });
       }).catch(function () {});
@@ -782,6 +805,7 @@ var Portal = {
     renderHealth: function (d) {
       var h = d.health || {}, fw = d.firmware || {}, dev = d.device || {}, rs = (d.radio_stats || {}).radio || null;
       var w1 = ((d.delivery || {})["1h"]) || {}, w24 = ((d.delivery || {})["24h"]) || {}, lag = d.loop_lag || null;
+      var ld = d.link_drops || {};
       var labels = { ok: ["OK", "badge-success"], idle: ["idle", "badge-muted"], tx_off: ["TX off", "badge-muted"],
                      tx_suspect: ["TX suspect", "badge-danger"], rx_silent: ["hearing nothing", "badge-danger"], unknown: ["unclear", "badge-warning"] };
       var lb = labels[h.verdict] || ["?", "badge-muted"];
@@ -789,7 +813,7 @@ var Portal = {
       $("health-reason").textContent = h.reason || "";
       var pct = function (w) { return w.heard_pct == null ? "–" : w.heard_pct + "%"; };
       $("health-tiles").innerHTML =
-        tile("Heard", pct(w1), (w1.sent || 0) + " sent · " + (w1.resent || 0) + " resent, 1 h", w1.heard_pct == null ? "" : w1.heard_pct >= 70 ? "ok" : w1.heard_pct >= 40 ? "warn" : "bad") +
+        tile("Heard", pct(w1), (w1.sent || 0) + " sent · " + (w1.resent || 0) + " resent" + (w1.carried ? " · " + w1.carried + " seen by CoreScope" : "") + ", 1 h", w1.heard_pct == null ? "" : w1.heard_pct >= 70 ? "ok" : w1.heard_pct >= 40 ? "warn" : "bad") +
         tile("Echo", w1.echo_median_ms != null ? w1.echo_median_ms + " ms" : "–", "median · 24 h: " + pct(w24) + " of " + (w24.sent || 0)) +
         tile("Last heard", h.rx_age_s != null ? ago(h.rx_age_s) : "never", "any packet from anyone", h.verdict === "rx_silent" ? "bad" : "") +
         tile("Unheard streak", String(h.unheard_streak || 0), "sends in a row with no echo", (h.unheard_streak || 0) >= 3 ? "bad" : "") +
@@ -798,7 +822,9 @@ var Portal = {
         tile("Airtime", rs ? Math.round((rs.tx_air_secs || 0) / 60) + " min TX" : "–", rs ? Math.round((rs.rx_air_secs || 0) / 60) + " min RX since boot" : "") +
         tile("Loop lag", lag && lag.running ? lag.recent_worst_s + " s" : "–",
           lag && lag.running ? "worst stall in " + Math.round((lag.window_s || 300) / 60) + " min · late " + lag.pct + "% of it" : "not being measured",
-          lag && lag.pct >= 2 ? "warn" : "");
+          lag && lag.pct >= 2 ? "warn" : "") +
+        tile("Link drops · 24 h", String(ld["24h"] || 0), ld.last_at ? "last " + agoAt(ld.last_at) + " ago: " + (ld.last_reason || "") : "the radio stayed connected",
+          (ld["24h"] || 0) > 1 ? "bad" : ld["24h"] ? "warn" : "");
       $("health-node").innerHTML = "Firmware " + esc(fw.ver || "?") + (fw.ok ? ' <span class="badge badge-success">GRP_DATA ok</span>' :
         ' <span class="badge badge-danger">needs ' + esc(fw.min || "1.15") + "+ for the app datagrams</span>") +
         (dev.model ? " · " + esc(dev.model) : "") + (dev.max_contacts ? " · " + dev.max_contacts + " contact slots" : "");

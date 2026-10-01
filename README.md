@@ -127,21 +127,28 @@ it out over plain http.
 ## Wire format at a glance
 
 Every message is one MeshCore `GRP_DATA` packet (`data_type 0xFF10`) on
-`#meshwx`, at most 165 bytes, with a 4-byte header: sequence number, the
+`#meshwx`, with a 4-byte header: sequence number, the
 first two bytes of the bot's public key, and the message type (high nibble)
 with flags (low nibble). Little-endian throughout. The sequence number is
 assigned when a packet is transmitted, from one counter shared by broadcasts
 and answers and saved across restarts; a resend repeats the same bytes and
 the same number.
 
+The bot sends at most 157 bytes of data in a packet, though the transport
+and the apps take 165: the companion firmware reports a repeater's copy of
+a packet only up to 169 raw bytes, and a 157-byte datagram comes back as
+167, a 158-byte one as 183. A full Digest (25 entries, 160 B) is the one
+exception, because 25 entries is how an app knows the list may have been
+cut. Bots before 1 October 2026 filled packets to 165.
+
 | Type | Message | Size | When |
 |---|---|---|---|
 | 1 | Warning: VTEC event, office, ETN, absolute expiry, storm tags, polygon and/or county or zone runs | 15 B + polygon + runs (a typical storm warning is 51 B) | on change; tornado, severe thunderstorm, flash flood and extreme wind warnings once more after 90 s |
 | 2 | Cancel | 8 B | when a warning ends before its expiry |
 | 3 | Digest: up to 25 active identities with their expiry, plus feed health | 10 B + 6 per warning | every 3 h, a minute after a cancel, on request |
-| 4 | Observations: up to 13 stations in one packet, each with its own age (14 without) | 9 B + 11 per station | hourly, on request |
+| 4 | Observations: up to 12 stations in one packet, each with its own age (13 without) | 9 B + 11 per station | hourly, on request |
 | 5 | Forecast: up to 7 whole days for a PFM point | 12 B + 5 per day | every 6 h for the home point, on request |
-| 6 | Text: warning narrative, forecast discussion, space weather, storm reports, rainfall, METAR/TAF, outlook, receiver status | up to 8 chunks of 157 B of text | on request only |
+| 6 | Text: warning narrative, forecast discussion, space weather, storm reports, rainfall, METAR/TAF, outlook, receiver status | up to 8 chunks of 149 B of text | on request only |
 | 7 | Not available | 6 B | answer to a request the bot cannot serve |
 | 8 | Coverage: centre, radius, NWS offices and the zone runs this bot carries | 14 B + 1 per office + 4 per run | every 3 h, on request |
 | 9 | Request: an app's `>` request, the one message that travels app -> bot | 14 B + the text (a `>d` is 16 B) | sent by the app, flooded on `#meshwx` |
@@ -308,10 +315,12 @@ request-only.
 |---|---|---|
 | `warnings` | 2 min | New and changed warnings in coverage, a Cancel for one that ended early, and one repeat of a tornado, severe thunderstorm, flash flood or extreme wind warning 90 s later |
 | `digest` | 180 min | The active-warning Digest (also a minute after any Cancel) |
-| `observations` | 60 min | One packet for up to 13 stations within the radius that reported in the last 120 min |
+| `observations` | 60 min | One packet for up to 12 stations within the radius that reported in the last 120 min |
 | `forecast` | 360 min | The forecast for the first home city |
 
-The scheduler checks every 30 s and spaces packets 2 s apart. A job's
+The scheduler checks every 30 s and spaces packets 2 s apart; the radio
+keeps the same gap between any two transmissions, resends, text replies
+and DMs included. A job's
 location is `coverage`, `city`, `pfm_point` or `station` (observations for
 one station). A v4 job file is migrated when it loads: retired products are
 dropped and a forecast job runs no more often than every 3 h.
@@ -324,7 +333,7 @@ Each setting lives in exactly one place, next to the status it affects:
 | Section | What it shows | What you set there |
 |---|---|---|
 | **Overview** | Dish, feed, radio, transmit and reply mode, requests and replies, jobs, log problems, host; recent requests; the accuracy audit result. Refreshes every 15 s; the header strip repeats dish, radio and transmit on every page. | nothing |
-| **Text Bot** | Request/reply counters, the live feed of the channel and DMs (with why a request was not answered), a "try a command" box that runs the DM path, the `help` text, the channels it listens on, peer bots heard | reply mode (with a confirmation before `channel`), stranger hop limit, advert interval, peer-bot prefix, resend limit, echo window, resends per hour |
+| **Text Bot** | Request/reply counters, the live feed of the channel and DMs (with why a request was not answered), a "try a command" box that runs the DM path, the `help` text, the channels it listens on, peer bots heard | reply mode (with a confirmation before `channel`), stranger hop limit, advert interval, peer-bot prefix, resend limit, echo window, resends per hour, wait before answering a relayed request |
 | **Broadcasts** | Counters, jobs with last/next run and bytes, the broadcast log (jobs and app requests) | jobs (add, edit, enable, run now, delete), "run due jobs" |
 | **Radio** | Link, health verdict, hardware and node profile, LoRa parameters, all channel slots, the contact table with housekeeping status | test transmit, adopt a replacement radio or start a new profile, node name and location, LoRa preset or parameters, TX power, transmit on/off, advert, reboot, the text and data channel names, contact housekeeping |
 | **Satellite** | goesrecv and goesproc, signal stats and history, what the EMWIN feed delivered in the last hour, a browser for every product in the store, a link to the public dashboard | pointing / receive mode |
@@ -564,7 +573,8 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_MESH_QUIET_S` | `600` | When no repeat has been heard from anyone for this many seconds, skip the resend |
 | `MCW_SCOPE_URL` | *(empty)* | CoreScope instance to ask who heard a packet; empty = off |
 | `MCW_SCOPE_MODE` | `stats` | `stats` records the observers; `decide` also skips a resend CoreScope saw repeated |
-| `MCW_SCOPE_MIN_OBSERVERS` | `2` | Observers of a repeated copy needed before it counts |
+| `MCW_SCOPE_MIN_OBSERVERS` | `1` | Observers of a repeated copy needed before it counts |
+| `MCW_RELAYED_REPLY_DELAY_S` | `1.0` | An answer to a request that came through repeaters waits this long plus up to half as much again, so it does not go out while the request is still being passed on; `0` = at once |
 | `MCW_DM_REPLY_DELAY_S` | `2.0` | A DM reply's first try leaves at least this long after its request arrived |
 | `MCW_DM_COPY_WINDOW_S` | `120` | A DM with the same sender and text within this many seconds of the first is a copy of that request |
 | `MCW_DM_COPY_RETAIN_S` | `1800` | A DM with the same sender, timestamp and text within this many seconds is a copy |

@@ -38,7 +38,7 @@ def test_warning_message_round_trips_identity_tags_polygon_and_counties():
     assert counties == {(453, True), (209, True)} and all(a["state"] == b.tables.states.index("TX") for a in d["areas"])
     assert b.identity_str(b.warning_identity(w)) == "SV.W.EWX.42"
     assert b.parse_identity("SV.W.EWX.42") == b.warning_identity(w) and b.parse_identity("XX.Q.EWX.1") is None
-    assert len(msg) <= v5.MAX_DATA
+    assert len(msg) <= v5.MAX_SEND
 
 
 def test_oversized_polygon_is_thinned_rather_than_dropped():
@@ -46,7 +46,7 @@ def test_oversized_polygon_is_thinned_rather_than_dropped():
     w["vertices"] = [(30.0 + i * 0.01, -97.0 - i * 0.01) for i in range(60)]
     w["ugcs"] = [f"TXC{n}" for n in range(1, 120, 2)]           # 60 non-consecutive counties
     msg = b.warning_message(1, 1, w)
-    assert msg is not None and len(msg) <= v5.MAX_DATA
+    assert msg is not None and len(msg) <= v5.MAX_SEND
     d = v5.decode(msg)
     assert 3 <= len(d["polygon"]) <= 16
 
@@ -153,7 +153,7 @@ def test_a_cancel_carries_no_source_only_its_reason():
 # -- Revision 7: the cut text reply ------------------------------------------------
 
 
-MAX_TEXT = v5.MAX_TEXT_CHUNKS * v5.MAX_TEXT_BYTES        # 1256 bytes of UTF-8
+MAX_TEXT = v5.MAX_TEXT_CHUNKS * v5.MAX_TEXT_BYTES        # 1192 bytes of UTF-8
 
 
 def _sentences(n: int, word: str = "word") -> str:
@@ -169,7 +169,7 @@ def test_a_reply_that_fits_is_not_flagged_as_cut():
 
 
 def test_an_eight_chunk_reply_that_exactly_fits_is_not_flagged():
-    """The boundary case: 1256 bytes is eight full chunks and nothing was
+    """The boundary case: 1192 bytes is eight full chunks and nothing was
     dropped, so the flag must stay clear."""
     text = "a" * MAX_TEXT
     body, cut = b.fit_text(text)
@@ -184,7 +184,7 @@ def test_an_eight_chunk_reply_that_exactly_fits_is_not_flagged():
 
 
 def test_a_long_reply_is_cut_at_a_sentence_and_flagged_on_every_chunk():
-    text = _sentences(60)                     # comfortably over 1256 bytes
+    text = _sentences(60)                     # comfortably over 1192 bytes
     assert len(text.encode()) > MAX_TEXT
     seq = b.SeqCounter(100)
     msgs = b.text_messages(seq, 5, v5.SUBJECT_AFD, text)
@@ -373,28 +373,29 @@ def test_each_station_says_how_far_behind_the_batch_time_its_own_report_is():
 
 
 def test_a_full_batch_drops_its_farthest_station_to_carry_the_ages():
-    """Fourteen stations are 163 bytes on their own, so the ages cost the
-    fourteenth — the farthest, since the list arrives nearest first — rather
+    """Thirteen stations are 152 bytes on their own, so the ages cost the
+    thirteenth — the farthest, since the list arrives nearest first — rather
     than being sent for some stations and not others."""
     icaos = ["KAUS", "KATT", "KGTU", "KHYI", "KEDC", "KBAZ", "KRYW",
-             "KDZB", "KSSF", "KSAT", "KTPL", "KILE", "KGRK", "KLZZ"]
+             "KDZB", "KSSF", "KSAT", "KTPL", "KILE", "KGRK"]
+    assert len(icaos) == b.MAX_OBS_STATIONS == v5.MAX_STATIONS
     store = _aged_metar_store([(5 + i, _clear(c)) for i, c in enumerate(icaos)])
     msg = b.obs_message(1, 1, store, icaos)
-    assert len(msg) == 159 <= v5.MAX_DATA
+    assert len(msg) == 147 <= v5.MAX_SEND
     d = v5.decode(msg)
     assert d["flags"] == v5.FLAG_OBS_AGES
-    assert len(d["stations"]) == v5.MAX_STATIONS_WITH_AGES == 13
-    dropped = b.tables.station("KLZZ")                 # the farthest, last in the list
+    assert len(d["stations"]) == v5.MAX_STATIONS_WITH_AGES == 12
+    dropped = b.tables.station("KGRK")                 # the farthest, last in the list
     assert dropped not in {s["station"] for s in d["stations"]}
     assert all(s["age_min"] is not None for s in d["stations"])
 
 
-def test_thirteen_stations_keep_every_age():
+def test_twelve_stations_keep_every_age():
     icaos = ["KAUS", "KATT", "KGTU", "KHYI", "KEDC", "KBAZ", "KRYW",
-             "KDZB", "KSSF", "KSAT", "KTPL", "KILE", "KGRK"]
+             "KDZB", "KSSF", "KSAT", "KTPL", "KILE"]
     store = _aged_metar_store([(5, _clear(c)) for c in icaos])
     d = v5.decode(b.obs_message(1, 1, store, icaos))
-    assert len(d["stations"]) == 13 and all(s["age_min"] == 0 for s in d["stations"])
+    assert len(d["stations"]) == 12 and all(s["age_min"] == 0 for s in d["stations"])
 
 
 def test_a_warning_carries_the_issue_time_and_keeps_it_when_the_polygon_goes():
@@ -407,7 +408,7 @@ def test_a_warning_carries_the_issue_time_and_keeps_it_when_the_polygon_goes():
     big = {**w, "vertices": [(30.0 + i * 0.01, -97.0 - i * 0.01) for i in range(60)],
            "ugcs": [f"TXC{n}" for n in range(1, 120, 2)]}
     msg = b.warning_message(1, 1, big)
-    assert msg is not None and len(msg) <= v5.MAX_DATA
+    assert msg is not None and len(msg) <= v5.MAX_SEND
     d = v5.decode(msg)
     assert 3 <= len(d["polygon"]) <= 16                      # the polygon is what gives way
     assert d["issued_min"] == int(issued.timestamp() // 60)   # the issue time never does
@@ -567,3 +568,87 @@ def test_f_at_a_coordinate_with_no_forecast_within_reach(monkeypatch):
     assert (d["name"], d["request"], d["reason"]) == (
         "not_available", "f", v5.REASON_NO_DATA
     )
+
+
+# -- The send limit (157 bytes) -----------------------------------------------------------
+
+
+def test_every_builder_stays_inside_the_send_limit_at_its_maxima(monkeypatch):
+    """Every builder, fed more than one packet holds through the fixtures the
+    tests above use, sends nothing over `v5.MAX_SEND`. The bot confirms a send
+    by hearing a repeater's copy, and the companion firmware never reports a
+    copy of a datagram over 157 bytes (it is 183 raw bytes; the frame holds 169)."""
+    from meshcore_weather.parser.weather import WeatherStore
+    from meshcore_weather.protocol import warnings as warnings_mod
+    from meshcore_weather.protocol.coverage import Coverage
+    from meshcore_weather.radar import cut_tile, read_picture
+    from tests.test_radar import FRAMES, STHPL
+
+    sent: dict[str, list[bytes]] = {}
+
+    # Warnings: a 60-vertex polygon, 60 county runs, the issue time and a start.
+    issued = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=37)
+    ring = [(30.0 + i * 0.01, -97.0 - i * 0.01) for i in range(60)]
+    counties = [f"TXC{n:03d}" for n in range(1, 120, 2)]
+    timed = {**_warning(), "issued_at": issued, "onset_at": issued + timedelta(minutes=60)}
+    sent["warning"] = [
+        b.warning_message(1, 9, {**timed, "vertices": ring, "ugcs": counties}),
+        b.warning_message(1, 9, {**timed, "vertices": ring, "ugcs": []}),
+        b.warning_message(1, 9, {**timed, "vertices": [], "ugcs": counties}),
+    ]
+    sent["cancel"] = [b.cancel_message(1, 9, (3, 35, 42), reason=2)]
+    sent["digest"] = [b.digest_message(1, 9, [_warning(etn=n, hours=1 + n) for n in range(1, 40)], 0)]
+
+    # Observations: one candidate more than a batch with ages holds.
+    icaos = ["KAUS", "KATT", "KGTU", "KHYI", "KEDC", "KBAZ", "KRYW",
+             "KDZB", "KSSF", "KSAT", "KTPL", "KILE", "KGRK", "KLZZ"]
+    store = _aged_metar_store([(5 + i, _clear(c)) for i, c in enumerate(icaos)])
+    sent["observations"] = [b.obs_message(1, 9, store, icaos),
+                            b.station_obs_message(1, 9, store, "KAUS")]
+
+    _serve(monkeypatch, _austin_point())
+    sent["forecast"] = [b.forecast_message(1, 9, WeatherStore(), 30.19, -97.67)]
+
+    # Coverage: more runs and more offices than the packet carries, both cut.
+    zones = {f"TXZ{n:03d}" for n in range(1, 81, 2)} | {f"TXZ{n:03d}" for n in range(100, 140)}
+    b.tables.load()
+    cov = Coverage(zones=zones, sources={"cities": [], "states": [], "wfos": b.tables.offices[:40]})
+    sent["coverage"] = [b.coverage_message(1, 9, cov, (30.2672, -97.7431), 120)]
+
+    # Area sweep: 300 warning runs and 300 watch runs, national and scoped.
+    active = [_warning(etn=1, ugcs=[f"TXC{n:03d}" for n in range(1, 600, 2)]),
+              _warning(etn=2, phen="TO", sig="A", ugcs=[f"OKC{n:03d}" for n in range(1, 600, 2)])]
+    monkeypatch.setattr(warnings_mod, "extract_active_warnings", lambda store, coverage=None, now=None: active)
+    sent["area_sweep"] = (b.area_sweep_messages(b.SeqCounter(), 9, WeatherStore())
+                          + b.area_sweep_messages(b.SeqCounter(), 9, WeatherStore(), states=["OK", "TX"]))
+
+    sent["text"] = (b.text_messages(b.SeqCounter(), 9, v5.SUBJECT_AFD, _sentences(60))
+                    + b.text_messages(b.SeqCounter(), 9, v5.SUBJECT_AFD, "☃ " * 900))
+    sent["not_available"] = [b.not_available(1, 9, ">radar", v5.REASON_RATE_LIMITED)]
+
+    # Radar: the fixture picture's whole tile and its partial one, each made
+    # too busy for a fine packet.
+    picture = read_picture(STHPL, "RADSTHPL")
+    frame = FRAMES["RADSTHPL"]
+    sent["radar"] = []
+    for south, west, zoom in ((32, -98, 0), (24, -100, 1)):
+        tile = cut_tile(picture, frame, south, west, zoom)
+        r0, r1, c0, c1 = tile.bounds or (0, 31, 0, 31)
+        tile.rows = [[(r * 5 + c * 3) % 4 if r0 <= r <= r1 and c0 <= c <= c1 else 0 for c in range(32)]
+                     for r in range(32)]
+        sent["radar"].append(b.radar_message(1, 9, tile, picture, frame))
+
+    for name, packets in sent.items():
+        assert packets and all(p is not None for p in packets), name
+        for p in packets:
+            # A full digest alone is 160 (v5.MAX_DIGEST_ENTRIES says why).
+            assert len(p) <= (v5.MAX_DATA if name == "digest" else v5.MAX_SEND), (name, len(p))
+            assert v5.decode(p)["name"] == name
+    # The fixtures do reach the limits, so the bound above was tested, not dodged.
+    longest = {name: max(len(p) for p in packets) for name, packets in sent.items()}
+    assert longest["coverage"] == v5.MAX_SEND
+    assert longest["text"] == v5.MAX_SEND
+    assert longest["area_sweep"] == 11 + 4 * v5.MAX_SWEEP_ENTRIES_PER_PACKET == 155
+    assert longest["digest"] == 10 + 6 * v5.MAX_DIGEST_ENTRIES == 160
+    assert longest["observations"] == 9 + 11 * 12 + 6 == 147
+    assert all(v5.decode(p)["coarse"] for p in sent["radar"])

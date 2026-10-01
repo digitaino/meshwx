@@ -8,6 +8,8 @@ port it to Swift, Kotlin or C without chasing imports.
 Every v5 message is the ``data`` field of one MeshCore ``GRP_DATA`` packet on
 the ``#meshwx`` channel with ``data_type = 0xFF10``.  ``data`` is at most 165
 bytes and every message fits in one packet; only Text carries chunk numbers.
+The encoders here build at most 157 (``MAX_SEND``); the decoders take
+anything up to 165 (``MAX_DATA``), which older bots sent.
 
 Every type but one travels bot -> app.  Request (type 9, spec 7B, new in
 revision 6) is the app's `>` request flooded on the same channel: the bot
@@ -36,6 +38,7 @@ from dataclasses import dataclass
 __all__ = [
     "DATA_TYPE",
     "MAX_DATA",
+    "MAX_SEND",
     "HEADER_SIZE",
     "TYPE_WARNING",
     "TYPE_CANCEL",
@@ -160,8 +163,18 @@ __all__ = [
 #: MeshCore ``data_type`` carrying a v5 message (development range).
 DATA_TYPE = 0xFF10
 
-#: Largest ``data`` payload the transport accepts, in bytes.
+#: Largest ``data`` payload the transport accepts, in bytes.  What a decoder
+#: must take: bots before 1 October 2026 filled packets to it.
 MAX_DATA = 165
+
+#: Largest ``data`` payload a bot sends, in bytes; every encoder here refuses
+#: more.  A bot confirms delivery by hearing a repeater pass its packet on, and
+#: the companion firmware pushes a heard packet to the bot only when the raw
+#: packet plus 3 bytes fits its 172-byte frame (MAX_FRAME_SIZE, MyMesh.cpp).
+#: With the 3-byte data type and length in front, 157 bytes encrypt to 160 and
+#: a repeater's copy is 167 raw bytes, reported; 158 to 165 encrypt to 176 and
+#: the copy is 183, never reported.
+MAX_SEND = 157
 
 #: Size of the common header.
 HEADER_SIZE = 4
@@ -309,18 +322,25 @@ SOURCE_INTERNET = 2
 #: Built from products of both kinds.
 SOURCE_MIXED = 3
 
-# Counts and limits.
-MAX_TEXT_BYTES = MAX_DATA - 8  # 157
+# Counts and limits.  They are what fits in MAX_SEND, so they are what a bot
+# sends; a decoder still reads the larger counts MAX_DATA held.
+MAX_TEXT_BYTES = MAX_SEND - 8  # 149
 MAX_TEXT_CHUNKS = 8
 MIN_POLYGON_VERTICES = 3
 MAX_POLYGON_VERTICES = 30
 MAX_AREA_RUNS = 30
+# 10 + 6 x 25 = 160: the one message allowed past MAX_SEND. An app reads a
+# digest of exactly 25 entries as "may have been cut" and keeps the warnings
+# past its end; cut at 24, a released app would read the cut list as whole
+# and drop warnings that are still active. So a full digest stays at 25 until
+# the apps read 24 as full, and only CoreScope can confirm it was carried.
 MAX_DIGEST_ENTRIES = 25
-MAX_STATIONS = 14
-# A batch of 14 stations is already 163 bytes, so the age nibbles (one per
-# station, packed two to a byte) do not fit beside a full one: 9 + 11 x 14 + 7
-# is 170.  Thirteen stations with their ages are 159 (spec 6, revision 5).
-MAX_STATIONS_WITH_AGES = 13
+# 9 + 11 x 13 = 152; a 14th station would make 163.
+MAX_STATIONS = 13
+# The age nibbles (one per station, packed two to a byte) do not fit beside a
+# full batch: 9 + 11 x 13 + 7 is 159.  Twelve stations with their ages are
+# 147 (spec 6, revision 5).
+MAX_STATIONS_WITH_AGES = 12
 #: One age nibble step, in minutes.
 OBS_AGE_STEP_MIN = 10
 #: The largest age a nibble carries: 15 steps, read as "150 minutes or more".
@@ -330,9 +350,10 @@ MAX_ISSUED_BEFORE_EXPIRY = 0xFFFF
 # Revision 12: the start, as minutes before `expires`, saturating the same way.
 MAX_BEGINS_BEFORE_EXPIRY = 0xFFFF
 MAX_PERIODS = 14
-# Coverage: both maxima at once are 14 + 24 + 1 + 120 = 159 bytes, inside
+# Coverage: both maxima at once are 14 + 22 + 1 + 120 = 157 bytes, inside
 # one packet, so a full office list never costs a zone run or the reverse.
-MAX_COVERAGE_OFFICES = 24
+# The offices gave up the room: a bot's runs are cut far more often.
+MAX_COVERAGE_OFFICES = 22
 MAX_COVERAGE_RUNS = 30
 # Request (spec 7B): six bytes of the sender's public key — the prefix a DM
 # identifies the same phone by — then the sender's own Unix seconds, then the
@@ -345,10 +366,11 @@ MAX_REQUEST_TEXT = 40
 MIN_REQUEST_SIZE = HEADER_SIZE + REQUEST_SENDER_BYTES + 4 + 1   # 15
 
 # Area sweep (spec 7C).  Seven fixed bytes after the header, then 4-byte
-# entries: 11 + 38 x 4 = 163, inside the 165-byte packet with two to spare.
+# entries: 11 + 36 x 4 = 155, inside the 157-byte send limit with two to
+# spare.  A bot before 1 October 2026 sent 38, which a decoder still reads.
 MAX_SWEEP_PACKETS = 8
-MAX_SWEEP_ENTRIES_PER_PACKET = 38
-#: The whole sweep's ceiling, 304 runs.  Past it the least severe are dropped
+MAX_SWEEP_ENTRIES_PER_PACKET = 36
+#: The whole sweep's ceiling, 288 runs.  Past it the least severe are dropped
 #: and the cut flag says so.
 MAX_SWEEP_ENTRIES = MAX_SWEEP_PACKETS * MAX_SWEEP_ENTRIES_PER_PACKET
 #: The longest run one entry carries: six bits hold `run - 1`.
@@ -435,10 +457,13 @@ def _check_header(seq: int, bot: int, mtype: int, flags: int) -> None:
         raise ValueError(f"flags must be 0..15, got {flags}")
 
 
-def _check_size(data: bytes, what: str) -> bytes:
-    if len(data) > MAX_DATA:
+def _check_size(data: bytes, what: str, limit: int | None = None) -> bytes:
+    """Every encoder ends here, so nothing it builds is over ``MAX_SEND``
+    (the Digest alone passes ``MAX_DATA``; see ``MAX_DIGEST_ENTRIES``)."""
+    limit = MAX_SEND if limit is None else limit
+    if len(data) > limit:
         raise ValueError(
-            f"{what} is {len(data)} bytes, over the {MAX_DATA}-byte limit"
+            f"{what} is {len(data)} bytes, over the {limit}-byte send limit"
         )
     return data
 
@@ -870,7 +895,7 @@ def encode_digest(
             _u16(etn, "etn"),
             rel,
         )
-    return _check_size(bytes(out), "digest")
+    return _check_size(bytes(out), "digest", MAX_DATA)
 
 
 def _decode_digest(data: bytes, hdr: Header) -> dict:
@@ -954,14 +979,14 @@ def encode_obs(
     stations: "list[dict]",
     source: int = SOURCE_UNSTATED,
 ) -> bytes:
-    """Encode an Observations batch (1..14 stations, 11 bytes each).
+    """Encode an Observations batch (1..13 stations, 11 bytes each).
 
     A station carrying ``age_min`` — how many minutes older than ``ts_min``
     its own report is — puts the batch into the revision 5 form: flags nibble
     bit 0 set and a trailing block of age nibbles.  The ages are all or
     nothing, so a batch where only some stations know their age is refused
     rather than sent with the rest guessed at; and because the block costs
-    ``ceil(n / 2)`` bytes on top of an already 163-byte full batch, 14
+    ``ceil(n / 2)`` bytes on top of an already 152-byte full batch, 13
     stations with ages do not fit in one packet (see ``MAX_STATIONS_WITH_AGES``).
 
     ``source`` describes the batch, which is aggregated from many products:
@@ -1299,7 +1324,7 @@ def text_chunks(
 ) -> "list[bytes]":
     """Split ``text`` into Text messages.
 
-    Chunks never split a UTF-8 code point, carry at most 157 text bytes,
+    Chunks never split a UTF-8 code point, carry at most 149 text bytes,
     share ``group = seq_start & 0xFF``, and use consecutive sequence numbers
     starting at ``seq_start`` (wrapping 255 -> 0).
 
@@ -1586,7 +1611,7 @@ def encode_area_sweep(
 
     ``scope`` is the state indices this sweep covers (spec 7C, revision 10).
     They go out as one entry each, ahead of the alert entries and counting
-    toward the 38 a packet holds, and they belong on packet 0 alone.
+    toward the 36 a packet holds, and they belong on packet 0 alone.
     ``scoped`` sets ``total`` bit 7 and belongs on *every* packet, so a phone
     that lost packet 0 still knows it is not looking at the country; passing a
     scope implies it.

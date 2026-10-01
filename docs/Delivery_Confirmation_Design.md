@@ -72,8 +72,20 @@ again. The bot should do the same, with a budget.
    it. The `search=` parameter does not match hashes, so lookup is a time
    window filtered by hash on our side. Channel packets are encrypted, so
    CoreScope cannot attribute them to WX-AUS; the hash is the only key.
-   (Found later: the server ignores `timeRange`. The lookup relies on the
-   newest-first order instead and asks for 300 packets.)
+   (Found later: the server ignores `timeRange`. The lookup relied on the
+   newest-first order instead and asked for 300 packets, about 450 kB a
+   time. Since 2026-10-01 it asks by hash, below.)
+8. **What the node reports.** The stock companion firmware pushes a heard
+   packet to the app only when it fits its 172-byte serial frame with three
+   bytes to spare (`examples/companion_radio/MyMesh.cpp`, `len + 3 <=
+   MAX_FRAME_SIZE`). A repeater's copy of a GRP_DATA datagram is header,
+   path byte, one 2-byte hash and the payload; the payload is 3 bytes plus
+   the data padded to 16-byte blocks. Up to 157 data bytes that is 167
+   bytes and is reported; 158 to 165 is 183 and never is. On 2026-10-01
+   all 60 datagrams of 161-165 bytes went unheard and most were resent for
+   nothing, so the bot now sends at most 157 (`docs/MeshWX_v5_Spec.md`).
+   A channel text message has the same limit at 160 bytes of plaintext:
+   timestamp, flags, "WX-AUS: " and 147 bytes of text.
 
 ## The system
 
@@ -104,13 +116,28 @@ requests and replies"); the tracker only routes their ACKs.
   anyone was heard in the last 10 minutes once the bot has been up that
   long (nothing would change, and the user's own "no repeater in range"
   case); or the CoreScope check (below) says a repeated copy was observed.
-  With `MCW_RETRANSMIT_MAX=0` it only measures.
+  A packet too long for the node to report an echo of (`echo_visible`) is
+  not resent blind: only CoreScope can say it was lost. With
+  `MCW_RETRANSMIT_MAX=0` it only measures.
+- Every transmission, resends included, waits its turn at the radio
+  (`MeshcoreRadio.on_air`): one at a time, 2 s after the last, whether it
+  is a packet of an answer, a resend, a text reply, a DM or an advert. A
+  resend that hears its echo while it waits stays home. One the radio
+  could not send (refused, or the USB link gone) is not counted as a
+  resend and costs no budget; the outcome says "radio unavailable".
+- The hash stays registered for 60 s after the outcome is written. An echo
+  in that time marks the outcome echoed and `late`, on the record too.
 - The outcome lands on the traffic-log event as `delivery: {result, echo,
-  echo_ms, via, snr, acked, rtt_ms, attempts, resent, skipped,
-  observed_by, ...}` so the feed, the counters and the public page can show
-  it. `echo_ms` and `rtt_ms` are timed from the transmission that was
-  heard, not from the first send. The last 24 hours of outcomes survive a
-  restart (`data/delivery_outcomes.json`).
+  echo_ms, via, snr, acked, rtt_ms, attempts, resent, skipped, late,
+  carried, observed_by, ...}` so the feed, the counters and the public page
+  can show it. `echo_ms` and `rtt_ms` are timed from the transmission that
+  was heard (the radio reports when a resend actually went on air), not
+  from the first send. An event that carries several packets (an answer
+  of several) keeps each packet's outcome and shows `{result: "batch",
+  packets, heard, pending, resent, parts}`. The last 24 hours of outcomes
+  survive a restart (`data/delivery_outcomes.json`); a row's 7th field
+  holds `late` and `carried` ("scope": no echo, but CoreScope saw a
+  repeat), and the health verdict counts a carried packet as heard.
 
 ### Per kind
 
@@ -231,14 +258,18 @@ node's own ACK, and one of the pair was often lost. A copy of `more` got
 
 Off unless `MCW_SCOPE_URL` is set (e.g. `https://scope.digitaino.com`).
 Every lookup is fail-soft with a 3 s timeout and never in the send path. It
-pulls the newest 300 packets of that payload type, finds our hash, and reads
-every observation of it.
+is one request by hash, `/api/packets?hash=<h>&expand=observations`, a few
+kB. Observations stamped more than 2 minutes before the send are dropped:
+a packet with fixed content repeats its hash each time the 1-byte `seq`
+comes round, and the older sightings are of the earlier packet.
 
 - `MCW_SCOPE_MODE=decide`: when the echo window passes with no local echo,
   one query. Only observers whose copy carries a repeater in its path
   count (`repeated_by`); an observer next door that heard us at zero hops
-  proves nothing. At least `MCW_SCOPE_MIN_OBSERVERS` (default 2) of them
-  are needed before the retransmit is skipped. Catches the case where our
+  proves nothing. At least `MCW_SCOPE_MIN_OBSERVERS` (default 1) of them
+  are needed before the retransmit is skipped. (It was 2 until 2026-10-01,
+  when 8 resends went out for packets one observer had already seen
+  repeated.) Catches the case where our
   node did not hear the repeat but the mesh did. This probe runs seconds
   after the send, while observers are still reporting, so it only ever
   vetoes a resend and never goes on the record.
@@ -254,15 +285,32 @@ This is optional, and weather data never depends on it.
 - Traffic feed, per reply: `echo 1.2 s via D0,3A`, `ack 2.4 s`,
   `resent ×1`, `no echo`, `no ack`, `no echo · not resent: <reason>`, and,
   once CoreScope has answered, the number of observers whose copy came
-  through a repeater (paths in the tooltip). A copy of a DM request shows
-  as its own line with what it got and why.
+  through a repeater (paths in the tooltip). A late echo says "(late)". An
+  answer of several packets shows `heard 7 of 8`, with each packet's result
+  in the tooltip. A copy of a DM request shows as its own line with what it
+  got and why.
 - Radio › Health tiles: "Heard" (share of tracked sends echoed or acked in
   the last hour, with sent and resent), "Echo" (median echo delay, and the
-  24 h share), "Last heard", "Unheard streak", "Loop lag". The Overview
-  says how many replies were heard back.
+  24 h share), "Last heard", "Unheard streak", "Loop lag", "Link drops"
+  (how often the node fell off the serial link in 24 h, and the last
+  reason; on 2026-10-01 the radio and the dish's SDR dropped off USB
+  together four times in five minutes, each within seconds of a send,
+  which points at USB power). The Overview says how many replies were
+  heard back, and how many more CoreScope saw repeated.
 - Settings: Text Bot has "Resend if not heard, max" (0 measure only, 1, 2),
-  "Echo window (s)" and the per-hour budget; System › Settings has the
-  CoreScope URL, mode and minimum observers.
+  "Echo window (s)", the per-hour budget and the wait before answering a
+  relayed request; System › Settings has the CoreScope URL, mode and
+  minimum observers.
+
+### Answering a relayed request
+
+A request that came through repeaters is still being passed on when it
+reaches the bot. On 2026-10-01, 12 of 35 answers sent within a third of a
+second of such a request lost their first copy, and none of the 8 sent
+later did; all 13 resends of small packets that day were for this. So an
+answer to a request heard at one hop or more waits
+`MCW_RELAYED_REPLY_DELAY_S` (1 s) plus up to half as much again at random
+(`main.reply_not_before`); one heard direct goes at once.
 
 ### Configuration
 
@@ -273,7 +321,8 @@ MCW_RETRANSMIT_PER_HOUR=30
 MCW_MESH_QUIET_S=600            # no repeat heard from anyone this long: no resend
 MCW_SCOPE_URL=                  # e.g. https://scope.digitaino.com
 MCW_SCOPE_MODE=stats            # stats | decide
-MCW_SCOPE_MIN_OBSERVERS=2       # observers of a REPEATED copy before decide mode skips a resend
+MCW_SCOPE_MIN_OBSERVERS=1       # observers of a REPEATED copy before decide mode skips a resend
+MCW_RELAYED_REPLY_DELAY_S=1.0   # an answer to a request that came through repeaters waits this (+ up to half)
 MCW_DM_REPLY_DELAY_S=2.0        # a DM reply's first try, at least this long after its request
 MCW_DM_COPY_WINDOW_S=120        # same sender and text within this of the first copy: a copy
 MCW_DM_COPY_RETAIN_S=1800       # same sender, timestamp and text within this: a copy
