@@ -78,7 +78,9 @@ export function WeatherPlacePageView({ app, page, onUseMyLocation }) {
     }),
 
     // Under the weather, where a weather app puts it (§3.2 Q1, Q7).
-    warning != null ? WeatherWarningBannerSection({ app, screen, banner: warning, onOpen: push.alert }) : null,
+    warning != null
+      ? WeatherWarningBannerSection({ app, screen, banner: warning, onOpen: push.alert, onOpenList: push.alerts })
+      : null,
 
     // Nothing held for this place at all: the block above already says so, once, and names what is
     // nearest (§3.1 U-13). With no place at all it is already the whole of what the page can say.
@@ -141,10 +143,12 @@ function preview({ app, page }) {
 
 /**
  * The one strip under the weather, **always the same height**: the alert covering this place, when
- * it ends, and a count of any others. There is no card, ever — a page that rearranges itself in a
- * storm is a page whose shape cannot be learned (§3.2 Q7).
+ * it ends, and a count of any others. Tapping it opens the alert when it is the only one, and the
+ * alerts list when there are others, whose first section is exactly the alerts covering this place
+ * (§3.1 U-50): a count that opened one of them would hide the rest. There is no card, ever — a page
+ * that rearranges itself in a storm is a page whose shape cannot be learned (§3.2 Q7).
  */
-export function WeatherWarningBannerSection({ app, screen, banner, onOpen }) {
+export function WeatherWarningBannerSection({ app, screen, banner, onOpen, onOpenList }) {
   const item = banner?.item
   if (item == null) return null
   const tables = app?.tables ?? attempt(() => MeshWXTables.shared)
@@ -171,7 +175,7 @@ export function WeatherWarningBannerSection({ app, screen, banner, onOpen }) {
     type: 'button',
     style: `--tint: var(--tint-${tint})`,
     dataset: { test: 'weather.warningBanner' },
-    onclick: () => onOpen?.(item.identity),
+    onclick: () => ((banner.more ?? 0) > 0 ? onOpenList?.() : onOpen?.(item.identity)),
   },
     // `MeshWXPresentation` names SF Symbols the offline icon set does not all draw (tornado,
     // snowflake, wind): the warning triangle stands in rather than the kit's placeholder dot.
@@ -265,6 +269,10 @@ function pushers({ app, screen, pageID }) {
     alert: (identity) => open(async () => {
       const { WeatherAlertDetailScreen } = await import('../radio/index.js')
       return WeatherAlertDetailScreen({ app, page, identity })
+    }),
+    alerts: () => open(async () => {
+      const { WeatherAlertsListScreen } = await import('../radio/index.js')
+      return WeatherAlertsListScreen({ app, page })
     }),
     report: (subject) => open(async () => {
       const { WeatherReportScreen } = await import('../radio/index.js')
