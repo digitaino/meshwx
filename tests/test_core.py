@@ -213,6 +213,21 @@ class TestForecast:
         assert text.count("|") == 3                  # four days, so it still fits one packet
         assert len(text) <= render_text.MAX_DM
 
+    def test_an_old_forecast_for_a_long_label_still_fits_one_packet(self, store, monkeypatch):
+        # "Forecast 78664" went to two pages: the ZIP, the point's name and the
+        # issue time left no room for four days.
+        monkeypatch.setattr(services, "_now", lambda: datetime(2026, 9, 15, 7, 0, tzinfo=timezone.utc))
+        for place in ("78664", "Lockhart TX", "Dripping Springs TX", "78620"):
+            loc = resolver.resolve(place)
+            fc = services.forecast_for(store, loc)
+            text = render_text.forecast(loc, fc)
+            assert len(text.encode()) <= render_text.MAX_DM, text
+            assert ", issued " in text and text.count("|") <= 3
+        # A label with room for three days gets three, not a second page.
+        long_loc = dict(loc, name="Lake Travis Northshore Estates At The Hills, TX 78620")
+        text = render_text.forecast(long_loc, fc)
+        assert len(text.encode()) <= render_text.MAX_DM and text.count("|") == 2, text
+
     def test_a_point_nearby_with_no_forecast_held_is_not_called_far(self):
         empty = WeatherStore()
         loc = resolver.resolve("Lockhart TX")

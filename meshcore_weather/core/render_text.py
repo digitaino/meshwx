@@ -176,7 +176,9 @@ def forecast(loc: dict, fc: Forecast | None, days: int = 5) -> str:
             return _cap(f"{place_label(loc)}: no recent forecast received")
         return _cap(f"{place_label(loc)}: no forecast point within 80km")
     # A copy kept through a missed issuance says when it was issued, and gives
-    # a day less so the reply still fits one packet.
+    # what days fit one packet: four at most, fewer when the place's label is
+    # long ("Round Rock, TX 78664 (Georgetown Airport 21km, ...)" went to two
+    # pages on 2026-10-01).
     issued = f", issued {_when(fc.issued_at, tz_for_loc(loc))}" if fc.stale and fc.issued_at else ""
     if issued:
         days = min(days, 4)
@@ -194,6 +196,8 @@ def forecast(loc: dict, fc: Forecast | None, days: int = 5) -> str:
             seg += f" {_SKY.get(sky, '')}"
         parts.append(seg)
     head = f"{place_label(loc)} ({fc.point_name.split('-')[0].strip()} {fc.distance_km:.0f}km{issued}):"
+    while issued and len(parts) > 1 and len((head + " " + " | ".join(parts)).encode()) > MAX_DM:
+        parts.pop()
     return _cap(head + " " + " | ".join(parts))
 
 

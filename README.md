@@ -660,7 +660,7 @@ as dropped, "conversation, not a request". By DM every message is a request.
 |---------|---------|-------|
 | `wx <city ST, station or ZIP>` | `wx Austin TX`, `wx KAUS`, `wx AUS`, `wx 78701` | Current conditions, today's high/low, active warnings |
 | `wx`, `wx <state>` | `wx TX`, `TX`, `wx texas` | National or state overview |
-| `forecast <city ST or ZIP>` | `forecast Miami FL`, `forecast 02134` | Daily forecast from the nearest PFM point, from today on. One more than 13 h old (the dish missed an issuance) gives its issue time and four days: `Lockhart, TX (San Marcos Airport 19km, issued Wed 1:33AM): Thu …`. With a point nearby and no forecast held: `no recent forecast received` |
+| `forecast <city ST or ZIP>` | `forecast Miami FL`, `forecast 02134` | Daily forecast from the nearest PFM point, from today on. One more than 13 h old (the dish missed an issuance) gives its issue time and as many days as fit one packet, four at most: `Lockhart, TX (San Marcos Airport 19km, issued Wed 1:33AM): Thu …`. With a point nearby and no forecast held: `no recent forecast received` |
 | `warn`, `warn <ST>`, `warn <city ST or ZIP>` | `warn KS`, `warn 78701` | Active watches, warnings and advisories: national, a state, or a place |
 | `outlook <city ST or ZIP>` | `outlook Des Moines IA` | Hazardous weather outlook |
 | `storm [ST or city ST]` | `storm SD` | Storm reports from the last 6 hours (the home state without an argument) |
