@@ -276,13 +276,13 @@ describe('WeatherAreaSweepCost', () => {
     const held = picture([national({ group: 1, total: 6, packets: { 0: [] } })])
     assert.equal(cost(WeatherAreaSelection.wholeCountry, false, held), 6)
     // A narrow map says nothing about how much more the advisories would add.
-    assert.equal(cost(WeatherAreaSelection.wholeCountry, true, held), 7)
+    assert.equal(cost(WeatherAreaSelection.wholeCountry, true, held), 8)
   })
 
   it('with nothing held the country is the measured figure', () => {
     const empty = picture([])
-    assert.equal(cost(WeatherAreaSelection.wholeCountry, false, empty), 4)
-    assert.equal(cost(WeatherAreaSelection.wholeCountry, true, empty), 7)
+    assert.equal(cost(WeatherAreaSelection.wholeCountry, false, empty), 5)
+    assert.equal(cost(WeatherAreaSelection.wholeCountry, true, empty), 8)
   })
 
   it('with nothing held a few states are one packet per four', () => {
@@ -291,17 +291,17 @@ describe('WeatherAreaSweepCost', () => {
     assert.equal(cost(WeatherAreaSelection.make({ states: ['TX', 'OK', 'MT', 'CA', 'NV'] }), false, empty), 2)
   })
 
-  /** `ceil((entries in those states + states) / 38)`, at least 1: the scope entries cost too. */
+  /** `ceil((entries in those states + states) / 36)`, at least 1: the scope entries cost too. */
   it('a few states are measured against what the map already says about them', () => {
     const entries = []
-    for (let index = 0; index < 40; index += 1) entries.push(entry(3, TX, 100 + index))
+    for (let index = 0; index < 36; index += 1) entries.push(entry(3, TX, 100 + index))
     for (let index = 0; index < 40; index += 1) entries.push(entry(24, MT, 1 + index))
     const held = picture([national({ group: 1, total: 4, packets: { 0: entries } })])
 
-    // 40 Texas entries and one scope entry: two packets.
+    // 36 Texas entries and one scope entry: two packets at 36 a packet (one at an older bot's 38).
     assert.equal(cost(WeatherAreaSelection.make({ states: ['TX'] }), false, held), 2)
     assert.equal(cost(WeatherAreaSelection.make({ states: ['MT'] }), false, held), 2)
-    // Both: 80 entries and two scope entries, three packets.
+    // Both: 76 entries and two scope entries, three packets.
     assert.equal(cost(WeatherAreaSelection.make({ states: ['TX', 'MT'] }), false, held), 3)
     // A state with nothing in it is still a packet: the scope entry says it is clear.
     assert.equal(cost(WeatherAreaSelection.make({ states: ['OK'] }), false, held), 1)

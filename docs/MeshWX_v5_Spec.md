@@ -460,6 +460,12 @@ signal released apps act on: cut at 24, they would read a cut list as
 whole and drop warnings that are still active. Its sender cannot hear a
 repeater's copy of it; only an observer network can say it was carried.
 
+So read `count` of **24 or more** as possibly cut (the iOS and web clients
+do from 1 October 2026). A whole list of 24 read that way only keeps an
+ended warning until it expires or the next digest says otherwise, and it
+lets a bot cut at 24, inside 157 bytes, once the apps that wait for
+exactly 25 are no longer in use.
+
 `feed_health` measures one office's quietness, not the satellite link. The
 home office is the one resolved from the bot's home coordinate unless the
 operator listed offices explicitly; for WX-AUS it is EWX. A calm night at
@@ -1626,7 +1632,7 @@ range shows old data; saying so is the feature.
 2. Decode `GRP_DATA` with `data_type 0xFF10`, up to 165 bytes although a
    bot sends at most 157 (section 2.1); run the test vectors.
 3. Track `(bot, seq)`; dedupe; detect gaps → `>d`.
-4. Warnings keyed by `(event, office, etn)`; apply Cancel and Digest (mind a full digest, section 5).
+4. Warnings keyed by `(event, office, etn)`; apply Cancel and Digest (mind a full digest, section 5: 24 entries or more may be cut).
 5. Render from the bundle tables; never from strings on the wire. Hide unknown fields.
 6. Requests with `>`, by DM to pick one bot or as channel text; 15 s timeout, one retry.
 7. Stale badges from `ts` and the station's own age, `issued`, `expires`,

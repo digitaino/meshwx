@@ -22,19 +22,19 @@ export const WeatherAreaSweepCost = Object.freeze({
   statesPerPacket: 4,
   /**
    * With nothing held, for the whole country. Measured against the bot's live products on
-   * 2026-09-20: warnings and watches were 148 runs, four packets; with advisories 263 runs,
-   * seven. Eight is the ceiling and a busy day reaches it.
+   * 2026-09-20: warnings and watches were 148 runs, five packets at 36 to a packet; with
+   * advisories 263 runs, eight. Eight is the ceiling and a busy day reaches it.
    */
-  nationalPackets: 4,
-  nationalPacketsWithAdvisories: 7,
+  nationalPackets: 5,
+  nationalPacketsWithAdvisories: 8,
 
   /**
    * `packets({ for: selection, advisories, held })` → the number under the button.
    *
    * - **The whole country**: the last national sweep at this level, which is the only honest
-   *   figure there is, else 4 (7 with advisories).
-   * - **A few states**: `ceil((entries in those states + states) / 38)`, at least 1. The scope
-   *   entries count toward the 38 an entry budget holds (spec §7C), which is why the state count
+   *   figure there is, else 5 (8 with advisories).
+   * - **A few states**: `ceil((entries in those states + states) / 36)`, at least 1. The scope
+   *   entries count toward the 36 a bot puts in a packet (spec §7C), which is why the state count
    *   is in the numerator — fifteen states cost almost half a packet before any weather does.
    * - **A few states with nothing national held**: one packet per four states, at least one.
    *
@@ -70,6 +70,6 @@ export const WeatherAreaSweepCost = Object.freeze({
       const code = states[entry.state]
       if (code != null && wanted.has(code)) entries += 1
     }
-    return Math.max(1, Math.ceil((entries + count) / MeshWXWire.maxAreaSweepEntries))
+    return Math.max(1, Math.ceil((entries + count) / MeshWXWire.areaSweepEntriesSent))
   },
 })

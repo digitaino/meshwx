@@ -717,10 +717,10 @@ function applyDigest(digest, { state, receivedAt }) {
   }
   const speaksBefore = dateFromUnixMinutes(digest.now_min) - WeatherStateReducer.digestMargin * 1000
   const listed = new Set(digest.entries.map((entry) => identityKey(entry)))
-  // A full list is sorted soonest expiry first and cut at 25, so it says nothing about a warning
-  // expiring at or after its last entry: that one may be among the cut (ties included, since
-  // the cut can fall between equal expiries).
-  const horizon = digest.entries.length >= MeshWXWire.maxDigestEntries
+  // A full list is sorted soonest expiry first and cut (at 25 by older bots, 24 under the send
+  // limit), so it says nothing about a warning expiring at or after its last entry: that one may
+  // be among the cut (ties included, since the cut can fall between equal expiries).
+  const horizon = digest.entries.length >= MeshWXWire.digestMayBeCutAt
     ? Math.max(...digest.entries.map((entry) => entry.expires_min))
     : null
 

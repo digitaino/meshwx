@@ -66,7 +66,10 @@ export const MeshWXWire = Object.freeze({
 
   // MARK: Counts and limits (spec §3, §5, §6, §7, §8.1)
 
-  /** Text bytes one chunk can carry: the packet budget minus the 8-byte text header. */
+  /**
+   * Text bytes one chunk can carry: the packet budget minus the 8-byte text header. A bot since
+   * 1 October 2026 sends at most `maxSend - 8`, 149.
+   */
   maxTextBytes: 157,
   /** Chunks one reply may be split into. */
   maxTextChunks: 8,
@@ -74,6 +77,15 @@ export const MeshWXWire = Object.freeze({
   maxPolygonVertices: 30,
   maxAreaRuns: 30,
   maxDigestEntries: 25,
+  /**
+   * A Digest this long may have been cut (spec §5): it lists the warnings that expire soonest, so
+   * a warning expiring at or after its last entry may simply not have fitted. A bot before
+   * 1 October 2026 cut at `maxDigestEntries`; one under the 157-byte `maxSend` holds 24
+   * (`10 + 6 × 24` is 154). A whole list of 24 read as maybe cut only keeps an ended warning until
+   * it expires or the next digest, which is the safe side.
+   */
+  digestMayBeCutAt: 24,
+  /** Stations one Observations batch may carry: 14 from a bot before 1 October 2026, 13 since. */
   maxStations: 14,
   /**
    * Stations one batch may carry when it also carries the per-station ages (spec §6.1). A full
@@ -82,11 +94,12 @@ export const MeshWXWire = Object.freeze({
    * the ages, because a batch honest about some stations and silent about the rest is worse than
    * one that says nothing. Not enforced separately; the packet budget is what refuses the 14th.
    */
-  maxStationsWithAges: 13,
+  maxStationsWithAges: 13, // 12 from a bot since 1 October 2026
   maxPeriods: 14,
   /**
    * Offices one Coverage message may list (spec §7A). 24 offices and 30 runs together are 159
    * bytes, so a full list of either never costs the other one; past it the bot cuts and says so.
+   * A bot since 1 October 2026 lists at most 22, to stay inside `maxSend`.
    */
   maxCoverageOffices: 24,
   /**
@@ -101,9 +114,14 @@ export const MeshWXWire = Object.freeze({
   maxRequestTextBytes: 40,
   /**
    * Entries one Area sweep packet carries (spec §7C): `(165 − 11) / 4` is 38, and the packet
-   * budget is what the cap is made of.
+   * budget is what the cap is made of. What a decoder reads; see `areaSweepEntriesSent`.
    */
   maxAreaSweepEntries: 38,
+  /**
+   * Entries a bot puts in one sweep packet since 1 October 2026: `(157 − 11) / 4` is 36. What the
+   * cost of the next sweep is counted in.
+   */
+  areaSweepEntriesSent: 36,
   /**
    * Packets one sweep may be split into (spec §7C), the same ceiling a Text reply has. Eight
    * packets is the whole country's worth of airtime, which is why the screen never asks by itself.

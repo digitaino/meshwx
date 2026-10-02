@@ -430,9 +430,9 @@ describe('Weather tool model', () => {
     assert.equal(
       WeatherRequest.wireText(model.areaSweepRequest({ includesAdvisories: false })), '>wmap',
     )
-    // With nothing held the country is the measured figure: four packets, seven with advisories.
-    assert.equal(model.areaSweepCost({ includesAdvisories: false }), 4)
-    assert.equal(model.areaSweepCost({ includesAdvisories: true }), 7)
+    // With nothing held the country is the measured figure: five packets, eight with advisories.
+    assert.equal(model.areaSweepCost({ includesAdvisories: false }), 5)
+    assert.equal(model.areaSweepCost({ includesAdvisories: true }), 8)
   })
 
   it('the area selection is kept on the device and is what the ask button sends', () => {

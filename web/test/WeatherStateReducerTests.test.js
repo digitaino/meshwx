@@ -314,16 +314,20 @@ describe('WeatherStateReducer', () => {
       return bot
     }
 
-    const full = makeHeld()
-    const changes = full.apply(F.digest({ seq: 3, entries }), F.t0)
-    // The one expiring before the last entry would have been listed; the later one may have been cut.
-    assert.deepStrictEqual(changes, [
-      WeatherStateChange.digestApplied({ missing: entries.map(([identity]) => identity), removed: [soon] })
-    ])
-    assert.ok(held(full.state, late) != null)
+    // 25 is a list an older bot cut; 24 is one cut under the 157-byte send limit.
+    for (const count of [MeshWXWire.maxDigestEntries, MeshWXWire.digestMayBeCutAt]) {
+      const full = makeHeld()
+      const listed = entries.slice(0, count)
+      const changes = full.apply(F.digest({ seq: 3, entries: listed }), F.t0)
+      // The one expiring before the last entry would have been listed; the later one may have been cut.
+      assert.deepStrictEqual(changes, [
+        WeatherStateChange.digestApplied({ missing: listed.map(([identity]) => identity), removed: [soon] })
+      ], `${count} entries`)
+      assert.ok(held(full.state, late) != null, `${count} entries`)
+    }
 
     const short = makeHeld()
-    short.apply(F.digest({ seq: 3, entries: entries.slice(0, -1) }), F.t0)
+    short.apply(F.digest({ seq: 3, entries: entries.slice(0, MeshWXWire.digestMayBeCutAt - 1) }), F.t0)
     assert.deepStrictEqual(short.state.warnings, {}, 'a list with room to spare speaks for everything')
   })
 
