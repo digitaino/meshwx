@@ -320,7 +320,7 @@ export const WeatherCopy = Object.freeze({
         // Radar says which of the four refusals it is in its own words: "no recent picture for
         // this area" and "this bot has no dish at all" ask the reader to do entirely different
         // things, and one "not available" would leave them tapping for ever (design §3).
-        if (request?.kind === 'radar') {
+        if (request?.kind === 'radar' || request?.kind === 'radarLoop') {
           return WeatherCopy.radarRefusal(
             WeatherRadarRefusal.make({ reason: outcome.value }), { source: sourceStart },
           )
@@ -366,12 +366,14 @@ export const WeatherCopy = Object.freeze({
   // MARK: - Radar (revision 11 §3)
 
   /**
-   * The three widths the radar screen offers, by zoom. Never kilometres: a tile is two degrees,
-   * which is 222 km tall everywhere and a different width at every latitude. Zoom 3 exists on the
-   * wire and is not offered, so it has no name here rather than a fourth word nothing else says.
+   * The widths the radar screen offers, by zoom: Detail (−1, revision 13), Local, Regional, Wide.
+   * Never kilometres: a tile is two degrees, which is 222 km tall everywhere and a different
+   * width at every latitude. Zoom 3 exists on the wire and is not offered, so it has no name here
+   * rather than a word nothing else says.
    */
   radarWidthName(zoom) {
     switch (zoom) {
+      case -1: return t('weather.radar.width.detail')
       case 0: return t('weather.radar.width.local')
       case 1: return t('weather.radar.width.regional')
       case 2: return t('weather.radar.width.wide')
@@ -474,6 +476,24 @@ export const WeatherCopy = Object.freeze({
     // at where a storm was two mosaics ago has to be told that is what they are looking at.
     if (picture.age.isOld) parts.push(t('weather.radar.moved'))
     return parts.join(' · ')
+  },
+
+  /**
+   * "6:08 PM · 2 of 5" (revision 13): a frame of a loop, by its own time and its place in the
+   * loop. Shown in place of the time line while the loop plays or rests on an older frame; the
+   * summary sentences go on describing the newest picture.
+   */
+  radarFrameLine(stored, { index, count, now, timeZone, locale }) {
+    const takenAt = stored.radar.taken_min * 60_000
+    return t('weather.radar.loop.frame', WeatherFormatting.clockTime(takenAt, { now, timeZone, locale }), index, count)
+  },
+
+  /**
+   * "Up to 5 packets": what "Ask for the last hour" may spend. "Up to", because the pictures this
+   * phone lists as held are left out and an hour may have fewer than five.
+   */
+  radarLoopCost(packets) {
+    return t('weather.radar.loop.cost', packets)
   },
 
   /** Why the bot would not send a tile, in the ask's own status line (design §3). */
@@ -935,6 +955,10 @@ export const WeatherCopy = Object.freeze({
       // back from the lattice and no place on this phone is claimed to be inside it.
       case 'radar':
         return withSubject(t('weather.radar.request.title'), WeatherRequest.coordinateKey(request))
+      // "Radar, last hour · 30.270,-97.740" (revision 13): the same coordinate, and a name that
+      // says this ask is for up to five packets rather than one.
+      case 'radarLoop':
+        return withSubject(t('weather.radar.loop.request.title'), WeatherRequest.coordinateKey(request))
       default:
         return ''
     }
@@ -1021,12 +1045,14 @@ export const WeatherCopy = Object.freeze({
         return t('weather.requestName.coverage')
       // "Radar picture · Local · 30.000,-98.000": the picture, its width and the square it is
       // of, because that is all a held tile is. Who asked for it is not something this phone can
-      // know, and the lattice means several people may have.
+      // know, and the lattice means several people may have. Since revision 13 a square can hold
+      // the frames of its last hour, one row still, and "· 5 pictures" when it holds more than one.
       case 'radar':
         return [
           t('weather.radar.request.title'),
           WeatherCopy.radarWidthName(subject.tile.zoom),
           WeatherCopy.radarCentre(subject.tile),
+          (subject.frames ?? 1) > 1 ? t('weather.radar.cached.frames', subject.frames) : null,
         ].filter((one) => one != null).join(' · ')
       default:
         return ''

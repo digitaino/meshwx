@@ -19,8 +19,9 @@ import { MeshWXCompass } from './MeshWXMessage.js';
  * an app has for a bad packet is the log line: the radio is gone by then and the bot will not
  * repeat itself on request.
  *
- * `kind` is `'truncated'` (with `what`, `need`, `have`), `'badUTF8'`, `'radarTreeTruncated'` or
- * `'radarBoundsOutsideGrid'`.
+ * `kind` is `'truncated'` (with `what`, `need`, `have`), `'badUTF8'`, `'radarTreeTruncated'`,
+ * `'radarBoundsOutsideGrid'`, `'radarDetailDepthReserved'` (with `depth`) or
+ * `'radarDetailOffLattice'` (with `south`, `west` in degrees).
  */
 export class MeshWXDecodeError extends Error {
   constructor(kind, details = {}) {
@@ -32,6 +33,10 @@ export class MeshWXDecodeError extends Error {
     } else if (kind === 'radarBoundsOutsideGrid') {
       message = `radar bounds ${details.row0},${details.row1},${details.col0},${details.col1}`
         + ` are not inside a ${details.size} x ${details.size} grid`;
+    } else if (kind === 'radarDetailDepthReserved') {
+      message = `radar detail depth ${details.depth} is reserved`;
+    } else if (kind === 'radarDetailOffLattice') {
+      message = `radar detail tile ${details.south},${details.west} is not on the half-degree lattice`;
     } else {
       message = 'text is not valid UTF-8';
     }
@@ -75,6 +80,24 @@ export class MeshWXDecodeError extends Error {
    */
   static radarBoundsOutsideGrid({ row0, row1, col0, col1, size }) {
     return new MeshWXDecodeError('radarBoundsOutsideGrid', { row0, row1, col0, col1, size });
+  }
+
+  /**
+   * A Radar detail tile's `depth` was not 0 (spec §7E, revision 13). Depth is room left for a
+   * finer tile from a finer picture; reading one of those as a 1° tile would draw it over four
+   * times the ground it covers.
+   */
+  static radarDetailDepthReserved({ depth }) {
+    return new MeshWXDecodeError('radarDetailDepthReserved', { depth });
+  }
+
+  /**
+   * A Radar detail tile's `south` or `west` was an odd number of quarter degrees (spec §7E): not
+   * a square of the half-degree lattice, so no phone could have asked for it and none can share
+   * it. `south` and `west` are in degrees.
+   */
+  static radarDetailOffLattice({ south, west }) {
+    return new MeshWXDecodeError('radarDetailOffLattice', { south, west });
   }
 }
 
@@ -622,23 +645,70 @@ function decodeRadarCells(bytes, offset, size) {
 }
 
 /**
- * One tile of a radar picture (spec §7D, revision 11).
+ * One tile of a radar picture (spec §7D, revision 11): whole-degree edges, the zoom in the low
+ * bits of the `shape` byte.
+ */
+function decodeRadar(bytes, header) {
+  need(bytes, MeshWXWire.radarFixedSize + 1, 'radar');
+  const shape = bytes[11];
+  return radarBody(bytes, header, {
+    fixedSize: MeshWXWire.radarFixedSize,
+    // The time printed on the radar picture: not when the bot received it, not when it sent it.
+    taken: u32(bytes, 4),
+    south: i8(bytes[8]),
+    west: i16(bytes, 9),
+    zoom: shape & MeshWXWire.radarZoomMask,
+    product: shape >> MeshWXWire.radarProductShift,
+    what: 'radar',
+  });
+}
+
+/**
+ * One 1° tile of a regional radar picture (spec §7E, revision 13): twice the detail of Local.
  *
+ * The same flags, bounds and quadtree as type 11. What differs is the frame: `south` and `west`
+ * are i16 quarter degrees (the half-degree lattice needs halves, and quarters leave room for a
+ * finer tile one day), and the `shape` byte's low bits are a `depth` that is always 0 today
+ * rather than a zoom. Decoded, it is the type 11 shape with `zoom` −1 and the edges in decimal
+ * degrees, so every reader past this file treats the two alike.
+ */
+function decodeRadarDetail(bytes, header) {
+  need(bytes, MeshWXWire.radarDetailFixedSize + 1, 'radar detail');
+  const shape = bytes[12];
+  const depth = shape & MeshWXWire.radarDetailDepthMask;
+  if (depth !== 0) throw MeshWXDecodeError.radarDetailDepthReserved({ depth });
+  const southUnits = i16(bytes, 8);
+  const westUnits = i16(bytes, 10);
+  const units = MeshWXWire.radarDetailUnitsPerDegree;
+  // On the half-degree lattice an edge is an even number of quarter degrees.
+  if (southUnits % 2 !== 0 || westUnits % 2 !== 0) {
+    throw MeshWXDecodeError.radarDetailOffLattice({ south: southUnits / units, west: westUnits / units });
+  }
+  return radarBody(bytes, header, {
+    fixedSize: MeshWXWire.radarDetailFixedSize,
+    taken: u32(bytes, 4),
+    south: southUnits / units,
+    west: westUnits / units,
+    zoom: MeshWXWire.radarDetailZoom,
+    product: shape >> MeshWXWire.radarProductShift,
+    what: 'radar detail',
+  });
+}
+
+/**
  * The flags nibble carries both shape bits: coarse says the grid is 16 × 16 rather than 32 × 32
  * — the bot's answer to a picture too busy for one packet, never a second packet — and partial
  * says four `bounds` bytes sit between the fixed fields and the cells.
  */
-function decodeRadar(bytes, header) {
-  need(bytes, MeshWXWire.radarFixedSize + 1, 'radar');
+function radarBody(bytes, header, { fixedSize, taken, south, west, zoom, product, what }) {
   const isCoarse = (header.flags & MeshWXWire.radarCoarseBit) !== 0;
   const isPartial = (header.flags & MeshWXWire.radarPartialBit) !== 0;
   const size = isCoarse ? MeshWXWire.radarCoarseGrid : MeshWXWire.radarGrid;
-  const shape = bytes[11];
 
-  let offset = MeshWXWire.radarFixedSize;
+  let offset = fixedSize;
   let bounds = null;
   if (isPartial) {
-    need(bytes, offset + MeshWXWire.radarBoundsSize + 1, 'radar bounds');
+    need(bytes, offset + MeshWXWire.radarBoundsSize + 1, `${what} bounds`);
     bounds = [...bytes.subarray(offset, offset + MeshWXWire.radarBoundsSize)];
     offset += MeshWXWire.radarBoundsSize;
     const [row0, row1, col0, col1] = bounds;
@@ -648,12 +718,11 @@ function decodeRadar(bytes, header) {
   }
   return {
     ...header,
-    // The time printed on the radar picture: not when the bot received it, not when it sent it.
-    taken_min: u32(bytes, 4),
-    south: i8(bytes[8]),
-    west: i16(bytes, 9),
-    zoom: shape & MeshWXWire.radarZoomMask,
-    product: shape >> MeshWXWire.radarProductShift,
+    taken_min: taken,
+    south,
+    west,
+    zoom,
+    product,
     coarse: isCoarse,
     partial: isPartial,
     bounds,
@@ -675,6 +744,7 @@ const DECODERS = {
   [MeshWXMessageType.request]: decodeRequest,
   [MeshWXMessageType.areaSweep]: decodeAreaSweep,
   [MeshWXMessageType.radar]: decodeRadar,
+  [MeshWXMessageType.radarDetail]: decodeRadarDetail,
 };
 
 /**

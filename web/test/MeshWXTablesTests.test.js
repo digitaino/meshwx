@@ -18,7 +18,7 @@ describe('MeshWX tables', () => {
   before(async () => { tables = await sharedTables(); });
 
   test('bundleLoads', () => {
-    assert.equal(tables.protocolVersion, 16, 'protocol.json version is 16 for v5.0 revision 12');
+    assert.equal(tables.protocolVersion, 17, 'protocol.json version is 17 for v5.0 revision 13');
     assert.equal(tables.offices.length, 127, '125 WFOs, then NHC and WNS (spec rev 3 §9)');
     assert.equal(tables.stations.length, 2237);
     assert.equal(tables.states.length, 78);
@@ -208,6 +208,30 @@ describe('MeshWX tables', () => {
     assert.equal(tables.radar.maxAgeMinutes, 60);
     assert.equal(tables.radar.cooldownSeconds, 300);
     assert.equal(tables.radar.requestLetter, MeshWXWire.radarRequestLetter);
+  });
+
+  /**
+   * Revision 13 (protocol.json version 17): the detail level and the loop are stated by the
+   * bundle as well. The wire constants live in `MeshWXWire`, where a decoder reaches them without
+   * the bundle; this pins the two to each other, read off the publisher's own file.
+   */
+  test('theRadarBlockStatesTheDetailLevelAndTheLoop', async () => {
+    const radar = (await nodeBundleLoader()('protocol.json')).v5.radar;
+    assert.equal(radar.min_zoom, MeshWXWire.minRadarZoom);
+    assert.equal(radar.max_zoom, MeshWXWire.maxRadarZoom);
+    assert.equal(radar.detail.type, 12);
+    assert.equal(radar.detail.zoom, MeshWXWire.radarDetailZoom);
+    assert.equal(radar.detail.span_degrees, 1);
+    assert.equal(radar.detail.step_degrees, 0.5);
+    assert.equal(radar.detail.coord_unit_degrees, 1 / MeshWXWire.radarDetailUnitsPerDegree);
+    assert.equal(radar.detail.depth_mask, MeshWXWire.radarDetailDepthMask);
+    assert.equal(radar.detail.min_px_per_degree, MeshWXWire.radarDetailMinPixelsPerDegree);
+    assert.equal(radar.detail.request_token, `z${MeshWXWire.radarDetailZoom}`);
+    assert.equal(radar.loop.request_token, 'loop');
+    assert.equal(radar.loop.window_minutes, MeshWXWire.radarLoopWindowMinutes);
+    assert.equal(radar.loop.max_frames, MeshWXWire.radarLoopMaxFrames);
+    assert.equal(radar.loop.min_spacing_minutes, MeshWXWire.radarLoopMinSpacingMinutes);
+    assert.equal(radar.loop.held_max, MeshWXWire.radarLoopHeldMax);
   });
 
   test('missingResourcesLoadEmptyRatherThanCrashing', () => {

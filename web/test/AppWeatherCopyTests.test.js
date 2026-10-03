@@ -920,4 +920,57 @@ describe('Weather copy', () => {
       'Radar picture · 30.267,-97.743',
     )
   })
+
+  // MARK: - Radar detail and the last hour (revision 13 §3)
+
+  /** "Width name `Detail` for zoom −1 wherever a width is named (traffic rows, cached rows)." */
+  it('the detail level is named Detail, and a square with frames says how many', () => {
+    assert.equal(WeatherCopy.radarWidthName(-1), 'Detail')
+    assert.equal(WeatherCopy.radarCentre({ south: 32.5, west: -97.5, zoom: -1 }), '33.000,-97.000')
+    assert.equal(
+      F.plain(WeatherCopy.channelSubject({ kind: 'radar', tile: { south: 32.5, west: -97.5, zoom: -1 } }, { tables })),
+      'Radar picture · Detail · 33.000,-97.000',
+    )
+    // "5 pictures" when the square holds more than one; nothing when it holds one.
+    assert.equal(
+      F.plain(WeatherCopy.channelSubject(
+        { kind: 'radar', tile: { south: 29, west: -99, zoom: 0 }, frames: 5 }, { tables },
+      )),
+      'Radar picture · Local · 30.000,-98.000 · 5 pictures',
+    )
+    assert.equal(
+      F.plain(WeatherCopy.channelSubject(
+        { kind: 'radar', tile: { south: 29, west: -99, zoom: 0 }, frames: 1 }, { tables },
+      )),
+      'Radar picture · Local · 30.000,-98.000',
+    )
+  })
+
+  /** "Request rows read 'Radar, last hour'", with the coordinate asked about. */
+  it('the last hour is logged by its own name, and refused in the radar words', () => {
+    const loop = WeatherRequest.radarLoop({ latitude: 30.2672, longitude: -97.7431, held: [29_832_458] })
+    assert.equal(F.plain(WeatherCopy.requestName(loop, { tables })), 'Radar, last hour · 30.267,-97.743')
+    assert.equal(
+      F.plain(WeatherCopy.requestName(
+        WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }), { tables },
+      )),
+      'Radar picture · 32.780,-96.800',
+    )
+    const refused = (reason) => request(settled(WeatherRequestOutcome.notAvailable(reason), F.now), { for: loop })
+    assert.equal(
+      refused(MeshWXNotAvailableReason.rateLimited),
+      'WX-AUS sent this picture a few minutes ago and has nothing newer yet.',
+    )
+    assert.equal(refused(MeshWXNotAvailableReason.noData), 'WX-AUS has no recent radar picture for this area.')
+  })
+
+  /** "6:08 PM · 2 of 5", and the loop's cost "Up to 5 packets". */
+  it('a frame of the loop says its own time and its place in the loop', () => {
+    const frame = { radar: { taken_min: Math.floor(F.now / 60_000) - 45 } }
+    assert.equal(
+      F.plain(WeatherCopy.radarFrameLine(frame, { index: 2, count: 5, now: F.now, timeZone: F.timeZone, locale: F.locale })),
+      '10:35 PM · 2 of 5',
+    )
+    assert.equal(F.plain(WeatherCopy.radarLoopCost(5)), 'Up to 5 packets')
+  })
 })

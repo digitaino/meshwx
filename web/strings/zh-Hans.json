@@ -538,5 +538,19 @@
  "weather.radar.cached.title": "雷达图",
  "weather.radar.request.title": "雷达图",
  "weather.radar.traffic.cells": "%lld 个格子有降水",
- "weather.radar.traffic.cellsOne": "1 个格子有降水"
+ "weather.radar.traffic.cellsOne": "1 个格子有降水",
+ "weather.radar.width.detail": "精细",
+ "weather.radar.detail.hint": "点按地图，获取那个地点的精细雷达图。",
+ "weather.radar.detail.ask": "请求此处的精细图",
+ "weather.radar.detail.footnote": "精细度是本地的两倍，覆盖面积为四分之一。",
+ "weather.radar.detail.fallback": "没有这个地点的精细图，正在显示本地。",
+ "weather.radar.loop.play": "播放",
+ "weather.radar.loop.pause": "暂停",
+ "weather.radar.loop.ask": "请求最近一小时",
+ "weather.radar.loop.cost": "最多 %lld 个数据包",
+ "weather.radar.loop.footnote": "本设备已有的图不会重新发送。",
+ "weather.radar.loop.frame": "%1$@ · 第 %2$lld 张，共 %3$lld 张",
+ "weather.radar.loop.missing": "这一小时缺少部分图。",
+ "weather.radar.loop.request.title": "雷达，最近一小时",
+ "weather.radar.cached.frames": "%lld 张图"
 }

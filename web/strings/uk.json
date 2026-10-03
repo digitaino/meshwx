@@ -538,5 +538,19 @@
  "weather.radar.cached.title": "Знімки радара",
  "weather.radar.request.title": "Знімок радара",
  "weather.radar.traffic.cells": "Комірок з опадами: %lld",
- "weather.radar.traffic.cellsOne": "1 комірка з опадами"
+ "weather.radar.traffic.cellsOne": "1 комірка з опадами",
+ "weather.radar.width.detail": "Детально",
+ "weather.radar.detail.hint": "Торкнися карти, щоб отримати детальний знімок цього місця.",
+ "weather.radar.detail.ask": "Запитати деталі тут",
+ "weather.radar.detail.footnote": "Удвічі детальніше, ніж «Локально», на чверті площі.",
+ "weather.radar.detail.fallback": "Детального знімка цього місця немає. Показано «Локально».",
+ "weather.radar.loop.play": "Відтворити",
+ "weather.radar.loop.pause": "Пауза",
+ "weather.radar.loop.ask": "Запитати останню годину",
+ "weather.radar.loop.cost": "До %lld пакетів",
+ "weather.radar.loop.footnote": "Знімки, які вже є на цьому пристрої, повторно не надсилаються.",
+ "weather.radar.loop.frame": "%1$@ · %2$lld з %3$lld",
+ "weather.radar.loop.missing": "Деяких знімків за цю годину немає.",
+ "weather.radar.loop.request.title": "Радар, остання година",
+ "weather.radar.cached.frames": "Знімків: %lld"
 }

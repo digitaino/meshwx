@@ -334,13 +334,46 @@ export const MeshWXWire = Object.freeze({
   radarZoomMask: 0x03,
   /** How far up the `shape` byte the product index sits. */
   radarProductShift: 2,
+
+  // MARK: Radar detail and loops (spec revision 13, §7D.4 and §7E)
+  //
+  // One level finer than Local and no more: the regional mosaics are about 1/37° a pixel, so a
+  // 1° tile of 32 × 32 cells is 1.2 pixels a cell — twice the detail of Local and the most the
+  // picture has. In the data model it is zoom −1 (span `2^(zoom + 1)` = 1°, step `2^zoom` = 0.5°),
+  // so every rule that takes a zoom takes −1 the same way. On the wire it is its own type, 12,
+  // because its edges are half degrees and type 11 has whole degrees only.
+
+  /** The detail level as a zoom: a 1° tile on a half-degree lattice. */
+  radarDetailZoom: -1,
+  /** The narrowest zoom a tile can have, the detail level. `maxRadarZoom` is the widest. */
+  minRadarZoom: -1,
+  /**
+   * The bot cuts a detail tile only from a picture with at least this many pixels a degree: the
+   * twelve calibrated regional mosaics of the lower 48, Hawaii and Puerto Rico, not the national
+   * picture (9.8) and not Alaska (12). Bot only; kept here for the record.
+   */
+  radarDetailMinPixelsPerDegree: 30,
+  /** Type 12's `south` and `west` are in quarter degrees: 30.5° is 122. */
+  radarDetailUnitsPerDegree: 4,
+  /** Header, `taken`, `south`, `west` and `shape` of a detail tile, before bounds and cells. */
+  radarDetailFixedSize: 13,
+  /** Type 12's `shape` byte, bits 0-1: `depth`. Only 0 (a 1° tile) is defined; a decoder refuses the rest. */
+  radarDetailDepthMask: 0x03,
+  /** The most frames a loop answer has, the newest included: an hour at 15-minute steps. */
+  radarLoopMaxFrames: 5,
+  /** How far back a loop reaches from its newest picture. Minutes. */
+  radarLoopWindowMinutes: 60,
+  /** The bot skips a picture taken less than this after the last one it picked. Minutes. */
+  radarLoopMinSpacingMinutes: 10,
+  /** Held pictures one `loop` request may list, as UTC `HHMM` (protocol.json `held_max`). */
+  radarLoopHeldMax: 5,
 });
 
 /**
- * The eleven structured message types (spec §2.2, high nibble of the type byte), as
+ * The twelve structured message types (spec §2.2, high nibble of the type byte), as
  * `caseName → raw number`.
  *
- * Types 12-15 are free for third-party experiments, so this is deliberately not
+ * Types 13-15 are free for third-party experiments, so this is deliberately not
  * exhaustive over the nibble: a decoded header keeps the byte and receivers ignore what
  * they do not know.
  */
@@ -370,6 +403,13 @@ export const MeshWXMessageType = Object.freeze({
    * broadcasts radar on a schedule.
    */
   radar: 11,
+  /**
+   * Spec revision 13, §7E: one 1° tile of a regional radar picture, twice the detail of Local.
+   * It decodes into the same radar message shape as type 11, with `zoom` −1 and `south` and
+   * `west` in decimal degrees; only `type` and `name` tell the two apart. An app before
+   * revision 13 ignores it like any unknown type.
+   */
+  radarDetail: 12,
 });
 
 /**
@@ -388,6 +428,7 @@ export const MeshWXTypeNames = Object.freeze({
   9: 'request',
   10: 'area_sweep',
   11: 'radar',
+  12: 'radar_detail',
 });
 
 /**

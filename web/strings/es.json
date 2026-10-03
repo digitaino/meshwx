@@ -538,5 +538,19 @@
  "weather.radar.cached.title": "Imágenes de radar",
  "weather.radar.request.title": "Imagen de radar",
  "weather.radar.traffic.cells": "%lld celdas con precipitación",
- "weather.radar.traffic.cellsOne": "1 celda con precipitación"
+ "weather.radar.traffic.cellsOne": "1 celda con precipitación",
+ "weather.radar.width.detail": "Detalle",
+ "weather.radar.detail.hint": "Toca el mapa para obtener una imagen detallada de ese punto.",
+ "weather.radar.detail.ask": "Pedir detalle aquí",
+ "weather.radar.detail.footnote": "El doble de detalle que Local, sobre una cuarta parte del área.",
+ "weather.radar.detail.fallback": "No hay imagen detallada de este punto. Se muestra Local.",
+ "weather.radar.loop.play": "Reproducir",
+ "weather.radar.loop.pause": "Pausa",
+ "weather.radar.loop.ask": "Pedir la última hora",
+ "weather.radar.loop.cost": "Hasta %lld paquetes",
+ "weather.radar.loop.footnote": "Las imágenes que este dispositivo ya tiene no se vuelven a enviar.",
+ "weather.radar.loop.frame": "%1$@ · %2$lld de %3$lld",
+ "weather.radar.loop.missing": "Faltan algunas imágenes de esta hora.",
+ "weather.radar.loop.request.title": "Radar, última hora",
+ "weather.radar.cached.frames": "%lld imágenes"
 }

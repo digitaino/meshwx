@@ -73,19 +73,19 @@ describe('MeshWX codec', () => {
   });
 
   test('unknownTypeKeepsTheHeaderAndDropsTheBody', () => {
-    // Nibble 12 is in the third-party experimental range (spec §2.2): the bot never sends it, so
+    // Nibble 13 is in the third-party experimental range (spec §2.2): the bot never sends it, so
     // it must be ignored — but `(bot, seq)` tracking still needs it, which is why this is a
-    // decode, not an error.
-    const message = decode(bytes(0x05, 0x7a, 0x4c, 0xc3, 0xaa, 0xbb));
+    // decode, not an error. (Nibble 12 was the example until revision 13 made it Radar detail.)
+    const message = decode(bytes(0x05, 0x7a, 0x4c, 0xd3, 0xaa, 0xbb));
     assert.equal(message.seq, 5);
-    assert.equal(message.type, 12);
+    assert.equal(message.type, 13);
     assert.equal(message.name, 'unknown');
     assert.equal(message.flags, 3);
-    assert.deepStrictEqual(message, { seq: 5, bot: 19578, type: 12, name: 'unknown', flags: 3 });
+    assert.deepStrictEqual(message, { seq: 5, bot: 19578, type: 13, name: 'unknown', flags: 3 });
   });
 
   test('unknownTypeHasNoEncoding', () => {
-    const message = decode(bytes(0x05, 0x7a, 0x4c, 0xc3));
+    const message = decode(bytes(0x05, 0x7a, 0x4c, 0xd3));
     assert.throws(() => encode(message), encodeError('outOfRange'));
   });
 

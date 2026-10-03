@@ -79,6 +79,9 @@ export function copy(app, page = null) {
     radarSummary: (summary, placeName) => WeatherCopy.radarSummary(summary, { placeName }),
     radarWidthName: (zoom) => WeatherCopy.radarWidthName(zoom),
     radarMosaic: (product, tables) => WeatherCopy.radarMosaic(product, { tables }),
+    /** "6:08 PM · 2 of 5": one frame of a loop (revision 13). */
+    radarFrameLine: (stored, index, count) => WeatherCopy.radarFrameLine(stored, { index, count, ...when }),
+    radarLoopCost: (packets) => WeatherCopy.radarLoopCost(packets),
     stationLink: (inArea, total, source) => WeatherCopy.stationLink({ inArea, total, source }),
   }
 }

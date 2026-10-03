@@ -223,6 +223,16 @@ describe('WeatherTrafficSummary', () => {
       summary(MeshWXEncoder.notAvailable({ seq: 5, bot: BOT, request: '>x', reason: 4 })),
       { title: 'Not available', detail: 'x · asked too recently' },
     )
+    // Revision 13: a detail tile (type 12) reads "Radar picture · Detail · …", and an older frame
+    // of a loop reads like any picture — its row's own time says which one it is.
+    assert.deepStrictEqual(
+      summary(radar({ zoom: -1, south: 32.5, west: -97.5 })),
+      { title: 'Radar picture', detail: 'Detail · 64 cells with precipitation' },
+    )
+    assert.deepStrictEqual(
+      summary(radar({ takenMinutes: 29_832_458 - 45 })),
+      { title: 'Radar picture', detail: 'Local · 64 cells with precipitation' },
+    )
   })
 
   /**

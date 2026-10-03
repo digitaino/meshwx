@@ -292,6 +292,10 @@ function paint(state, drawing, print) {
   if (state.app?.tables?.places != null) {
     map.setPlaces(state.app.tables.places, { nameOf: (place) => MeshWXPlaceNames.placeName(place.name) })
   }
+  // A radar layer built ahead (`cellLayer`), outside the fingerprint: the radar screen's loop
+  // steps through one per frame, and a step must neither rebuild nor re-frame anything
+  // (revision 13). Only a drawing that carries the key is touched by it.
+  if (drawing.cellLayer !== undefined) map.setCellLayer(drawing.cellLayer)
   if (state.drawn === print) return
   state.drawn = print
   map.setShapes(drawing.shapes ?? [])

@@ -538,5 +538,19 @@
  "weather.radar.cached.title": "Radarbeelden",
  "weather.radar.request.title": "Radarbeeld",
  "weather.radar.traffic.cells": "%lld cellen met neerslag",
- "weather.radar.traffic.cellsOne": "1 cel met neerslag"
+ "weather.radar.traffic.cellsOne": "1 cel met neerslag",
+ "weather.radar.width.detail": "Detail",
+ "weather.radar.detail.hint": "Tik op de kaart voor een gedetailleerd beeld van die plek.",
+ "weather.radar.detail.ask": "Detail hier opvragen",
+ "weather.radar.detail.footnote": "Twee keer zoveel detail als Lokaal, over een kwart van het gebied.",
+ "weather.radar.detail.fallback": "Geen gedetailleerd beeld van deze plek. Lokaal wordt getoond.",
+ "weather.radar.loop.play": "Afspelen",
+ "weather.radar.loop.pause": "Pauze",
+ "weather.radar.loop.ask": "Laatste uur opvragen",
+ "weather.radar.loop.cost": "Tot %lld pakketten",
+ "weather.radar.loop.footnote": "Beelden die dit apparaat al heeft, worden niet opnieuw verstuurd.",
+ "weather.radar.loop.frame": "%1$@ · %2$lld van %3$lld",
+ "weather.radar.loop.missing": "Er ontbreken beelden van dit uur.",
+ "weather.radar.loop.request.title": "Radar, laatste uur",
+ "weather.radar.cached.frames": "%lld beelden"
 }

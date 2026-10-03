@@ -15,6 +15,8 @@ import {
   WeatherRadarAge,
   WeatherRadarCard,
   WeatherRadarCells,
+  WeatherRadarDetail,
+  WeatherRadarLoop,
   WeatherRadarPick,
   WeatherRadarRefusal,
   WeatherRadarSummary,
@@ -395,4 +397,176 @@ test("a coarse tile's rectangles are twice the size", () => {
   const [box] = WeatherRadarCells.rectangles({ radar })
   assert.ok(Math.abs((box.east - box.west) - 2 / 16) < 1e-9)
   assert.ok(Math.abs((box.north - box.south) - 2 / 16) < 1e-9)
+})
+
+// MARK: - Revision 13: the detail level
+
+/** Austin's 1° square: centre 30.5 N, 97.5 W. */
+const austinDetail = { south: 30, west: -98, zoom: -1 }
+/** Dallas's: centre 33.0 N, 97.0 W, inside Dallas's Local square 32 N to 34 N, 98 W to 96 W. */
+const dallasDetail = { south: 32.5, west: -97.5, zoom: -1 }
+
+/**
+ * "`WeatherRadarPick.best(for:tiles:now:)` considers zoom 0 to 3 only: the place page never shows
+ * a detail tile." Without the rule the detail tile would win every time by being the narrowest.
+ */
+test('the place page never shows a detail tile, and the Detail width does', () => {
+  const place = P.place(P.austin)
+  const detail = storedRadarTile({ ...austinDetail, takenMinutes: P.nowMinutes })
+  const local = storedRadarTile({ south: 29, west: -99, zoom: 0, takenMinutes: P.nowMinutes - 20 })
+  assert.equal(WeatherRadarPick.best({ for: P.austin, tiles: [detail, local], now: P.now }), local)
+  assert.equal(WeatherRadarPick.best({ for: P.austin, tiles: [detail], now: P.now }), null)
+  assert.equal(WeatherRadarCard.make({ place, tiles: [detail], now: P.now }).kind, 'missing')
+  // Asked for by its zoom, −1 is a width like any other.
+  assert.equal(WeatherRadarPick.best({ for: P.austin, tiles: [detail, local], zoom: -1, now: P.now }), detail)
+  assert.equal(WeatherRadarPick.held(austinDetail, { tiles: [detail, local], now: P.now }), detail)
+})
+
+test('the detail square is the 1° tile around the spot', () => {
+  assert.deepStrictEqual(WeatherRadarDetail.tile({ for: P.dallas }), dallasDetail)
+  assert.deepStrictEqual(WeatherRadarDetail.localTile({ for: P.dallas }), { south: 32, west: -98, zoom: 0 })
+  assert.equal(WeatherRadarDetail.tile({ for: null }), null)
+  // The ask is the spot at z-1, never the page's place.
+  assert.equal(
+    WeatherRequest.wireText(WeatherRadarDetail.ask({ spot: P.dallas })), '>radar 32.777,-96.797 z-1',
+  )
+  assert.equal(WeatherRadarDetail.ask({ spot: null }), null)
+})
+
+/**
+ * "`.held(picture)` when a detail tile for the spot is held (at most 120 minutes old), else
+ * `.local(picture)` when the zoom 0 tile containing the spot is, else `.missing`. `.local` is
+ * the fallback and says so on screen."
+ */
+test('the detail card is the detail picture, else Local standing in, else missing', () => {
+  const local = storedRadarTile({ south: 32, west: -98, zoom: 0, takenMinutes: P.nowMinutes - 5 })
+  const detail = storedRadarTile({ ...dallasDetail, takenMinutes: P.nowMinutes - 20 })
+  const card = (tiles) => WeatherRadarDetail.card({ spot: P.dallas, tiles, now: P.now })
+
+  const missing = card([])
+  assert.equal(missing.kind, 'missing')
+  assert.deepStrictEqual(missing.tile, dallasDetail, 'the square a tap on the ask would fill')
+
+  const fallback = card([local])
+  assert.equal(fallback.kind, 'local')
+  assert.equal(fallback.picture.stored, local)
+  assert.equal(fallback.picture.isWiderThanAsked, true)
+
+  // A detail picture wins even when Local is newer: it is what the Detail width is for.
+  const held = card([local, detail])
+  assert.equal(held.kind, 'held')
+  assert.equal(held.picture.stored, detail)
+  assert.equal(held.picture.isWiderThanAsked, false)
+  assert.equal(held.picture.age.minutes, 20)
+
+  // Past two hours the detail picture is not drawn, and Local stands in again.
+  const old = storedRadarTile({ ...dallasDetail, takenMinutes: P.nowMinutes - 121 })
+  assert.equal(card([local, old]).kind, 'local')
+  // And a Local tile of another square does not stand in.
+  assert.equal(card([storedRadarTile({ south: 29, west: -99, zoom: 0 })]).kind, 'missing')
+})
+
+/**
+ * "Draws the held detail picture, with its own time line and summary for the place when the
+ * place is inside it." The picture's own summary is about the spot; what the screen says about
+ * the place goes through `summary`, and a spot picked a state away has no sentence about Austin.
+ */
+test('the detail picture says something about the place only when the place is on it', () => {
+  const detail = storedRadarTile({ ...dallasDetail, cells: [[0, 0, 2]] })
+  const card = WeatherRadarDetail.card({ spot: P.dallas, tiles: [detail], now: P.now })
+  assert.equal(card.picture.summary.here, MeshWXRadarLevel.none, 'about the spot')
+  assert.equal(WeatherRadarDetail.picture(card), card.picture)
+  assert.equal(WeatherRadarDetail.isFallback(card), false)
+  assert.equal(WeatherRadarDetail.summary({ of: card.picture, place: P.austin }), null)
+  const dallas = WeatherRadarDetail.summary({ of: card.picture, place: P.dallas })
+  assert.equal(dallas.here, MeshWXRadarLevel.none)
+  assert.notEqual(dallas.nearest, null)
+  assert.equal(WeatherRadarDetail.summary({ of: card.picture, place: null }), null)
+  assert.equal(WeatherRadarDetail.summary({ of: null, place: P.dallas }), null)
+  // Local standing in is the fallback, and speaks about a place on its own wider square.
+  const local = storedRadarTile({ south: 32, west: -98, zoom: 0 })
+  const fallback = WeatherRadarDetail.card({ spot: P.dallas, tiles: [local], now: P.now })
+  assert.equal(WeatherRadarDetail.isFallback(fallback), true)
+  assert.notEqual(WeatherRadarDetail.summary({ of: fallback.picture, place: P.dallas }), null)
+  assert.equal(WeatherRadarDetail.picture(WeatherRadarDetail.card({ spot: P.dallas, tiles: [], now: P.now })), null)
+})
+
+// MARK: - Revision 13: the last hour
+
+const square = { south: 29, west: -99, zoom: 0 }
+const frameAgo = (ago, options = {}) => storedRadarTile({ ...square, takenMinutes: P.nowMinutes - ago, ...options })
+const loopOf = (tiles, tile = square) => WeatherRadarLoop.make({ tile, tiles, now: P.now })
+const agesOf = (loop) => loop.frames.map((one) => P.nowMinutes - one.radar.taken_min)
+
+/**
+ * "The frames of that exact tile whose `taken` is within 60 minutes before the newest held for it
+ * … oldest first", and `held` their `taken` minutes, newest first: the order a loop request lists
+ * them in.
+ */
+test('a loop is the frames of one square in the hour before its newest, oldest first', () => {
+  const tiles = [0, 15, 30, 45, 60, 75].map((ago) => frameAgo(ago))
+  // Another square, and another width of the same place, are other loops.
+  tiles.push(storedRadarTile({ south: 32, west: -98, zoom: 0 }), storedRadarTile({ south: 28, west: -100, zoom: 1 }))
+  const loop = loopOf(tiles)
+  assert.deepStrictEqual(agesOf(loop), [60, 45, 30, 15, 0], 'sixty minutes before the newest is in, seventy-five is not')
+  assert.deepStrictEqual(loop.held, [0, 15, 30, 45, 60].map((ago) => P.nowMinutes - ago))
+  assert.equal(loop.hasGap, false)
+  assert.equal(WeatherRadarLoop.newest(loop).radar.taken_min, P.nowMinutes)
+  // The window runs from the newest held, not from now.
+  assert.deepStrictEqual(agesOf(loopOf([40, 70, 100, 115].map((ago) => frameAgo(ago)))), [100, 70, 40])
+})
+
+test('a loop has at most five frames, the newest kept', () => {
+  const loop = loopOf([0, 10, 20, 30, 40, 50, 60].map((ago) => frameAgo(ago)))
+  assert.equal(loop.frames.length, WeatherRadarLoop.maxFrames)
+  assert.deepStrictEqual(agesOf(loop), [40, 30, 20, 10, 0])
+})
+
+/** "At most 120 minutes old (the 'not drawn' rule of revision 11)." */
+test('a frame past two hours is not in the loop', () => {
+  assert.deepStrictEqual(agesOf(loopOf([100, 115, 121, 130].map((ago) => frameAgo(ago)))), [115, 100])
+  assert.deepStrictEqual(agesOf(loopOf([120].map((ago) => frameAgo(ago)))), [120])
+  const gone = loopOf([121, 135].map((ago) => frameAgo(ago)))
+  assert.deepStrictEqual(gone, WeatherRadarLoop.empty)
+  assert.equal(WeatherRadarLoop.canPlay(gone), false)
+})
+
+/** "`hasGap` when two consecutive frames are more than 20 minutes apart." */
+test('a missing picture is a gap of more than twenty minutes', () => {
+  assert.equal(loopOf([0, 15, 45].map((ago) => frameAgo(ago))).hasGap, true)
+  assert.equal(loopOf([0, 20, 40].map((ago) => frameAgo(ago))).hasGap, false, 'twenty is not more than twenty')
+  assert.equal(loopOf([0].map((ago) => frameAgo(ago))).hasGap, false)
+})
+
+/**
+ * Every bot's frames go in, and two copies of one picture are one frame: the finer, then the
+ * later arrival. A loop that showed one picture twice would stand still for a step.
+ */
+test('two copies of one picture are one frame, the finer kept', () => {
+  const coarse = frameAgo(15, { size: 16, receivedAt: P.now })
+  const fine = frameAgo(15, { receivedAt: P.now - 60_000 })
+  const loop = loopOf([coarse, frameAgo(0), fine])
+  assert.equal(loop.frames.length, 2)
+  assert.equal(loop.frames[0], fine)
+  assert.deepStrictEqual(loop.held, [P.nowMinutes, P.nowMinutes - 15])
+})
+
+/** Play from two frames; "Ask for the last hour" until the hour is full, at five. */
+test('a loop plays from two frames and asks for more until it has five', () => {
+  const of = (count) => loopOf([0, 15, 30, 45, 60].slice(0, count).map((ago) => frameAgo(ago)))
+  assert.equal(WeatherRadarLoop.canPlay(of(0)), false)
+  assert.equal(WeatherRadarLoop.canPlay(of(1)), false)
+  assert.equal(WeatherRadarLoop.canPlay(of(2)), true)
+  assert.equal(WeatherRadarLoop.isFull(of(0)), false)
+  assert.equal(WeatherRadarLoop.isFull(of(4)), false)
+  assert.equal(WeatherRadarLoop.isFull(of(5)), true)
+  // The ask lists what the loop holds, newest first, at the width and coordinate given.
+  assert.equal(
+    WeatherRequest.wireText(WeatherRadarLoop.ask(of(2), { latitude: 30.27, longitude: -97.74, zoom: 0 })),
+    `>radar 30.270,-97.740 loop ${WeatherRequest.utcHourMinute(P.nowMinutes)} ${WeatherRequest.utcHourMinute(P.nowMinutes - 15)}`,
+  )
+  // A detail square's frames are a loop like any other.
+  const detail = [0, 15].map((ago) => storedRadarTile({ ...dallasDetail, takenMinutes: P.nowMinutes - ago }))
+  assert.equal(WeatherRadarLoop.canPlay(loopOf(detail, dallasDetail)), true)
+  assert.deepStrictEqual(loopOf(detail, null), WeatherRadarLoop.empty)
 })

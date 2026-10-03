@@ -583,9 +583,9 @@ describe('WeatherStateReducer', () => {
     let changes = bot.apply(refusal, F.t0)
     assert.deepStrictEqual(changes, [WeatherStateChange.notAvailable(refusal)])
 
-    const unknown = { seq: 2, bot: F.botID, type: 12, name: 'unknown', flags: 0 }
+    const unknown = { seq: 2, bot: F.botID, type: 13, name: 'unknown', flags: 0 }
     changes = bot.apply(unknown, F.t0)
-    assert.deepStrictEqual(changes, [WeatherStateChange.unknownType({ rawType: 12 })])
+    assert.deepStrictEqual(changes, [WeatherStateChange.unknownType({ rawType: 13 })])
     assert.equal(bot.state.lastSeq, 2)
     assert.deepStrictEqual(bot.state.warnings, {})
   })
@@ -1601,30 +1601,57 @@ describe('WeatherStateReducer radar tiles', () => {
     assert.equal(MeshWXRadar.level(stored.radar, { row: 19, col: 19 }), 2)
   })
 
-  it('a newer picture of the same square replaces the one held', () => {
+  /**
+   * Revision 13: `radarTiles` holds frames, one per `(tile, taken)`. A newer picture of a square
+   * joins the one held instead of replacing it, because the two are the last two frames of the
+   * square's loop.
+   */
+  it('a newer picture of the same square joins the one held as another frame', () => {
     const bot = new Bot()
     bot.apply(F.radar({ seq: 1, south: 32, west: -98 }), F.t0)
-    bot.apply(
+    const changes = bot.apply(
       F.radar({
         seq: 2, south: 32, west: -98, takenMinutes: F.t0Minutes + 15,
         rows: F.radarRows({ cells: [[0, 0, 3]] })
       }),
       F.t0 + minutes(15)
     )
-    assert.equal(bot.state.radarTiles.length, 1, 'one picture per square: no history, no animation')
-    assert.equal(tileFor(bot.state, dallas).radar.taken_min, F.t0Minutes + 15)
+    assert.deepStrictEqual(changes, [
+      WeatherStateChange.radarStored(dallas, { takenMinutes: F.t0Minutes + 15 })
+    ])
+    assert.equal(bot.state.radarTiles.length, 2, 'one frame per square and picture')
+    assert.deepStrictEqual(
+      bot.state.radarTiles.map((one) => one.radar.taken_min), [F.t0Minutes + 15, F.t0Minutes],
+      'newest taken first'
+    )
   })
 
-  it('an older picture of a square already held changes nothing', () => {
+  /** An older picture is what a loop answer is made of: oldest first, one packet each. */
+  it('an older picture of a square already held is stored as a frame of its loop', () => {
     const bot = new Bot()
     bot.apply(F.radar({ seq: 1, south: 32, west: -98, takenMinutes: F.t0Minutes }), F.t0)
     const changes = bot.apply(
       F.radar({ seq: 2, south: 32, west: -98, takenMinutes: F.t0Minutes - 15 }), F.t0 + 1000
     )
     assert.deepStrictEqual(changes, [
-      WeatherStateChange.radarIgnoredOlder({ takenMinutes: F.t0Minutes - 15 })
+      WeatherStateChange.radarStored(dallas, { takenMinutes: F.t0Minutes - 15 })
     ])
-    assert.equal(tileFor(bot.state, dallas).radar.taken_min, F.t0Minutes)
+    assert.deepStrictEqual(
+      bot.state.radarTiles.map((one) => one.radar.taken_min), [F.t0Minutes, F.t0Minutes - 15]
+    )
+  })
+
+  /** The same `taken` arriving again is the same picture re-cut, and it replaces the frame. */
+  it('the same picture again replaces its frame rather than joining it', () => {
+    const bot = new Bot()
+    bot.apply(F.radar({ seq: 1, south: 32, west: -98 }), F.t0)
+    bot.apply(
+      F.radar({ seq: 2, south: 32, west: -98, rows: F.radarRows({ cells: [[3, 3, 1]] }) }),
+      F.t0 + 1000
+    )
+    assert.equal(bot.state.radarTiles.length, 1)
+    assert.equal(bot.state.radarTiles[0].receivedAt, F.t0 + 1000)
+    assert.equal(MeshWXRadar.level(bot.state.radarTiles[0].radar, { row: 3, col: 3 }), 1)
   })
 
   /**
@@ -1647,6 +1674,16 @@ describe('WeatherStateReducer radar tiles', () => {
     other.apply(F.radar({ seq: 1, south: 32, west: -98, rows: F.radarRows({ size: 16 }) }), F.t0)
     other.apply(F.radar({ seq: 2, south: 32, west: -98 }), F.t0 + 1000)
     assert.equal(tileFor(other.state, dallas).radar.coarse, false)
+    assert.equal(other.state.radarTiles.length, 1)
+
+    // And a coarse picture of a *different* taken is a frame of its own (revision 13).
+    const frames = new Bot()
+    frames.apply(F.radar({ seq: 1, south: 32, west: -98 }), F.t0)
+    frames.apply(
+      F.radar({ seq: 2, south: 32, west: -98, takenMinutes: F.t0Minutes - 15, rows: F.radarRows({ size: 16 }) }),
+      F.t0 + 1000
+    )
+    assert.deepStrictEqual(frames.state.radarTiles.map((one) => one.radar.coarse), [false, true])
   })
 
   it('two squares are two tiles, newest taken first', () => {
@@ -1680,23 +1717,51 @@ describe('WeatherStateReducer radar tiles', () => {
     assert.equal(bot.state.radarTiles.length, 1)
   })
 
-  it('at most twelve tiles are held, the oldest taken dropped', () => {
+  /** Twelve until revision 13 made the list one entry per frame: five frames an hour a square. */
+  it('at most forty frames are held, the oldest taken dropped', () => {
+    assert.equal(WeatherStateReducer.maxRadarTiles, 40)
     const bot = new Bot()
-    for (let index = 0; index < 14; index += 1) {
-      bot.apply(
-        F.radar({
-          seq: index + 1,
-          south: 20 + index,
-          west: -98,
-          takenMinutes: F.t0Minutes - 14 + index
-        }),
-        F.t0 + index * 1000
-      )
+    // Nine squares of five frames each, a minute apart: forty-five frames, inside the three hours.
+    let seq = 0
+    for (let square = 0; square < 9; square += 1) {
+      for (let frame = 0; frame < 5; frame += 1) {
+        seq += 1
+        bot.apply(
+          F.radar({ seq, south: 20 + square, west: -98, takenMinutes: F.t0Minutes - 45 + seq }),
+          F.t0 + seq * 1000
+        )
+      }
     }
     assert.equal(bot.state.radarTiles.length, WeatherStateReducer.maxRadarTiles)
+    const taken = bot.state.radarTiles.map((one) => one.radar.taken_min)
+    assert.equal(taken[0], F.t0Minutes, 'the newest kept')
+    assert.equal(taken[39], F.t0Minutes - 39, 'the five oldest dropped')
+    assert.ok(!bot.state.radarTiles.some((one) => one.tile.south === 20), 'the first square aged out whole')
+  })
+
+  /**
+   * Revision 13's detail tile (type 12) is stored like any other, under its half-degree square
+   * at zoom −1, and its frames follow the same rules.
+   */
+  it('a detail tile is stored under its half-degree square', () => {
+    const bot = new Bot()
+    const detail = { ...F.radar({ seq: 1, south: 32.5, west: -97.5, zoom: -1 }), type: 12, name: 'radar_detail' }
+    const changes = bot.apply(detail, F.t0)
+    const square = { south: 32.5, west: -97.5, zoom: -1 }
+    assert.deepStrictEqual(changes, [WeatherStateChange.radarStored(square, { takenMinutes: F.t0Minutes })])
+    assert.deepStrictEqual(tileFor(bot.state, square).tile, square)
+    bot.apply({ ...detail, seq: 2, taken_min: F.t0Minutes - 15 }, F.t0 + 1000)
+    assert.equal(bot.state.radarTiles.length, 2)
+  })
+
+  /** Retention is still three hours behind the newest `taken`, frames or not. */
+  it('frames more than three hours behind the newest are dropped', () => {
+    const bot = new Bot()
+    for (const [seq, ago] of [[1, 200], [2, 170], [3, 15], [4, 0]]) {
+      bot.apply(F.radar({ seq, south: 32, west: -98, takenMinutes: F.t0Minutes - ago }), F.t0 + seq * 1000)
+    }
     assert.deepStrictEqual(
-      bot.state.radarTiles.map((one) => one.tile.south),
-      [33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22]
+      bot.state.radarTiles.map((one) => F.t0Minutes - one.radar.taken_min), [0, 15, 170]
     )
   })
 
@@ -1712,6 +1777,29 @@ describe('WeatherStateReducer radar tiles', () => {
     const read = WeatherBotState.decode(JSON.parse(JSON.stringify(bot.state)))
     assert.deepStrictEqual(read.radarTiles, bot.state.radarTiles)
     assert.deepStrictEqual(read.radarTiles[0].radar.bounds, [0, 9, 0, 15])
+  })
+
+  /**
+   * A state file written before revision 13 held one tile per square with whole-degree edges.
+   * That is a list of frames like any other, and it reads unchanged.
+   */
+  it('a state file written before revision 13 reads unchanged', () => {
+    const saved = {
+      ...WeatherBotState.make({ botID: F.botID }),
+      radarTiles: [{
+        tile: { south: 29, west: -99, zoom: 0 },
+        radar: F.radar({ seq: 1, south: 29, west: -99 }),
+        receivedAt: F.t0,
+        source: 1
+      }]
+    }
+    const read = WeatherBotState.decode(JSON.parse(JSON.stringify(saved)))
+    assert.deepStrictEqual(read.radarTiles, saved.radarTiles)
+    // And a newer frame joins it.
+    const bot = new Bot()
+    bot.state = read
+    bot.apply(F.radar({ seq: 2, south: 29, west: -99, takenMinutes: F.t0Minutes + 15 }), F.t0 + minutes(15))
+    assert.equal(bot.state.radarTiles.length, 2)
   })
 
   /** A state file written before revision 11 has no tiles, which is exactly what it held. */

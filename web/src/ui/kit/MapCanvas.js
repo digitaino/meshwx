@@ -9,6 +9,7 @@
 //   map.setPlaces(tables.places)                      // optional city labels
 //   map.setShapes([{ id, rings, tint, fill, stroke, dashed, data }])
 //   map.setCells(rectangles, { unknown })            // radar levels, in degrees
+//   map.setCellLayer(cellLayer(rectangles, { unknown }))  // the same, built once ahead
 //   map.setMarkers([{ latitude, longitude, kind, label }])
 //   map.fit('shapes' | 'conus' | { minLatitude, … }, { padding, maxZoom })
 //   map.onTap = ({ shapes, coordinate }) => …
@@ -65,6 +66,28 @@ export function cameraBox({ south, west, north, east }) {
 export function worldRectangle({ south, west, north, east }) {
   const y = worldY(north)
   return { x: worldX(west), y, width: (east - west) / 360, height: worldY(south) - y }
+}
+
+/**
+ * The radar cells as the map paints them: one path per level, and one for the cells a partial
+ * picture does not reach. Null when there is nothing to draw. Built apart from a map so a loop can
+ * build each frame's once and hand it to `setCellLayer` on every step.
+ */
+export function cellLayer(cells, { unknown = [] } = {}) {
+  const levels = new Map()
+  for (const cell of cells ?? []) {
+    let path = levels.get(cell.level)
+    if (path == null) levels.set(cell.level, (path = new Path2D()))
+    const box = worldRectangle(cell)
+    path.rect(box.x, box.y, box.width, box.height)
+  }
+  let missing = null
+  for (const cell of unknown ?? []) {
+    missing ??= new Path2D()
+    const box = worldRectangle(cell)
+    missing.rect(box.x, box.y, box.width, box.height)
+  }
+  return levels.size || missing ? { levels: [...levels].sort((a, b) => a[0] - b[0]), unknown: missing } : null
 }
 
 function pathOf(rings) {
@@ -175,20 +198,17 @@ export class MapCanvas {
    * a fill per rectangle at 55% would print a darker seam everywhere two of them touch.
    */
   setCells(cells, { unknown = [] } = {}) {
-    const levels = new Map()
-    for (const cell of cells ?? []) {
-      let path = levels.get(cell.level)
-      if (path == null) levels.set(cell.level, (path = new Path2D()))
-      const box = worldRectangle(cell)
-      path.rect(box.x, box.y, box.width, box.height)
-    }
-    let missing = null
-    for (const cell of unknown ?? []) {
-      missing ??= new Path2D()
-      const box = worldRectangle(cell)
-      missing.rect(box.x, box.y, box.width, box.height)
-    }
-    this.cells = levels.size || missing ? { levels: [...levels].sort((a, b) => a[0] - b[0]), unknown: missing } : null
+    this.setCellLayer(cellLayer(cells, { unknown }))
+  }
+
+  /**
+   * A layer `cellLayer` already built, or null for none. The radar loop builds one per frame,
+   * once, and steps through them here (revision 13): nothing is rebuilt on a step and the camera
+   * never moves.
+   */
+  setCellLayer(layer) {
+    if (this.cells === layer) return
+    this.cells = layer ?? null
     this.draw()
   }
 

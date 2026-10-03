@@ -538,5 +538,19 @@
  "weather.radar.cached.title": "Radar pictures",
  "weather.radar.request.title": "Radar picture",
  "weather.radar.traffic.cells": "%lld cells with precipitation",
- "weather.radar.traffic.cellsOne": "1 cell with precipitation"
+ "weather.radar.traffic.cellsOne": "1 cell with precipitation",
+ "weather.radar.width.detail": "Detail",
+ "weather.radar.detail.hint": "Tap the map for a detailed picture of that spot.",
+ "weather.radar.detail.ask": "Ask for detail here",
+ "weather.radar.detail.footnote": "Twice the detail of Local, over a quarter of the area.",
+ "weather.radar.detail.fallback": "No detailed picture of this spot. Showing Local.",
+ "weather.radar.loop.play": "Play",
+ "weather.radar.loop.pause": "Pause",
+ "weather.radar.loop.ask": "Ask for the last hour",
+ "weather.radar.loop.cost": "Up to %lld packets",
+ "weather.radar.loop.footnote": "Pictures this device already has are not sent again.",
+ "weather.radar.loop.frame": "%1$@ · %2$lld of %3$lld",
+ "weather.radar.loop.missing": "Some pictures from this hour are missing.",
+ "weather.radar.loop.request.title": "Radar, last hour",
+ "weather.radar.cached.frames": "%lld pictures"
 }

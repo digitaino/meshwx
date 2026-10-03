@@ -100,11 +100,14 @@ export const WeatherStateChange = Object.freeze({
    * it changed nothing.
    */
   areaSweepIgnoredOlder({ builtMinutes }) { return { kind: 'areaSweepIgnoredOlder', builtMinutes } },
-  /** A radar tile landed (spec §7D). `value` is the lattice square it is of. */
+  /**
+   * A radar frame landed (spec §7D). `value` is the lattice square it is of. Since revision 13 an
+   * older picture of a square is a frame of its loop and lands here too.
+   */
   radarStored(tile, { takenMinutes }) { return { kind: 'radarStored', value: tile, takenMinutes } },
   /**
-   * A picture of a square this phone already holds a newer one of — or the coarse half of the
-   * same picture, behind the fine one. Either way the tile on screen stands.
+   * The coarse half of a picture already held fine, or a picture too far behind everything else
+   * held to be kept. Either way nothing on screen changes.
    */
   radarIgnoredOlder({ takenMinutes }) { return { kind: 'radarIgnoredOlder', takenMinutes } },
   notAvailable(notAvailable) { return { kind: 'notAvailable', value: notAvailable } },
@@ -259,7 +262,9 @@ export const WeatherStateReducer = {
       case 'area_sweep':
         changes.push(storeAreaSweep(message, { state, receivedAt, source }))
         break
+      // Revision 13's detail tile decodes into the same shape as a Radar tile, at zoom −1.
       case 'radar':
+      case 'radar_detail':
         changes.push(storeRadar(message, { state, receivedAt, source }))
         break
       case 'not_available':
@@ -470,12 +475,15 @@ export const WeatherStateReducer = {
 
   // MARK: - Radar tiles
   //
-  // Revision 11, §7D. One picture per square, and the squares are cheap to hold and expensive to
-  // fetch — one packet each, request only — so the rules here drop a tile only when it is either
-  // superseded or too old to draw.
+  // Revision 11, §7D, and revision 13's frames. One entry per square and picture, and they are
+  // cheap to hold and expensive to fetch — one packet each, request only — so the rules here drop
+  // a frame only when it is either superseded by the same picture finer or too old to keep.
 
-  /** Tiles one bot may hold at once, oldest `taken` dropped (design §2). */
-  maxRadarTiles: 12,
+  /**
+   * Frames one bot may hold at once, oldest `taken` dropped. Twelve until revision 13 made the
+   * list one entry per picture: an hour's loop is five frames, so forty is eight squares' loops.
+   */
+  maxRadarTiles: 40,
   /**
    * How far behind the bot's clock a picture may be and still be kept. Minutes.
    *
@@ -972,30 +980,27 @@ function storeAreaSweep(sweep, { state, receivedAt, source }) {
 // MARK: - Radar
 
 /**
- * Spec §7D: one picture per lattice square, the newest kept.
+ * Spec §7D, revision 13: one frame per lattice square **and picture**, `(tile, taken)`.
  *
- * Two rules, and the second is the reason the first is not just "newest wins". A picture of a
- * square replaces the one held when its `taken` is the same or newer — the same because a bot
- * that re-cut the same picture sent the same picture, and there is nothing to choose between
- * them. But a **coarse** tile never replaces a fine one of the same `taken`: the coarse tile is
- * the same picture at half the detail, sent because somebody's request could not fit the finer
- * one in a packet, and taking it would throw away detail this phone already has.
+ * Until revision 13 a square held one picture and a newer one replaced it. Now a different
+ * `taken` is another frame, older or newer — an older one is a frame of the square's loop, sent
+ * because somebody asked for the last hour — and only the same `taken` arriving again replaces
+ * what is held. Then revision 11's second rule stands: a **coarse** tile never replaces a fine
+ * one of the same `taken`. The coarse tile is the same picture at half the detail, sent because
+ * somebody's request could not fit the finer one in a packet, and taking it would throw away
+ * detail this phone already has.
  *
- * A tile arriving for a square nothing is held for is simply stored, however old it is;
- * `retainRadarTiles` is what decides whether it survives, and `WeatherRadarPick` whether it is
- * drawn.
+ * A frame is stored however old it is; `retainRadarTiles` is what decides whether it survives,
+ * and `WeatherRadarPick` and `WeatherRadarLoop` whether it is drawn.
  */
 function storeRadar(radar, { state, receivedAt, source }) {
   const tile = MeshWXRadar.tile(radar)
   const key = MeshWXRadarTile.key(tile)
-  const held = state.radarTiles.find((one) => MeshWXRadarTile.key(one.tile) === key) ?? null
-  if (held != null) {
-    const isOlder = radar.taken_min < held.radar.taken_min
-    const isCoarserOfTheSame = radar.taken_min === held.radar.taken_min
-      && radar.coarse === true && held.radar.coarse !== true
-    if (isOlder || isCoarserOfTheSame) {
-      return WeatherStateChange.radarIgnoredOlder({ takenMinutes: radar.taken_min })
-    }
+  const held = state.radarTiles.find(
+    (one) => MeshWXRadarTile.key(one.tile) === key && one.radar.taken_min === radar.taken_min
+  ) ?? null
+  if (held != null && radar.coarse === true && held.radar.coarse !== true) {
+    return WeatherStateChange.radarIgnoredOlder({ takenMinutes: radar.taken_min })
   }
 
   const stored = WeatherStoredRadarTile.make({ tile, radar, receivedAt, source })

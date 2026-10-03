@@ -132,8 +132,25 @@ export const WeatherRequest = Object.freeze({
    * answer serve everybody in a town rather than one phone each.
    *
    * Request only, and never on a timer: revision 11 ships with no scheduled radar at all.
+   *
+   * `zoom` −1 is the detail level of revision 13, written `z-1`: the 1° tile around the
+   * coordinate, or — where the bot has no picture fine enough — the Local tile for the same
+   * coordinate, which is why `expectedReply` names both.
    */
   radar({ latitude, longitude, zoom = 0 }) { return { kind: 'radar', latitude, longitude, zoom } },
+  /**
+   * `>radar 30.270,-97.740 loop` / `>radar 30.270,-97.740 z-1 loop 2353 2338` — the pictures of
+   * the last hour for one tile, oldest first, one packet each (spec §7D.4, revision 13).
+   *
+   * `held` is the `taken` minutes of the frames this phone already holds for that tile
+   * (`WeatherRadarLoop.held`), so the bot leaves them out. They go on the wire as UTC `HHMM`,
+   * newest first, as many as keep the request within its 40 bytes: a held picture left off the
+   * list is sent again, which costs a packet and breaks nothing. Never on a timer, and never
+   * played without asking: "Ask for the last hour" is a tap, with its cost stated first.
+   */
+  radarLoop({ latitude, longitude, zoom = 0, held = [] }) {
+    return { kind: 'radarLoop', latitude, longitude, zoom, held: [...held] }
+  },
 
   // MARK: - The scope and the indexes, normalised once
   //
@@ -217,14 +234,53 @@ export const WeatherRequest = Object.freeze({
       case 'parts': return `>part ${request.group} ${WeatherRequest.partIndexes(request.indexes).join(',')}`
       case 'forecastAt':
         return `>f ${WeatherRequest.coordinateText(request.latitude)},${WeatherRequest.coordinateText(request.longitude)}`
-      case 'radar': {
-        // `>radar <lat>,<lon>` at zoom 0, `… z2` otherwise. The longest this can be is
-        // `>radar -30.270,-197.740 z3`, 26 bytes of the 40-byte request budget (spec §7B).
-        const place = `${WeatherRequest.coordinateText(request.latitude)},${WeatherRequest.coordinateText(request.longitude)}`
-        return request.zoom > 0 ? `>radar ${place} z${request.zoom}` : `>radar ${place}`
-      }
+      case 'radar':
+        return WeatherRequest.radarText(request)
+      case 'radarLoop':
+        return WeatherRequest.radarLoopText(request)
       default: throw new Error(`WeatherRequest: unknown kind ${request.kind}`)
     }
+  },
+
+  /**
+   * `>radar <lat>,<lon>` at zoom 0, `… z2` at a wider zoom and `… z-1` at the detail level. Zoom 0
+   * sends nothing after the place: it is the default, and "anything else after the place is part
+   * of the place" (spec revision 11, §7D). The longest this can be is
+   * `>radar -30.270,-197.740 z-1`, 27 bytes of the 40-byte request budget (spec §7B).
+   */
+  radarText({ latitude, longitude, zoom = 0 }) {
+    const base = `>radar ${WeatherRequest.coordinateKey({ latitude, longitude })}`
+    return (zoom ?? 0) === 0 ? base : `${base} z${zoom}`
+  },
+
+  /**
+   * `>radar 30.270,-97.740 [z<n>] loop [HHMM …]` (spec revision 13, §7D.4): the held pictures'
+   * UTC hour and minute, **newest first**, as many as fit the 40-byte request and never more than
+   * `MeshWXWire.radarLoopHeldMax`. `>radar 30.270,-97.740 loop` is 26 bytes, so two always fit
+   * there; a southern, western coordinate at the detail level leaves room for one. The newest go
+   * first because they are the ones a phone is likeliest to hold; a held picture left off is sent
+   * again, which costs a packet and breaks nothing.
+   */
+  radarLoopText({ latitude, longitude, zoom = 0, held = [] }) {
+    let text = `${WeatherRequest.radarText({ latitude, longitude, zoom })} loop`
+    const newestFirst = [...new Set((held ?? []).map(Number))].sort((lhs, rhs) => rhs - lhs)
+    for (const minutes of newestFirst.slice(0, MeshWXWire.radarLoopHeldMax)) {
+      const next = `${text} ${WeatherRequest.utcHourMinute(minutes)}`
+      // ASCII throughout, so characters are bytes.
+      if (next.length > MeshWXWire.maxRequestTextBytes) break
+      text = next
+    }
+    return text
+  },
+
+  /**
+   * `"2353"`: a picture's `taken` (Unix minutes) as the loop request writes it, UTC hour and
+   * minute. Minutes alone would not do: at 15-minute steps the newest picture and the one an hour
+   * before it end in the same two digits.
+   */
+  utcHourMinute(takenMinutes) {
+    const ofDay = ((Math.trunc(takenMinutes) % 1440) + 1440) % 1440
+    return `${String(Math.floor(ofDay / 60)).padStart(2, '0')}${String(ofDay % 60).padStart(2, '0')}`
   },
 
   /**
@@ -236,7 +292,7 @@ export const WeatherRequest = Object.freeze({
    * radar tile and a phone waiting for rainfall totals would each take the other's refusal.
    */
   requestLetter(request) {
-    if (request.kind === 'radar') return MeshWXWire.radarRequestLetter
+    if (request.kind === 'radar' || request.kind === 'radarLoop') return MeshWXWire.radarRequestLetter
     // `wireText` always starts with `>` followed by a lowercase ASCII letter.
     return WeatherRequest.wireText(request)[1]
   },
@@ -268,13 +324,24 @@ export const WeatherRequest = Object.freeze({
       // measures the distance, which needs the tables this type stays free of.
       case 'forecastAt': return WeatherReplyKind.forecast({ point: null })
       // The tile is worked out here rather than waited for, because the lattice is fixed: the
-      // answer to this coordinate is one named square of the earth, whoever sends it.
+      // answer to this coordinate is one named square of the earth, whoever sends it. A loop is
+      // settled the same way, by its first frame; the rest keep flowing into state.
+      //
+      // At the detail level the bot answers with Local where it has no picture fine enough
+      // (revision 13), so the zoom 0 tile containing the same coordinate settles it too. It is
+      // worked out from the coordinate, not from the detail tile: a detail tile centred on a half
+      // degree lies across two zoom 0 tiles, and only the coordinate says which the bot cut.
       case 'radar':
+      case 'radarLoop': {
+        const zoom = request.zoom ?? 0
+        const at = { latitude: request.latitude, longitude: request.longitude }
         return WeatherReplyKind.radar({
-          tile: MeshWXRadarTile.containing({
-            latitude: request.latitude, longitude: request.longitude, zoom: request.zoom
-          })
+          tile: MeshWXRadarTile.containing({ ...at, zoom }),
+          fallback: zoom === MeshWXWire.radarDetailZoom
+            ? MeshWXRadarTile.containing({ ...at, zoom: 0 })
+            : null
         })
+      }
       default: throw new Error(`WeatherRequest: unknown kind ${request.kind}`)
     }
   },
@@ -308,7 +375,7 @@ export const WeatherRequest = Object.freeze({
       // Revision 11's radar is the clearest case of all: the tile is a named square of the
       // earth on a fixed lattice, and two bots cutting it from the same national mosaic are
       // sending the same picture. "Another bot's Radar for the same tile settles it too."
-      case 'radar':
+      case 'radar': case 'radarLoop':
         return true
       default:
         return false
@@ -343,7 +410,11 @@ export const WeatherRequest = Object.freeze({
       // The coordinate, not the tile: two coordinates on one tile are one *answer*, which is
       // what the service's answer slot is keyed by, but they are two questions — and the
       // pending list, the log and the five-second spacing all key on the question asked.
-      case 'radar': return `${request.kind}:${WeatherRequest.coordinateKey(request)}:z${request.zoom}`
+      case 'radar': return `${request.kind}:${WeatherRequest.coordinateKey(request)}:z${request.zoom ?? 0}`
+      // The held list too, as the Swift's synthesised `Hashable` compares it: the same square
+      // asked for while holding other pictures is other bytes on the air.
+      case 'radarLoop':
+        return `${request.kind}:${WeatherRequest.coordinateKey(request)}:z${request.zoom ?? 0}:${(request.held ?? []).join(',')}`
       default: return request.kind
     }
   }
@@ -389,8 +460,13 @@ export const WeatherReplyKind = Object.freeze({
    * for that tile from the bot asked settles the request whatever its `taken`", because a bot
    * with nothing newer than the picture it already sent answers with that one, and a phone that
    * went on waiting for a fresher one would wait for the next quarter of an hour.
+   *
+   * `fallback` (revision 13) is the zoom 0 tile a detail request is also settled by, because it
+   * is what the bot sends where it has no picture fine enough; null at every other zoom. A JS
+   * addition: the Swift case carries the tile alone, and the fallback cannot be worked out from
+   * the detail tile without the coordinate.
    */
-  radar({ tile }) { return { kind: 'radar', tile } }
+  radar({ tile, fallback = null }) { return { kind: 'radar', tile, fallback } }
 })
 
 /**

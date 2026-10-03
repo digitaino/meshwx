@@ -1,7 +1,7 @@
 // Port of MC1Services/Sources/MeshWX/MeshWXMessage.swift
 //
 // ============================================================================
-// SWIFT FIELD  →  VECTOR KEY, for all eleven message types (PORTING §5)
+// SWIFT FIELD  →  VECTOR KEY, for all twelve message types (PORTING §5)
 // ============================================================================
 //
 // A decoded message is *exactly* the `decoded` object of docs/meshwx_v5_vectors.json:
@@ -11,8 +11,8 @@
 // Common header — the first five keys of every decoded message (spec §2.2):
 //   MeshWXHeader.seq              → seq          u8, per-bot sequence number
 //   MeshWXHeader.bot              → bot          u16, first two bytes of the bot's public key
-//   MeshWXHeader.rawType          → type         u8, 1…11 (the high nibble)
-//   MeshWXHeader.type             → name         "warning" … "radar", "unknown"
+//   MeshWXHeader.rawType          → type         u8, 1…12 (the high nibble)
+//   MeshWXHeader.type             → name         "warning" … "radar_detail", "unknown"
 //   MeshWXHeader.flags            → flags        u8, the low nibble, verbatim
 //   MeshWXHeader.dataSource       → source       0 unstated, 1 GOES, 2 internet, 3 mixed.
 //                                                Present on every type that carries weather;
@@ -154,6 +154,14 @@
 //   cells                         → rows           `size` strings of the digits 0-3, north row
 //                                                  first, west column first. A cell outside
 //                                                  `bounds` is 0 and means UNKNOWN, not dry.
+//
+// Type 12, Radar detail (spec §7E, revision 13) — the same MeshWXRadar, name "radar_detail":
+//   every key as type 11, except
+//   south                         → south          i16 quarter degrees on the wire, decoded as
+//                                                  decimal degrees on the half-degree lattice
+//   west                          → west           the same
+//   zoom                          → zoom           −1, always (the `shape` byte's low bits are a
+//                                                  `depth` that must be 0)
 //
 // ============================================================================
 

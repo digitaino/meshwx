@@ -263,4 +263,118 @@ describe('WeatherRequest', () => {
     assert.equal(R.isEqual(austin, R.radar({ latitude: 30.27, longitude: -97.74, zoom: 1 })), false)
     assert.equal(R.isEqual(austin, R.radar({ latitude: 30.51, longitude: -97.68 })), false)
   })
+
+  // MARK: - Revision 13
+
+  /** 2026-09-20 23:38 and 23:53 UTC, as Unix minutes: the pictures of the vectors' squall line. */
+  const at2338 = 29832458
+  const at2353 = at2338 + 15
+
+  /** The detail level is zoom −1 on the wire too: `z-1`, the `request_radar_detail` vector. */
+  it('a detail request is the coordinate and z-1', () => {
+    const dallas = R.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 })
+    assert.equal(R.wireText(dallas), '>radar 32.780,-96.800 z-1')
+    assert.equal(R.requestLetter(dallas), MeshWXWire.radarRequestLetter)
+    assert.equal(R.key(dallas), 'radar:32.780,-96.800:z-1')
+    assert.equal(R.isEqual(dallas, R.radar({ latitude: 32.78, longitude: -96.8 })), false)
+    const longest = R.wireText(R.radar({ latitude: -30.27, longitude: -197.74, zoom: -1 }))
+    assert.equal(longest, '>radar -30.270,-197.740 z-1')
+    assert.ok(longest.length <= MeshWXWire.maxRequestTextBytes)
+  })
+
+  /**
+   * "A request at zoom −1 is also settled by the zoom 0 tile containing the same coordinate,
+   * which is the bot's fallback." Worked out from the coordinate: Dallas's detail square is
+   * 32.5 N to 33.5 N, and its Local square 32 N to 34 N.
+   */
+  it('a detail request expects its own square, or Local for the same coordinate', () => {
+    assert.deepStrictEqual(
+      R.expectedReply(R.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 })),
+      WeatherReplyKind.radar({
+        tile: { south: 32.5, west: -97.5, zoom: -1 }, fallback: { south: 32, west: -98, zoom: 0 }
+      })
+    )
+    // Every other zoom has no fallback: the bot answers the width asked or refuses.
+    for (const zoom of [0, 1, 2, 3]) {
+      assert.equal(R.expectedReply(R.radar({ latitude: 32.78, longitude: -96.8, zoom })).fallback, null)
+    }
+    // A loop is settled the same way, by its first frame.
+    assert.deepStrictEqual(
+      R.expectedReply(R.radarLoop({ latitude: 32.78, longitude: -96.8, zoom: -1, held: [at2338] })),
+      R.expectedReply(R.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }))
+    )
+  })
+
+  /**
+   * The `request_radar_loop` vector: the held pictures as UTC `HHMM`, **newest first**, whatever
+   * order the caller held them in. Minutes alone would not do: at 15-minute steps the newest
+   * picture and the one an hour before it end in the same two digits.
+   */
+  it('the last hour lists the pictures held as UTC HHMM, newest first', () => {
+    assert.equal(R.utcHourMinute(at2338), '2338')
+    assert.equal(R.utcHourMinute(at2353), '2353')
+    assert.equal(R.utcHourMinute(at2338 + 22), '0000', 'midnight UTC')
+    assert.equal(R.utcHourMinute(at2338 + 30), '0008')
+
+    const austin = R.radarLoop({ latitude: 30.27, longitude: -97.74, held: [at2338, at2353] })
+    assert.equal(R.wireText(austin), '>radar 30.270,-97.740 loop 2353 2338')
+    assert.equal(R.wireText(R.radarLoop({ latitude: 30.27, longitude: -97.74 })), '>radar 30.270,-97.740 loop')
+    assert.equal(
+      R.wireText(R.radarLoop({ latitude: 30.27, longitude: -97.74, zoom: 1, held: [at2338 + 30] })),
+      '>radar 30.270,-97.740 z1 loop 0008'
+    )
+    assert.equal(
+      R.wireText(R.radarLoop({ latitude: 30.27, longitude: -97.74, zoom: -1, held: [at2353] })),
+      '>radar 30.270,-97.740 z-1 loop 2353'
+    )
+    // The same picture twice (two bots' copies) is listed once.
+    assert.equal(
+      R.wireText(R.radarLoop({ latitude: 30.27, longitude: -97.74, held: [at2353, at2353] })),
+      '>radar 30.270,-97.740 loop 2353'
+    )
+  })
+
+  /**
+   * "A request is at most 40 bytes, and that limit stays. The app lists its held pictures newest
+   * first, as many as fit." `>radar 30.270,-97.740 loop` is 26 bytes, so two always fit there; a
+   * held picture left off is sent again, which costs a packet and breaks nothing.
+   */
+  it('the last hour lists only as many held pictures as fit in 40 bytes', () => {
+    const hour = [0, 15, 30, 45].map((ago) => at2353 - ago)
+    const austin = R.wireText(R.radarLoop({ latitude: 30.27, longitude: -97.74, held: hour }))
+    assert.equal(austin, '>radar 30.270,-97.740 loop 2353 2338')
+    assert.equal(austin.length, 36, 'a third would be 41')
+
+    const detail = R.wireText(R.radarLoop({ latitude: 30.27, longitude: -97.74, zoom: -1, held: hour }))
+    assert.equal(detail, '>radar 30.270,-97.740 z-1 loop 2353 2338')
+    assert.equal(detail.length, MeshWXWire.maxRequestTextBytes, 'exactly the budget')
+
+    const longest = R.wireText(R.radarLoop({ latitude: -30.27, longitude: -197.74, zoom: -1, held: hour }))
+    assert.equal(longest, '>radar -30.270,-197.740 z-1 loop 2353', 'the newest kept')
+
+    // The shortest coordinate fits three, and never more than the five the loop can hold.
+    const shortest = R.wireText(R.radarLoop({ latitude: 0, longitude: 0, held: hour }))
+    assert.equal(shortest, '>radar 0.000,0.000 loop 2353 2338 2323')
+    for (const text of [austin, detail, longest, shortest]) {
+      assert.ok(new TextEncoder().encode(text).length <= MeshWXWire.maxRequestTextBytes, text)
+    }
+  })
+
+  /**
+   * A loop is refused under `x` like any radar ask and settled by any bot's frame of the square.
+   * Its key is the Swift's synthesised `Hashable`: the coordinate, the width and the held list,
+   * because the same square asked for while holding other pictures is other bytes on the air.
+   */
+  it('the last hour is an x request, keyed by the coordinate, the width and what is held', () => {
+    const loop = R.radarLoop({ latitude: 30.27, longitude: -97.74, held: [at2353] })
+    assert.equal(R.requestLetter(loop), 'x')
+    assert.equal(R.acceptsAnswerFromAnyBot(loop), true)
+    assert.equal(R.key(loop), `radarLoop:30.270,-97.740:z0:${at2353}`)
+    assert.equal(R.isEqual(loop, R.radarLoop({ latitude: 30.2701, longitude: -97.74, held: [at2353] })), true)
+    assert.equal(R.isEqual(loop, R.radarLoop({ latitude: 30.27, longitude: -97.74, held: [] })), false)
+    assert.equal(R.isEqual(loop, R.radarLoop({ latitude: 30.27, longitude: -97.74, zoom: -1 })), false)
+    assert.equal(R.isEqual(loop, R.radar({ latitude: 30.27, longitude: -97.74 })), false)
+    // Plain data: it survives the request log's JSON.
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(loop)), loop)
+  })
 })

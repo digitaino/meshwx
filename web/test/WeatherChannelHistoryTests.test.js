@@ -303,3 +303,35 @@ test('every radar tile held is a row of its own, named by its square', () => {
   assert.deepEqual(row.subject.tile, { south: 29, west: -99, zoom: 0 })
   assert.equal(row.contentAt, (t0Minutes - 12) * 60_000)
 })
+
+/**
+ * Revision 13: "one row per tile as before, its newest time, and '5 pictures' when it holds more
+ * than one." The frames of a square's loop are one square of earth, not five rows of it.
+ */
+test('a square holding several frames is still one row, with its newest time and a count', () => {
+  const built = state()
+  built.radarTiles = [0, 15, 30, 45, 60].map((ago) => storedRadarTile({
+    south: 29, west: -99, zoom: 0, takenMinutes: t0Minutes - ago, receivedAt: t0 - 60_000 + ago,
+  }))
+  built.radarTiles.push(storedRadarTile({ south: 32.5, west: -97.5, zoom: -1, takenMinutes: t0Minutes - 8 }))
+  const group = cacheOf(built).groups.find((one) => one.group === 'radarPictures')
+  assert.equal(group.items.length, 2)
+  const local = group.items.find((item) => item.subject.tile.zoom === 0)
+  assert.deepEqual(local.subject, WeatherChannelSubject.radar({ tile: { south: 29, west: -99, zoom: 0 }, frames: 5 }))
+  assert.equal(local.contentAt, t0Minutes * 60_000, 'the newest picture')
+  assert.equal(local.id, `radar-${botID}-0-29--99`)
+  const detail = group.items.find((item) => item.subject.tile.zoom === -1)
+  assert.equal(detail.subject.frames, 1)
+  assert.equal(detail.id, `radar-${botID}--1-32.5--97.5`)
+
+  // What the channel carried lists each frame as the packet it was, with its own time.
+  const heard = WeatherHeard.make({ states: { [String(botID)]: built }, now: t0 })
+  const rows = heard.filter((item) => item.subject.kind === 'radar')
+  assert.equal(rows.length, 6)
+  assert.equal(new Set(rows.map((item) => item.id)).size, 6)
+  assert.ok(rows.every((item) => item.subject.frames === 1))
+  assert.deepEqual(
+    rows.filter((item) => item.subject.tile.zoom === 0).map((item) => item.contentAt).sort((a, b) => b - a),
+    [0, 15, 30, 45, 60].map((ago) => (t0Minutes - ago) * 60_000),
+  )
+})

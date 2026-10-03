@@ -422,8 +422,11 @@ export const WeatherAreaSweepAssembly = {
  *   picture. Never shown as the picture's age — `radar.taken_min` is, and only it.
  * - `source`: where the bot got the picture (spec §2.2, revision 7). A tile off the dish is 1.
  *
- * One per tile: revision 11 has no animation and no history, so a newer picture of a square
- * replaces the one held rather than joining it.
+ * One per tile **and picture** since revision 13: an older picture of a square is a frame of its
+ * loop and joins the newer one rather than being dropped, and only the same `taken` again
+ * replaces what is held. A state written before revision 13 held one per tile, which is a list
+ * of frames like any other and reads unchanged — `radar.south` and `.west` are whole numbers
+ * there, and half degrees only on a detail tile (zoom −1).
  */
 export const WeatherStoredRadarTile = {
   make({ tile, radar, receivedAt, source = UNSTATED_SOURCE }) {
@@ -556,8 +559,9 @@ export const WeatherBotState = {
        * The radar tiles this bot sent (spec §7D, revision 11), **newest `taken` first**. Empty
        * until somebody on the channel asks for one: there is no scheduled radar broadcast.
        *
-       * One entry per lattice square, replaced by a newer picture of the same square;
-       * `WeatherStateReducer.retainRadarTiles` is the only thing that drops one.
+       * One entry per lattice square and picture, `(tile, taken)`, since revision 13: the
+       * frames a loop is played from. `WeatherStateReducer.retainRadarTiles` is the only thing
+       * that drops one.
        */
       radarTiles: []
     }

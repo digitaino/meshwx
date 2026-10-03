@@ -538,5 +538,19 @@
  "weather.radar.cached.title": "Obrazy radarowe",
  "weather.radar.request.title": "Obraz radarowy",
  "weather.radar.traffic.cells": "Komórki z opadami: %lld",
- "weather.radar.traffic.cellsOne": "1 komórka z opadami"
+ "weather.radar.traffic.cellsOne": "1 komórka z opadami",
+ "weather.radar.width.detail": "Szczegółowy",
+ "weather.radar.detail.hint": "Dotknij mapy, żeby dostać szczegółowy obraz tego miejsca.",
+ "weather.radar.detail.ask": "Zapytaj o szczegóły tutaj",
+ "weather.radar.detail.footnote": "Dwa razy więcej szczegółów niż Lokalny, na jednej czwartej obszaru.",
+ "weather.radar.detail.fallback": "Brak szczegółowego obrazu tego miejsca. Pokazuję Lokalny.",
+ "weather.radar.loop.play": "Odtwórz",
+ "weather.radar.loop.pause": "Pauza",
+ "weather.radar.loop.ask": "Zapytaj o ostatnią godzinę",
+ "weather.radar.loop.cost": "Do %lld pakietów",
+ "weather.radar.loop.footnote": "Obrazy, które to urządzenie już ma, nie są wysyłane ponownie.",
+ "weather.radar.loop.frame": "%1$@ · %2$lld z %3$lld",
+ "weather.radar.loop.missing": "Brakuje części obrazów z tej godziny.",
+ "weather.radar.loop.request.title": "Radar, ostatnia godzina",
+ "weather.radar.cached.frames": "Obrazy: %lld"
 }

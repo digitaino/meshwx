@@ -264,7 +264,8 @@ export function radarRows({ size = 32, cells = [] } = {}) {
 }
 
 /**
- * One radar tile (type 11, spec §7D, revision 11).
+ * One radar tile (type 11, spec §7D, revision 11), or at `zoom` −1 a detail tile (type 12,
+ * revision 13), which decodes into the same shape with half-degree edges.
  *
  * `bounds` is the four-element wire array and makes the packet partial; a 16-row grid makes it
  * coarse. Both are read off the body rather than passed as flags, exactly as the codec does.
@@ -285,7 +286,9 @@ export function radar({
   const isCoarse = size === 16
   const flags = (isCoarse ? 1 : 0) | (bounds == null ? 0 : 2) | sourceBits(source)
   return {
-    ...header({ seq, type: 11, name: 'radar', flags, bot: from }),
+    ...header({
+      seq, type: zoom === -1 ? 12 : 11, name: zoom === -1 ? 'radar_detail' : 'radar', flags, bot: from
+    }),
     taken_min: takenMinutes,
     south,
     west,

@@ -917,6 +917,10 @@ function packRadarCells(rows) {
  * Throws `oversize` when a fine tile does not fit the packet. The bot's answer to that is to
  * coarsen and encode again; nothing in the app ever encodes one at all, but the vectors are a
  * round trip and a test needs a squall line without waiting for one.
+ *
+ * `zoom` −1 is the detail level of revision 13 and is written as **type 12** (spec §7E): `south`
+ * and `west` in quarter degrees, on the half-degree lattice, and a `depth` of 0 where type 11 has
+ * the zoom. Every other zoom is type 11, whatever `type` the caller's object carried.
  */
 export function radar({
   seq,
@@ -949,10 +953,23 @@ export function radar({
       }
     }
   }
-  requireRange(zoom, 0, MeshWXWire.maxRadarZoom, 'zoom');
+  requireRange(zoom, MeshWXWire.minRadarZoom, MeshWXWire.maxRadarZoom, 'zoom');
   requireRange(product, 0, MeshWXWire.maxRadarProduct, 'product');
-  requireRange(south, -90, 90, 'south');
-  requireRange(west, -180, 179, 'west');
+  const isDetail = zoom === MeshWXWire.radarDetailZoom;
+  const units = MeshWXWire.radarDetailUnitsPerDegree;
+  if (isDetail) {
+    // Half degrees only: an odd number of quarter degrees is a square no lattice names, and the
+    // decoder refuses one, so the encoder does not write one.
+    for (const [field, value, low, high] of [['south', south, -90, 90], ['west', west, -180, 179.5]]) {
+      const quarters = value * units;
+      if (!Number.isInteger(quarters) || quarters % 2 !== 0 || value < low || value > high) {
+        throw MeshWXEncodeError.outOfRange({ field, value });
+      }
+    }
+  } else {
+    requireRange(south, -90, 90, 'south');
+    requireRange(west, -180, 179, 'west');
+  }
 
   let flags = size === MeshWXWire.radarCoarseGrid ? MeshWXWire.radarCoarseBit : 0;
   let box = null;
@@ -975,14 +992,23 @@ export function radar({
   flags |= sourceBits(source);
 
   const writer = new Writer();
-  writeHeader(writer, { seq, bot, rawType: MeshWXMessageType.radar, flags });
+  writeHeader(writer, {
+    seq, bot, rawType: isDetail ? MeshWXMessageType.radarDetail : MeshWXMessageType.radar, flags,
+  });
   writer.u32(requireRange(takenMinutes, 0, 0xffff_ffff, 'taken_min'));
-  writer.i8(south);
-  writer.i16(west);
-  writer.u8((product << MeshWXWire.radarProductShift) | zoom);
+  if (isDetail) {
+    writer.i16(south * units);
+    writer.i16(west * units);
+    // `depth` 0, a 1° tile: the only depth there is (spec §7E).
+    writer.u8(product << MeshWXWire.radarProductShift);
+  } else {
+    writer.i8(south);
+    writer.i16(west);
+    writer.u8((product << MeshWXWire.radarProductShift) | zoom);
+  }
   if (box != null) for (const value of MeshWXRadarBounds.array(box)) writer.u8(value);
   writer.push(packRadarCells(grid));
-  return writer.done('radar');
+  return writer.done(isDetail ? 'radar detail' : 'radar');
 }
 
 // MARK: - Round trip
@@ -1101,9 +1127,10 @@ export function encode(message) {
         source,
       });
     case MeshWXMessageType.radar:
+    case MeshWXMessageType.radarDetail:
       // The coarse and partial flags are not passed: both are read back off the *body* — the
       // grid's own size, and whether there are bounds — so a re-encode cannot disagree with the
-      // cells it is encoding.
+      // cells it is encoding. Nor is the type: the zoom decides it, −1 being type 12.
       return radar({
         seq,
         bot,

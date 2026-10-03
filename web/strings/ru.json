@@ -538,5 +538,19 @@
  "weather.radar.cached.title": "Снимки радара",
  "weather.radar.request.title": "Снимок радара",
  "weather.radar.traffic.cells": "Ячеек с осадками: %lld",
- "weather.radar.traffic.cellsOne": "1 ячейка с осадками"
+ "weather.radar.traffic.cellsOne": "1 ячейка с осадками",
+ "weather.radar.width.detail": "Детально",
+ "weather.radar.detail.hint": "Нажми на карту, чтобы получить детальный снимок этого места.",
+ "weather.radar.detail.ask": "Запросить детали здесь",
+ "weather.radar.detail.footnote": "Вдвое детальнее, чем «Локально», на четверти площади.",
+ "weather.radar.detail.fallback": "Детального снимка этого места нет. Показано «Локально».",
+ "weather.radar.loop.play": "Воспроизвести",
+ "weather.radar.loop.pause": "Пауза",
+ "weather.radar.loop.ask": "Запросить последний час",
+ "weather.radar.loop.cost": "До %lld пакетов",
+ "weather.radar.loop.footnote": "Снимки, которые уже есть на этом устройстве, повторно не отправляются.",
+ "weather.radar.loop.frame": "%1$@ · %2$lld из %3$lld",
+ "weather.radar.loop.missing": "Некоторых снимков за этот час нет.",
+ "weather.radar.loop.request.title": "Радар, последний час",
+ "weather.radar.cached.frames": "Снимков: %lld"
 }

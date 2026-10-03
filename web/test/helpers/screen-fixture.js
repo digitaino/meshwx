@@ -191,8 +191,8 @@ export function storedRadarTile({
     radar: {
       seq: 0,
       bot: WeatherPhoneFixture.botID,
-      type: 11,
-      name: 'radar',
+      type: zoom === -1 ? 12 : 11,
+      name: zoom === -1 ? 'radar_detail' : 'radar',
       flags: (size === 16 ? 1 : 0) | (bounds == null ? 0 : 2) | (source << 2),
       taken_min: taken,
       south,

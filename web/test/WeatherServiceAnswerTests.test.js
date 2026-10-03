@@ -623,6 +623,144 @@ describe('WeatherService answers', () => {
     )
   })
 
+  // MARK: - Radar detail and the last hour (revision 13)
+
+  /**
+   * "A request at zoom −1 is also settled by the zoom 0 tile containing the same coordinate,
+   * which is the bot's fallback": where the bot has no regional picture fine enough to cut a 1°
+   * tile from, it answers `z-1` with Local.
+   */
+  it('a detail request is settled by its own square or by the Local tile the bot falls back to', async () => {
+    for (const answer of [
+      { south: 32.5, west: -97.5, zoom: -1 }, // the detail tile itself (type 12)
+      { south: 32, west: -98, zoom: 0 }, // Local for Dallas, the fallback
+    ]) {
+      const h = await makeHarness()
+      await h.service.send(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }), { to: F.bot })
+      assert.deepStrictEqual(h.transport.sent.map((entry) => entry.text), ['>radar 32.780,-96.800 z-1'])
+      // Neither another detail square nor another zoom 0 square is the answer.
+      await h.service.ingest(F.radar({ seq: 1, south: 32, west: -97.5, zoom: -1 }))
+      await h.service.ingest(F.radar({ seq: 2, south: 29, west: -99, zoom: 0 }))
+      await h.service.ingest(F.radar({ seq: 3, south: 32, west: -98, zoom: 1 }))
+      assert.equal(h.service.pendingRequests().length, 1, `still waiting for ${JSON.stringify(answer)}`)
+      await h.service.ingest(F.radar({ seq: 4, ...answer }))
+      assert.deepStrictEqual(
+        F.settlements(h.events).map(([, outcome]) => outcome), [WeatherRequestOutcome.answered]
+      )
+    }
+  })
+
+  /**
+   * The fallback is worked out from the coordinate, never from the detail square: a square
+   * centred on a half degree lies across two Local tiles, and only the coordinate says which one
+   * the bot cut.
+   */
+  it('the Local fallback is the Local tile of the coordinate asked', async () => {
+    const h = await makeHarness()
+    // 30.30 N is on the detail square 30.0 to 31.0, whose centre (30.5) is halfway between the
+    // centres of two Local squares; the coordinate itself is on the one centred on 30.
+    await h.service.send(WeatherRequest.radar({ latitude: 30.3, longitude: -97.74, zoom: -1 }), { to: F.bot })
+    await h.service.ingest(F.radar({ seq: 1, south: 30, west: -99, zoom: 0 }))
+    assert.equal(h.service.pendingRequests().length, 1, '31 N centre: not the Local tile of 30.30 N')
+    await h.service.ingest(F.radar({ seq: 2, south: 29, west: -99, zoom: 0 }))
+    assert.equal(h.service.pendingRequests().length, 0)
+  })
+
+  /**
+   * A detail ask answered with Local has been answered: asked again inside five minutes, the bot
+   * would send the same Local tile or refuse it (reason 4), so the detail square's slot is filled
+   * by the fallback that settled it. Somebody else's Local tile, settling nothing, fills only its
+   * own square's slot.
+   */
+  it('the Local fallback that answers a detail ask answers it again for five minutes', async () => {
+    const h = await makeHarness()
+    await h.service.send(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }), { to: F.bot })
+    await h.service.ingest(F.radar({ seq: 1, south: 32, west: -98, zoom: 0, takenMinutes: F.t0Minutes - 5 }))
+    await h.clock.advance(60)
+    assert.equal(
+      await h.service.send(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }), { to: F.bot }),
+      null
+    )
+    assert.equal(h.transport.sent.length, 1)
+
+    const other = await makeHarness()
+    await other.service.ingest(F.radar({ seq: 1, south: 32, west: -98, zoom: 0, takenMinutes: F.t0Minutes - 5 }))
+    await other.clock.advance(60)
+    assert.notEqual(
+      await other.service.send(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }), { to: F.bot }),
+      null,
+      'nobody here asked for detail, so the square may well have it'
+    )
+  })
+
+  /**
+   * `>radar <place> loop HHMM…`: the held pictures go on the wire newest first, and the first
+   * frame of the answer settles the ask, as any Radar message for the tile does. The rest keep
+   * landing in state as frames.
+   */
+  it('the last hour goes out with the pictures held, and its first frame settles it', async () => {
+    const h = await makeHarness()
+    const held = [F.t0Minutes - 15, F.t0Minutes]
+    const pending = await h.service.send(
+      WeatherRequest.radarLoop({ latitude: 30.27, longitude: -97.74, held }), { to: F.bot }
+    )
+    assert.equal(pending.request.kind, 'radarLoop')
+    const hhmm = (minutes) => WeatherRequest.utcHourMinute(minutes)
+    assert.deepStrictEqual(
+      h.transport.sent.map((entry) => entry.text),
+      [`>radar 30.270,-97.740 loop ${hhmm(F.t0Minutes)} ${hhmm(F.t0Minutes - 15)}`]
+    )
+    // Oldest first, one packet each.
+    await h.service.ingest(F.radar({ seq: 1, south: 29, west: -99, zoom: 0, takenMinutes: F.t0Minutes - 45 }))
+    assert.deepStrictEqual(
+      F.settlements(h.events).map(([, outcome]) => outcome), [WeatherRequestOutcome.answered]
+    )
+    await h.service.ingest(F.radar({ seq: 2, south: 29, west: -99, zoom: 0, takenMinutes: F.t0Minutes - 30 }))
+    const state = await h.service.state({ for: F.botID })
+    assert.deepStrictEqual(
+      state.radarTiles.map((one) => F.t0Minutes - one.radar.taken_min), [30, 45], 'two frames of one square'
+    )
+  })
+
+  /** A loop's refusal comes back under `x` like any radar refusal, worded by its reason. */
+  it('a refusal under x settles the last hour', async () => {
+    const h = await makeHarness()
+    await h.service.send(WeatherRequest.radarLoop({ latitude: 30.27, longitude: -97.74 }), { to: F.bot })
+    await h.service.ingest(F.notAvailable({ seq: 1, letter: 'x', reason: 4 }))
+    assert.deepStrictEqual(
+      F.settlements(h.events).map(([entry, outcome]) => [entry.request.kind, outcome]),
+      [['radarLoop', WeatherRequestOutcome.notAvailable(4)]]
+    )
+  })
+
+  /**
+   * The five-minute slot says when the square's newest picture arrived. A loop asks for the older
+   * ones, so a picture received a minute ago does not answer it; and an older frame landing does
+   * not answer the next ask for a newer picture either.
+   */
+  it('the last hour is not answered by the slot, and an older frame does not fill it', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.radar({ seq: 1, south: 29, west: -99, zoom: 0, takenMinutes: F.t0Minutes - 5 }))
+    await h.clock.advance(60)
+    assert.notEqual(
+      await h.service.send(WeatherRequest.radarLoop({ latitude: 30.27, longitude: -97.74 }), { to: F.bot }),
+      null,
+      'a loop is never "already received"'
+    )
+
+    const other = await makeHarness()
+    await other.service.ingest(F.radar({ seq: 1, south: 29, west: -99, zoom: 0, takenMinutes: F.t0Minutes - 5 }))
+    await other.clock.advance(6 * 60)
+    // Somebody's loop: an older frame of the same square, heard now.
+    await other.service.ingest(F.radar({ seq: 2, south: 29, west: -99, zoom: 0, takenMinutes: F.t0Minutes - 20 }))
+    await other.clock.advance(60)
+    assert.notEqual(
+      await other.service.send(WeatherRequest.radar({ latitude: 30.27, longitude: -97.74 }), { to: F.bot }),
+      null,
+      'the newest picture arrived six minutes ago, and the frame since is older'
+    )
+  })
+
   // MARK: - Backlog
 
   it('a backlog message updates state but answers nothing and is not hearing the bot', async () => {

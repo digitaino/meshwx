@@ -57,9 +57,13 @@ export const WeatherChannelSubject = Object.freeze({
    * One radar tile (spec §7D, revision 11). **The tile is the subject**: a picture of a square of
    * earth, named by its width and its centre rather than by anybody's question — nothing on the
    * wire says who asked for it, and the lattice means several people may have.
+   *
+   * `frames` (revision 13) is how many pictures of the square the row stands for: 1 for a row of
+   * the channel history, which lists each frame as the packet it was, and the count held on the
+   * Cached screen, which keeps one row per square and says "5 pictures".
    */
-  radar({ tile }) {
-    return { kind: 'radar', tile }
+  radar({ tile, frames = 1 }) {
+    return { kind: 'radar', tile, frames }
   },
 })
 
@@ -161,11 +165,13 @@ export const WeatherHeard = Object.freeze({
       if (state.coverage != null) {
         add('coverage', WeatherChannelSubject.coverage, { contentAt: null, receivedAt: state.coverage.receivedAt })
       }
+      // One row per frame, with its own time: an older picture off a loop went past on the
+      // channel like any other (revision 13).
       for (const stored of state.radarTiles ?? []) {
         const tile = stored.tile
         add(
-          `radar-${tile.zoom}-${tile.south}-${tile.west}`,
-          WeatherChannelSubject.radar({ tile }),
+          `radar-${tile.zoom}-${tile.south}-${tile.west}-${stored.radar.taken_min}`,
+          WeatherChannelSubject.radar({ tile, frames: 1 }),
           // The picture's own time, which is not when it was sent: a tile cut from a mosaic an
           // hour after it was made is an hour old the moment it lands.
           { contentAt: WeatherStoredRadarTile.takenAt(stored), receivedAt: stored.receivedAt },
@@ -314,16 +320,17 @@ export const WeatherCache = Object.freeze({
           destination: WeatherCache.destination({ of: assembly.request ?? null, tables }),
         })
       }
-      // One row per square of earth held, whatever its width (design §3). No destination: the
-      // radar screen is reached from the place page's card, which knows which place it is about;
-      // a cached row knows only a tile.
-      for (const stored of state.radarTiles ?? []) {
+      // One row per square of earth held, whatever its width (design §3), with its newest
+      // picture's time and, since revision 13, how many pictures of it are held. No destination:
+      // the radar screen is reached from the place page's card, which knows which place it is
+      // about; a cached row knows only a tile.
+      for (const { stored, frames } of radarSquares(state.radarTiles)) {
         const tile = stored.tile
         add({
           id: `radar-${botID}-${tile.zoom}-${tile.south}-${tile.west}`,
           group: WeatherCacheGroup.radarPictures,
           botID,
-          subject: WeatherChannelSubject.radar({ tile }),
+          subject: WeatherChannelSubject.radar({ tile, frames }),
           contentAt: WeatherStoredRadarTile.takenAt(stored),
           receivedAt: stored.receivedAt,
           destination: null,
@@ -389,4 +396,27 @@ export const WeatherCache = Object.freeze({
  */
 function labelForAskedForecast(key) {
   return key === UNASKED_FORECAST_KEY ? null : key
+}
+
+/**
+ * One bot's radar frames as squares (revision 13): each square's newest frame — then the one
+ * that arrived last — and how many pictures (distinct `taken`) of it are held, in the order the
+ * squares first appear.
+ */
+function radarSquares(list) {
+  const squares = new Map()
+  for (const stored of list ?? []) {
+    const tile = stored.tile
+    const key = `${tile.zoom}|${tile.south}|${tile.west}`
+    const held = squares.get(key)
+    if (held == null) {
+      squares.set(key, { stored, taken: new Set([stored.radar.taken_min]) })
+      continue
+    }
+    held.taken.add(stored.radar.taken_min)
+    const newer = stored.radar.taken_min > held.stored.radar.taken_min
+      || (stored.radar.taken_min === held.stored.radar.taken_min && stored.receivedAt > held.stored.receivedAt)
+    if (newer) held.stored = stored
+  }
+  return [...squares.values()].map(({ stored, taken }) => ({ stored, frames: taken.size }))
 }
