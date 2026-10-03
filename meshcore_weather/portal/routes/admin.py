@@ -320,6 +320,15 @@ async def _feed_stats(bot) -> dict:
         "warnings_last_hour": warn,
         "newest_age_s": int((now - newest).total_seconds()) if newest else None,
         "top_types_last_hour": types.most_common(12),
+        # The dish's internet backup (emwin/fetcher.py SDRSource): on while
+        # goesproc has written nothing for `sdr_internet_fallback_min`.
+        "internet_backup": {
+            "after_min": settings.sdr_internet_fallback_min,
+            "on": bool(getattr(bot.emwin, "fallback_active", False)),
+            "since": since.isoformat() if (since := getattr(bot.emwin, "fallback_since", None)) else None,
+            "added": getattr(bot.emwin, "fallback_added", 0),
+            "from_internet_last_hour": sum(1 for p in last_hour if p.get("source") == "internet"),
+        } if settings.emwin_source == "sdr" else None,
     }
 
 

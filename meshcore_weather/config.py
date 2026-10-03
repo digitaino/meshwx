@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     # "sdr": goesproc's emwin output tree (YYYY-MM-DD/ dirs of .TXT files)
     sdr_emwin_dir: str = "~/goes-images/emwin"
     sdr_poll_interval: int = 30     # seconds between directory scans
+    # The dish's internet backup. With the source "sdr", once goesproc has
+    # written nothing for this many minutes (a dish down for maintenance, a
+    # lost lock) the bot also takes NOAA's internet bundle: emwin_base_url
+    # once to cover the gap, then emwin_poll_url every emwin_poll_interval,
+    # until the dish writes again. The same product has the same file name
+    # either way, so nothing is held twice, and each product keeps the
+    # source it came by. 0 = never.
+    sdr_internet_fallback_min: int = 10
     # Radar pictures (spec 7D): a directory of EMWIN `*-RAD*.GIF` under YYYY-MM-DD/.
     # Empty means the dish's own EMWIN directory when the source is "sdr", and
     # no radar at all otherwise: the internet bundle carries no images.

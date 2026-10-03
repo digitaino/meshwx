@@ -591,6 +591,7 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_EMWIN_MAX_AGE_HOURS` | `12` | Hours a product stays in the store; warning-class products stay at least 48 h and storm reports at least 24 h |
 | `MCW_SDR_EMWIN_DIR` | `~/goes-images/emwin` | goesproc's EMWIN output (`YYYY-MM-DD/` directories) |
 | `MCW_SDR_POLL_INTERVAL` | `30` | Seconds between directory scans |
+| `MCW_SDR_INTERNET_FALLBACK_MIN` | `10` | The dish's internet backup: after this many minutes with no new file from goesproc, the bot also takes NOAA's internet bundle (the last hour once, then every 2 minutes) until the dish writes again. Products are matched by file name, so none is held twice; the ones from the internet are kept under `data/emwin_internet/` so a restart keeps them. Radar has no backup (the bundle has no pictures). `0` turns it off |
 | `MCW_RADAR_DIR` | empty | Where the EMWIN radar GIFs are (`YYYY-MM-DD/*-RAD*.GIF`). Empty means `MCW_SDR_EMWIN_DIR` when the source is `sdr`, and no radar otherwise: the internet bundle carries no images |
 | `MCW_SDR_DASHBOARD_URL` | `http://127.0.0.1:8080` | The goestools dashboard: the `sat` reply, receiver log lines, the portal's Satellite page and Overview |
 

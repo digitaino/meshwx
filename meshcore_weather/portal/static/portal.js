@@ -1057,6 +1057,15 @@ var Portal = {
     onLeave: function () { if (this._timer) clearInterval(this._timer); this._timer = null; },
 
     load: function () {
+      // The dish's internet backup: off while the dish writes, on after
+      // `after_min` minutes of silence, with what it has brought in.
+      function backupTile(b) {
+        if (!b) return "";
+        if (!b.after_min) return tile("Internet backup", "off", "turned off (MCW_SDR_INTERNET_FALLBACK_MIN 0)");
+        if (!b.on) return tile("Internet backup", "standing by", "takes over after " + b.after_min + " min without a file from the dish" +
+          (b.from_internet_last_hour ? " · " + b.from_internet_last_hour + " products from it in the last hour" : ""), "ok");
+        return tile("Internet backup", "on", "since " + agoAt(Date.parse(b.since) / 1000) + " ago · " + b.added + " products from NOAA", "warn");
+      }
       api("/api/sdr").then(function (d) {
         var r = d.receiver || {}, st = r.stats || {}, feed = d.feed || {}, err = r._error;
         $("sat-dashboard-link").href = d.dashboard_url;
@@ -1065,7 +1074,8 @@ var Portal = {
           tile("Viterbi", st.vit_avg != null ? st.vit_avg : "–", "errors per frame, lower is better") +
           tile("Drops", st.drops != null ? st.drops : "–", "last interval", st.drops ? "warn" : "") +
           tile("Feed", feed.products_last_hour != null ? feed.products_last_hour : "–", "products in the last hour") +
-          tile("Newest file", ago(feed.newest_age_s) + " old", feed.source === "sdr" ? "from the dish" : "internet feed");
+          tile("Newest file", ago(feed.newest_age_s) + " old", feed.source === "sdr" ? "from the dish" : "internet feed") +
+          backupTile(feed.internet_backup);
         $("sat-signal-sub").textContent = err ? err :
           ("mode " + (r.mode || "?") + " · gain " + (st.gain != null ? st.gain.toFixed(1) : "?") + " · freq offset " + (st.freq != null ? Math.round(st.freq) + " Hz" : "?"));
         $("sat-mode-point").className = "btn" + (r.mode === "point" ? " btn-primary" : "");

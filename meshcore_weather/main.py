@@ -1458,7 +1458,13 @@ class WeatherBot:
         if command == "sat":
             if self._sdr_monitor is None:
                 return "No satellite receiver on this bot: its EMWIN comes over the internet"
-            return self._sdr_monitor.report(emwin_mtime=getattr(self.emwin, "newest_mtime", None))
+            line = self._sdr_monitor.report(emwin_mtime=getattr(self.emwin, "newest_mtime", None))
+            since = getattr(self.emwin, "fallback_since", None)
+            if since is not None:
+                # The dish is quiet and the bot is on NOAA's internet feed:
+                # the one thing a person asking `sat` most needs to know.
+                line += f". Internet backup on since {since.strftime('%H:%MZ')}"
+            return line
 
         if command == "cov":
             return self._coverage_reply()

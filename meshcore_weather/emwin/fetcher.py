@@ -17,6 +17,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import time
 import zipfile
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone, timedelta
@@ -35,6 +37,31 @@ EMWIN_FILENAME_RE = re.compile(
 )
 
 EMWIN_TS_RE = re.compile(r"_(\d{14})_")
+
+
+def read_bundle(data: bytes, source: str = "internet") -> list[dict]:
+    """An EMWIN ZIP bundle (zips inside zips allowed) -> product dicts."""
+    products = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for name in zf.namelist():
+                if name.lower().endswith(".zip"):
+                    try:
+                        products.extend(read_bundle(zf.read(name), source))
+                    except Exception:
+                        pass
+                elif name.lower().endswith(".txt"):
+                    try:
+                        raw_text = zf.read(name).decode("utf-8", errors="replace").strip()
+                        if raw_text:
+                            prod = parse_emwin_file(name, raw_text, source=source)
+                            if prod:
+                                products.append(prod)
+                    except Exception:
+                        pass
+    except zipfile.BadZipFile:
+        logger.warning("Invalid ZIP data")
+    return products
 
 
 class EMWINSource(ABC):
@@ -234,27 +261,7 @@ class InternetSource(EMWINSource):
             logger.exception("Error saving cache")
 
     def _extract_zip(self, data: bytes) -> list[dict]:
-        products = []
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                for name in zf.namelist():
-                    if name.lower().endswith(".zip"):
-                        try:
-                            products.extend(self._extract_zip(zf.read(name)))
-                        except Exception:
-                            pass
-                    elif name.lower().endswith(".txt"):
-                        try:
-                            raw_text = zf.read(name).decode("utf-8", errors="replace").strip()
-                            if raw_text:
-                                prod = self._parse_emwin_file(name, raw_text)
-                                if prod:
-                                    products.append(prod)
-                        except Exception:
-                            pass
-        except zipfile.BadZipFile:
-            logger.warning("Invalid ZIP data")
-        return products
+        return read_bundle(data, source="internet")
 
     def _parse_emwin_file(self, filename: str, raw_text: str) -> dict | None:
         return parse_emwin_file(filename, raw_text, source="internet")
@@ -280,16 +287,36 @@ class SDRSource(EMWINSource):
     would turn `\\r\\r\\n` into blank lines and break pyIEM), and hand it to
     the same parser the zip path uses. No network, no cache file: the
     files on disk are the cache.
+
+    **The internet backup.** When the dish has written nothing for
+    `sdr_internet_fallback_min` minutes, the source also takes NOAA's
+    internet bundle (the hour's bundle once, to cover the gap, then the
+    2-minute one) until the dish writes again. NOAA names every product
+    exactly as goesproc does, so a product either way is one file name and
+    is held once, and each keeps the source it came by. The ones from the
+    internet are written under `fallback_root` in the same day folders, so
+    a restart in the middle of an outage still has them; that folder is
+    scanned with the dish's and pruned the same way.
     """
 
-    def __init__(self, root: Path | None = None):
+    def __init__(self, root: Path | None = None, fallback_root: Path | None = None):
         self.root = Path(root or settings.sdr_emwin_dir).expanduser()
+        # The production source keeps its internet products next to the bot's
+        # other data; a source pointed somewhere else (a test) has no backup
+        # unless it is given a folder for one.
+        if fallback_root is None and root is None:
+            fallback_root = Path(settings.data_dir) / "emwin_internet"
+        self.fallback_root = Path(fallback_root).expanduser() if fallback_root else None
         self._products: dict[str, dict] = {}
         self._seen: set[str] = set()
         self._poll_task: asyncio.Task | None = None
         self._running = False
         self._seen_initial = False
-        self.newest_mtime: float | None = None    # newest file taken in, for `sat`
+        self.newest_mtime: float | None = None    # newest file the DISH wrote, for `sat`
+        self.fallback_since: datetime | None = None   # the internet backup is on (since when)
+        self.fallback_added = 0                       # products it brought in this time
+        self._fallback_fetched = 0.0                  # monotonic time of its last fetch
+        self._client: "httpx.AsyncClient | None" = None
 
     async def start(self) -> None:
         if not self.root.is_dir():
@@ -309,6 +336,9 @@ class SDRSource(EMWINSource):
                 await self._poll_task
             except asyncio.CancelledError:
                 pass
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def _poll_loop(self) -> None:
         while self._running:
@@ -319,12 +349,122 @@ class SDRSource(EMWINSource):
                     logger.info("SDR source: +%d new products (%d total)", new, len(self._products))
             except Exception:
                 logger.exception("Error scanning SDR EMWIN directory")
+            try:
+                await self.check_fallback()
+            except Exception:
+                logger.exception("Error in the internet backup")
 
-    def _candidate_dirs(self, now: datetime) -> list[Path]:
+    # -- the internet backup ------------------------------------------------
+
+    @property
+    def fallback_active(self) -> bool:
+        return self.fallback_since is not None
+
+    def dish_quiet_min(self, now: float | None = None) -> float:
+        """Minutes since the dish last wrote a file this source took in."""
+        if self.newest_mtime is None:
+            return float("inf")
+        return ((now or time.time()) - self.newest_mtime) / 60
+
+    async def check_fallback(self, now: datetime | None = None, wall: float | None = None) -> int:
+        """Turn the internet backup on or off by how long the dish has been
+        quiet, and fetch when it is on.  Returns the products it added."""
+        limit = settings.sdr_internet_fallback_min
+        if self.fallback_root is None or limit <= 0:
+            return 0
+        now = now or datetime.now(timezone.utc)
+        quiet = self.dish_quiet_min(wall)
+        if quiet < limit:
+            if self.fallback_active:
+                logger.info("EMWIN: the dish is writing again; internet backup off after %s, "
+                            "%d products came that way", _span(now - self.fallback_since), self.fallback_added)
+                self.fallback_since = None
+            return 0
+        if not self.fallback_active:
+            self.fallback_since = now
+            self.fallback_added = 0
+            self._fallback_fetched = 0.0
+            logger.warning("EMWIN: nothing from the dish for %s; taking NOAA's internet feed until it writes again",
+                           "ever" if quiet == float("inf") else f"{quiet:.0f} min")
+            url = settings.emwin_base_url          # the last hour, to cover the gap
+        elif time.monotonic() - self._fallback_fetched >= settings.emwin_poll_interval:
+            url = settings.emwin_poll_url
+        else:
+            return 0
+        added = await self._fetch_internet(url, now)
+        self._fallback_fetched = time.monotonic()
+        self.fallback_added += added
+        if added:
+            logger.info("EMWIN (internet backup): +%d new products (%d total)", added, len(self._products))
+        return added
+
+    async def _get(self, url: str) -> "bytes | None":
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=60.0)
+        try:
+            resp = await self._client.get(url)
+            resp.raise_for_status()
+            return resp.content
+        except httpx.HTTPError as e:
+            logger.warning("EMWIN internet backup: %s", e)
+            return None
+
+    async def _fetch_internet(self, url: str, now: datetime) -> int:
+        data = await self._get(url)
+        if not data:
+            return 0
+        loop = asyncio.get_running_loop()
+        products = await loop.run_in_executor(None, read_bundle, data, "internet")
+        return await loop.run_in_executor(None, self._take_internet, products, now)
+
+    def _take_internet(self, products: list[dict], now: datetime) -> int:
+        """Hold the bundle's products the dish has not given us, and write
+        each one down so that a restart keeps it."""
+        added = 0
+        notable: list[str] = []
+        for prod in products:
+            name = prod.get("filename") or ""
+            if not name or name in self._seen or name in self._products:
+                continue
+            if is_expired((prod.get("awips_id") or "")[:3], prod["timestamp"], now):
+                self._seen.add(name)
+                continue
+            folder = self.fallback_root / f"{prod['timestamp']:%Y-%m-%d}"
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / name).write_bytes(prod["raw_text"].encode("utf-8"))
+            except OSError as e:
+                logger.warning("EMWIN internet backup: could not keep %s on disk: %s", name, e)
+            self._seen.add(name)
+            self._products[name] = prod
+            added += 1
+            if (prod.get("awips_id") or "")[:3] in _NOTABLE:
+                notable.append(prod["awips_id"])
+        if notable:
+            logger.info("EMWIN (internet): %s%s", " ".join(notable[:10]),
+                        f" +{len(notable) - 10} more" if len(notable) > 10 else "")
+        self._prune_fallback(now)
+        return added
+
+    def _prune_fallback(self, now: datetime) -> None:
+        """Day folders of internet products no product can still come from."""
+        if self.fallback_root is None or not self.fallback_root.is_dir():
+            return
+        keep = set(d.name for d in self._candidate_dirs(now, self.fallback_root))
+        for d in self.fallback_root.iterdir():
+            if d.is_dir() and d.name not in keep:
+                shutil.rmtree(d, ignore_errors=True)
+
+    # -- the directories -------------------------------------------------------
+
+    def _candidate_dirs(self, now: datetime, root: "Path | None" = None) -> list[Path]:
         """Date directories that can still contain unexpired products."""
+        root = root or self.root
         cutoff_day = (now - timedelta(hours=longest_hours() + 24)).date()
         dirs = []
-        for d in self.root.iterdir():
+        if not root.is_dir():
+            return dirs
+        for d in root.iterdir():
             if not d.is_dir():
                 continue
             try:
@@ -342,7 +482,10 @@ class SDRSource(EMWINSource):
         settle = now.timestamp() - 2          # skip files goesproc may still be writing
         added = 0
         notable: list[str] = []
-        for d in self._candidate_dirs(now):
+        folders = [(d, "sdr") for d in self._candidate_dirs(now)]
+        if self.fallback_root is not None:
+            folders += [(d, "internet") for d in self._candidate_dirs(now, self.fallback_root)]
+        for d, source in folders:
             with os.scandir(d) as it:
                 for entry in it:
                     name = entry.name
@@ -371,11 +514,12 @@ class SDRSource(EMWINSource):
                     self._seen.add(name)
                     if not raw:
                         continue
-                    prod = parse_emwin_file(name, raw, source="sdr")
+                    prod = parse_emwin_file(name, raw, source=source)
                     if prod:
                         self._products[name] = prod
                         added += 1
-                        self.newest_mtime = max(self.newest_mtime or 0.0, st.st_mtime)
+                        if source == "sdr":
+                            self.newest_mtime = max(self.newest_mtime or 0.0, st.st_mtime)
                         if (prod.get("awips_id") or "")[:3] in _NOTABLE:
                             notable.append(prod["awips_id"])
         if notable and self._seen_initial:
@@ -391,6 +535,11 @@ class SDRSource(EMWINSource):
 
     async def fetch_products(self) -> list[dict]:
         return list(self._products.values())
+
+
+def _span(delta: timedelta) -> str:
+    m = int(delta.total_seconds() // 60)
+    return f"{m} min" if m < 120 else f"{m // 60} h {m % 60:02d} min"
 
 
 def create_source() -> EMWINSource:
