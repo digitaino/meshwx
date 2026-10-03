@@ -1,15 +1,26 @@
 # MeshWX v5: the weather protocol for MeshCore apps
 
-Version 5.0, revision 12, 2026-09-29. This is the document an app developer
+Version 5.0, revision 13, 2026-10-03. This is the document an app developer
 builds against. It replaces the v3/v4 protocol documents, the April 2026
 iOS brief and the v4 client guide, all of which are now superseded.
+
+Revision 13 adds one message and two request words, all for radar.
+**Radar detail** (type 12, section 7E) is a radar tile one degree on a
+side, twice the detail of the closest tile before it and as much as the
+pictures hold; its edges are half degrees, which type 11 cannot carry.
+`>radar ... loop` (section 7D.4) asks for the last hour of a tile: up to
+five ordinary radar packets, oldest first, leaving out the pictures the
+app says it holds, so a phone can play them as a loop. A revision 12
+client ignores type 12 like any unknown type and already keeps only the
+newest picture of a tile, so it keeps working untouched. If you hold
+revision 12, read section 16.
 
 Revision 12 adds two bytes to one message: a Warning issued before it
 takes effect now says when it starts (section 3), so a watch issued on
 Tuesday for Wednesday evening through Friday is shown as starting then,
 not as in effect now. The bytes follow the issue time and are found by
 length, so a revision 11 client never reads them and keeps working
-untouched. If you hold revision 11, read section 16.
+untouched. If you hold revision 11, read section 16A.
 
 Revision 11 adds one message: **Radar** (type 11, section 7D), one tile of
 a radar picture as a quadtree of four precipitation levels, always one
@@ -19,7 +30,7 @@ minutes; no internet is involved. It answers the new request `>radar`, is
 never broadcast on a schedule, and its refusals carry the letter `x`, the
 one request whose Not-available letter is not its first. Nothing already
 on the wire changed and unknown types are ignored, so a revision 10 client
-keeps working untouched. If you hold revision 10, read section 16A.
+keeps working untouched. If you hold revision 10, read section 16B.
 
 Revision 10 adds three request forms and reinterprets one byte. `>part`
 (section 7C) asks for the packets of a multi-packet answer a phone did not
@@ -29,7 +40,7 @@ entries, and `total` bit 7 says a sweep is scoped. `>f 35.687,-105.938`
 asks for a forecast at a coordinate, so a phone no longer has to know of a
 bundled point to ask. The one byte that changed meaning is the sweep's
 `total`, and it could change because no revision 9 client had shipped to
-anyone. If you hold revision 9, read section 16B.
+anyone. If you hold revision 9, read section 16C.
 
 Revision 9 adds one message: **Area sweep** (type 10, section 7C), the
 national picture of active alerts as runs of UGC numbers, which the phone
@@ -37,7 +48,7 @@ draws on the zone and county outlines it already ships. It answers the new
 requests `>wmap` and `>wmap all`, is never broadcast on a schedule, and is
 limited to one sweep every 5 minutes across all senders. Nothing already
 on the wire changed and unknown types are ignored, so a revision 8 client
-keeps working untouched. If you hold revision 8, read section 16C.
+keeps working untouched. If you hold revision 8, read section 16D.
 
 Revision 8 changes one answer and no byte. `>o KAUS` for a station with
 no fresh report now answers with the nearest station within 40 km of it
@@ -52,7 +63,7 @@ stop guessing whether it is reading satellite data. And a **cut flag** on
 Text (section 8.1) says a narrative was longer than the air allows and the
 tail was dropped; the text now ends at a sentence rather than mid-word.
 A revision 6 client ignores both bits and reads every packet exactly as
-before. If you hold revision 6, read section 16E.
+before. If you hold revision 6, read section 16F.
 
 Revision 5 adds two times, so that a phone can say *when* a number is true
 instead of implying it is true now: a **per-station age** in Observations
@@ -60,7 +71,7 @@ instead of implying it is true now: a **per-station age** in Observations
 appended after everything a revision 4 decoder reads and both are
 announced by a bit in the flags nibble, so a revision 4 client keeps
 decoding every message exactly as before and simply never learns the two
-times. If you hold revision 4, read section 16G.
+times. If you hold revision 4, read section 16H.
 
 Revision 4 adds one message: **Coverage** (type 8, section 7A), the bot's
 own statement of what it carries — centre, radius, NWS offices, and the
@@ -214,7 +225,8 @@ Message types:
 | 9 | Request (app → bot, new in revision 6) | 7B |
 | 10 | Area sweep (new in revision 9) | 7C |
 | 11 | Radar (new in revision 11; reserved until then "for a future structured product") | 7D |
-| 12 to 15 | Free for third-party experiments; the bot never sends them | |
+| 12 | Radar detail (new in revision 13; free for third-party experiments until then) | 7E |
+| 13 to 15 | Free for third-party experiments; the bot never sends them | |
 
 Receivers ignore unknown types.
 
@@ -1048,8 +1060,9 @@ tile there is answered Not available, reason 0, until it is.
 
 ### 7D.3 Limits
 
-An answer is one packet, so the hourly packet budget and the per-sender
-rule (section 8.2) are limit enough, with one addition. The
+A picture is one packet and a loop at most five (7D.4), so the hourly
+packet budget and the per-sender rule (section 8.2) are limit enough, with
+one addition. The
 same tile cut from the same picture is the same bytes, and everyone in
 range already received them: asked for again within **5 minutes** it is
 answered Not available, letter `x`, reason 4. The window is keyed on
@@ -1059,6 +1072,102 @@ older one, and a wider tile is a different tile.
 The bot answers from a picture at most **60 minutes** old by `taken`. With
 nothing newer it answers Not available, reason 0: an old radar picture is
 worse than none, because it looks like an answer.
+
+### 7D.4 The last hour
+
+New in revision 13. `>radar <place> [z<n>] loop [HHMM ...]` asks for the
+pictures of the last hour of one tile, so that an app can play them as a
+loop. Nothing new goes on the wire: each picture is an ordinary Radar
+packet (or Radar detail, section 7E), and its `taken` says which picture
+it is. The bot:
+
+1. Finds the tile and the product exactly as for one picture (7D.1, 7E),
+   from the newest picture of that product at most 60 minutes old. None:
+   Not available, reason 0.
+2. Walks back through older pictures of **the same product only**: each
+   one whose `taken` is at least 10 minutes before the last one picked,
+   back to 60 minutes before the newest, at most five in all, the newest
+   included (`protocol.json` `v5.radar.loop`). A picture the dish missed
+   is a gap. It is never filled from another product: a loop that switches
+   between a regional picture and the national one changes its detail in
+   front of the person watching it.
+3. Leaves out every picture whose `taken`, as a UTC hour and minute,
+   follows `loop` in the request (the app holds it), and every tile of a
+   picture that went out in the last 5 minutes (7D.3: everyone listening
+   holds it).
+4. Sends the rest **oldest first**, one packet each. Each counts against
+   the hourly budget and starts its own 5-minute window.
+5. With nothing left to send, answers Not available reason 4 when anything
+   was left out under 3, and reason 0 when there was nothing to find.
+
+The `HHMM` groups are four digits each, at most five, newest first, and
+as many as keep the request inside its 40 bytes (section 7B).
+`>radar 30.270,-97.740 loop` is 26 bytes, so two always fit, and a held
+picture left off the list is only sent again, which costs a packet and
+breaks nothing. The hour is needed as well as the minute: at 15-minute
+steps the newest picture and the one an hour before it end in the same
+two digits.
+
+An app plays the pictures of one tile that it holds, whoever asked for
+them, and does not ask for an hour it already holds. `request_radar_loop`
+in the vectors asks for Austin's hour while holding 23:53 and 23:38.
+
+## 7E. Radar detail (type 12)
+
+A radar tile at **zoom -1**: one degree on a side and the same 32 x 32
+grid, so a cell is 1/32 of a degree (3.5 km north to south). New in
+revision 13; everything in 7D applies unless this section says otherwise.
+
+**One level, and no more.** The regional pictures have pixels about 1/37
+of a degree across (2.6 by 3 km at Austin). A zoom 0 cell holds 2.3 by
+2.3 of them and a detail cell about one, so a detail tile is twice as
+sharp; a finer one would draw each pixel as four cells and show nothing
+new. The national picture (9.8 pixels a degree) and Alaska's (12) are
+coarser than zoom 0 already, so a detail tile is cut only from a picture
+of at least 30 pixels a degree (`v5.radar.detail.min_px_per_degree`):
+the calibrated regional pictures of the lower 48, Hawaii's and Puerto
+Rico's.
+
+**The zoom 0 tile instead.** Where no such picture at most 60 minutes old
+holds the tile, `>radar ... z-1` is answered with the zoom 0 tile for the
+same coordinate, under all of zoom 0's rules, reason 4 included, and a
+loop the same way. An app that asked for detail takes the zoom 0 tile
+containing the same coordinate as its answer, and says it is showing the
+wider picture.
+
+**The lattice.** 7D.1's rule with `step = 0.5`:
+`centre = floor(x / 0.5 + 0.5) * 0.5`, `south = centre_lat - 0.5`,
+`west = centre_lon - 0.5`. The asked spot is never closer than 0.25
+degrees to an edge. The edges are half degrees, which a type 11 packet
+cannot carry, and an app before revision 13 would have drawn a zoom it
+did not know at the wrong size: that is why this is a type of its own.
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 4 | 4 | `taken` | As type 11 |
+| 8 | 2 | `south` | i16 LE, the tile's southern edge in **quarter degrees**: 32.5 degrees is 130 |
+| 10 | 2 | `west` | i16 LE, the tile's western edge in quarter degrees, -720 to 718 |
+| 12 | 1 | `shape` | bits 0-1 `depth`, 0: a one-degree tile. Other values are reserved and the packet is rejected. Bits 2-7 `product`, as type 11 |
+| 13 | 4 | `bounds` | **Only when the partial flag is set**, as type 11 |
+| 13 or 17 | 1 to 144 | `cells` | The quadtree of 7D.2 |
+
+The flags are type 11's: bit 0 coarse, bit 1 partial, bits 2 and 3 the
+data source. Reject a tile whose `south` or `west` is an odd number of
+quarter degrees: it is not on the lattice. A tile with nothing on it is
+14 bytes. Quarter degrees and a `depth` that is always 0 cost nothing
+now, and leave room for a finer tile from a finer picture (Puerto Rico's
+is 140 pixels a degree) without another type.
+
+Measured on the 38 Southern Plains pictures of 18 to 21 September 2026,
+a detail tile with precipitation on it was 54 bytes typically and 100 at
+most, and none needed the coarse form. `radar_detail_tile` in
+`meshwx_v5_vectors.json` is real: the tile at Dallas from the same
+picture as `radar_tile`, 100 bytes. `radar_detail_coarse_partial`
+exercises both flags.
+
+A detail tile is a picture of a spot somebody chose. Keep it with the
+other tiles, by `(south, west, zoom, taken)`, but do not show it as the
+picture of a place unless the person asked for detail there.
 
 ## 8. Text (type 6) and Not available (type 7)
 
@@ -1141,6 +1250,8 @@ type and get a text DM back.
 | `>radar 30.270,-97.740` | The zoom 0 tile for that coordinate, decimal degrees, three decimals: the tile whose centre is nearest (section 7D.1). An app sends this form |
 | `>radar 30.270,-97.740 z2` | The same at zoom 2. The zoom is its own last token, `z0` to `z3`; anything else after the place is part of the place, so `>radar zion il` is a town. `z4` and up gets Not available reason 1 |
 | `>radar round rock tx`, `>radar 78701 z1` | A place or a ZIP the bot resolves, as `>f` does |
+| `>radar 30.270,-97.740 z-1` | Radar detail (section 7E, revision 13): the one-degree tile for that coordinate, or the zoom 0 tile for it where the bot has no picture fine enough. `z-2` and below get Not available reason 1 |
+| `>radar 30.270,-97.740 loop`, `>radar 30.270,-97.740 z1 loop 2353 2338` | The last hour of that tile (section 7D.4, revision 13): up to five pictures, oldest first, leaving out those whose UTC `HHMM` follow `loop`. `loop` followed by anything but four-digit groups is part of the place: `>radar loop tx` is Loop, Texas |
 | `>sat` | The bot's GOES receiver now, one line, Text subject 8: lock, signal good/fair/poor, packets dropped in the last minute, age of the newest EMWIN file. A receiver that is not reporting is answered as Text saying so. A Not available for it would carry `s`, the letter `>space` and `>storm` use |
 | `>cov` | Coverage (section 7A), one packet: the bot's centre, radius, offices and zone runs. It describes the bot, not a place, so coverage never filters it and it is answerable at any time. A bot that knows neither a centre nor a zone answers Not available reason 0, request `c` |
 
@@ -1215,7 +1326,7 @@ thing again, not to ask for the parts again.
 not its first: `r` was already `>rain`, and a refusal has to say which of
 the two it refuses. Its reasons: 0 no picture newer than 60 minutes holds
 the tile (or the region is not calibrated, or no picture reaches it), 1 the
-place did not resolve or the zoom is not 0 to 3, 2 this bot has no radar
+place did not resolve or the zoom is not -1 to 3, 2 this bot has no radar
 pictures at all, 4 this tile of this picture went out in the last 5
 minutes.
 
@@ -1267,7 +1378,7 @@ then `C` or `Z`, then the 3-digit number. `TXC453` is in `counties.json`,
 Louisiana parishes, Alaska boroughs and Virginia's independent cities are
 all "counties" here, as in the NWS products.
 
-Bundle versioning: `protocol.json` `version` (16 since revision 12),
+Bundle versioning: `protocol.json` `version` (17 since revision 13),
 `index.json` `version` (2 since revision 3) and `pfm_points.json`
 `version` (2 since revision 10). The send limit of 1 October 2026
 (section 2.1) changed `protocol.json` without a new `version`, since no
@@ -1536,7 +1647,15 @@ range shows old data; saying so is the feature.
   exactly this.
 - Radar sees snow as well as rain, so the word is precipitation.
 - Keep tiles by `(south, west, zoom)`, newest `taken` wins, and use a tile
-  somebody else asked for whenever it holds the place being shown.
+  somebody else asked for whenever it holds the place being shown. From
+  revision 13 keep the older pictures of a tile too, by
+  `(south, west, zoom, taken)`: they are its loop (7D.4). Show the newest
+  unless a loop is playing.
+- Play a loop only when the person asks, with each picture's own time on
+  screen, and show a missing picture as a gap rather than stretching the
+  one before it.
+- An answer to a detail request (7E) may be the zoom 0 tile. Show it, and
+  say that it is the wider picture.
 
 ## 11. Search and place resolution
 
@@ -1618,7 +1737,9 @@ range shows old data; saying so is the feature.
   the place on screen, whoever asked for it. Asking again inside 5 minutes
   of the same picture going out is answered Not available reason 4, which
   costs the mesh a packet too, so tell the user when the picture they hold
-  was taken instead of inviting them to refresh it.
+  was taken instead of inviting them to refresh it. A loop (7D.4) is up to
+  five packets: offer it on its own control, list what you hold, and play
+  an hour you already hold without asking.
 - Do not re-request something you already hold. Apart from `>part`, the
   bot has no cache: it rebuilds and re-transmits the whole answer,
   spending airtime for everyone on the mesh.
@@ -1661,6 +1782,11 @@ range shows old data; saying so is the feature.
     time when two remain, ignore 0 or a value not below `issued_before`,
     and show a product that has not started as **from** its start
     **until** its expiry.
+16. For revision 13 (7D.4, 7E): decode type 12 with its quarter-degree
+    edges and reject a `depth` other than 0; take the zoom 0 tile as an
+    answer to a detail request; send held pictures after `loop` as UTC
+    `HHMM`, newest first, within the request's 40 bytes; play a loop only
+    when asked, with each picture's time.
 
 ## 15. What changed from v4
 
@@ -1673,7 +1799,43 @@ event byte and storm tags, areas are runs of zone or county numbers, and
 a cancel and a digest exist. Observations are batched. Message types are
 renumbered; nothing from v3/v4 decodes as v5.
 
-## 16. Changes in revision 12
+## 16. Changes in revision 13
+
+Revision 13 adds one message and two request words. No field moved and
+no existing message changed.
+
+| Section | Revision 12 | Revision 13 |
+|---|---|---|
+| 2.2 | Type 12 free for third-party experiments | Type 12 is **Radar detail**; 13 to 15 stay free |
+| 7D.3 | An answer was one packet | A picture is one packet and a loop at most five; every tile sent starts its own 5-minute window |
+| 7D.4 | (none) | `loop`: the last hour of a tile, up to five pictures of one product at least 10 minutes apart, oldest first, leaving out the ones the app lists as UTC `HHMM` |
+| 7E | (none) | Radar detail: zoom -1, one degree, half-degree lattice, edges in quarter degrees, `depth` 0. Cut only from pictures of 30 pixels a degree or more; the zoom 0 tile for the same coordinate where there is none |
+| 8.2 | The zoom was `z0` to `z3` | `z-1` as well, and an optional `loop [HHMM ...]` after the zoom |
+| 8.3 | Reason 1 under `x`: the zoom is not 0 to 3 | The zoom is not -1 to 3 |
+| 9 | `protocol.json` `version` 16 | `version` 17: `types.radar_detail`, `flags.radar_detail`, `v5.radar.min_zoom`, `v5.radar.detail`, `v5.radar.loop`, `limits.radar_detail_cells_bytes`, `record_sizes.radar_detail_fixed` |
+| 10.6, 13, 14 | One picture per tile | Older pictures kept as a loop, played on request; a detail answer may be the zoom 0 tile; checklist item 16 |
+| 16A-16H | (none) | Every older changelog moved down a letter |
+
+Why, in the owner's words of 3 October 2026: *I would like to improve the
+radar system in a way that the user can request older radar images and
+the client presents them in a loop. Also I was thinking we should be able
+to zoom in further into a specific area and be able to request a more
+detailed picture of an area.* The same packet over a smaller square is
+more detail, but only down to the picture's own pixels, which is one
+level closer than revision 11 went; hence one level and not more (7E).
+A frame sent as its difference from the one before saved nothing on the
+pictures measured and would have made one lost packet spoil the rest of
+the loop, so every frame is a whole tile.
+
+To adopt revision 13: decode type 12 and run the four new vectors
+(`radar_detail_tile`, `radar_detail_coarse_partial`,
+`request_radar_detail`, `request_radar_loop`); compute detail tiles with
+`step = 0.5`; keep tiles by `(south, west, zoom, taken)`; and ask `loop`
+with the pictures you hold. An app that adopts none of it ignores type 12
+like any unknown type and keeps only the newest of the older pictures it
+hears, exactly as revision 11 told it to.
+
+## 16A. Changes in revision 12
 
 Revision 12 adds one field. No byte moved and no type was added.
 
@@ -1695,7 +1857,7 @@ two remain, and compute the start as `expires − begins_before`; ignore a
 value of 0 or one not smaller than `issued_before`. Decode the new vector
 `warning_upcoming_watch`. Nothing else changes.
 
-## 16A. Changes in revision 11
+## 16B. Changes in revision 11
 
 Revision 11 adds one message, one request and one Not-available letter. No
 field moved, no index moved, and no existing message changed.
@@ -1741,7 +1903,7 @@ tiles with `floor(x / step + 0.5)`; keep tiles by `(south, west, zoom)` with
 the newest `taken`; honour `bounds`; show `taken`. An app that adopts none
 of it ignores type 11 like any unknown type and loses nothing it had.
 
-## 16B. Changes in revision 10
+## 16C. Changes in revision 10
 
 Revision 10 adds three request forms and reinterprets one byte. No field
 moved, no index moved, and no message body changed.
@@ -1799,7 +1961,7 @@ every request it knows how to send; what it cannot do is read a **scoped**
 sweep, whose `total` it would take for 129 packets. It should therefore
 not send `>wmap` with states until it has read this section.
 
-## 16C. Changes in revision 9
+## 16D. Changes in revision 9
 
 Revision 9 adds one message: **Area sweep** (type 10, section 7C), the
 national picture of active alerts as runs of UGC numbers. Nothing already
@@ -1842,7 +2004,7 @@ is not an area with nothing in it. An app that does not implement type 10
 ignores it, as section 2.2 says of every unknown type, and should not send
 `>wmap`.
 
-## 16D. Changes in revision 8
+## 16E. Changes in revision 8
 
 Revision 8 changes what one request answers. No byte, field or index
 moved.
@@ -1863,7 +2025,7 @@ station within 40 km of the one named, from the bot asked. A revision 7
 app already stores the reading, since every Observations message is filed
 by its own indices; it only fails to count it as the answer.
 
-## 16E. Changes in revision 7
+## 16F. Changes in revision 7
 
 Revision 7 adds two flag bits and moves no byte. Nothing in any body
 changed, no field grew, and no index moved.
@@ -1890,7 +2052,7 @@ To adopt revision 7: read two bits out of the flags nibble everywhere but
 Cancel, read bit 0 of a Text chunk, and stop drawing a cut narrative as
 damage. Nothing else needs touching.
 
-## 16F. Changes in revision 6
+## 16G. Changes in revision 6
 
 Revision 6 adds one message and changes no existing byte: **Request
 (type 9, section 7B)**, an app's `>` request flooded on `#meshwx` as a
@@ -1898,7 +2060,7 @@ datagram. The DM and channel-text forms of section 8.2 still work; a
 revision 5 bot ignores type 9 and a revision 5 app never sends it.
 Sections 8.2, 12 and 13 say where the datagram fits.
 
-## 16G. Changes in revision 5
+## 16H. Changes in revision 5
 
 Revision 5 adds two times and nothing else. Both are appended after
 everything revision 4 reads, both are announced by a flags-nibble bit, and

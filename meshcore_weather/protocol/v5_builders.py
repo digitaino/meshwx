@@ -278,22 +278,32 @@ def parse_latlon(arg: str) -> tuple[float, float] | None:
     return lat, lon
 
 
-_RADAR_ZOOM = re.compile(r"(?:^|\s)z([0-9])\s*$", re.IGNORECASE)
+_RADAR_ZOOM = re.compile(r"(?:^|\s)z(-?[0-9])\s*$", re.IGNORECASE)
+_RADAR_LOOP = re.compile(r"(?:^|\s)loop((?:\s+[0-9]{4}){0,5})\s*$", re.IGNORECASE)
 
 
-def parse_radar_request(arg: str) -> "tuple[str, int] | None":
-    """`>radar [place] [z<n>]` -> (place, zoom).  None when the zoom is not 0..3.
+def parse_radar_request(arg: str) -> "tuple[str, int, list[int] | None] | None":
+    """`>radar [place] [z<n>] [loop [HHMM ...]]` -> (place, zoom, held).
 
-    The zoom is its own last token, `z0` to `z3`; anything else after the
-    place is part of the place, so `>radar zion il` is a town."""
+    None when the zoom is not -1..3.  `held` is None for a single picture and
+    otherwise the pictures the app already holds, as UTC minutes of the day
+    (spec 7D.4): `loop 2338 2353` is [1418, 1433].  Read from the end: the
+    loop, then the zoom, each its own token; anything else is part of the
+    place, so `>radar zion il` and `>radar loop tx` are towns."""
     arg = (arg or "").strip()
+    held = None
+    m = _RADAR_LOOP.search(arg)
+    if m:
+        held = [int(g[:2]) * 60 + int(g[2:]) for g in m.group(1).split()
+                if int(g[:2]) < 24 and int(g[2:]) < 60]
+        arg = arg[:m.start()].strip()
     m = _RADAR_ZOOM.search(arg)
     if not m:
-        return arg, 0
+        return arg, 0, held
     zoom = int(m.group(1))
-    if zoom > v5.MAX_RADAR_ZOOM:
+    if not (v5.MIN_RADAR_ZOOM <= zoom <= v5.MAX_RADAR_ZOOM):
         return None
-    return arg[:m.start()].strip(), zoom
+    return arg[:m.start()].strip(), zoom, held
 
 
 def radar_message(seq: int, bot: int, tile, picture, frame) -> "bytes | None":

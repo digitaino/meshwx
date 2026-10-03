@@ -149,7 +149,7 @@ def reencode(d: dict) -> bytes:
             scope=d["scope"],
             scoped=d["scoped"],
         )
-    if name == "radar":
+    if name in ("radar", "radar_detail"):
         return v5.encode_radar(
             seq,
             bot,
@@ -238,12 +238,12 @@ def test_header_range_checks(seq, bot):
 
 
 def test_unknown_type_decodes_as_header_only():
-    data = v5.encode_header(9, BOT, 12, 3) + b"\x01\x02"
+    data = v5.encode_header(9, BOT, 13, 3) + b"\x01\x02"
     out = v5.decode(data)
     assert out == {
         "seq": 9,
         "bot": BOT,
-        "type": 12,
+        "type": 13,
         "name": "unknown",
         "flags": 3,
     }
@@ -1202,7 +1202,8 @@ def test_protocol_json_v5_block():
 
     with open(PROTOCOL_PATH, encoding="utf-8") as fh:
         proto = json.load(fh)
-    assert proto["version"] == 16
+    assert proto["version"] == 17
+    assert "Revision 13" in proto["v5"]["notes"]
     # Revision 12: a warning's start, two bytes after the issue time.
     assert proto["v5"]["record_sizes"]["warning_begins"] == 2
     assert proto["v5"]["sentinels"]["warning_begins_saturated"] == v5.MAX_BEGINS_BEFORE_EXPIRY
@@ -1223,7 +1224,7 @@ def test_protocol_json_v5_block():
     assert block["types"] == {
         "warning": 1, "cancel": 2, "digest": 3, "observations": 4,
         "forecast": 5, "text": 6, "not_available": 7, "coverage": 8,
-        "request": 9, "area_sweep": 10, "radar": 11,
+        "request": 9, "area_sweep": 10, "radar": 11, "radar_detail": 12,
     }
     # Revision 11: radar tiles.
     radar = block["radar"]
@@ -1241,6 +1242,17 @@ def test_protocol_json_v5_block():
     assert radar["cooldown_seconds"] == bc.RADAR_COOLDOWN_S
     assert block["record_sizes"]["radar_fixed"] == 12 and block["record_sizes"]["radar_bounds"] == 4
     assert block["limits"]["radar_cells_bytes"] == [1, v5.MAX_SEND - 12]
+    # Revision 13: the detail level and the last hour.
+    from meshcore_weather.radar.tiles import DETAIL_MIN_PX_PER_DEGREE
+    assert radar["min_zoom"] == v5.MIN_RADAR_ZOOM == v5.RADAR_DETAIL_ZOOM == radar["detail"]["zoom"]
+    assert radar["detail"]["type"] == block["types"]["radar_detail"] == v5.TYPE_RADAR_DETAIL
+    assert radar["detail"]["span_degrees"] == v5.radar_span(v5.RADAR_DETAIL_ZOOM)
+    assert radar["detail"]["cells_bytes"] == v5.RADAR_DETAIL_CELLS_BYTES == v5.MAX_SEND - 13
+    assert block["limits"]["radar_detail_cells_bytes"] == [1, v5.RADAR_DETAIL_CELLS_BYTES]
+    assert block["record_sizes"]["radar_detail_fixed"] == 13
+    assert radar["detail"]["min_px_per_degree"] == DETAIL_MIN_PX_PER_DEGREE
+    assert (radar["loop"]["window_minutes"], radar["loop"]["max_frames"], radar["loop"]["min_spacing_minutes"]) == (
+        v5.RADAR_LOOP_WINDOW_MIN, v5.RADAR_LOOP_MAX_FRAMES, v5.RADAR_LOOP_MIN_SPACING_MIN)
     assert block["flags"]["coverage"] == {
         "zones_truncated": v5.FLAG_COVERAGE_ZONES_CUT,
         "offices_truncated": v5.FLAG_COVERAGE_OFFICES_CUT,
@@ -1327,7 +1339,7 @@ def test_vectors_cover_every_message_type():
     names = {v5.decode(bytes.fromhex(v["hex"]))["name"] for v in _vectors()}
     assert names == {
         "warning", "cancel", "digest", "observations", "forecast", "text",
-        "not_available", "coverage", "request", "area_sweep", "radar",
+        "not_available", "coverage", "request", "area_sweep", "radar", "radar_detail",
     }
 
 

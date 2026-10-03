@@ -56,6 +56,37 @@ class RadarService:
                 return tile, picture, frame
         return None
 
+    def loop_for(self, lat: float, lon: float, zoom: int = 0, now: "datetime | None" = None
+                 ) -> "list[tuple[RadarTile, RadarPicture, Frame]]":
+        """The last hour of one tile (spec 7D.4), oldest first, the newest last.
+
+        The newest is what `tile_for` answers; the others are older pictures of
+        **the same product**, each at least 10 minutes before the one after it,
+        back to an hour before the newest, five at most.  A picture missing from
+        the dish is a gap: filling it from another product would change the
+        detail in the middle of the loop."""
+        found = self.tile_for(lat, lon, zoom, now)
+        if found is None:
+            return []
+        tile, newest, frame = found
+        frames = [found]
+        oldest = newest.taken - timedelta(minutes=v5.RADAR_LOOP_WINDOW_MIN)
+        last = newest.taken
+        older = sorted(self.source.older(frame.id, newest, v5.RADAR_LOOP_WINDOW_MIN, now),
+                       key=lambda p: p.taken, reverse=True)
+        for picture in older:
+            if len(frames) >= v5.RADAR_LOOP_MAX_FRAMES or picture.taken < oldest:
+                break
+            if not picture.frame_ok or picture.taken > last - timedelta(minutes=v5.RADAR_LOOP_MIN_SPACING_MIN):
+                continue
+            cut = cut_tile(picture, frame, tile.south, tile.west, tile.zoom)
+            if cut is None:
+                continue
+            frames.append((cut, picture, frame))
+            last = picture.taken
+        frames.reverse()
+        return frames
+
     def status(self) -> dict:
         if not self.available:
             return {"available": False, "products": {}}

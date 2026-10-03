@@ -285,13 +285,18 @@ class AppResponder:
         # own that says nothing about now.
         if n and cmd == "wmap" and msgs[0][3] >> 4 == v5.TYPE_AREA_SWEEP:
             self._stamp_sweep(v5.decode(msgs[0]))
-        if n and cmd == "radar" and msgs[0][3] >> 4 == v5.TYPE_RADAR:
-            self._stamp_radar(v5.decode(msgs[0]), now)
-            cut = self._radar_cut.pop(msgs[0], None)
-            if cut is not None:
-                from meshcore_weather.radar import audit
-                audit.record(request=text, sender=sender_key, tile=cut[0], picture=cut[1],
-                             frame=cut[2], packet=msgs[0], now=now)
+        if cmd == "radar":
+            # Every tile the radio took starts its own five minutes: a loop's
+            # frames are pictures everyone listening now holds.
+            for msg in msgs[:n]:
+                if msg[3] >> 4 not in (v5.TYPE_RADAR, v5.TYPE_RADAR_DETAIL):
+                    continue
+                self._stamp_radar(v5.decode(msg), now)
+                cut = self._radar_cut.pop(msg, None)
+                if cut is not None:
+                    from meshcore_weather.radar import audit
+                    audit.record(request=text, sender=sender_key, tile=cut[0], picture=cut[1],
+                                 frame=cut[2], packet=msg, now=now)
         self._radar_cut.clear()
         return f"{n} packet(s), {nbytes} B"
 
@@ -344,7 +349,7 @@ class AppResponder:
     # -- radar (spec 7D) --
 
     @staticmethod
-    def _radar_key(radar: dict) -> tuple[int, int, int, int]:
+    def _radar_key(radar: dict) -> tuple[float, float, int, int]:
         return radar["south"], radar["west"], radar["zoom"], radar["taken_min"]
 
     def _stamp_radar(self, radar: dict, now: float) -> None:
@@ -363,7 +368,8 @@ class AppResponder:
         self._last_radar.clear()
 
     def _radar_answer(self, arg: str, seq: b.SeqCounter, bot: int) -> list[bytes]:
-        """`>radar [place] [z<n>]`: one tile of the newest radar picture."""
+        """`>radar [place] [z<n>] [loop [HHMM ...]]`: one tile of the newest
+        radar picture, or the last hour of it (spec 7D, 7D.4, 7E)."""
         from meshcore_weather.radar import service as radar_service
         radar = radar_service.shared()
         if not radar.available:
@@ -371,7 +377,7 @@ class AppResponder:
         parsed = b.parse_radar_request(arg)
         if parsed is None:
             return [b.not_available(seq.next(), bot, "radar", v5.REASON_UNKNOWN_LOCATION)]
-        place, zoom = parsed
+        place, zoom, held = parsed
         lat = lon = None
         if not place:
             home = self._scheduler.context().home
@@ -385,23 +391,43 @@ class AppResponder:
                 lat, lon = loc.get("lat"), loc.get("lon")
         if lat is None or lon is None:
             return [b.not_available(seq.next(), bot, "radar", v5.REASON_UNKNOWN_LOCATION)]
-        found = radar.tile_for(float(lat), float(lon), zoom)
-        if found is None:
+        lat, lon = float(lat), float(lon)
+        if held is None:
+            found = radar.tile_for(lat, lon, zoom)
+            if found is None and zoom == v5.RADAR_DETAIL_ZOOM:
+                # No picture fine enough for detail: Local instead (spec 7E).
+                found = radar.tile_for(lat, lon, 0)
+            frames = [found] if found is not None else []
+        else:
+            frames = radar.loop_for(lat, lon, zoom)
+            if not frames and zoom == v5.RADAR_DETAIL_ZOOM:
+                frames = radar.loop_for(lat, lon, 0)
+        if not frames:
             return [b.not_available(seq.next(), bot, "radar", v5.REASON_NO_DATA)]
-        tile, picture, frame = found
-        key = (tile.south, tile.west, tile.zoom, int(picture.taken.timestamp() // 60))
-        if time.time() - self._last_radar.get(key, 0.0) < settings.radar_window_s:
-            logger.info("Radar tile %s asked for again inside the %.0fs window; rate limited",
-                        key, settings.radar_window_s)
-            return [b.not_available(seq.next(), bot, "radar", v5.REASON_RATE_LIMITED)]
-        msg = b.radar_message(seq.next(), bot, tile, picture, frame)
-        if msg is None:
-            return [b.not_available(seq.next(), bot, "radar", v5.REASON_NO_DATA)]
-        self._radar_cut[msg] = (tile, picture, frame)
-        logger.info("Radar tile %d,%d z%d from %s taken %s: %d wet cells, %d B%s",
-                    tile.south, tile.west, tile.zoom, frame.id, picture.taken.strftime("%H:%MZ"),
-                    tile.wet, len(msg), " (coarse)" if msg[3] & v5.FLAG_RADAR_COARSE else "")
-        return [msg]
+        msgs, skipped = [], False
+        for tile, picture, frame in frames:
+            taken_min = int(picture.taken.timestamp() // 60)
+            key = (tile.south, tile.west, tile.zoom, taken_min)
+            if held is not None and taken_min % 1440 in held:
+                skipped = True
+                continue
+            if time.time() - self._last_radar.get(key, 0.0) < settings.radar_window_s:
+                logger.info("Radar tile %s asked for again inside the %.0fs window; left out",
+                            key, settings.radar_window_s)
+                skipped = True
+                continue
+            msg = b.radar_message(seq.next(), bot, tile, picture, frame)
+            if msg is None:
+                continue
+            self._radar_cut[msg] = (tile, picture, frame)
+            logger.info("Radar tile %s,%s z%d from %s taken %s: %d wet cells, %d B%s",
+                        tile.south, tile.west, tile.zoom, frame.id, picture.taken.strftime("%H:%MZ"),
+                        tile.wet, len(msg), " (coarse)" if msg[3] & v5.FLAG_RADAR_COARSE else "")
+            msgs.append(msg)
+        if msgs:
+            return msgs
+        return [b.not_available(seq.next(), bot, "radar",
+                                v5.REASON_RATE_LIMITED if skipped else v5.REASON_NO_DATA)]
 
     def _stamp_sweep(self, sweep: dict) -> None:
         """Record what a sweep just covered, so the next request for the same

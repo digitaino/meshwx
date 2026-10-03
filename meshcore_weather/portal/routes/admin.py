@@ -591,8 +591,8 @@ def _limit_rows(bot) -> list[dict]:
                 "resettable": bool(status["waiting"]),
             })
 
-        # `>radar` (spec 7D): one packet an answer, so the budget above is its
-        # limit, plus a window per tile of one picture. The row also says
+        # `>radar` (spec 7D): one packet a picture and five for a loop (7D.4),
+        # so the budget above is its limit, plus a window per tile of one picture. The row also says
         # whether there are pictures to cut tiles from at all, which is the
         # first thing to look at when every radar request is refused.
         if hasattr(responder, "radar_cooldowns"):
@@ -606,8 +606,8 @@ def _limit_rows(bot) -> list[dict]:
             rows.append({
                 "id": "radar",
                 "name": "Radar tiles",
-                "rule": (f"one packet an answer; the same tile of the same picture once "
-                         f"every {_span(window)}, whoever asks"),
+                "rule": (f"one packet a picture, an hour's loop at most five; the same tile of "
+                         f"the same picture once every {_span(window)}, whoever asks"),
                 "detail": ("no radar pictures: this bot has no dish directory" if not radar.get("available")
                            else f"{len(fresh)} of {len(products)} pictures under 30 min old"
                                 + (f", {len(cooling)} tile{'' if len(cooling) == 1 else 's'} inside the window"

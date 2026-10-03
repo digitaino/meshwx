@@ -45,7 +45,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 | Radio swap: node profile, adoption, health verdict | shipped |
 | Receiver status (`sat`, `>sat`) | shipped |
 | Coverage statement (`cov`, `>cov`, broadcast every 3 h) | shipped |
-| Radar tiles from the dish's EMWIN radar pictures (`radar`, `>radar`, spec revision 11) | shipped, request only |
+| Radar tiles from the dish's EMWIN radar pictures (`radar`, `>radar`, spec revision 11), the last hour as a loop and a one-degree detail tile (revision 13) | shipped, request only |
 | Admin portal and public dashboard | shipped |
 | Accuracy audit (`scripts/audit.py`) | shipped |
 | MQTT packet publishing for CoreScope | shipped, off by default |
@@ -180,6 +180,8 @@ send channel datagrams (`CMD_SEND_CHANNEL_DATA`, 0x3E).
 | `>metar KAUS`, `>taf KAUS` | That station's own report, or Not available; a place or ZIP gets the nearest reporting station |
 | `>space`, `>storm TX`, `>rain TX`, `>hwo` | Space weather, storm reports, rainfall, hazardous weather outlook |
 | `>radar`, `>radar 30.270,-97.740`, `>radar austin tx z1` | One tile of the newest radar picture, 32 x 32 cells in four precipitation levels, always one packet. `z0` to `z3` widens it from 2 to 16 degrees. Needs the dish: the pictures are EMWIN GIFs |
+| `>radar 30.270,-97.740 z-1` | The one-degree detail tile (type 12, revision 13), cut only from a regional picture; the zoom 0 tile where there is none |
+| `>radar 30.270,-97.740 loop`, `... z-1 loop 2353 2338` | The last hour of a tile: up to five pictures of one product, oldest first, one packet each, leaving out the ones the app lists (UTC `HHMM`) |
 | `>sat` | The bot's GOES receiver, one line of Text |
 | `>cov` | What this bot covers: centre, radius, NWS offices, zone runs. One packet, also broadcast every 3 h |
 
@@ -795,9 +797,9 @@ meshcore_weather/
 │
 ├── radar/
 │   ├── picture.py         # One EMWIN radar GIF -> precipitation levels: its own colour scale, furniture masks, the printed time
-│   ├── tiles.py           # The 32 x 32 tile a phone asked for, cut from a picture; the words of the `radar` reply
+│   ├── tiles.py           # The 32 x 32 tile a phone asked for (detail too), cut from a picture; the words of the `radar` reply
 │   ├── source.py          # Newest picture per product in the dish's EMWIN directory, decoded on demand
-│   ├── service.py         # What `>radar` and `radar` both ask: the best fresh picture for a tile
+│   ├── service.py         # What `>radar` and `radar` both ask: the best fresh picture for a tile, and its last hour
 │   └── products.json, masks/, stamp_digits.json   # Calibration, written by scripts/radar_calibrate.py
 │
 ├── schedule/
@@ -895,6 +897,7 @@ Shipped:
 - [x] MeshWX v5 revision 9: Area sweep (type 10), the national picture of what is active as runs of UGC numbers
 - [x] MeshWX v5 revision 10: `>part` for a missing part, `>wmap` by state, `>f lat,lon`, and forecast points rebuilt so a place without a PFM gets the nearest one that has it
 - [x] MeshWX v5 revision 11: Radar (type 11), one tile of an EMWIN mosaic in one packet, request only
+- [x] MeshWX v5 revision 13: Radar detail (type 12) and the last hour of a tile as a loop, request only
 - [x] MeshWX v5 revision 12: a warning issued before it takes effect says when it starts, so a watch for Wednesday is not shown as in force on Tuesday
 - [x] App requests answered on the channel so one request serves every listener
 - [x] Discovery by advert (`WX-<city>` chat node)

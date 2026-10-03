@@ -2,8 +2,9 @@
 
 goesproc writes radar GIFs next to the text products, under
 `<dir>/YYYY-MM-DD/`, named `Z_<wmo>_C_KWIN_<received>_<seq>-3-<PRODUCT>.GIF`.
-Nothing is decoded until a request needs it, and a decoded picture is kept
-until a newer file for that product appears.
+Nothing is decoded until a request needs it. Decoded pictures are kept, the
+most recently used first, so a loop (spec 7D.4) asked for twice does not decode
+its hour twice.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -23,6 +25,12 @@ logger = logging.getLogger(__name__)
 SCAN_TTL_S = 30
 #: A damaged newest file falls back to the ones before it, this many deep.
 FALLBACK_DEPTH = 3
+#: Decoded pictures kept: an hour of one product is five, and a picture is
+#: about 350 KB of levels.
+DECODED_KEEP = 24
+#: A picture reaches the dish 2 to 34 minutes after its time, so the files of
+#: an hour of pictures were received over the hour and this much more.
+RECEIVE_SLACK_MIN = 45
 
 
 class RadarSource:
@@ -30,7 +38,7 @@ class RadarSource:
         self.root = Path(root).expanduser()
         self._listing: "dict[str, list[tuple[datetime, Path]]]" = {}
         self._listed_at = 0.0
-        self._pictures: "dict[str, RadarPicture]" = {}
+        self._decoded: "OrderedDict[Path, RadarPicture]" = OrderedDict()
         self._bad: "set[Path]" = set()
 
     @property
@@ -68,23 +76,50 @@ class RadarSource:
         self._listing = found
         self._listed_at = time.monotonic()
 
+    def _read(self, path: Path, product: str) -> "RadarPicture | None":
+        if path in self._bad:
+            return None
+        held = self._decoded.get(path)
+        if held is not None:
+            self._decoded.move_to_end(path)
+            return held
+        picture = read_picture(path, product)
+        if picture is None:
+            self._bad.add(path)
+            return None
+        self._decoded[path] = picture
+        while len(self._decoded) > DECODED_KEEP:
+            self._decoded.popitem(last=False)
+        return picture
+
     def newest(self, product: str, now: "datetime | None" = None) -> "RadarPicture | None":
         """The newest readable picture of a product, decoded, or None."""
         now = now or datetime.now(timezone.utc)
         self._scan(now)
         for _, path in self._listing.get(product, [])[:FALLBACK_DEPTH]:
-            if path in self._bad:
-                continue
-            held = self._pictures.get(product)
-            if held is not None and held.path == path:
-                return held
-            picture = read_picture(path, product)
-            if picture is None:
-                self._bad.add(path)
-                continue
-            self._pictures[product] = picture
-            return picture
+            picture = self._read(path, product)
+            if picture is not None:
+                return picture
         return None
+
+    def older(self, product: str, newest: RadarPicture, minutes: int,
+              now: "datetime | None" = None) -> "list[RadarPicture]":
+        """The readable pictures of a product received before `newest`, newest
+        received first, from files received up to `minutes` (plus the time a
+        picture takes to reach the dish) before it.  Decodes what it returns."""
+        now = now or datetime.now(timezone.utc)
+        self._scan(now)
+        limit = newest.received - timedelta(minutes=minutes + RECEIVE_SLACK_MIN)
+        out = []
+        for received, path in self._listing.get(product, []):
+            if path == newest.path or received > newest.received:
+                continue
+            if received < limit:
+                break
+            picture = self._read(path, product)
+            if picture is not None:
+                out.append(picture)
+        return out
 
     def status(self, now: "datetime | None" = None) -> dict:
         """Newest file per product, for the portal.  Decodes nothing."""
