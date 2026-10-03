@@ -366,14 +366,12 @@ export const WeatherCopy = Object.freeze({
   // MARK: - Radar (revision 11 §3)
 
   /**
-   * The widths the radar screen offers, by zoom: Detail (−1, revision 13), Local, Regional, Wide.
-   * Never kilometres: a tile is two degrees, which is 222 km tall everywhere and a different
-   * width at every latitude. Zoom 3 exists on the wire and is not offered, so it has no name here
-   * rather than a word nothing else says.
+   * The three widths the radar screen offers, by zoom. Never kilometres: a tile is two degrees,
+   * which is 222 km tall everywhere and a different width at every latitude. Zoom 3 exists on the
+   * wire and is not offered, so it has no name here rather than a fourth word nothing else says.
    */
   radarWidthName(zoom) {
     switch (zoom) {
-      case -1: return t('weather.radar.width.detail')
       case 0: return t('weather.radar.width.local')
       case 1: return t('weather.radar.width.regional')
       case 2: return t('weather.radar.width.wide')

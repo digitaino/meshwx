@@ -86,41 +86,16 @@ describe('MeshWXRadarTile', () => {
   });
 
   /**
-   * Revision 13's detail level, zoom −1: a 1° tile on a half-degree lattice. The reference's own
-   * parametrised list (`test_the_detail_tile_for_a_coordinate`), value for value.
-   */
-  test('theDetailTileForACoordinate', () => {
-    const cases = [
-      [32.78, -96.80, { south: 32.5, west: -97.5 }],   // Dallas: centre 33.0, -97.0
-      [30.27, -97.74, { south: 30, west: -98 }],       // Austin: centre 30.5, -97.5
-      [30.25, -97.75, { south: 30, west: -98 }],       // ties round up here too
-      [-0.1, 0.1, { south: -0.5, west: -0.5 }],
-    ];
-    for (const [latitude, longitude, want] of cases) {
-      const square = MeshWXRadarTile.containing({ latitude, longitude, zoom: MeshWXWire.radarDetailZoom });
-      assert.deepStrictEqual(square, { ...want, zoom: -1 }, `${latitude},${longitude} z-1`);
-      assert.equal(MeshWXRadarTile.spanDegrees(square), 1);
-      assert.equal(MeshWXRadarTile.north(square), want.south + 1);
-      assert.equal(MeshWXRadarTile.east(square), want.west + 1);
-    }
-    // A cell is 1/32°, about 3.5 km north to south, and the asked spot is on its own tile.
-    const dallas = MeshWXRadarTile.containing({ latitude: 32.78, longitude: -96.8, zoom: -1 });
-    assert.equal(MeshWXRadarTile.cellDegrees(dallas, { size: 32 }), 1 / 32);
-    assert.ok(MeshWXRadarTile.contains(dallas, { latitude: 32.78, longitude: -96.8 }));
-    assert.equal(MeshWXRadarTile.key(dallas), '32.5,-97.5,-1');
-  });
-
-  /**
    * The whole point of putting the lattice at half the span: the place asked about is never
    * nearer than a quarter of the tile to an edge, so the storm coming at it is on the picture.
    */
   test('aPlaceIsNeverNearTheEdgeOfItsTile', () => {
     const places = [[30.27, -97.74], [47.61, -122.33], [25.76, -80.19], [64.84, -147.72], [-33.9, 151.2]];
-    for (let zoom = MeshWXWire.minRadarZoom; zoom <= MeshWXWire.maxRadarZoom; zoom += 1) {
+    for (let zoom = 0; zoom <= MeshWXWire.maxRadarZoom; zoom += 1) {
       for (const [latitude, longitude] of places) {
         const square = MeshWXRadarTile.containing({ latitude, longitude, zoom });
         const span = MeshWXRadarTile.spanDegrees(square);
-        assert.equal(span, 2 ** (zoom + 1));
+        assert.equal(span, 2 << zoom);
         for (const [value, edge] of [[latitude, square.south], [longitude, square.west]]) {
           assert.ok(value - edge >= span / 4 && value - edge <= (3 * span) / 4,
             `${value} is ${value - edge} into a ${span}° tile`);
@@ -129,15 +104,12 @@ describe('MeshWXRadarTile', () => {
     }
   });
 
-  // The lattice clamps to −1…3, as the Swift does; the encoder is where a zoom of 4 is refused.
+  // The lattice clamps, as the Swift does; the encoder is where a zoom of 4 is refused.
   test('zoomOutOfRangeIsClamped', () => {
     assert.deepEqual(MeshWXRadarTile.containing({ latitude: 30.27, longitude: -97.74, zoom: 4 }),
       MeshWXRadarTile.containing({ latitude: 30.27, longitude: -97.74, zoom: 3 }));
-    // −1 is a zoom now (revision 13), and −2 is the one past it.
     assert.deepEqual(MeshWXRadarTile.containing({ latitude: 30.27, longitude: -97.74, zoom: -1 }),
-      { south: 30, west: -98, zoom: -1 });
-    assert.deepEqual(MeshWXRadarTile.containing({ latitude: 30.27, longitude: -97.74, zoom: -2 }),
-      { south: 30, west: -98, zoom: -1 });
+      { south: 29, west: -99, zoom: 0 });
   });
 
   /**
@@ -371,7 +343,8 @@ describe('MeshWXRadar codec', () => {
 
   test('theEncoderRefusesWhatTheWireCannotCarry', () => {
     assert.throws(() => tile({ zoom: 4 }), MeshWXEncodeError);
-    assert.throws(() => tile({ zoom: -2 }), MeshWXEncodeError);
+    // Zoom −1 was the detail level of revision 13's first draft, removed before release.
+    assert.throws(() => tile({ zoom: -1 }), MeshWXEncodeError);
     assert.throws(() => tile({ product: 64 }), MeshWXEncodeError);
     assert.throws(() => tile({ west: 180 }), MeshWXEncodeError);
     assert.throws(() => tile({ south: 91 }), MeshWXEncodeError);
@@ -417,85 +390,16 @@ describe('MeshWXRadar codec', () => {
     // Built by hand or decoded off the air, it is the same object.
     assert.deepStrictEqual(decode(encode(built)), built);
   });
-});
 
-// Revision 13, spec §7E: the detail level travels as type 12, with its edges in quarter degrees.
-describe('MeshWXRadar detail codec', () => {
-  /** The reference's `test_a_detail_tile_round_trips_in_quarter_degrees`, value for value. */
-  test('aDetailTileRoundTripsInQuarterDegrees', () => {
-    const grid = rows(32, [[5, 7, 3], [30, 2, 1]]);
-    const data = MeshWXEncoder.radar({
-      seq: 3, bot: BOT, takenMinutes: TAKEN_MIN, south: -0.5, west: 179.5, zoom: -1, product: 13,
-      rows: grid, source: 1,
-    });
-    assert.equal(data[3] >> 4, MeshWXMessageType.radarDetail);
-    assert.ok(data.length <= MeshWXWire.maxData);
-    assert.deepStrictEqual([...data.subarray(8, 10)], [0xfe, 0xff], 'south −2 quarter degrees');
-    assert.deepStrictEqual([...data.subarray(10, 12)], [718 & 0xff, 718 >> 8], 'west 718 quarter degrees');
-    assert.equal(data[12], 13 << 2, 'product 13, depth 0');
-    const out = decode(data);
-    assert.deepStrictEqual(
-      [out.name, out.south, out.west, out.zoom, out.product], ['radar_detail', -0.5, 179.5, -1, 13],
-    );
-    assert.equal(out.rows[5][7], '3');
-    assert.equal(out.rows[30][2], '1');
-    assert.ok(MeshWXRadar.isRadarMessage(out));
-    assert.deepStrictEqual(MeshWXRadar.tile(out), { south: -0.5, west: 179.5, zoom: -1 });
-
-    // "A tile with nothing on it is 14 bytes."
-    const empty = MeshWXEncoder.radar({
-      seq: 3, bot: BOT, takenMinutes: TAKEN_MIN, south: 30, west: -98, zoom: -1, product: 1, rows: rows(32),
-    });
-    assert.equal(empty.length, 14);
-  });
-
-  /** The reference's `test_a_detail_tile_is_refused_off_its_lattice_or_with_a_depth`. */
-  test('aDetailTileIsRefusedOffItsLatticeOrWithADepth', () => {
-    const grid = rows(32);
-    const detail = (options) => MeshWXEncoder.radar({
-      seq: 1, bot: BOT, takenMinutes: 1, south: 30.5, west: -98, zoom: -1, product: 1, rows: grid, ...options,
-    });
-    assert.throws(() => detail({ south: 30.25 }), MeshWXEncodeError, 'a quarter, not a half');
-    assert.throws(() => detail({ zoom: 0 }), MeshWXEncodeError, 'a half degree is not a zoom 0 edge');
-
-    const good = detail({});
-    const deep = Uint8Array.from(good);
-    deep[12] |= 1;
-    assert.throws(() => decode(deep), (error) => error instanceof MeshWXDecodeError
-      && error.kind === 'radarDetailDepthReserved' && error.depth === 1);
-
-    const off = Uint8Array.from(good);
-    off[8] = 123; // 30.75: a quarter, not a half
-    off[9] = 0;
-    assert.throws(() => decode(off), (error) => error instanceof MeshWXDecodeError
-      && error.kind === 'radarDetailOffLattice' && error.south === 30.75 && error.west === -98);
-  });
-
-  test('aDetailTileCarriesTheSameFlagsAndBoundsAsType11', () => {
-    const data = MeshWXEncoder.radar({
-      seq: 2, bot: BOT, takenMinutes: TAKEN_MIN, south: 24, west: -98.5, zoom: -1, product: 1,
-      rows: rows(16, [[2, 3, 3]]), bounds: [0, 7, 0, 15], source: 1,
-    });
-    const out = decode(data);
-    assert.equal(out.type, MeshWXMessageType.radarDetail);
-    assert.equal(out.flags, 0x7, 'coarse, partial, off the dish');
-    assert.deepStrictEqual(out.bounds, [0, 7, 0, 15]);
-    assert.ok(MeshWXRadar.isUnknown(out, { row: 8, col: 0 }));
-    // The fixed part is a byte longer than type 11's: a cut there is refused before the cells.
-    assert.throws(() => decode(data.subarray(0, MeshWXWire.radarDetailFixedSize)), MeshWXDecodeError);
-    assert.throws(() => decode(data.subarray(0, 17)), MeshWXDecodeError);
-  });
-
-  /** `make` at zoom −1 is a type 12 object, and the encoder writes it as one. */
-  test('makeAtTheDetailLevelIsType12', () => {
-    const built = MeshWXRadar.make({
-      takenMinutes: TAKEN_MIN, south: 32.5, west: -97.5, zoom: -1, product: 1, rows: rows(32, [[0, 0, 2]]),
-      source: 1, seq: 7, bot: BOT,
-    });
-    assert.equal(built.type, MeshWXMessageType.radarDetail);
-    assert.equal(built.name, 'radar_detail');
-    assert.deepStrictEqual(decode(encode(built)), built);
-    // And an object that says type 11 with zoom −1 is still written as type 12: the zoom decides.
-    assert.equal(encode({ ...built, type: MeshWXMessageType.radar, name: 'radar' })[3] >> 4, 12);
+  /**
+   * Revision 13 as amended: the detail tile (type 12) was built, tried and removed before any
+   * release, and type 12 is free again. A packet of that type is an unknown type like 13 to 15:
+   * its header is kept for `(bot, seq)` and its body is never read as a picture.
+   */
+  test('radarDetailIsAnUnknownTypeAgain', () => {
+    assert.equal(MeshWXMessageType.radarDetail, undefined);
+    const data = Uint8Array.from(tile({ cells: [[3, 4, 2]], source: 1 }));
+    data[3] = (12 << 4) | (data[3] & 0x0f);
+    assert.deepStrictEqual(decode(data), { seq: 1, bot: BOT, type: 12, name: 'unknown', flags: data[3] & 0x0f });
   });
 });

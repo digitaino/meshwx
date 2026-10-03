@@ -3,8 +3,7 @@
 // What a radar picture says (spec §7D, revision 11, and the screen decisions in the revision 11
 // design §3): which tile to draw, how old it is, what it says about one place, what the card
 // shows, and the rectangles a map draws. Revision 13 (docs/MESHWX_REV13.md in the app) adds the
-// last hour of a square as a loop (`WeatherRadarLoop`) and the 1° detail level around a spot
-// picked on the map (`WeatherRadarDetail`).
+// last hour of a square as a loop (`WeatherRadarLoop`).
 //
 // Pure, as everything in this layer is: no clock of its own, no words, no colours. `now` is
 // always a parameter, distances come back in kilometres for the caller to convert to the
@@ -52,17 +51,12 @@ export const WeatherRadarPick = Object.freeze({
    * `zoom`, when given, limits the choice to one width. That is *not* what the radar screen's
    * width control uses — see `held`, which answers "what is held for this square" rather than
    * "which picture is this place's".
-   *
-   * Without `zoom` the choice is among **zoom 0 to 3 only** (revision 13): the place page never
-   * shows a detail tile. A detail tile is of a spot somebody picked on the radar screen, not of
-   * the place, and on the page it would win every time by being the narrowest. With `zoom` −1
-   * it is chosen like any other width.
    */
   best({ for: coordinate, tiles, zoom = null, now }) {
     const nowMinutes = Math.floor(now / 60_000)
     let best = null
     for (const stored of tiles ?? []) {
-      if (zoom != null ? stored.tile.zoom !== zoom : stored.tile.zoom < 0) continue
+      if (zoom != null && stored.tile.zoom !== zoom) continue
       if (WeatherRadarPick.age({ ofTakenMinutes: stored.radar.taken_min, nowMinutes })
         > WeatherRadarPick.maximumAgeMinutes) continue
       if (!WeatherRadarPick.reaches(stored, { coordinate })) continue
@@ -80,7 +74,7 @@ export const WeatherRadarPick = Object.freeze({
    * different one from "Not asked for yet". `best` is for the other question.
    *
    * Since revision 13 `tiles` holds frames, several pictures of one square: this is the newest of
-   * them, by the same ordering `best` uses. Zoom −1 is a square like any other.
+   * them, by the same ordering `best` uses.
    */
   held(tile, { tiles, now }) {
     const nowMinutes = Math.floor(now / 60_000)
@@ -486,110 +480,12 @@ export const WeatherRadarLoop = Object.freeze({
 
   /**
    * The ask for the rest of the hour at one width, listing what this loop already holds so the
-   * bot leaves those pictures out (spec revision 13, §7D.4). The coordinate is the place's for
-   * Local, Regional and Wide, and the picked spot's for Detail.
+   * bot leaves those pictures out (spec revision 13, §7D.4), at the place's coordinate.
    */
   ask(loop, { latitude, longitude, zoom }) {
     return WeatherRequest.radarLoop({ latitude, longitude, zoom, held: loop?.held ?? [] })
   }
 })
-
-// MARK: - The detail level (revision 13)
-
-/**
- * The radar screen's Detail width: one degree around a spot picked on its map, twice the detail
- * of Local over a quarter of the area (spec revision 13, §7E, §3).
- *
- * `card` answers with one of three, the middle one the bot's own fallback:
- *
- * - `held`: a detail picture of the spot's square, at most 120 minutes old.
- * - `local`: no detail picture, but the zoom 0 tile containing the spot is held. It is drawn
- *   instead and **says so** ("No detailed picture of this spot. Showing Local."): it is also what
- *   the bot sends where it has no picture fine enough to cut a detail tile from.
- * - `missing`: neither — "Not asked for yet." `tile` is the detail square a tap on the ask would
- *   fill; the Swift's `.missing` carries nothing, and this is the same JS addition as
- *   `WeatherRadarCard.missing`.
- *
- * Both pictures go through `WeatherRadarPick.held`, the exact square like every width. Their
- * summaries are about the **spot**; the screen speaks about the place only when the place is on
- * the square drawn (`summary`).
- */
-export const WeatherRadarDetail = Object.freeze({
-  zoom: MeshWXWire.radarDetailZoom,
-
-  /** The detail square a spot is in: the 1° tile whose centre is the nearest half-degree point. */
-  tile({ for: spot }) {
-    if (spot == null) return null
-    return MeshWXRadarTile.containing({
-      latitude: spot.latitude, longitude: spot.longitude, zoom: MeshWXWire.radarDetailZoom
-    })
-  },
-
-  /** The Local tile the bot falls back to for a spot: the zoom 0 tile containing it. */
-  localTile({ for: spot }) {
-    if (spot == null) return null
-    return MeshWXRadarTile.containing({ latitude: spot.latitude, longitude: spot.longitude, zoom: 0 })
-  },
-
-  held({ picture }) {
-    return { kind: 'held', picture }
-  },
-  local({ picture }) {
-    return { kind: 'local', picture }
-  },
-  missing({ tile = null } = {}) {
-    return { kind: 'missing', tile }
-  },
-
-  card({ spot, tiles, now }) {
-    const square = WeatherRadarDetail.tile({ for: spot })
-    if (square == null) return WeatherRadarDetail.missing()
-    const detail = WeatherRadarPick.held(square, { tiles, now })
-    if (detail != null) return WeatherRadarDetail.held({ picture: detailPicture(detail, { spot, now }) })
-    const local = WeatherRadarPick.held(WeatherRadarDetail.localTile({ for: spot }), { tiles, now })
-    if (local != null) return WeatherRadarDetail.local({ picture: detailPicture(local, { spot, now }) })
-    return WeatherRadarDetail.missing({ tile: square })
-  },
-
-  /** The single ask for a spot: `>radar <lat>,<lon> z-1`. Never the page's place. */
-  ask({ spot }) {
-    if (spot == null) return null
-    return WeatherRequest.radar({
-      latitude: spot.latitude, longitude: spot.longitude, zoom: MeshWXWire.radarDetailZoom
-    })
-  },
-
-  /**
-   * The summary about the **place**, when the place is inside the tile drawn: a detail square is
-   * about a spot, and a sentence naming Austin under a square of Round Rock would be about a place
-   * the picture is not of. Null when the place is outside it, or there is no place.
-   */
-  summary({ of: picture, place }) {
-    if (picture == null || place == null) return null
-    if (!MeshWXRadarTile.contains(picture.stored.tile, place)) return null
-    return WeatherRadarSummary.make({ tile: picture.stored.radar, coordinate: place })
-  },
-
-  /** The picture drawn, held or standing in, or null. */
-  picture(card) {
-    return card?.kind === 'held' || card?.kind === 'local' ? card.picture : null
-  },
-
-  /** The Local tile is on screen in place of a detail picture. */
-  isFallback(card) {
-    return card?.kind === 'local'
-  }
-})
-
-function detailPicture(stored, { spot, now }) {
-  return WeatherRadarPicture.make({
-    stored,
-    age: WeatherRadarAge.make({ takenMinutes: stored.radar.taken_min, now }),
-    summary: WeatherRadarSummary.make({ tile: stored.radar, coordinate: spot }),
-    // Asked for the detail level, so Local standing in is wider than asked.
-    isWiderThanAsked: stored.tile.zoom > MeshWXWire.radarDetailZoom
-  })
-}
 
 // MARK: - Refusals
 

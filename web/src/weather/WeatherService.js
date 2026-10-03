@@ -649,7 +649,7 @@ export class WeatherService {
           ? (message.idx === 0 ? this.#sweepScopeCodes(message) : null)
           : NATIONAL_SWEEP_SCOPE
         if (scope != null) fill(botID, sweepSlot(scope), dateFromUnixMinutes(message.built_min))
-      } else if (change.kind === 'radarStored' && MeshWXRadar.isRadarMessage(message)
+      } else if (change.kind === 'radarStored' && message.name === 'radar'
         && this.#isNewestRadarFrame(message)) {
         // Keyed by the tile and filled for **any** bot, because that is how a radar answer is
         // paired: the lattice square is the question, and two bots cutting it from the same
@@ -660,18 +660,7 @@ export class WeatherService {
         // Only by the newest frame of the square (revision 13): an older frame from somebody's
         // loop is not the answer to "the picture of this square", and filling the slot with it
         // would turn the next ask for a newer picture into "already received" an hour back.
-        const asOf = dateFromUnixMinutes(message.taken_min)
-        fill(null, radarSlot(change.value), asOf)
-        // The bot's fallback: a detail ask answered with the zoom 0 tile because no picture fine
-        // enough holds the spot (§7E). Asked again inside five minutes, the bot would send the
-        // same Local tile or refuse it, reason 4, so the detail square has been answered too.
-        for (const request of settled) {
-          if (request.kind !== 'radar' || request.zoom !== MeshWXWire.radarDetailZoom) continue
-          const detail = MeshWXRadarTile.containing({
-            latitude: request.latitude, longitude: request.longitude, zoom: request.zoom
-          })
-          if (!MeshWXRadarTile.isEqual(detail, change.value)) fill(null, radarSlot(detail), asOf)
-        }
+        fill(null, radarSlot(change.value), dateFromUnixMinutes(message.taken_min))
       } else if (change.kind === 'coverageStored' && message.name === 'coverage') {
         // No content time: the statement describes the bot, not an hour (spec §7A), so the
         // five-minute rule runs from receipt alone and nothing claims it is "as of" anything.
@@ -1360,18 +1349,13 @@ export class WeatherService {
       // sweep's own flag and scope say what arrived, which is what the map reads.
       return true
     }
-    if (kind.kind === 'radar' && MeshWXRadar.isRadarMessage(message)) {
+    if (kind.kind === 'radar' && message.name === 'radar') {
       // The tile and nothing else. Not `taken`: a bot with nothing newer answers with the
       // picture it already sent, and a phone that went on waiting for a fresher one would wait
       // out the quarter of an hour until the next picture is made. Not the bot either — this is
       // one of the requests any bot's answer settles (`acceptsAnswerFromAnyBot`), because the
       // lattice square is a square of the earth and the mosaic behind it is the same mosaic.
-      //
-      // A detail request is also settled by the Local tile for the same coordinate, which is
-      // what the bot sends where it has no picture fine enough (revision 13).
-      const tile = MeshWXRadar.tile(message)
-      return MeshWXRadarTile.isEqual(tile, kind.tile)
-        || (kind.fallback != null && MeshWXRadarTile.isEqual(tile, kind.fallback))
+      return MeshWXRadarTile.isEqual(MeshWXRadar.tile(message), kind.tile)
     }
     if (kind.kind === 'parts' && (message.name === 'area_sweep' || message.name === 'text')) {
       // The bot replays the bytes it stamped with that group byte, whichever kind of answer they

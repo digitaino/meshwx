@@ -61,11 +61,13 @@ describe('MeshWX vectors', () => {
     assert.ok(vectors.some((v) => v.name === 'not_available_radar'));
     // Revision 12's one: a watch issued a day and a half before it takes effect.
     assert.ok(vectors.some((v) => v.name === 'warning_upcoming_watch'));
-    // Revision 13's four: a real detail tile, a coarse and partial one, and the two new asks.
-    assert.ok(vectors.some((v) => v.name === 'radar_detail_tile'));
-    assert.ok(vectors.some((v) => v.name === 'radar_detail_coarse_partial'));
-    assert.ok(vectors.some((v) => v.name === 'request_radar_detail'));
+    // Revision 13's one: the loop ask. The three detail vectors of its first draft went with the
+    // detail level (type 12), and none may come back without a type to decode them as.
     assert.ok(vectors.some((v) => v.name === 'request_radar_loop'));
+    for (const name of ['radar_detail_tile', 'radar_detail_coarse_partial', 'request_radar_detail']) {
+      assert.ok(!vectors.some((v) => v.name === name), `${name} was removed with the detail level`);
+    }
+    assert.ok(vectors.every((v) => v.decoded?.type !== 12), 'type 12 is free again');
   });
 
   describe('decodesToTheDocumentedFields', () => {
@@ -419,32 +421,8 @@ describe('MeshWX vectors', () => {
     assert.notEqual(WeatherRequest.requestLetter(WeatherRequest.rainfall({ state: 'TX' })), refusal.request);
   });
 
-  /**
-   * Revision 13, spec §7E: the real 1° tile at Dallas cut from the Southern Plains picture of
-   * 20 September 2026, 23:38Z. It is the type 11 shape with half-degree edges and zoom −1, so the
-   * lattice, the cells and every screen rule read it as they read any tile.
-   */
-  test('theDetailVectorIsTheDallasSquare', () => {
-    const tile = decode(hexToBytes(vector('radar_detail_tile').hex));
-    assert.equal(tile.type, MeshWXMessageType.radarDetail);
-    assert.ok(MeshWXRadar.isRadarMessage(tile));
-    assert.deepStrictEqual(
-      MeshWXRadar.tile(tile),
-      MeshWXRadarTile.containing({ latitude: 32.78, longitude: -96.8, zoom: MeshWXWire.radarDetailZoom }),
-    );
-    assert.equal(MeshWXRadarTile.spanDegrees(MeshWXRadar.tile(tile)), 1);
-    assert.ok(MeshWXRadar.wetCells(tile) > 0);
-    // The same picture as the `radar_tile` vector, whose taken it shares.
-    assert.equal(tile.taken_min, decode(hexToBytes(vector('radar_tile').hex)).taken_min);
-  });
-
-  /** The two new asks are the app's own bytes: `z-1`, and `loop` with the held times newest first. */
-  test('theRevision13RequestsAreTheAppsOwnText', () => {
-    const detail = decode(hexToBytes(vector('request_radar_detail').hex));
-    assert.equal(
-      WeatherRequest.wireText(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 })),
-      detail.text,
-    );
+  /** Revision 13's ask is the app's own bytes: `loop` with the held times newest first. */
+  test('theRevision13RequestIsTheAppsOwnText', () => {
     const loop = decode(hexToBytes(vector('request_radar_loop').hex));
     const taken2338 = decode(hexToBytes(vector('radar_tile').hex)).taken_min;
     assert.equal(

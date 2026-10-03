@@ -425,12 +425,23 @@ export const WeatherAreaSweepAssembly = {
  * One per tile **and picture** since revision 13: an older picture of a square is a frame of its
  * loop and joins the newer one rather than being dropped, and only the same `taken` again
  * replaces what is held. A state written before revision 13 held one per tile, which is a list
- * of frames like any other and reads unchanged — `radar.south` and `.west` are whole numbers
- * there, and half degrees only on a detail tile (zoom −1).
+ * of frames like any other and reads unchanged.
+ *
+ * A state written by the first build of revision 13 may also hold **detail tiles**: zoom −1,
+ * a 1° square with half-degree edges, decoded from a message type that was tried and removed
+ * before any release (docs/MESHWX_REV13.md). They still load — the edges are plain numbers — and
+ * are dropped as they are read (`WeatherBotState.decode`) and by retention
+ * (`WeatherStateReducer.retainRadarTiles`), because no width on screen draws one and no lattice
+ * reader knows a zoom below 0.
  */
 export const WeatherStoredRadarTile = {
   make({ tile, radar, receivedAt, source = UNSTATED_SOURCE }) {
     return { tile, radar, receivedAt, source }
+  },
+
+  /** False for a detail tile of the removed zoom −1 level (above), which is not kept. */
+  isKept(stored) {
+    return !(stored?.tile?.zoom < 0)
   },
 
   decode(json) {
@@ -622,8 +633,12 @@ export const WeatherBotState = {
       state.areaSweeps = []
     }
     // Revision 11, §7D. Absent in a state file written before it is an empty list, which is
-    // exactly right: nobody had asked for a radar picture, and none had ever been held.
-    state.radarTiles = (json.radarTiles ?? []).map(WeatherStoredRadarTile.decode)
+    // exactly right: nobody had asked for a radar picture, and none had ever been held. The
+    // detail tiles of revision 13's first build (zoom −1) are left behind; every other frame
+    // reads as it was written.
+    state.radarTiles = (json.radarTiles ?? [])
+      .map(WeatherStoredRadarTile.decode)
+      .filter(WeatherStoredRadarTile.isKept)
     return state
   },
 

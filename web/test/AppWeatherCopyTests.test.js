@@ -921,16 +921,14 @@ describe('Weather copy', () => {
     )
   })
 
-  // MARK: - Radar detail and the last hour (revision 13 §3)
+  // MARK: - The last hour (revision 13 §3)
 
-  /** "Width name `Detail` for zoom −1 wherever a width is named (traffic rows, cached rows)." */
-  it('the detail level is named Detail, and a square with frames says how many', () => {
-    assert.equal(WeatherCopy.radarWidthName(-1), 'Detail')
-    assert.equal(WeatherCopy.radarCentre({ south: 32.5, west: -97.5, zoom: -1 }), '33.000,-97.000')
-    assert.equal(
-      F.plain(WeatherCopy.channelSubject({ kind: 'radar', tile: { south: 32.5, west: -97.5, zoom: -1 } }, { tables })),
-      'Radar picture · Detail · 33.000,-97.000',
-    )
+  /**
+   * "One row per tile, its newest time, and '5 pictures' when it holds more than one." The widths
+   * are Local, Regional and Wide only: the first draft's Detail (zoom −1) has no name.
+   */
+  it('a square with frames says how many, and only the three widths have names', () => {
+    assert.equal(WeatherCopy.radarWidthName(-1), null)
     // "5 pictures" when the square holds more than one; nothing when it holds one.
     assert.equal(
       F.plain(WeatherCopy.channelSubject(
@@ -950,12 +948,6 @@ describe('Weather copy', () => {
   it('the last hour is logged by its own name, and refused in the radar words', () => {
     const loop = WeatherRequest.radarLoop({ latitude: 30.2672, longitude: -97.7431, held: [29_832_458] })
     assert.equal(F.plain(WeatherCopy.requestName(loop, { tables })), 'Radar, last hour · 30.267,-97.743')
-    assert.equal(
-      F.plain(WeatherCopy.requestName(
-        WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }), { tables },
-      )),
-      'Radar picture · 32.780,-96.800',
-    )
     const refused = (reason) => request(settled(WeatherRequestOutcome.notAvailable(reason), F.now), { for: loop })
     assert.equal(
       refused(MeshWXNotAvailableReason.rateLimited),

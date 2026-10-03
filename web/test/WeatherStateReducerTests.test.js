@@ -22,6 +22,7 @@ import {
   WeatherTextAssembly,
   dateFromUnixMinutes,
   identityKey,
+  weatherStateFromSnapshot,
   weatherStateSnapshot
 } from '../src/weather/index.js'
 import * as F from './helpers/weather-fixtures.js'
@@ -1740,18 +1741,75 @@ describe('WeatherStateReducer radar tiles', () => {
   })
 
   /**
-   * Revision 13's detail tile (type 12) is stored like any other, under its half-degree square
-   * at zoom −1, and its frames follow the same rules.
+   * A frame as revision 13's first draft stored it: a detail tile (type 12, zoom −1), a 1° square
+   * with half-degree edges. The draft was removed before release, but the owner's phone ran it.
    */
-  it('a detail tile is stored under its half-degree square', () => {
+  const draftDetailFrame = ({ seq, ago, receivedAt = F.t0 }) => ({
+    tile: { south: 32.5, west: -97.5, zoom: -1 },
+    radar: {
+      ...F.radar({ seq, south: 32.5, west: -97.5, zoom: -1, takenMinutes: F.t0Minutes - ago }),
+      type: 12,
+      name: 'radar_detail'
+    },
+    receivedAt,
+    source: 1
+  })
+  const localFrame = ({ seq, ago, receivedAt = F.t0 }) => ({
+    tile: { south: 29, west: -99, zoom: 0 },
+    radar: F.radar({ seq, south: 29, west: -99, takenMinutes: F.t0Minutes - ago }),
+    receivedAt,
+    source: 1
+  })
+
+  /**
+   * "A state saved by that build on the owner's phone may hold zoom −1 tiles with half-degree
+   * edges, and it must still load. Such tiles are dropped when the state is read" (revision 13
+   * §2). Every other frame reads exactly as it was written, in its order.
+   */
+  it('a state saved with detail tiles loads, and leaves them behind', () => {
+    const saved = {
+      ...WeatherBotState.make({ botID: F.botID }),
+      // Newest taken first, as the draft kept them, with a detail frame the newest of all.
+      radarTiles: [
+        draftDetailFrame({ seq: 4, ago: 0 }),
+        localFrame({ seq: 3, ago: 5 }),
+        draftDetailFrame({ seq: 2, ago: 15 }),
+        localFrame({ seq: 1, ago: 20 })
+      ]
+    }
+    const read = WeatherBotState.decode(JSON.parse(JSON.stringify(saved)))
+    assert.deepStrictEqual(read.radarTiles, [saved.radarTiles[1], saved.radarTiles[3]])
+
+    // The whole way a browser reads it back: the stored snapshot, through JSON.
+    const snapshot = JSON.parse(JSON.stringify(weatherStateSnapshot({ [String(F.botID)]: saved })))
+    const states = weatherStateFromSnapshot(snapshot)
+    assert.deepStrictEqual(states[String(F.botID)].radarTiles, read.radarTiles)
+
+    // A file holding nothing but detail tiles reads as holding no radar at all.
+    const onlyDetail = WeatherBotState.decode(JSON.parse(JSON.stringify({
+      ...WeatherBotState.make({ botID: F.botID }), radarTiles: [draftDetailFrame({ seq: 1, ago: 0 })]
+    })))
+    assert.deepStrictEqual(onlyDetail.radarTiles, [])
+  })
+
+  /**
+   * "… and by retention." A detail tile still in memory goes the next time the list is retained,
+   * and goes first: the newest `taken` held is the bot's clock for the three-hour rule, and a
+   * detail frame must not stand for it.
+   */
+  it('retention drops a detail tile, before it can stand for the bot clock', () => {
+    const ahead = draftDetailFrame({ seq: 2, ago: -4 * 60 })
+    const local = localFrame({ seq: 1, ago: 0 })
+    assert.deepStrictEqual(WeatherStateReducer.retainRadarTiles([ahead, local]), [local])
+    assert.deepStrictEqual(WeatherStateReducer.retainRadarTiles([ahead]), [])
+
+    // And through the reducer: the next frame stored retains the list.
     const bot = new Bot()
-    const detail = { ...F.radar({ seq: 1, south: 32.5, west: -97.5, zoom: -1 }), type: 12, name: 'radar_detail' }
-    const changes = bot.apply(detail, F.t0)
-    const square = { south: 32.5, west: -97.5, zoom: -1 }
-    assert.deepStrictEqual(changes, [WeatherStateChange.radarStored(square, { takenMinutes: F.t0Minutes })])
-    assert.deepStrictEqual(tileFor(bot.state, square).tile, square)
-    bot.apply({ ...detail, seq: 2, taken_min: F.t0Minutes - 15 }, F.t0 + 1000)
-    assert.equal(bot.state.radarTiles.length, 2)
+    bot.state = { ...bot.state, radarTiles: [draftDetailFrame({ seq: 1, ago: 10 }), localFrame({ seq: 2, ago: 15 })] }
+    bot.apply(F.radar({ seq: 3, south: 29, west: -99, takenMinutes: F.t0Minutes }), F.t0 + 1000)
+    assert.deepStrictEqual(
+      bot.state.radarTiles.map((one) => [one.tile.zoom, F.t0Minutes - one.radar.taken_min]), [[0, 0], [0, 15]]
+    )
   })
 
   /** Retention is still three hours behind the newest `taken`, frames or not. */

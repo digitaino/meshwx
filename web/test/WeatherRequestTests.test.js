@@ -270,38 +270,24 @@ describe('WeatherRequest', () => {
   const at2338 = 29832458
   const at2353 = at2338 + 15
 
-  /** The detail level is zoom −1 on the wire too: `z-1`, the `request_radar_detail` vector. */
-  it('a detail request is the coordinate and z-1', () => {
-    const dallas = R.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 })
-    assert.equal(R.wireText(dallas), '>radar 32.780,-96.800 z-1')
-    assert.equal(R.requestLetter(dallas), MeshWXWire.radarRequestLetter)
-    assert.equal(R.key(dallas), 'radar:32.780,-96.800:z-1')
-    assert.equal(R.isEqual(dallas, R.radar({ latitude: 32.78, longitude: -96.8 })), false)
-    const longest = R.wireText(R.radar({ latitude: -30.27, longitude: -197.74, zoom: -1 }))
-    assert.equal(longest, '>radar -30.270,-197.740 z-1')
-    assert.ok(longest.length <= MeshWXWire.maxRequestTextBytes)
-  })
-
   /**
-   * "A request at zoom −1 is also settled by the zoom 0 tile containing the same coordinate,
-   * which is the bot's fallback." Worked out from the coordinate: Dallas's detail square is
-   * 32.5 N to 33.5 N, and its Local square 32 N to 34 N.
+   * "No `z-1`": the detail level of revision 13's first draft was removed, and a radar ask is
+   * zoom 0 to 3 again. A zoom below 0 writes nothing after the place, which is the zoom 0 form,
+   * and expects the zoom 0 tile, as the lattice clamps it. The reply is the tile alone, as the
+   * Swift's `.radar(tile:)` is: there is no fallback square to be settled by.
    */
-  it('a detail request expects its own square, or Local for the same coordinate', () => {
+  it('there is no detail level: no z-1 on the wire, and the reply is the tile alone', () => {
+    const dallas = R.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 })
+    assert.equal(R.wireText(dallas), '>radar 32.780,-96.800')
+    assert.equal(R.wireText(R.radarLoop({ latitude: 32.78, longitude: -96.8, zoom: -1 })), '>radar 32.780,-96.800 loop')
     assert.deepStrictEqual(
-      R.expectedReply(R.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 })),
-      WeatherReplyKind.radar({
-        tile: { south: 32.5, west: -97.5, zoom: -1 }, fallback: { south: 32, west: -98, zoom: 0 }
-      })
+      R.expectedReply(dallas), WeatherReplyKind.radar({ tile: { south: 32, west: -98, zoom: 0 } })
     )
-    // Every other zoom has no fallback: the bot answers the width asked or refuses.
-    for (const zoom of [0, 1, 2, 3]) {
-      assert.equal(R.expectedReply(R.radar({ latitude: 32.78, longitude: -96.8, zoom })).fallback, null)
-    }
+    assert.deepStrictEqual(Object.keys(WeatherReplyKind.radar({ tile: { south: 32, west: -98, zoom: 0 } })), ['kind', 'tile'])
     // A loop is settled the same way, by its first frame.
     assert.deepStrictEqual(
-      R.expectedReply(R.radarLoop({ latitude: 32.78, longitude: -96.8, zoom: -1, held: [at2338] })),
-      R.expectedReply(R.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }))
+      R.expectedReply(R.radarLoop({ latitude: 32.78, longitude: -96.8, zoom: 1, held: [at2338] })),
+      R.expectedReply(R.radar({ latitude: 32.78, longitude: -96.8, zoom: 1 }))
     )
   })
 
@@ -324,8 +310,8 @@ describe('WeatherRequest', () => {
       '>radar 30.270,-97.740 z1 loop 0008'
     )
     assert.equal(
-      R.wireText(R.radarLoop({ latitude: 30.27, longitude: -97.74, zoom: -1, held: [at2353] })),
-      '>radar 30.270,-97.740 z-1 loop 2353'
+      R.wireText(R.radarLoop({ latitude: 30.27, longitude: -97.74, zoom: 3, held: [at2353] })),
+      '>radar 30.270,-97.740 z3 loop 2353'
     )
     // The same picture twice (two bots' copies) is listed once.
     assert.equal(
@@ -345,17 +331,17 @@ describe('WeatherRequest', () => {
     assert.equal(austin, '>radar 30.270,-97.740 loop 2353 2338')
     assert.equal(austin.length, 36, 'a third would be 41')
 
-    const detail = R.wireText(R.radarLoop({ latitude: 30.27, longitude: -97.74, zoom: -1, held: hour }))
-    assert.equal(detail, '>radar 30.270,-97.740 z-1 loop 2353 2338')
-    assert.equal(detail.length, MeshWXWire.maxRequestTextBytes, 'exactly the budget')
+    const west = R.wireText(R.radarLoop({ latitude: 30.27, longitude: -100.74, zoom: 1, held: hour }))
+    assert.equal(west, '>radar 30.270,-100.740 z1 loop 2353 2338')
+    assert.equal(west.length, MeshWXWire.maxRequestTextBytes, 'exactly the budget')
 
-    const longest = R.wireText(R.radarLoop({ latitude: -30.27, longitude: -197.74, zoom: -1, held: hour }))
-    assert.equal(longest, '>radar -30.270,-197.740 z-1 loop 2353', 'the newest kept')
+    const longest = R.wireText(R.radarLoop({ latitude: -30.27, longitude: -197.74, zoom: 3, held: hour }))
+    assert.equal(longest, '>radar -30.270,-197.740 z3 loop 2353', 'the newest kept')
 
     // The shortest coordinate fits three, and never more than the five the loop can hold.
     const shortest = R.wireText(R.radarLoop({ latitude: 0, longitude: 0, held: hour }))
     assert.equal(shortest, '>radar 0.000,0.000 loop 2353 2338 2323')
-    for (const text of [austin, detail, longest, shortest]) {
+    for (const text of [austin, west, longest, shortest]) {
       assert.ok(new TextEncoder().encode(text).length <= MeshWXWire.maxRequestTextBytes, text)
     }
   })
@@ -372,7 +358,7 @@ describe('WeatherRequest', () => {
     assert.equal(R.key(loop), `radarLoop:30.270,-97.740:z0:${at2353}`)
     assert.equal(R.isEqual(loop, R.radarLoop({ latitude: 30.2701, longitude: -97.74, held: [at2353] })), true)
     assert.equal(R.isEqual(loop, R.radarLoop({ latitude: 30.27, longitude: -97.74, held: [] })), false)
-    assert.equal(R.isEqual(loop, R.radarLoop({ latitude: 30.27, longitude: -97.74, zoom: -1 })), false)
+    assert.equal(R.isEqual(loop, R.radarLoop({ latitude: 30.27, longitude: -97.74, zoom: 1, held: [at2353] })), false)
     assert.equal(R.isEqual(loop, R.radar({ latitude: 30.27, longitude: -97.74 })), false)
     // Plain data: it survives the request log's JSON.
     assert.deepStrictEqual(JSON.parse(JSON.stringify(loop)), loop)

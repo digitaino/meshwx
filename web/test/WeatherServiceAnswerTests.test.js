@@ -623,75 +623,7 @@ describe('WeatherService answers', () => {
     )
   })
 
-  // MARK: - Radar detail and the last hour (revision 13)
-
-  /**
-   * "A request at zoom −1 is also settled by the zoom 0 tile containing the same coordinate,
-   * which is the bot's fallback": where the bot has no regional picture fine enough to cut a 1°
-   * tile from, it answers `z-1` with Local.
-   */
-  it('a detail request is settled by its own square or by the Local tile the bot falls back to', async () => {
-    for (const answer of [
-      { south: 32.5, west: -97.5, zoom: -1 }, // the detail tile itself (type 12)
-      { south: 32, west: -98, zoom: 0 }, // Local for Dallas, the fallback
-    ]) {
-      const h = await makeHarness()
-      await h.service.send(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }), { to: F.bot })
-      assert.deepStrictEqual(h.transport.sent.map((entry) => entry.text), ['>radar 32.780,-96.800 z-1'])
-      // Neither another detail square nor another zoom 0 square is the answer.
-      await h.service.ingest(F.radar({ seq: 1, south: 32, west: -97.5, zoom: -1 }))
-      await h.service.ingest(F.radar({ seq: 2, south: 29, west: -99, zoom: 0 }))
-      await h.service.ingest(F.radar({ seq: 3, south: 32, west: -98, zoom: 1 }))
-      assert.equal(h.service.pendingRequests().length, 1, `still waiting for ${JSON.stringify(answer)}`)
-      await h.service.ingest(F.radar({ seq: 4, ...answer }))
-      assert.deepStrictEqual(
-        F.settlements(h.events).map(([, outcome]) => outcome), [WeatherRequestOutcome.answered]
-      )
-    }
-  })
-
-  /**
-   * The fallback is worked out from the coordinate, never from the detail square: a square
-   * centred on a half degree lies across two Local tiles, and only the coordinate says which one
-   * the bot cut.
-   */
-  it('the Local fallback is the Local tile of the coordinate asked', async () => {
-    const h = await makeHarness()
-    // 30.30 N is on the detail square 30.0 to 31.0, whose centre (30.5) is halfway between the
-    // centres of two Local squares; the coordinate itself is on the one centred on 30.
-    await h.service.send(WeatherRequest.radar({ latitude: 30.3, longitude: -97.74, zoom: -1 }), { to: F.bot })
-    await h.service.ingest(F.radar({ seq: 1, south: 30, west: -99, zoom: 0 }))
-    assert.equal(h.service.pendingRequests().length, 1, '31 N centre: not the Local tile of 30.30 N')
-    await h.service.ingest(F.radar({ seq: 2, south: 29, west: -99, zoom: 0 }))
-    assert.equal(h.service.pendingRequests().length, 0)
-  })
-
-  /**
-   * A detail ask answered with Local has been answered: asked again inside five minutes, the bot
-   * would send the same Local tile or refuse it (reason 4), so the detail square's slot is filled
-   * by the fallback that settled it. Somebody else's Local tile, settling nothing, fills only its
-   * own square's slot.
-   */
-  it('the Local fallback that answers a detail ask answers it again for five minutes', async () => {
-    const h = await makeHarness()
-    await h.service.send(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }), { to: F.bot })
-    await h.service.ingest(F.radar({ seq: 1, south: 32, west: -98, zoom: 0, takenMinutes: F.t0Minutes - 5 }))
-    await h.clock.advance(60)
-    assert.equal(
-      await h.service.send(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }), { to: F.bot }),
-      null
-    )
-    assert.equal(h.transport.sent.length, 1)
-
-    const other = await makeHarness()
-    await other.service.ingest(F.radar({ seq: 1, south: 32, west: -98, zoom: 0, takenMinutes: F.t0Minutes - 5 }))
-    await other.clock.advance(60)
-    assert.notEqual(
-      await other.service.send(WeatherRequest.radar({ latitude: 32.78, longitude: -96.8, zoom: -1 }), { to: F.bot }),
-      null,
-      'nobody here asked for detail, so the square may well have it'
-    )
-  })
+  // MARK: - The last hour (revision 13)
 
   /**
    * `>radar <place> loop HHMM…`: the held pictures go on the wire newest first, and the first

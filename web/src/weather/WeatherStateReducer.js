@@ -262,9 +262,7 @@ export const WeatherStateReducer = {
       case 'area_sweep':
         changes.push(storeAreaSweep(message, { state, receivedAt, source }))
         break
-      // Revision 13's detail tile decodes into the same shape as a Radar tile, at zoom −1.
       case 'radar':
-      case 'radar_detail':
         changes.push(storeRadar(message, { state, receivedAt, source }))
         break
       case 'not_available':
@@ -501,9 +499,12 @@ export const WeatherStateReducer = {
    * backlog by: a tile drained from the radio's queue is as old as its picture says it is,
    * whenever the phone heard it. A tile more than `radarRetentionMinutes` behind that goes, and
    * then the list is capped.
+   *
+   * A detail tile (zoom −1) of revision 13's first build goes first, before it can stand for the
+   * bot's clock: that level was removed, and nothing draws one (`WeatherStoredRadarTile.isKept`).
    */
   retainRadarTiles(tiles) {
-    const ordered = [...tiles].sort((lhs, rhs) => {
+    const ordered = tiles.filter(WeatherStoredRadarTile.isKept).sort((lhs, rhs) => {
       const left = lhs.radar.taken_min
       const right = rhs.radar.taken_min
       if (left !== right) return right - left

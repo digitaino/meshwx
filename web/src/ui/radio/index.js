@@ -21,8 +21,8 @@ export { WeatherTrafficScreen, WeatherTrafficDetailScreen } from './WeatherTraff
 export { WeatherRequestsScreen, RequestRow } from './WeatherRequestsView.js'
 export { WeatherCachedScreen } from './WeatherCachedView.js'
 export {
-  WeatherRadarScreen, radarDrawing, radarPrint, radarScreenModel, radarWidths, radarLoopDelay,
-  RADAR_WIDTHS, RADAR_DETAIL, RADAR_LOOP_TIMING,
+  WeatherRadarScreen, radarDrawing, radarPrint, radarScreenModel, radarLoopDelay,
+  RADAR_WIDTHS, RADAR_LOOP_TIMING,
 } from './WeatherRadarView.js'
 export { WeatherAlertNotificationsScreen } from './WeatherAlertNotificationsView.js'
 export { RadioPill } from './RadioPill.js'

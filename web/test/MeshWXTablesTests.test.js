@@ -211,22 +211,17 @@ describe('MeshWX tables', () => {
   });
 
   /**
-   * Revision 13 (protocol.json version 17): the detail level and the loop are stated by the
-   * bundle as well. The wire constants live in `MeshWXWire`, where a decoder reaches them without
-   * the bundle; this pins the two to each other, read off the publisher's own file.
+   * Revision 13 (protocol.json version 17): the loop is stated by the bundle as well. The wire
+   * constants live in `MeshWXWire`, where a decoder reaches them without the bundle; this pins the
+   * two to each other, read off the publisher's own file. The detail level of the first draft is
+   * gone from both: zoom 0 is the narrowest, and there is no `detail` block.
    */
-  test('theRadarBlockStatesTheDetailLevelAndTheLoop', async () => {
+  test('theRadarBlockStatesTheLoop', async () => {
     const radar = (await nodeBundleLoader()('protocol.json')).v5.radar;
-    assert.equal(radar.min_zoom, MeshWXWire.minRadarZoom);
     assert.equal(radar.max_zoom, MeshWXWire.maxRadarZoom);
-    assert.equal(radar.detail.type, 12);
-    assert.equal(radar.detail.zoom, MeshWXWire.radarDetailZoom);
-    assert.equal(radar.detail.span_degrees, 1);
-    assert.equal(radar.detail.step_degrees, 0.5);
-    assert.equal(radar.detail.coord_unit_degrees, 1 / MeshWXWire.radarDetailUnitsPerDegree);
-    assert.equal(radar.detail.depth_mask, MeshWXWire.radarDetailDepthMask);
-    assert.equal(radar.detail.min_px_per_degree, MeshWXWire.radarDetailMinPixelsPerDegree);
-    assert.equal(radar.detail.request_token, `z${MeshWXWire.radarDetailZoom}`);
+    assert.deepStrictEqual(radar.span_degrees, [2, 4, 8, 16]);
+    assert.equal(radar.min_zoom, undefined);
+    assert.equal(radar.detail, undefined);
     assert.equal(radar.loop.request_token, 'loop');
     assert.equal(radar.loop.window_minutes, MeshWXWire.radarLoopWindowMinutes);
     assert.equal(radar.loop.max_frames, MeshWXWire.radarLoopMaxFrames);

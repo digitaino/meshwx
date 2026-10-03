@@ -131,13 +131,11 @@ export const WeatherTrafficSummary = Object.freeze({
           ),
         }
       case 'radar':
-      case 'radar_detail':
         // "Radar picture · Local · 214 cells with precipitation" (revision 11 design §3). The
         // width rather than the tile's corner: a tile is two degrees, which is 222 km tall
         // everywhere and a different width at every latitude, so the corner would be a number
-        // nobody can picture and the width is the thing that was asked for. A detail tile
-        // (type 12, revision 13) reads "Radar picture · Detail · …", and an older frame of a
-        // loop reads like any other picture: the row's own time says which it is.
+        // nobody can picture and the width is the thing that was asked for. An older frame of a
+        // loop (revision 13) reads like any other picture: the row's own time says which it is.
         return {
           title: t('weather.radar.request.title'),
           detail: join(radarWidthName(message.zoom), wetCellCount(MeshWXRadar.wetCells(message))),
@@ -186,13 +184,12 @@ function areaCount(count) {
 }
 
 /**
- * How wide the tile is, in the words the radar screen's own control uses (design §3): Detail,
- * Local, Regional, Wide for zooms −1, 0, 1 and 2. Zoom 3 exists on the wire and is not offered,
- * so a tile at that width is left unnamed rather than given a word nothing else says.
+ * How wide the tile is, in the three words the radar screen's own control uses (design §3):
+ * Local, Regional, Wide for zooms 0, 1 and 2. Zoom 3 exists on the wire and is not offered, so a
+ * tile at that width is left unnamed rather than given a fourth word nothing else says.
  */
 function radarWidthName(zoom) {
   switch (zoom) {
-    case -1: return t('weather.radar.width.detail')
     case 0: return t('weather.radar.width.local')
     case 1: return t('weather.radar.width.regional')
     case 2: return t('weather.radar.width.wide')

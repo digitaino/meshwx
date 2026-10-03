@@ -13,16 +13,11 @@
 // - **Unknown cells are hatched, never left looking dry.** Outside a partial tile's bounds there
 //   is no reading at all, and the line under the map says so in words as well.
 //
-// Revision 13 adds two things, both asked for and neither ever done by itself:
-//
-// - **Detail.** A tap on the map picks a spot (zoom in first to aim). The width control then gains
-//   a fourth segment, Detail, selected at once, and the camera frames the 1° square around the
-//   spot, outlined. Another tap moves the spot; the segment stays for the spot until the screen
-//   closes. Where no detail picture is held but the spot's Local one is, Local is drawn and says so.
-// - **The last hour.** Under the map, for whatever width is on screen: Play / Pause once the loop
-//   has two frames, "Ask for the last hour" while it has fewer than five, and a line when a
-//   picture is missing. Nothing plays by itself; leaving the screen or changing width stops it.
-//   Each frame's drawing is built once and the map steps through them without re-framing.
+// Revision 13 adds **the last hour**, asked for and never done by itself. Under the map, for
+// whatever width is on screen: Play / Pause once the loop has two frames, "Ask for the last hour"
+// while it has fewer than five, and a line when a picture is missing. Nothing plays by itself;
+// leaving the screen or changing width stops it. Each frame's drawing is built once and the map
+// steps through them without re-framing.
 //
 // It is bound to the page it was opened from (docs/MESHWX_UI.md §3.1 U-18): the place, the tiles
 // and the bot all come from that page's snapshot, and never from whichever page the pager has
@@ -31,34 +26,23 @@ import { h } from '../kit/dom.js'
 import { Card, List } from '../kit/components.js'
 import { cameraBox, cellLayer } from '../kit/MapCanvas.js'
 import { t } from '../../l10n.js'
-import { MeshWXRadarLevel, MeshWXRadarTile, MeshWXWarning, MeshWXWire } from '../../meshwx/index.js'
+import { MeshWXRadarLevel, MeshWXRadarTile, MeshWXWarning } from '../../meshwx/index.js'
 import {
-  WeatherRadarAge, WeatherRadarCard, WeatherRadarCells, WeatherRadarDetail, WeatherRadarLoop, WeatherRadarPicture,
+  WeatherRadarAge, WeatherRadarCard, WeatherRadarCells, WeatherRadarLoop, WeatherRadarPicture,
 } from '../../screen/index.js'
 import { WeatherRequest } from '../../weather/index.js'
 import { copy, Line, safeScreen, Segmented } from './support.js'
 import { AskButton, AskFootnotes, isAskable, PendingBar } from './WeatherAskControl.js'
 import { applyDrawing, MapView, tintOf } from './WeatherAlertMap.js'
 
-/** The three widths the screen always offers. Zoom 3 is on the wire and is not one of them (§3). */
+/** The three widths the screen offers. Zoom 3 is on the wire and is not one of them (§3). */
 export const RADAR_WIDTHS = Object.freeze([0, 1, 2])
-
-/** The Detail segment's zoom, offered once a spot is picked (revision 13). */
-export const RADAR_DETAIL = MeshWXWire.radarDetailZoom
 
 /**
  * How long a frame of the loop stays on screen: 0.8 s each, and the newest 2 s, so the loop
  * comes to rest on "now" for long enough to read it before it starts again (revision 13 §3).
  */
 export const RADAR_LOOP_TIMING = Object.freeze({ frameMilliseconds: 800, newestMilliseconds: 2000 })
-
-/**
- * The segments of the width control: Local, Regional, Wide, and Detail joining them, last, once a
- * spot is picked (as the iOS screen orders them).
- */
-export function radarWidths({ spot = null } = {}) {
-  return spot == null ? RADAR_WIDTHS : [...RADAR_WIDTHS, RADAR_DETAIL]
-}
 
 /** How long frame `index` (0-based, oldest first) of `count` shows before the next. */
 export function radarLoopDelay({ index, count }) {
@@ -70,53 +54,25 @@ export function radarLoopDelay({ index, count }) {
  * tested: which picture, which square the camera frames, what the asks are, the loop, and which
  * frame is on screen.
  *
- * - `zoom` is the selected segment; −1 is Detail and needs a `spot`, without which it reads as
- *   Local.
+ * - `zoom` is the selected segment, one of `RADAR_WIDTHS`.
  * - `frameIndex` is the loop frame on screen (0-based, oldest first), or null for the picture at
  *   rest. Resting on the newest frame is the picture at rest, unless it is playing.
  *
  * `frame` is set while playing, or while paused on an older frame: the time line then reads
  * "6:08 PM · 2 of 5", in the caution tone whenever that frame is old enough to be (from thirty
- * minutes, like any old picture). `summary` always describes the newest picture — on Detail only
- * when the place is on the square drawn.
+ * minutes, like any old picture). `summary` always describes the newest picture.
  */
-export function radarScreenModel({ place, tiles, zoom, spot = null, now, frameIndex = null, playing = false }) {
-  const isDetail = zoom === RADAR_DETAIL && spot != null
-  const width = isDetail ? RADAR_DETAIL : Math.max(zoom ?? 0, 0)
-  let card
-  let picture = null
-  let summary = null
-  let tile
-  let outline = null
-  let loopTile
-  let loopAt
-  let request
-  if (isDetail) {
-    card = WeatherRadarDetail.card({ spot, tiles, now })
-    picture = WeatherRadarDetail.picture(card)
-    summary = WeatherRadarDetail.summary({ of: picture, place: place?.coordinate ?? null })
-    // The camera frames the 1° square whatever is drawn in it: with Local standing in, the square
-    // asked about is still the one outlined and framed.
-    tile = WeatherRadarDetail.tile({ for: spot })
-    outline = tile
-    // The loop is of the square actually drawn, so Local's frames play when Local stands in.
-    loopTile = picture?.stored?.tile ?? tile
-    loopAt = spot
-    request = WeatherRadarDetail.ask({ spot })
-  } else {
-    card = WeatherRadarCard.width(width, { place, tiles, now })
-    picture = card.kind === 'held' ? card.picture : null
-    summary = picture?.summary ?? null
-    tile = picture?.stored?.tile ?? card.tile ?? WeatherRadarCard.tile({ for: place, zoom: width })
-    loopTile = tile
-    loopAt = place?.coordinate ?? null
-    request = WeatherRadarCard.ask({ place, zoom: width })
-  }
+export function radarScreenModel({ place, tiles, zoom, now, frameIndex = null, playing = false }) {
+  const width = Math.max(zoom ?? 0, 0)
+  const card = WeatherRadarCard.width(width, { place, tiles, now })
+  const picture = card.kind === 'held' ? card.picture : null
+  const tile = picture?.stored?.tile ?? card.tile ?? WeatherRadarCard.tile({ for: place, zoom: width })
+  const at = place?.coordinate ?? null
 
-  const loop = WeatherRadarLoop.make({ tile: loopTile, tiles, now })
-  const loopRequest = loopAt == null
+  const loop = WeatherRadarLoop.make({ tile, tiles, now })
+  const loopRequest = at == null
     ? null
-    : WeatherRadarLoop.ask(loop, { latitude: loopAt.latitude, longitude: loopAt.longitude, zoom: width })
+    : WeatherRadarLoop.ask(loop, { latitude: at.latitude, longitude: at.longitude, zoom: width })
 
   const count = loop.frames.length
   let index = frameIndex
@@ -132,25 +88,13 @@ export function radarScreenModel({ place, tiles, zoom, spot = null, now, frameIn
       isOld: WeatherRadarAge.make({ takenMinutes: stored.radar.taken_min, now }).isOld,
     }
 
-  let askTitle
-  if (isDetail) askTitle = card.kind === 'held' ? 'askNewer' : 'detailAsk'
-  else askTitle = picture == null ? 'ask' : 'askNewer'
-
   return {
-    widths: radarWidths({ spot }),
     zoom: width,
-    isDetail,
-    /** Before any spot is picked: "Tap the map for a detailed picture of that spot." */
-    showsHint: spot == null,
     card,
     picture,
-    summary,
-    /** Detail with Local standing in: "No detailed picture of this spot. Showing Local." */
-    isFallback: isDetail && WeatherRadarDetail.isFallback(card),
+    summary: picture?.summary ?? null,
     tile,
-    outline,
-    request,
-    askTitle,
+    request: WeatherRadarCard.ask({ place, zoom: width }),
     loop,
     loopRequest,
     canPlay: WeatherRadarLoop.canPlay(loop),
@@ -168,8 +112,6 @@ export function WeatherRadarScreen({ app, page }) {
   // no button here, so it opens on the widest that is offered.
   const opened = page?.snapshot?.radar?.picture?.stored?.tile?.zoom ?? 0
   let zoom = Math.min(Math.max(opened, 0), RADAR_WIDTHS[RADAR_WIDTHS.length - 1])
-  /** The spot a tap picked, for the Detail segment; null until the map is tapped. */
-  let spot = null
   /** The loop: whether it plays, the frame on screen, and the frames it plays through. */
   const player = { playing: false, index: null, frames: [], timer: null }
 
@@ -210,14 +152,6 @@ export function WeatherRadarScreen({ app, page }) {
     app.nav.refresh()
   }
 
-  const onTap = ({ coordinate }) => {
-    if (coordinate == null || !Number.isFinite(coordinate.latitude) || !Number.isFinite(coordinate.longitude)) return
-    spot = { latitude: coordinate.latitude, longitude: coordinate.longitude }
-    zoom = RADAR_DETAIL
-    stop()
-    app.nav.refresh()
-  }
-
   return safeScreen({
     id: 'radar',
     title: () => t('weather.radar.title'),
@@ -231,7 +165,6 @@ export function WeatherRadarScreen({ app, page }) {
         place,
         tiles: snapshot?.radarTiles ?? [],
         zoom,
-        spot,
         now: words.now,
         frameIndex: player.index,
         playing: player.playing,
@@ -264,7 +197,7 @@ export function WeatherRadarScreen({ app, page }) {
 
       return List(
         h('div', { class: 'radar-screen', key: 'map' },
-          MapView({ app, state, key: 'radar-map', interactive: true, ariaLabel: t('weather.radar.title'), onTap })),
+          MapView({ app, state, key: 'radar-map', interactive: true, ariaLabel: t('weather.radar.title') })),
 
         LoopCard({ app, page, words, model, player, togglePlay, status }),
 
@@ -275,7 +208,6 @@ export function WeatherRadarScreen({ app, page }) {
               // the button below is the whole of what to do about it.
               ? Line(t('weather.radar.notAsked'))
               : [
-                model.isFallback ? Line(t('weather.radar.detail.fallback'), { key: 'fallback' }) : null,
                 // The newest picture, always: a frame of the loop changes the time, not the words.
                 model.summary == null
                   ? null
@@ -305,33 +237,31 @@ export function WeatherRadarScreen({ app, page }) {
             Segmented({
               label: t('weather.radar.width'),
               value: model.zoom,
-              options: model.widths.map((one) => ({ value: one, label: words.radarWidthName(one) })),
+              options: RADAR_WIDTHS.map((one) => ({ value: one, label: words.radarWidthName(one) })),
               onchange: (next) => { zoom = next; stop(); app.nav.refresh() },
             }),
-            // Until a spot is picked, what the map is for beyond looking at it.
-            model.showsHint ? Line(t('weather.radar.detail.hint'), { key: 'hint' }) : null,
             // The cost above the button: it is what this tap is about to spend on the shared
             // channel, and a reader who has already tapped does not need telling. Always one
             // packet, at every width, held or not — a radar answer is one packet or a coarser
             // packet, never two (spec §7D).
             model.request != null && isAskable(status(model.request)) ? Line(t('weather.areaMap.packetsOne'), { key: 'cost' }) : null,
             model.request != null
-              ? AskButton({ app, page, title: askTitle(model, page), request: model.request, key: 'ask' })
+              ? AskButton({
+                app,
+                page,
+                title: held == null
+                  ? t('weather.radar.ask', page?.sourceName ?? '')
+                  : t('weather.radar.askNewer'),
+                request: model.request,
+                key: 'ask',
+              })
               : null,
             AskFootnotes({ app, page }),
-            Line(model.isDetail ? t('weather.radar.detail.footnote') : t('weather.radar.ask.footnote'), { key: 'footnote' }))),
+            Line(t('weather.radar.ask.footnote'), { key: 'footnote' }))),
 
         PendingBar({ app, requestsOnScreen: onScreen }))
     },
   })
-}
-
-function askTitle(model, page) {
-  switch (model.askTitle) {
-    case 'detailAsk': return t('weather.radar.detail.ask')
-    case 'askNewer': return t('weather.radar.askNewer')
-    default: return t('weather.radar.ask', page?.sourceName ?? '')
-  }
 }
 
 /**
@@ -410,8 +340,8 @@ function layerOf(stored) {
 }
 
 /**
- * What the radar map draws: the cells, the alerts as outlines over them, the detail square's
- * outline, the place's dot, and the square as the camera box.
+ * What the radar map draws: the cells, the alerts as outlines over them, the place's dot, and the
+ * tile as the camera box.
  *
  * The alerts are the ones this device is already holding for the page — nothing is asked for to
  * draw this screen — and they are drawn `fill: false` so the picture underneath survives them.
@@ -428,26 +358,6 @@ export function radarDrawing({ app, snapshot, model }) {
       id: `alert-${item.identity?.event}.${item.identity?.office}.${item.identity?.etn}`,
       rings: [polygon],
       tint: tintOf(item.warning.event, app?.tables),
-      fill: false,
-      stroke: true,
-      lineWidth: 2,
-      hitTest: false,
-    })
-  }
-  const outline = model?.outline ?? null
-  if (outline != null) {
-    const north = MeshWXRadarTile.north(outline)
-    const east = MeshWXRadarTile.east(outline)
-    shapes.push({
-      id: 'detail-square',
-      rings: [[
-        { latitude: outline.south, longitude: outline.west },
-        { latitude: north, longitude: outline.west },
-        { latitude: north, longitude: east },
-        { latitude: outline.south, longitude: east },
-      ]],
-      // The accent, not an event tint: the square is a question asked, not an alert.
-      tint: 'radarSpot',
       fill: false,
       stroke: true,
       lineWidth: 2,
@@ -483,7 +393,6 @@ export function radarPrint({ app, snapshot, model }) {
   const tile = model?.tile ?? null
   return [
     tile == null ? '' : MeshWXRadarTile.key(tile),
-    model?.outline == null ? '' : MeshWXRadarTile.key(model.outline),
     (snapshot?.alerts ?? []).map((one) => `${one.identity?.event}.${one.identity?.office}.${one.identity?.etn}`).join(','),
     snapshot?.place?.coordinate?.latitude,
     snapshot?.place?.coordinate?.longitude,

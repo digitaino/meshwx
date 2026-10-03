@@ -49,9 +49,6 @@
   --radar-heavy: #cc2f26;
   /* Cells a partial picture does not reach: grey, hatched, never anything that reads as dry. */
   --radar-unknown: #7b8792;
-  /* The detail square's outline on the radar map (revision 13): the accent in either theme,
-     because it is a question asked and never an alert. Read by the map as a shape tint. */
-  --tint-radarSpot: var(--accent);
 
   --radius: 14px;
   --radius-small: 9px;

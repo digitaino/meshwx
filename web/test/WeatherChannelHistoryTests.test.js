@@ -313,16 +313,16 @@ test('a square holding several frames is still one row, with its newest time and
   built.radarTiles = [0, 15, 30, 45, 60].map((ago) => storedRadarTile({
     south: 29, west: -99, zoom: 0, takenMinutes: t0Minutes - ago, receivedAt: t0 - 60_000 + ago,
   }))
-  built.radarTiles.push(storedRadarTile({ south: 32.5, west: -97.5, zoom: -1, takenMinutes: t0Minutes - 8 }))
+  built.radarTiles.push(storedRadarTile({ south: 28, west: -100, zoom: 1, takenMinutes: t0Minutes - 8 }))
   const group = cacheOf(built).groups.find((one) => one.group === 'radarPictures')
   assert.equal(group.items.length, 2)
   const local = group.items.find((item) => item.subject.tile.zoom === 0)
   assert.deepEqual(local.subject, WeatherChannelSubject.radar({ tile: { south: 29, west: -99, zoom: 0 }, frames: 5 }))
   assert.equal(local.contentAt, t0Minutes * 60_000, 'the newest picture')
   assert.equal(local.id, `radar-${botID}-0-29--99`)
-  const detail = group.items.find((item) => item.subject.tile.zoom === -1)
-  assert.equal(detail.subject.frames, 1)
-  assert.equal(detail.id, `radar-${botID}--1-32.5--97.5`)
+  const regional = group.items.find((item) => item.subject.tile.zoom === 1)
+  assert.equal(regional.subject.frames, 1)
+  assert.equal(regional.id, `radar-${botID}-1-28--100`)
 
   // What the channel carried lists each frame as the packet it was, with its own time.
   const heard = WeatherHeard.make({ states: { [String(botID)]: built }, now: t0 })

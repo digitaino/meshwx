@@ -1,16 +1,15 @@
 // The radar screen's own decisions (revision 13 §3), without a DOM.
 //
 // `WeatherRadarView` is a view and has no Swift test to port; the rules it adds on top of the
-// screen layer — which segments the width control has, what the Detail segment draws and asks
-// for, the loop row, which frame is on screen and how long it stays — live in
-// `radarScreenModel` so they can be pinned here. The canvas is not exercised: a stand-in `Path2D`
-// is enough to see that a frame's map layer is built once.
+// screen layer — the width control, the loop row, which frame is on screen and how long it stays
+// — live in `radarScreenModel` so they can be pinned here. The canvas is not exercised: a
+// stand-in `Path2D` is enough to see that a frame's map layer is built once.
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  RADAR_DETAIL, RADAR_LOOP_TIMING, radarDrawing, radarLoopDelay, radarPrint, radarScreenModel, radarWidths,
+  RADAR_LOOP_TIMING, RADAR_WIDTHS, radarDrawing, radarLoopDelay, radarPrint, radarScreenModel,
 } from '../src/ui/radio/WeatherRadarView.js'
 import { WeatherRequest } from '../src/weather/index.js'
 import { storedRadarTile, WeatherPhoneFixture as P } from './helpers/screen-fixture.js'
@@ -19,84 +18,39 @@ import { storedRadarTile, WeatherPhoneFixture as P } from './helpers/screen-fixt
 globalThis.Path2D ??= class { rect() {} }
 
 const austin = P.place(P.austin)
-/** A spot picked on the map near Dallas: its square is 32.5 N to 33.5 N, 97.5 W to 96.5 W. */
-const spot = { latitude: 32.78, longitude: -96.8 }
-const detailSquare = { south: 32.5, west: -97.5, zoom: -1 }
-const dallasLocal = { south: 32, west: -98, zoom: 0 }
 const austinLocal = { south: 29, west: -99, zoom: 0 }
+const austinRegional = { south: 28, west: -100, zoom: 1 }
 const at = (tile, ago, options = {}) => storedRadarTile({ ...tile, takenMinutes: P.nowMinutes - ago, ...options })
 const model = (options) => radarScreenModel({ place: austin, tiles: [], zoom: 0, now: P.now, ...options })
 
-test('the Detail segment appears once a spot is picked, last of the four', () => {
-  assert.deepStrictEqual(radarWidths({ spot: null }), [0, 1, 2])
-  assert.deepStrictEqual(radarWidths({ spot }), [0, 1, 2, RADAR_DETAIL])
-  assert.equal(RADAR_DETAIL, -1)
-
-  const before = model({})
-  assert.deepStrictEqual(before.widths, [0, 1, 2])
-  assert.equal(before.showsHint, true, '"Tap the map for a detailed picture of that spot."')
-  assert.equal(before.outline, null)
-
-  const after = model({ spot, zoom: RADAR_DETAIL })
-  assert.deepStrictEqual(after.widths, [0, 1, 2, -1])
-  assert.equal(after.showsHint, false)
-  assert.equal(after.isDetail, true)
-  // Without a spot the Detail zoom has nothing to be about, and reads as Local.
-  const stray = model({ zoom: RADAR_DETAIL })
-  assert.equal(stray.isDetail, false)
-  assert.equal(stray.zoom, 0)
-})
-
 /**
- * "The camera frames the 1° square, which is outlined." With nothing held: "Not asked for yet",
- * the ask "Ask for detail here" at the spot, and the loop's own ask for the same square.
+ * "Local, Regional and Wide as revision 11", and nothing else: the Detail segment of the first
+ * draft, the tap that picked its spot and the square it outlined are gone. Each width frames its
+ * own tile and asks for it at the place.
  */
-test('the Detail segment frames and outlines the square, and asks at the spot', () => {
-  const view = model({ spot, zoom: RADAR_DETAIL })
-  assert.equal(view.card.kind, 'missing')
-  assert.equal(view.picture, null)
-  assert.deepStrictEqual(view.tile, detailSquare)
-  assert.deepStrictEqual(view.outline, detailSquare)
-  assert.equal(WeatherRequest.wireText(view.request), '>radar 32.780,-96.800 z-1')
-  assert.equal(view.askTitle, 'detailAsk')
-  assert.equal(WeatherRequest.wireText(view.loopRequest), '>radar 32.780,-96.800 z-1 loop')
-  assert.equal(view.canPlay, false)
-  assert.equal(view.canAskForMore, true)
+test('the width control is Local, Regional and Wide, each framing its own tile', () => {
+  assert.deepStrictEqual(RADAR_WIDTHS, [0, 1, 2])
+  const local = model({ zoom: 0 })
+  assert.deepStrictEqual(local.tile, austinLocal)
+  assert.equal(WeatherRequest.wireText(local.request), '>radar 30.267,-97.743')
+  const regional = model({ zoom: 1 })
+  assert.deepStrictEqual(regional.tile, austinRegional)
+  assert.equal(WeatherRequest.wireText(regional.request), '>radar 30.267,-97.743 z1')
+  assert.equal(WeatherRequest.wireText(regional.loopRequest), '>radar 30.267,-97.743 z1 loop')
+  // A zoom below the narrowest width reads as Local, and asks for nothing finer.
+  const below = model({ zoom: -1 })
+  assert.equal(below.zoom, 0)
+  assert.deepStrictEqual(below.tile, austinLocal)
+  assert.equal(WeatherRequest.wireText(below.request), '>radar 30.267,-97.743')
 
-  const drawing = radarDrawing({ app: null, snapshot: { place: austin, alerts: [] }, model: view })
-  const outline = drawing.shapes.find((shape) => shape.id === 'detail-square')
-  assert.ok(outline != null, 'the square is outlined')
-  assert.equal(outline.fill, false)
-  assert.deepStrictEqual(drawing.bounds, { minLatitude: 32.5, maxLatitude: 33.5, minLongitude: -97.5, maxLongitude: -96.5 })
-  // No outline on the other widths.
-  const local = radarDrawing({ app: null, snapshot: { place: austin, alerts: [] }, model: model({ spot, zoom: 0 }) })
-  assert.equal(local.shapes.some((shape) => shape.id === 'detail-square'), false)
-})
-
-/**
- * "With no detail picture but a Local one for the spot, draws Local with the line 'No detailed
- * picture of this spot. Showing Local.'" The square asked about is still the one framed, the ask
- * still asks for detail, and the loop is Local's, which is what is drawn.
- */
-test('Local stands in on the Detail segment, and its frames are the loop', () => {
-  const tiles = [at(dallasLocal, 5), at(dallasLocal, 20)]
-  const view = model({ spot, zoom: RADAR_DETAIL, tiles })
-  assert.equal(view.card.kind, 'local')
-  assert.equal(view.isFallback, true)
-  assert.deepStrictEqual(view.picture.stored.tile, dallasLocal)
-  assert.deepStrictEqual(view.tile, detailSquare, 'the camera frames the square asked about')
-  assert.equal(view.askTitle, 'detailAsk', 'nothing at the detail level is held')
-  assert.equal(view.loop.frames.length, 2)
-  assert.equal(view.canPlay, true)
-  assert.equal(view.shown, view.picture.stored)
-
-  // With the detail picture held it is drawn, and the ask reads "Ask for a newer picture".
-  const held = model({ spot, zoom: RADAR_DETAIL, tiles: [...tiles, at(detailSquare, 10)] })
-  assert.equal(held.card.kind, 'held')
-  assert.equal(held.isFallback, false)
-  assert.equal(held.askTitle, 'askNewer')
-  assert.equal(held.loop.frames.length, 1, "the detail square's own loop")
-  assert.equal(held.canPlay, false)
+  for (const view of [local, regional]) {
+    // The only shapes on the map are the alerts held: no square is outlined.
+    assert.deepStrictEqual(radarDrawing({ app: null, snapshot: { place: austin, alerts: [] }, model: view }).shapes, [])
+  }
+  assert.deepStrictEqual(
+    radarDrawing({ app: null, snapshot: { place: austin, alerts: [] }, model: regional }).bounds,
+    { minLatitude: 28, maxLatitude: 32, minLongitude: -100, maxLongitude: -96 },
+  )
 })
 
 /**
@@ -189,9 +143,9 @@ test('a step of the loop swaps a layer built once, and does not re-frame the map
   assert.equal(radarDrawing({ app: null, snapshot, model: again }).cellLayer, layer, 'built once, kept')
 
   assert.equal(radarPrint({ app: null, snapshot, model: first }), radarPrint({ app: null, snapshot, model: second }))
-  // A new square does re-frame: that is what picking a spot is for.
+  // Another width is another square, and that does re-frame.
   assert.notEqual(
     radarPrint({ app: null, snapshot, model: first }),
-    radarPrint({ app: null, snapshot, model: model({ spot, zoom: RADAR_DETAIL, tiles }) }),
+    radarPrint({ app: null, snapshot, model: model({ zoom: 1, tiles }) }),
   )
 })

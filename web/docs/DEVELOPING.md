@@ -136,15 +136,14 @@ alerts over them as outlines so neither hides the other, a Light / Moderate / He
 Local / Regional / Wide control that asks for the same place at zoom 0, 1 or 2. Cells a partial
 picture does not reach are hatched and never drawn as dry ground.
 
-Revision 13 (`../../DigitainoMesh/docs/MESHWX_REV13.md`) adds two things to that screen. A tap on
-the map picks a spot: a fourth segment, Detail, appears and is selected, and the camera frames the
-1° square around the spot (zoom −1, wire type 12, twice the detail of Local), outlined. Where no
-detail picture is held but the spot's Local one is, Local is drawn and says so. And under the map,
-for whatever width is on screen, the last hour as a loop: Play / Pause from two frames (0.8 s each,
+Revision 13 (`../../DigitainoMesh/docs/MESHWX_REV13.md`) adds the last hour to that screen.
+Under the map, for whatever width is on screen, the loop: Play / Pause from two frames (0.8 s each,
 the newest 2 s, never by itself), "Ask for the last hour" (`>radar … loop HHMM …`, up to five
 packets) while it has fewer than five. `radarTiles` holds frames, one per square and picture. The
 screen's decisions are in `radarScreenModel` (`src/ui/radio/WeatherRadarView.js`), tested in
-`test/RadarScreenView.test.js`.
+`test/RadarScreenView.test.js`. A detail level (zoom −1, wire type 12) was built in the first
+version of revision 13 and removed before release; a state that version saved loads with its
+detail tiles left behind.
 
 `?link=demo` replays three real Austin tiles from the squall line of 20 September 2026 — the
 echoes sit in the north-west of the Local tile, which is where Dallas is — and `?open=radar`

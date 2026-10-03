@@ -75,7 +75,8 @@ describe('MeshWX codec', () => {
   test('unknownTypeKeepsTheHeaderAndDropsTheBody', () => {
     // Nibble 13 is in the third-party experimental range (spec §2.2): the bot never sends it, so
     // it must be ignored — but `(bot, seq)` tracking still needs it, which is why this is a
-    // decode, not an error. (Nibble 12 was the example until revision 13 made it Radar detail.)
+    // decode, not an error. (Nibble 12 is free again too: revision 13's detail tile was removed
+    // before release, and `radarDetailIsAnUnknownTypeAgain` pins it.)
     const message = decode(bytes(0x05, 0x7a, 0x4c, 0xd3, 0xaa, 0xbb));
     assert.equal(message.seq, 5);
     assert.equal(message.type, 13);

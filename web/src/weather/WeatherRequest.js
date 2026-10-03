@@ -132,14 +132,10 @@ export const WeatherRequest = Object.freeze({
    * answer serve everybody in a town rather than one phone each.
    *
    * Request only, and never on a timer: revision 11 ships with no scheduled radar at all.
-   *
-   * `zoom` −1 is the detail level of revision 13, written `z-1`: the 1° tile around the
-   * coordinate, or — where the bot has no picture fine enough — the Local tile for the same
-   * coordinate, which is why `expectedReply` names both.
    */
   radar({ latitude, longitude, zoom = 0 }) { return { kind: 'radar', latitude, longitude, zoom } },
   /**
-   * `>radar 30.270,-97.740 loop` / `>radar 30.270,-97.740 z-1 loop 2353 2338` — the pictures of
+   * `>radar 30.270,-97.740 loop` / `>radar 30.270,-97.740 z1 loop 2353 2338` — the pictures of
    * the last hour for one tile, oldest first, one packet each (spec §7D.4, revision 13).
    *
    * `held` is the `taken` minutes of the frames this phone already holds for that tile
@@ -243,21 +239,21 @@ export const WeatherRequest = Object.freeze({
   },
 
   /**
-   * `>radar <lat>,<lon>` at zoom 0, `… z2` at a wider zoom and `… z-1` at the detail level. Zoom 0
-   * sends nothing after the place: it is the default, and "anything else after the place is part
-   * of the place" (spec revision 11, §7D). The longest this can be is
-   * `>radar -30.270,-197.740 z-1`, 27 bytes of the 40-byte request budget (spec §7B).
+   * `>radar <lat>,<lon>` at zoom 0, `… z2` otherwise. Zoom 0 sends nothing after the place: it is
+   * the default, and "anything else after the place is part of the place" (spec revision 11,
+   * §7D). The longest this can be is `>radar -30.270,-197.740 z3`, 26 bytes of the 40-byte
+   * request budget (spec §7B).
    */
   radarText({ latitude, longitude, zoom = 0 }) {
     const base = `>radar ${WeatherRequest.coordinateKey({ latitude, longitude })}`
-    return (zoom ?? 0) === 0 ? base : `${base} z${zoom}`
+    return (zoom ?? 0) > 0 ? `${base} z${zoom}` : base
   },
 
   /**
    * `>radar 30.270,-97.740 [z<n>] loop [HHMM …]` (spec revision 13, §7D.4): the held pictures'
    * UTC hour and minute, **newest first**, as many as fit the 40-byte request and never more than
    * `MeshWXWire.radarLoopHeldMax`. `>radar 30.270,-97.740 loop` is 26 bytes, so two always fit
-   * there; a southern, western coordinate at the detail level leaves room for one. The newest go
+   * there; a southern, western coordinate at a wider zoom leaves room for one. The newest go
    * first because they are the ones a phone is likeliest to hold; a held picture left off is sent
    * again, which costs a packet and breaks nothing.
    */
@@ -326,22 +322,13 @@ export const WeatherRequest = Object.freeze({
       // The tile is worked out here rather than waited for, because the lattice is fixed: the
       // answer to this coordinate is one named square of the earth, whoever sends it. A loop is
       // settled the same way, by its first frame; the rest keep flowing into state.
-      //
-      // At the detail level the bot answers with Local where it has no picture fine enough
-      // (revision 13), so the zoom 0 tile containing the same coordinate settles it too. It is
-      // worked out from the coordinate, not from the detail tile: a detail tile centred on a half
-      // degree lies across two zoom 0 tiles, and only the coordinate says which the bot cut.
       case 'radar':
-      case 'radarLoop': {
-        const zoom = request.zoom ?? 0
-        const at = { latitude: request.latitude, longitude: request.longitude }
+      case 'radarLoop':
         return WeatherReplyKind.radar({
-          tile: MeshWXRadarTile.containing({ ...at, zoom }),
-          fallback: zoom === MeshWXWire.radarDetailZoom
-            ? MeshWXRadarTile.containing({ ...at, zoom: 0 })
-            : null
+          tile: MeshWXRadarTile.containing({
+            latitude: request.latitude, longitude: request.longitude, zoom: request.zoom ?? 0
+          })
         })
-      }
       default: throw new Error(`WeatherRequest: unknown kind ${request.kind}`)
     }
   },
@@ -460,13 +447,8 @@ export const WeatherReplyKind = Object.freeze({
    * for that tile from the bot asked settles the request whatever its `taken`", because a bot
    * with nothing newer than the picture it already sent answers with that one, and a phone that
    * went on waiting for a fresher one would wait for the next quarter of an hour.
-   *
-   * `fallback` (revision 13) is the zoom 0 tile a detail request is also settled by, because it
-   * is what the bot sends where it has no picture fine enough; null at every other zoom. A JS
-   * addition: the Swift case carries the tile alone, and the fallback cannot be worked out from
-   * the detail tile without the coordinate.
    */
-  radar({ tile, fallback = null }) { return { kind: 'radar', tile, fallback } }
+  radar({ tile }) { return { kind: 'radar', tile } }
 })
 
 /**

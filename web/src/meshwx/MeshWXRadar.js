@@ -1,7 +1,7 @@
 // Port of MC1Services/Sources/MeshWX/MeshWXRadar.swift
 //
-// Radar (type 11, spec §7D, revision 11) and Radar detail (type 12, spec §7E, revision 13): one
-// tile of a radar picture, and the lattice the tiles sit on.
+// Radar (type 11, spec §7D, revision 11): one tile of a radar picture, and the lattice the
+// tiles sit on.
 //
 // The picture itself is the decoded wire object (PORTING §5) — `taken_min`, `south`, `west`,
 // `zoom`, `product`, `coarse`, `partial`, `bounds`, `size`, `rows` — and `MeshWXRadar` is the
@@ -85,12 +85,7 @@ export const MeshWXRadarBounds = Object.freeze({
 });
 
 /**
- * One square of the lattice: `{ south, west, zoom }` (spec §7D, §7E).
- *
- * Zoom 0 to 3 have whole-degree edges. Zoom −1 is the detail level of revision 13, a 1° tile on
- * a half-degree lattice, so its edges are half degrees: `south` and `west` are numbers of degrees,
- * not integers. A stored state written before revision 13 has whole numbers there and reads
- * unchanged.
+ * One square of the lattice: `{ south, west, zoom }`, all whole degrees and 0-3 (spec §7D).
  *
  * Hashable and Codable in Swift, so here it is plain data with `key` for a dictionary and
  * `isEqual` for the comparisons that Swift gets from `==` (PORTING §3).
@@ -103,28 +98,28 @@ export const MeshWXRadarTile = Object.freeze({
   /**
    * The tile that answers a coordinate: the one whose **centre** is the nearest lattice point,
    * so the place asked about is never closer than a quarter of the span to an edge (55 km at
-   * zoom 0, 28 km at the detail level). The lattice step is half the span, `2^zoom` degrees:
-   * `south` and `west` come out whole at zoom 0 to 3 and on half degrees at zoom −1.
+   * zoom 0). The lattice step is half the span, `2^zoom` degrees, and `south` and `west` come
+   * out whole at every zoom.
    *
    * `Math.floor(value / step + 0.5)` and not a rounding function: a tie has to fall the same way
    * here as in the bot's Python and the app's Swift, or two clients asking about the same place
-   * ask for two different tiles and the channel pays for both. A step of 0.5 is exact in binary
-   * floating point, so the detail level rounds as exactly as the others.
+   * ask for two different tiles and the channel pays for both.
+   *
+   * The zoom is clamped to 0…`maxRadarZoom`, so the −1 of revision 13's removed detail level
+   * comes back as a zoom 0 tile.
    */
   containing({ latitude, longitude, zoom }) {
-    // Clamped to −1…3, as the Swift does: this is the lattice, not a request, and every caller
-    // wants a tile back. The encoder is where a zoom of 4 is a failure.
-    const level = Math.min(
-      Math.max(Math.trunc(zoom) || 0, MeshWXWire.minRadarZoom), MeshWXWire.maxRadarZoom,
-    );
-    const step = 2 ** level;
+    // Clamped, as the Swift does: this is the lattice, not a request, and every caller wants a
+    // tile back. The encoder is where a zoom of 4 is a failure.
+    const level = Math.min(Math.max(Math.trunc(zoom) || 0, 0), MeshWXWire.maxRadarZoom);
+    const step = 1 << level;
     const origin = (value) => Math.floor(value / step + 0.5) * step - step;
     return { south: origin(latitude), west: origin(longitude), zoom: level };
   },
 
-  /** `2^(zoom + 1)` degrees on each side: 1 at the detail level, then 2, 4, 8, 16. */
+  /** `2^(zoom + 1)` degrees on each side: 2, 4, 8, 16. */
   spanDegrees(tile) {
-    return 2 ** (tile.zoom + 1);
+    return 2 << tile.zoom;
   },
 
   north(tile) {
@@ -193,10 +188,7 @@ export const MeshWXRadarTile = Object.freeze({
     return { row: inside(row), col: inside(col) };
   },
 
-  /**
-   * `"32,-98,0"`, `"32.5,-97.5,-1"` — the dictionary key of PORTING §3, and what two tiles are
-   * compared by. A half degree prints as one exact decimal, so the key is still exact.
-   */
+  /** `"32,-98,0"` — the dictionary key of PORTING §3, and what two tiles are compared by. */
   key(tile) {
     return `${tile.south},${tile.west},${tile.zoom}`;
   },
@@ -208,26 +200,16 @@ export const MeshWXRadarTile = Object.freeze({
 });
 
 /**
- * One tile of a radar picture (type 11, spec §7D; type 12, §7E), as the decoded wire object.
+ * One tile of a radar picture (type 11, spec §7D), as the decoded wire object.
  *
  * `taken` is the time printed on the radar picture — not when the bot received it and not when
  * it sent it. It is the only clock a radar message carries, and everything on screen that says
  * how old the picture is says it from this.
- *
- * A detail tile (type 12, revision 13) is the same shape with `zoom` −1 and half-degree edges;
- * only `type` and `name` say which packet it came in. The Swift decodes both into one
- * `MeshWXMessage.radar`, which is why everything that asks "is this a radar picture" asks
- * `MeshWXRadar.isRadarMessage` rather than comparing a name.
  */
 export const MeshWXRadar = Object.freeze({
   Level: MeshWXRadarLevel,
   Bounds: MeshWXRadarBounds,
   Tile: MeshWXRadarTile,
-
-  /** Either radar type: a Radar tile (11) or a Radar detail tile (12). */
-  isRadarMessage(message) {
-    return message?.name === 'radar' || message?.name === 'radar_detail';
-  },
 
   /**
    * Build the decoded shape from the Swift's own field names, for a test or a fabricated tile.
@@ -255,13 +237,11 @@ export const MeshWXRadar = Object.freeze({
     const boundsArray = bounds == null
       ? null
       : (Array.isArray(bounds) ? [...bounds] : MeshWXRadarBounds.array(bounds));
-    // The detail level travels as its own type (revision 13), and nothing else differs.
-    const isDetail = zoom === MeshWXWire.radarDetailZoom;
     return {
       seq,
       bot,
-      type: isDetail ? MeshWXMessageType.radarDetail : MeshWXMessageType.radar,
-      name: isDetail ? 'radar_detail' : 'radar',
+      type: MeshWXMessageType.radar,
+      name: 'radar',
       flags: (isCoarse ? MeshWXWire.radarCoarseBit : 0)
         | (boundsArray == null ? 0 : MeshWXWire.radarPartialBit)
         | ((source & 0x3) << MeshWXWire.flagDataSourceShift),
