@@ -32,7 +32,6 @@ All multi-byte integers are little-endian.  Times are Unix minutes
 
 from __future__ import annotations
 
-import math
 import struct
 from dataclasses import dataclass
 
@@ -52,7 +51,6 @@ __all__ = [
     "TYPE_REQUEST",
     "TYPE_AREA_SWEEP",
     "TYPE_RADAR",
-    "TYPE_RADAR_DETAIL",
     "TYPE_NAMES",
     "SUBJECT_WARNING",
     "SUBJECT_AFD",
@@ -128,9 +126,6 @@ __all__ = [
     "RADAR_GRID",
     "RADAR_COARSE_GRID",
     "MAX_RADAR_ZOOM",
-    "MIN_RADAR_ZOOM",
-    "RADAR_DETAIL_ZOOM",
-    "RADAR_DETAIL_CELLS_BYTES",
     "RADAR_LOOP_WINDOW_MIN",
     "RADAR_LOOP_MAX_FRAMES",
     "RADAR_LOOP_MIN_SPACING_MIN",
@@ -155,7 +150,6 @@ __all__ = [
     "sweep_packets",
     "encode_radar",
     "radar_tile",
-    "radar_span",
     "radar_coarsen",
     "decode",
     "areas_from_ugcs",
@@ -207,10 +201,6 @@ TYPE_AREA_SWEEP = 10
 #: 2-bit levels.  The number revision 2 reserved "for a future structured
 #: product".
 TYPE_RADAR = 11
-#: Radar detail (spec 7E, revision 13): the same tile at zoom -1, one degree
-#: on a side.  Its edges are half degrees, which type 11 cannot say, and an
-#: app before revision 13 would draw a zoom it did not know at the wrong size.
-TYPE_RADAR_DETAIL = 12
 
 TYPE_NAMES = {
     TYPE_WARNING: "warning",
@@ -224,7 +214,6 @@ TYPE_NAMES = {
     TYPE_REQUEST: "request",
     TYPE_AREA_SWEEP: "area_sweep",
     TYPE_RADAR: "radar",
-    TYPE_RADAR_DETAIL: "radar_detail",
 }
 
 # Text subjects (spec 8.1).
@@ -414,16 +403,10 @@ MAX_SWEEP_SCOPE_STATES = 15
 #: Cells along one side of a tile, and of a coarse one.
 RADAR_GRID = 32
 RADAR_COARSE_GRID = 16
-#: A tile spans 2 ** (zoom + 1) degrees: 1, 2, 4, 8, 16.  Zoom -1, the
-#: detail level, travels as type 12 (spec 7E, revision 13).
+#: A tile spans 2 ** (zoom + 1) degrees: 2, 4, 8, 16.
 MAX_RADAR_ZOOM = 3
-MIN_RADAR_ZOOM = -1
-RADAR_DETAIL_ZOOM = -1
-#: The most cells bytes a detail tile carries: its fixed part is a byte
-#: longer than type 11's.
-RADAR_DETAIL_CELLS_BYTES = 144
-#: `>radar ... loop` (spec 7D.4): the pictures of the last hour, at least 10
-#: minutes apart, at most five of them, the newest included.
+#: `>radar ... loop` (spec 7D.4, revision 13): the pictures of the last hour,
+#: at least 10 minutes apart, at most five of them, the newest included.
 RADAR_LOOP_WINDOW_MIN = 60
 RADAR_LOOP_MAX_FRAMES = 5
 RADAR_LOOP_MIN_SPACING_MIN = 10
@@ -1804,16 +1787,8 @@ def _decode_area_sweep(data: bytes, hdr: Header) -> dict:
 # --------------------------------------------------------------------------
 
 
-def radar_span(zoom: int) -> float:
-    """Degrees on a side of a tile at this zoom: 1, 2, 4, 8 or 16."""
-    if not (MIN_RADAR_ZOOM <= zoom <= MAX_RADAR_ZOOM):
-        raise ValueError(f"zoom must be {MIN_RADAR_ZOOM}..{MAX_RADAR_ZOOM}, got {zoom}")
-    return 2.0 ** (zoom + 1)
-
-
-def radar_tile(lat: float, lon: float, zoom: int = 0) -> "tuple[float, float]":
-    """The tile that answers a coordinate: ``(south, west)`` in degrees,
-    whole at zoom 0 and up (as ints) and half degrees at zoom -1.
+def radar_tile(lat: float, lon: float, zoom: int = 0) -> "tuple[int, int]":
+    """The tile that answers a coordinate: ``(south, west)`` in whole degrees.
 
     Tiles sit on a lattice of half their span so that every phone can use a
     tile any phone asked for, and the one chosen is the one whose *centre* is
@@ -1821,15 +1796,8 @@ def radar_tile(lat: float, lon: float, zoom: int = 0) -> "tuple[float, float]":
     span to an edge.  ``floor(x / step + 0.5)`` and not ``round``: a tie must
     fall the same way in every language a client is written in.
     """
-    if not (MIN_RADAR_ZOOM <= zoom <= MAX_RADAR_ZOOM):
-        raise ValueError(f"zoom must be {MIN_RADAR_ZOOM}..{MAX_RADAR_ZOOM}, got {zoom}")
-    if zoom < 0:
-        step = 2.0 ** zoom
-
-        def origin_detail(value: float) -> float:
-            return math.floor(value / step + 0.5) * step - step
-
-        return origin_detail(lat), origin_detail(lon)
+    if not (0 <= zoom <= MAX_RADAR_ZOOM):
+        raise ValueError(f"zoom must be 0..{MAX_RADAR_ZOOM}, got {zoom}")
     step = 1 << zoom
 
     def origin(value: float) -> int:
@@ -1961,20 +1929,14 @@ def encode_radar(
         raise ValueError(f"rows must be {RADAR_GRID} x {RADAR_GRID} or {RADAR_COARSE_GRID} x {RADAR_COARSE_GRID}")
     if any(not (0 <= v <= 3) for r in rows for v in r):
         raise ValueError("a radar level must be 0..3")
-    if not (MIN_RADAR_ZOOM <= zoom <= MAX_RADAR_ZOOM):
-        raise ValueError(f"zoom must be {MIN_RADAR_ZOOM}..{MAX_RADAR_ZOOM}, got {zoom}")
+    if not (0 <= zoom <= MAX_RADAR_ZOOM):
+        raise ValueError(f"zoom must be 0..{MAX_RADAR_ZOOM}, got {zoom}")
     if not (0 <= product <= MAX_RADAR_PRODUCT):
         raise ValueError(f"product must be 0..{MAX_RADAR_PRODUCT}, got {product}")
-    detail = zoom == RADAR_DETAIL_ZOOM
     if not (-90 <= south <= 90):
         raise ValueError(f"south must be -90..90, got {south}")
-    if not (-180 <= west <= (179.5 if detail else 179)):
+    if not (-180 <= west <= 179):
         raise ValueError(f"west must be -180..179, got {west}")
-    if detail:
-        if south * 2 != int(south * 2) or west * 2 != int(west * 2):
-            raise ValueError(f"a detail tile's edges are half degrees, got {south}, {west}")
-    elif south != int(south) or west != int(west):
-        raise ValueError(f"a tile's edges are whole degrees, got {south}, {west}")
     flags = FLAG_RADAR_COARSE if size == RADAR_COARSE_GRID else 0
     extra = b""
     if bounds is not None:
@@ -1990,42 +1952,22 @@ def encode_radar(
             raise ValueError("a cell outside the bounds must be level 0")
         flags |= FLAG_RADAR_PARTIAL
         extra = bytes(bounds)
-    if detail:
-        # Quarter degrees, and `depth` 0 in the shape's low bits (spec 7E).
-        fixed = encode_header(seq, bot, TYPE_RADAR_DETAIL, pack_source(source, flags)) + struct.pack(
-            "<IhhB", _u32(taken_min, "taken_min"), int(south * 4), int(west * 4), product << 2)
-    else:
-        fixed = encode_header(seq, bot, TYPE_RADAR, pack_source(source, flags)) + struct.pack(
-            "<IbhB", _u32(taken_min, "taken_min"), int(south), int(west), (product << 2) | zoom)
-    out = fixed + extra + _radar_pack(rows)
-    return _check_size(out, "radar detail" if detail else "radar")
+    out = (
+        encode_header(seq, bot, TYPE_RADAR, pack_source(source, flags))
+        + struct.pack("<IbhB", _u32(taken_min, "taken_min"), south, west, (product << 2) | zoom)
+        + extra
+        + _radar_pack(rows)
+    )
+    return _check_size(out, "radar")
 
 
 def _decode_radar(data: bytes, hdr: Header) -> dict:
     _need(data, 13, "radar")
     taken, south, west, shape = struct.unpack_from("<IbhB", data, 4)
-    out = _radar_body(data, hdr, 12)
-    out.update(taken_min=taken, south=south, west=west, zoom=shape & 0x03, product=shape >> 2)
-    return _ordered_radar(out)
-
-
-_RADAR_KEYS = ("taken_min", "south", "west", "zoom", "product", "coarse", "partial", "bounds",
-               "size", "rows", "source")
-
-
-def _ordered_radar(out: dict) -> dict:
-    """The header's keys, then the tile's in one order for both types."""
-    head = {k: v for k, v in out.items() if k not in _RADAR_KEYS}
-    head.update((k, out[k]) for k in _RADAR_KEYS)
-    return head
-
-
-def _radar_body(data: bytes, hdr: Header, off: int) -> dict:
-    """What types 11 and 12 share after their fixed fields: the flags, the
-    optional bounds and the quadtree."""
     coarse = bool(hdr.flags & FLAG_RADAR_COARSE)
     partial = bool(hdr.flags & FLAG_RADAR_PARTIAL)
     size = RADAR_COARSE_GRID if coarse else RADAR_GRID
+    off = 12
     bounds = None
     if partial:
         _need(data, off + 4 + 1, "radar bounds")
@@ -2037,6 +1979,11 @@ def _radar_body(data: bytes, hdr: Header, off: int) -> dict:
     rows = _radar_unpack(data[off:], size)
     out = hdr.as_dict()
     out.update(
+        taken_min=taken,
+        south=south,
+        west=west,
+        zoom=shape & 0x03,
+        product=shape >> 2,
         coarse=coarse,
         partial=partial,
         bounds=bounds,
@@ -2045,22 +1992,6 @@ def _radar_body(data: bytes, hdr: Header, off: int) -> dict:
         source=unpack_source(hdr.flags),
     )
     return out
-
-
-def _decode_radar_detail(data: bytes, hdr: Header) -> dict:
-    """Type 12 (spec 7E): type 11's body with the edges in quarter degrees,
-    a `depth` that must be 0, and the edges on the half-degree lattice."""
-    _need(data, 14, "radar detail")
-    taken, south_q, west_q, shape = struct.unpack_from("<IhhB", data, 4)
-    depth = shape & 0x03
-    if depth != 0:
-        raise ValueError(f"radar detail: depth {depth} is reserved")
-    if south_q % 2 or west_q % 2:
-        raise ValueError(f"radar detail: edges {south_q / 4}, {west_q / 4} are not on the half-degree lattice")
-    out = _radar_body(data, hdr, 13)
-    out.update(taken_min=taken, south=south_q / 4, west=west_q / 4, zoom=RADAR_DETAIL_ZOOM,
-               product=shape >> 2)
-    return _ordered_radar(out)
 
 
 # --------------------------------------------------------------------------
@@ -2079,7 +2010,6 @@ _DECODERS = {
     TYPE_REQUEST: _decode_request,
     TYPE_AREA_SWEEP: _decode_area_sweep,
     TYPE_RADAR: _decode_radar,
-    TYPE_RADAR_DETAIL: _decode_radar_detail,
 }
 
 

@@ -289,7 +289,7 @@ class AppResponder:
             # Every tile the radio took starts its own five minutes: a loop's
             # frames are pictures everyone listening now holds.
             for msg in msgs[:n]:
-                if msg[3] >> 4 not in (v5.TYPE_RADAR, v5.TYPE_RADAR_DETAIL):
+                if msg[3] >> 4 != v5.TYPE_RADAR:
                     continue
                 self._stamp_radar(v5.decode(msg), now)
                 cut = self._radar_cut.pop(msg, None)
@@ -349,7 +349,7 @@ class AppResponder:
     # -- radar (spec 7D) --
 
     @staticmethod
-    def _radar_key(radar: dict) -> tuple[float, float, int, int]:
+    def _radar_key(radar: dict) -> tuple[int, int, int, int]:
         return radar["south"], radar["west"], radar["zoom"], radar["taken_min"]
 
     def _stamp_radar(self, radar: dict, now: float) -> None:
@@ -369,7 +369,7 @@ class AppResponder:
 
     def _radar_answer(self, arg: str, seq: b.SeqCounter, bot: int) -> list[bytes]:
         """`>radar [place] [z<n>] [loop [HHMM ...]]`: one tile of the newest
-        radar picture, or the last hour of it (spec 7D, 7D.4, 7E)."""
+        radar picture, or the last hour of it (spec 7D, 7D.4)."""
         from meshcore_weather.radar import service as radar_service
         radar = radar_service.shared()
         if not radar.available:
@@ -394,14 +394,9 @@ class AppResponder:
         lat, lon = float(lat), float(lon)
         if held is None:
             found = radar.tile_for(lat, lon, zoom)
-            if found is None and zoom == v5.RADAR_DETAIL_ZOOM:
-                # No picture fine enough for detail: Local instead (spec 7E).
-                found = radar.tile_for(lat, lon, 0)
             frames = [found] if found is not None else []
         else:
             frames = radar.loop_for(lat, lon, zoom)
-            if not frames and zoom == v5.RADAR_DETAIL_ZOOM:
-                frames = radar.loop_for(lat, lon, 0)
         if not frames:
             return [b.not_available(seq.next(), bot, "radar", v5.REASON_NO_DATA)]
         msgs, skipped = [], False
@@ -420,7 +415,7 @@ class AppResponder:
             if msg is None:
                 continue
             self._radar_cut[msg] = (tile, picture, frame)
-            logger.info("Radar tile %s,%s z%d from %s taken %s: %d wet cells, %d B%s",
+            logger.info("Radar tile %d,%d z%d from %s taken %s: %d wet cells, %d B%s",
                         tile.south, tile.west, tile.zoom, frame.id, picture.taken.strftime("%H:%MZ"),
                         tile.wet, len(msg), " (coarse)" if msg[3] & v5.FLAG_RADAR_COARSE else "")
             msgs.append(msg)

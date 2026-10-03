@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from statistics import median_low
 
-from meshcore_weather.protocol.v5 import MAX_RADAR_ZOOM, MIN_RADAR_ZOOM, RADAR_GRID
+from meshcore_weather.protocol.v5 import MAX_RADAR_ZOOM, RADAR_GRID
 from meshcore_weather.radar.picture import BANNER_PX, LEGEND_PX, RadarPicture
 
 HERE = Path(__file__).resolve().parent
@@ -22,11 +22,6 @@ HERE = Path(__file__).resolve().parent
 #: A product may serve a tile it covers at least this much of; less than that
 #: and the honest answer is "no picture".
 MIN_COVERAGE = 0.25
-#: A detail tile (zoom -1, 1/32 degree cells) only from a picture this fine:
-#: about one pixel a cell.  The regional pictures are 33 to 46 (Puerto Rico
-#: 140); the national one is 9.8 and Alaska's 12, coarser than Local already,
-#: and a detail tile cut from them would be the same blocks drawn smaller.
-DETAIL_MIN_PX_PER_DEGREE = 30.0
 
 _COMPASS8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
@@ -35,11 +30,10 @@ def _merc(lat: float) -> float:
     return math.degrees(math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)))
 
 
-def tile_span(zoom: int) -> "int | float":
-    """Degrees on a side: 2, 4, 8, 16, and 1.0 for the detail level."""
-    if not (MIN_RADAR_ZOOM <= zoom <= MAX_RADAR_ZOOM):
-        raise ValueError(f"zoom must be {MIN_RADAR_ZOOM}..{MAX_RADAR_ZOOM}, got {zoom}")
-    return 2 << zoom if zoom >= 0 else 2.0 ** (zoom + 1)
+def tile_span(zoom: int) -> int:
+    if not (0 <= zoom <= MAX_RADAR_ZOOM):
+        raise ValueError(f"zoom must be 0..{MAX_RADAR_ZOOM}, got {zoom}")
+    return 2 << zoom
 
 
 @dataclass(frozen=True)
@@ -68,7 +62,7 @@ class Frame:
         top, bottom = BANNER_PX, self.height - LEGEND_PX
         return top + (_merc(self.north) - _merc(lat)) / (_merc(self.north) - _merc(self.south)) * (bottom - top)
 
-    def coverage(self, south: float, west: float, span: float) -> float:
+    def coverage(self, south: int, west: int, span: int) -> float:
         """The fraction of a tile, by degrees, that lies inside this picture."""
         w = max(0.0, min(self.east, west + span) - max(self.west, west))
         h = max(0.0, min(self.north, south + span) - max(self.south, south))
@@ -87,17 +81,15 @@ def load_frames(path: "Path | None" = None) -> "list[Frame]":
     ]
 
 
-def candidates(frames: "list[Frame]", south: float, west: float, zoom: int) -> "list[Frame]":
+def candidates(frames: "list[Frame]", south: int, west: int, zoom: int) -> "list[Frame]":
     """The products that could serve a tile, best first.
 
     A picture that holds the whole tile beats one that holds part of it; among
     those, the finer picture wins, which is what puts a regional mosaic ahead
-    of the national one.  A detail tile takes only the pictures fine enough
-    to have the detail (`DETAIL_MIN_PX_PER_DEGREE`).
+    of the national one.
     """
     span = tile_span(zoom)
-    scored = [(f.coverage(south, west, span), f) for f in frames if f.calibrated
-              and (zoom >= 0 or f.px_per_degree >= DETAIL_MIN_PX_PER_DEGREE)]
+    scored = [(f.coverage(south, west, span), f) for f in frames if f.calibrated]
     scored = [(c, f) for c, f in scored if c >= MIN_COVERAGE]
     scored.sort(key=lambda cf: (-(cf[0] >= 0.999), -round(cf[0], 2) if cf[0] < 0.999 else 0, -cf[1].px_per_degree))
     return [f for _, f in scored]
@@ -105,8 +97,8 @@ def candidates(frames: "list[Frame]", south: float, west: float, zoom: int) -> "
 
 @dataclass
 class RadarTile:
-    south: "int | float"                          # whole degrees, half degrees at zoom -1
-    west: "int | float"
+    south: int
+    west: int
     zoom: int
     rows: "list[list[int]]"                       # 32 x 32, north row first
     bounds: "tuple[int, int, int, int] | None"    # row0, row1, col0, col1 when part is outside the picture
@@ -124,7 +116,7 @@ def strongest(seen) -> int:
     return 0
 
 
-def cut_tile(picture: RadarPicture, frame: Frame, south: float, west: float, zoom: int,
+def cut_tile(picture: RadarPicture, frame: Frame, south: int, west: int, zoom: int,
              rule=strongest) -> "RadarTile | None":
     """The tile's grid from one picture, or None when none of it is inside.
 

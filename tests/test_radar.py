@@ -1,5 +1,4 @@
-"""Radar (type 11, spec 7D, revision 11; type 12 and loops, revision 13): the
-tile codec, reading a real EMWIN radar GIF, cutting a tile from it, and the
+"""Radar (type 11, spec 7D, revision 11; loops, revision 13): the tile codec, reading a real EMWIN radar GIF, cutting a tile from it, and the
 `>radar` request with its limits.
 
 The two pictures under tests/fixtures/radar are as the dish received them on
@@ -81,21 +80,7 @@ def test_zoom_out_of_range_is_refused():
     with pytest.raises(ValueError):
         v5.radar_tile(30, -97, 4)
     with pytest.raises(ValueError):
-        v5.radar_tile(30, -97, -2)
-
-
-@pytest.mark.parametrize("lat, lon, expected", [
-    (32.78, -96.80, (32.5, -97.5)),      # Dallas: centre 33.0, -97.0
-    (30.27, -97.74, (30.0, -98.0)),      # Austin: centre 30.5, -97.5
-    (30.25, -97.75, (30.0, -98.0)),      # ties round up here too
-    (-0.1, 0.1, (-0.5, -0.5)),
-])
-def test_the_detail_tile_for_a_coordinate(lat, lon, expected):
-    assert v5.radar_tile(lat, lon, -1) == expected
-    span = tile_span(-1)
-    assert span == 1.0
-    south, west = expected
-    assert span / 4 <= lat - south <= 3 * span / 4 and span / 4 <= lon - west <= 3 * span / 4
+        v5.radar_tile(30, -97, -1)
 
 
 # ---------------------------------------------------------------------------
@@ -384,10 +369,9 @@ def test_the_service_answers_and_lets_go_of_old_pictures():
     ("z3", ("", 3, None)),
     ("zion il", ("zion il", 0, None)),       # a town, not a zoom
     ("austin tx z4", None),
-    ("austin tx z-2", None),
-    ("32.780,-96.800 z-1", ("32.780,-96.800", -1, None)),
+    ("austin tx z-1", ("austin tx z-1", 0, None)),   # no such zoom: a place that will not resolve
     ("32.780,-96.800 loop", ("32.780,-96.800", 0, [])),
-    ("30.270,-97.740 z-1 loop 2353 2338", ("30.270,-97.740", -1, [1433, 1418])),
+    ("30.270,-97.740 z1 loop 2353 2338", ("30.270,-97.740", 1, [1433, 1418])),
     ("78701 Z1 LOOP 0008", ("78701", 1, [8])),
     ("loop", ("", 0, [])),                   # the bot's home, looped
     ("loop tx", ("loop tx", 0, None)),       # Loop, Texas
@@ -536,81 +520,8 @@ async def test_radar_is_a_word_people_can_type():
 
 
 # ---------------------------------------------------------------------------
-# Revision 13: the detail level (type 12) and the last hour (`loop`)
+# Revision 13: the last hour (`loop`)
 # ---------------------------------------------------------------------------
-
-
-def test_a_detail_tile_round_trips_in_quarter_degrees():
-    rows = [[0] * 32 for _ in range(32)]
-    rows[5][7], rows[30][2] = 3, 1
-    data = v5.encode_radar(3, BOT, taken_min=TAKEN_MIN, south=-0.5, west=179.5, zoom=-1,
-                           product=13, rows=rows, source=v5.SOURCE_GOES)
-    assert data[3] >> 4 == v5.TYPE_RADAR_DETAIL and len(data) <= v5.MAX_SEND
-    assert data[8:10] == (-2).to_bytes(2, "little", signed=True)
-    assert data[10:12] == (718).to_bytes(2, "little", signed=True) and data[12] == 13 << 2
-    out = v5.decode(data)
-    assert (out["name"], out["south"], out["west"], out["zoom"], out["product"]) == (
-        "radar_detail", -0.5, 179.5, -1, 13)
-    assert out["rows"][5][7] == "3" and out["rows"][30][2] == "1"
-    empty = v5.encode_radar(3, BOT, taken_min=TAKEN_MIN, south=30, west=-98, zoom=-1, product=1,
-                            rows=[[0] * 32 for _ in range(32)])
-    assert len(empty) == 14
-
-
-def test_a_detail_tile_is_refused_off_its_lattice_or_with_a_depth():
-    rows = [[0] * 32 for _ in range(32)]
-    with pytest.raises(ValueError):
-        v5.encode_radar(1, BOT, taken_min=1, south=30.25, west=-98, zoom=-1, product=1, rows=rows)
-    with pytest.raises(ValueError):
-        v5.encode_radar(1, BOT, taken_min=1, south=30.5, west=-98, zoom=0, product=1, rows=rows)
-    good = bytearray(v5.encode_radar(1, BOT, taken_min=1, south=30.5, west=-98, zoom=-1, product=1, rows=rows))
-    bad = bytearray(good)
-    bad[12] |= 1                                                         # depth 1 is reserved
-    with pytest.raises(ValueError):
-        v5.decode(bytes(bad))
-    bad = bytearray(good)
-    bad[8:10] = (123).to_bytes(2, "little", signed=True)                  # 30.75: a quarter, not a half
-    with pytest.raises(ValueError):
-        v5.decode(bytes(bad))
-
-
-def test_only_a_fine_picture_makes_a_detail_tile():
-    def ids(lat, lon, zoom):
-        south, west = v5.radar_tile(lat, lon, zoom)
-        return [f.id for f in candidates(list(FRAMES.values()), south, west, zoom)]
-    assert ids(32.78, -96.80, 0)[-1] == "RADREFUS"                       # Local may use the national picture
-    assert "RADREFUS" not in ids(32.78, -96.80, -1) and ids(32.78, -96.80, -1)[0] == "RADSTHPL"
-    assert ids(61.2, -149.9, 0) == ["RADALLAK"] and ids(61.2, -149.9, -1) == []   # Alaska is 12 a degree
-    assert ids(18.22, -66.59, -1) == ["RADALLPR"]
-
-
-def test_the_service_cuts_a_detail_tile():
-    tile, picture, frame = RadarService(FIXTURES).tile_for(32.78, -96.80, -1, now=NOW)
-    assert (tile.south, tile.west, tile.zoom, frame.id) == (32.5, -97.5, -1, "RADSTHPL")
-    assert tile.bounds is None and tile.wet > 300
-    vector = next(v for v in json.loads((Path(__file__).parents[1] / "docs" / "meshwx_v5_vectors.json")
-                                        .read_text()) if v["name"] == "radar_detail_tile")
-    assert b.radar_message(43, BOT, tile, picture, frame).hex() == vector["hex"]
-
-
-async def test_a_detail_request_is_one_type_12_packet(monkeypatch):
-    responder, sent = _responder(monkeypatch)
-    outcome = await responder.handle_request(">radar 32.780,-96.800 z-1", "aa")
-    assert outcome == "1 packet(s), 100 B"
-    out = v5.decode(sent[0])
-    assert (out["name"], out["south"], out["west"], out["zoom"]) == ("radar_detail", 32.5, -97.5, -1)
-    assert [(c["south"], c["zoom"]) for c in responder.radar_cooldowns()] == [(32.5, -1)]
-    await responder.handle_request(">radar 32.780,-96.800 z-1", "bb")     # the same picture again
-    assert v5.decode(sent[1])["reason"] == v5.REASON_RATE_LIMITED
-
-
-async def test_with_no_fine_picture_detail_is_answered_with_local(monkeypatch):
-    from meshcore_weather.radar import tiles
-    monkeypatch.setattr(tiles, "DETAIL_MIN_PX_PER_DEGREE", 1000.0)
-    responder, sent = _responder(monkeypatch)
-    await responder.handle_request(">radar 32.780,-96.800 z-1", "aa")
-    out = v5.decode(sent[0])
-    assert (out["name"], out["south"], out["west"], out["zoom"]) == ("radar", 32, -98, 0)
 
 
 def test_the_source_finds_the_hour_before_a_picture():
@@ -628,8 +539,6 @@ def test_a_loop_is_one_product_oldest_first(monkeypatch):
     assert [p.taken.strftime("%H:%M") for _, p, _ in frames] == ["00:22", "00:58", "01:08"]
     assert {(t.south, t.west, t.zoom) for t, _, _ in frames} == {(36, -98, 0)}
     assert {f.id for _, _, f in frames} == {"RADSTHPL"}
-    detail = service.loop_for(37.0, -97.0, -1, now=LOOP_NOW)
-    assert {(t.south, t.west) for t, _, _ in detail} == {(36.5, -97.5)} and len(detail) == 3
     # 00:58 is exactly 10 minutes before 01:08, the closest two steps may be.
     monkeypatch.setattr(v5, "RADAR_LOOP_MIN_SPACING_MIN", 11)
     assert [p.taken.strftime("%H:%M") for _, p, _ in service.loop_for(37.0, -97.0, 0, now=LOOP_NOW)] == [
@@ -652,12 +561,12 @@ async def test_a_loop_request_sends_the_hour_oldest_first(monkeypatch):
 
 async def test_a_loop_leaves_out_what_the_app_holds(monkeypatch):
     responder, sent = _responder(monkeypatch, root=LOOP_ROOT, now=LOOP_NOW)
-    await responder.handle_request(">radar 37.000,-97.000 z-1 loop 0108 0022", "aa")
+    await responder.handle_request(">radar 37.000,-97.000 loop 0108 0022", "aa")
     out = [v5.decode(x) for x in sent]
-    assert [(o["name"], o["taken_min"] % 1440) for o in out] == [("radar_detail", 58)]
+    assert [(o["name"], o["zoom"], o["taken_min"] % 1440) for o in out] == [("radar", 0, 58)]
     responder.clear_radar_cooldowns()
     sent.clear()
-    await responder.handle_request(">radar 37.000,-97.000 z-1 loop 0108 0058 0022", "bb")
+    await responder.handle_request(">radar 37.000,-97.000 loop 0108 0058 0022", "bb")
     assert v5.decode(sent[0])["reason"] == v5.REASON_RATE_LIMITED       # nothing it lacks
 
 
