@@ -34,6 +34,8 @@ PORT = int(os.environ.get("PORT", "8080"))
 # The mesh weather bot's admin portal (meshcore-weather.service). Only its
 # read-only public bundle is proxied here; the portal itself stays LAN-only.
 BOT_URL = os.environ.get("BOT_URL", "http://127.0.0.1:8081")
+# Where the bot keeps the products it fetched over the internet while the dish was silent.
+INET_DIR = os.environ.get("BOT_EMWIN_INTERNET_DIR", f"{HOME}/meshcore-weather/data/emwin_internet")
 os.makedirs(THUMB_DIR, exist_ok=True)
 
 
@@ -211,10 +213,23 @@ class Status:
         imgs.sort(key=os.path.getmtime, reverse=True)
         latest_imgs = [{"path": os.path.relpath(p, IMG_ROOT), "name": os.path.basename(p),
                         "mtime": int(os.path.getmtime(p)), "size": os.path.getsize(p)} for p in imgs[:12]]
-        em = glob.glob(f"{IMG_ROOT}/emwin/*/*")
-        em.sort(key=os.path.getmtime, reverse=True)
-        latest_emwin = [{"path": os.path.relpath(p, IMG_ROOT), "name": os.path.basename(p),
-                         "mtime": int(os.path.getmtime(p)), "size": os.path.getsize(p)} for p in em[:15]]
+        em = [(p, "sat") for p in glob.glob(f"{IMG_ROOT}/emwin/*/*")]
+        # While the bot's internet backup is carrying the mesh, list its products
+        # too, tagged "net", so this panel does not sit on the dish's last files.
+        bot = globals().get("BOT")
+        backup = ((bot.get().get("feed") or {}).get("internet_backup") or {}) if bot else {}
+        inet_today = 0
+        if backup.get("on"):
+            days = sorted(glob.glob(f"{INET_DIR}/*"))[-2:]
+            em += [(p, "net") for d in days for p in glob.glob(f"{d}/*")]
+            today_utc = f"{INET_DIR}/{time.strftime('%Y-%m-%d', time.gmtime())}"
+            inet_today = len(os.listdir(today_utc)) if os.path.isdir(today_utc) else 0
+        em.sort(key=lambda t: os.path.getmtime(t[0]), reverse=True)
+        latest_emwin = [{"path": ("inet/" + os.path.relpath(p, INET_DIR)) if src == "net" else os.path.relpath(p, IMG_ROOT),
+                         "name": os.path.basename(p), "src": src,
+                         "mtime": int(os.path.getmtime(p)), "size": os.path.getsize(p)} for p, src in em[:15]]
+        counts["emwin_inet_today"] = inet_today
+        counts["internet_backup_on"] = bool(backup.get("on"))
         up = sh(["systemctl", "show", "goesrecv", "-p", "ActiveEnterTimestampMonotonic", "--value"])
         with self.lock:
             self.data = {"services": services, "temp": temp, "disk_free_gb": round(du.free / 1e9, 1),
@@ -386,7 +401,10 @@ class Handler(BaseHTTPRequestHandler):
             rel = os.path.normpath(p.split("/", 2)[2])
             if rel.startswith("..") or os.path.isabs(rel):
                 return self._send(403, b"no", "text/plain")
-            full = os.path.join(IMG_ROOT, rel)
+            if rel.startswith("inet/"):
+                full = os.path.join(INET_DIR, rel[5:])  # the bot's internet-backup products
+            else:
+                full = os.path.join(IMG_ROOT, rel)
             if p.startswith("/thumb/"):
                 full = thumb_for(rel) or full
             ext = full.rsplit(".", 1)[-1].lower()

@@ -154,8 +154,8 @@ function render(d){state=d;
  if(s.totals)$('tot').textContent=`${s.totals.packets} packets · ${s.totals.drops} drops · ${s.totals.rs_errors} RS corrections`;
  drawConst(s.const||[]);if(d.history)drawHist(d.history)}
 function renderImages(list){const g=$('imgs');if(!list||!list.length)return;g.innerHTML='';list.forEach(i=>{const a=document.createElement('a');a.href='/img/'+i.path;a.target='_blank';a.innerHTML=`<img loading="lazy" src="/thumb/${i.path}"><span title="${i.name}">${i.name.replace(/^GOES1[89]_/,'').replace(/\.jpg$/,'')} · ${fmtAge(Math.round(Date.now()/1000-i.mtime))} ago</span>`;g.appendChild(a)})}
-function renderEmwin(list,counts){const t=$('emwin');t.innerHTML='';(list||[]).forEach(f=>{const tr=document.createElement('tr');tr.innerHTML=`<td><a href="/img/${f.path}" target="_blank">${f.name}</a></td><td class="r">${fmtT(f.mtime)}</td>`;t.appendChild(tr)});
- if(!list||!list.length)t.innerHTML='<tr><td class="hint">no EMWIN files yet</td></tr>';if(counts)$('emcount').textContent=`· ${counts.emwin_today} today, ${counts.emwin} total`}
+function renderEmwin(list,counts){const t=$('emwin');t.innerHTML='';(list||[]).forEach(f=>{const tr=document.createElement('tr');tr.innerHTML=`<td><a href="/img/${f.path}" target="_blank">${f.name}</a></td><td class="r">${f.src==='net'?'<span style="color:#ffd27e" title="fetched over the internet by the bot while the dish is silent">net</span> ':''}${fmtT(f.mtime)}</td>`;t.appendChild(tr)});
+ if(!list||!list.length)t.innerHTML='<tr><td class="hint">no EMWIN files yet</td></tr>';if(counts)$('emcount').textContent=`· ${counts.emwin_today} today, ${counts.emwin} total`+(counts.internet_backup_on?` · ${counts.emwin_inet_today||0} via internet backup today`:'')}
 function drawConst(pts){const c=$('const'),W=c.width=c.clientWidth*dpr,H=c.height=240*dpr,x=c.getContext('2d');x.clearRect(0,0,W,H);
  x.strokeStyle='#30363d';x.beginPath();x.moveTo(W/2,0);x.lineTo(W/2,H);x.moveTo(0,H/2);x.lineTo(W,H/2);x.stroke();
  if(!pts.length){x.fillStyle='#8b949e';x.font=(12*dpr)+'px system-ui';x.fillText('no samples',10*dpr,20*dpr);return}
