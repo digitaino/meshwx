@@ -496,6 +496,19 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
                      "states": settings.home_states, "timezone": settings.timezone},
         "commands": PUBLIC_COMMANDS,
         "help": HELP_TEXT,
+        # Where the products come from right now. With the dish as the source,
+        # the internet backup is on while goesproc has written nothing for
+        # `sdr_internet_fallback_min`; the public page says so, so a reader
+        # knows whether a warning came off the satellite or over the internet.
+        "feed": {
+            "source": settings.emwin_source,
+            "internet_backup": {
+                "after_min": settings.sdr_internet_fallback_min,
+                "on": bool(getattr(bot.emwin, "fallback_active", False)),
+                "since": since.isoformat() if (since := getattr(bot.emwin, "fallback_since", None)) else None,
+                "added": getattr(bot.emwin, "fallback_added", 0),
+            } if settings.emwin_source == "sdr" else None,
+        },
         "peers": [{"name": p["name"], "lat": p["lat"], "lon": p["lon"]} for p in peers],
         "stats": _traffic_stats(),
         "broadcasts": {"24h": activity_log.stats(1440), "1h": activity_log.stats(60)},

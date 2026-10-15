@@ -54,7 +54,8 @@ td a{color:var(--acc);text-decoration:none}
  <div class="card c4"><h2>Mesh weather bot · <span id="botName">WX-AUS</span></h2>
   <div class="prose">
    <p class="hint" id="botSub"></p>
-   <p>The dish receives the GOES-19 HRIT downlink. NOAA relays EMWIN inside it: every National Weather Service text product for the whole country. The bot parses those products as they arrive and answers over LoRa on the MeshCore mesh. No internet connection is involved. A reply is one mesh packet.</p>
+   <p class="hint" id="botSource"></p>
+   <p>The dish receives the GOES-19 HRIT downlink. NOAA relays EMWIN inside it: every National Weather Service text product for the whole country. The bot parses those products as they arrive and answers over LoRa on the MeshCore mesh. Normally no internet connection is involved. A reply is one mesh packet.</p>
    <p><b>To use it on the Austin mesh</b></p>
    <ol>
     <li>Radio: <span id="botRadio">US MeshCore default (910.525 MHz, 62.5 kHz, SF7, CR5)</span>.</li>
@@ -219,6 +220,11 @@ function renderBot(d){const b=$('botBadge');
  b.textContent=bot.connected?(bot.tx_enabled?'BOT ON AIR':'BOT RX ONLY'):'BOT: NO RADIO';b.className='badge '+(bot.connected&&bot.tx_enabled?'ok':'warn');
  if(bot.name){$('botName').textContent=bot.name;$('botNameDm').textContent=bot.name}
  $('botSub').textContent=`up ${fmtAge(bot.uptime_s||0)} · ${bot.products||0} NWS products in memory`+(bot.lat!=null?` · ${(+bot.lat).toFixed(2)}, ${(+bot.lon).toFixed(2)}`:'')+(d.peers&&d.peers.length?` · peers: ${d.peers.map(p=>p.name).join(', ')}`:'');
+ const fd=d.feed||{},ib=fd.internet_backup||null,src=$('botSource');
+ if(fd.source==='internet'){src.textContent='Products come over the internet: this bot has no satellite receiver.';src.style.color=''}
+ else if(ib&&ib.on){const since=ib.since?Date.parse(ib.since)/1000:null;src.textContent=`The dish is silent, so products are coming from the NOAA internet backup${since?' (on for '+fmtAge(Math.max(0,Math.round(d.t-since)))+')':''}: ${ib.added||0} products that way so far.`;src.style.color='#ffd27e'}
+ else if(fd.source==='sdr'){src.textContent='Products come from the dish (GOES-19 HRIT).';src.style.color=''}
+ else{src.textContent=''}
  if(r)$('botRadio').textContent=`${r.preset?r.preset+': ':''}${r.freq_mhz} MHz, ${r.bw_khz} kHz, SF${r.sf}, CR${r.cr}`;
  const ch=(d.channels||{});if(ch.text){$('botChannel').textContent=ch.text;$('botChannel2').textContent=ch.text}if(ch.data)$('botDataChannel').textContent=ch.data;
  $('botReplyHow').textContent=bot.reply_mode==='channel'?'Replies currently go out on the channel.':bot.reply_mode==='dm_only'?'Replies go by DM only, so the bot needs your advert (next step).':'Replies go by DM when the bot knows your node. Otherwise it answers once on the channel and adverts so the next exchange can be a DM.';
