@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 # An observation older than this is not "current".
 OBS_MAX_AGE_MIN = 120
+# ...but it is still the weather as last seen: when nothing nearby is current
+# the newest report up to this old is served with its age rather than nothing
+# (owner, 2026-10-16: "Woodcreek: 70/49 20%" read as complete with no
+# observation at all and a five-hour-old forecast).
+OBS_STALE_MAX_AGE_MIN = 720
 # A forecast point farther than this is not "your" forecast.
 FORECAST_MAX_KM = 80.0
 # A forecast is issued about every 12 hours. One older than this is a copy
@@ -71,6 +76,7 @@ class Observation:
     pressure_inhg: float | None
     sky_code: int | None
     raw: str
+    stale: bool = False            # older than OBS_MAX_AGE_MIN: shown with its age, never as current
 
     @property
     def age_min(self) -> int:
@@ -94,15 +100,22 @@ class Observation:
 
 def observation_for(
     store: WeatherStore, loc: dict, max_age_min: int = OBS_MAX_AGE_MIN,
+    stale_max_age_min: int = OBS_STALE_MAX_AGE_MIN,
 ) -> Observation | None:
     """Latest fresh METAR from the nearest station THAT ACTUALLY REPORTS.
 
     Walks the resolver's distance-ranked station list and returns the first
     one with a METAR newer than `max_age_min`. A silent AWOS next door never
     hides a reporting airport a few km further away.
+
+    When no station has a fresh report, the newest one up to
+    `stale_max_age_min` old is returned instead, flagged `stale`, so the
+    reply says "63F ... (KAUS 12km, 5h old)" rather than leaving the
+    observation out and reading as if the forecast were the whole story.
     """
     now = datetime.now(timezone.utc)
     candidates = loc.get("stations") or ([(loc["station"], loc.get("station_km") or 0.0)] if loc.get("station") else [])
+    newest_stale: tuple[datetime, str, float, str] | None = None
     for icao, km in candidates:
         if km > STATION_MAX_KM:
             break
@@ -114,6 +127,10 @@ def observation_for(
         # station in it; the report's own DDHHMMZ group is when it was taken.
         ts = metar_observed_at(text, ts) or ts
         if (now - ts) > timedelta(minutes=max_age_min):
+            # Not current; remembered as the stand-in if nothing nearer is.
+            if (now - ts) <= timedelta(minutes=stale_max_age_min) and (
+                    newest_stale is None or ts > newest_stale[0]):
+                newest_stale = (ts, icao, float(km), text)
             continue
         fields = parse_metar(text)
         if not fields:
@@ -125,6 +142,18 @@ def observation_for(
             raw=text,
             **fields,
         )
+    if newest_stale is not None:
+        ts, icao, km, text = newest_stale
+        fields = parse_metar(text)
+        if fields:
+            return Observation(
+                station=icao,
+                distance_km=km,
+                observed_at=ts,
+                raw=text,
+                stale=True,
+                **fields,
+            )
     return None
 
 
@@ -536,15 +565,29 @@ def nowcast_for(store: WeatherStore, loc: dict) -> Nowcast | None:
 # -- Raw METAR / TAF ------------------------------------------------------------------
 
 
-def raw_metar_for(store: WeatherStore, loc: dict, max_age_min: int = OBS_MAX_AGE_MIN) -> tuple[str, float, str] | None:
-    """(station, km, raw METAR line) from the nearest reporting station."""
+def raw_metar_for(store: WeatherStore, loc: dict, max_age_min: int = OBS_MAX_AGE_MIN,
+                  stale_max_age_min: int = OBS_STALE_MAX_AGE_MIN) -> tuple[str, float, str] | None:
+    """(station, km, raw METAR line) from the nearest reporting station.
+
+    With nothing current, the newest report up to `stale_max_age_min` old,
+    as `observation_for` does: the line carries its own DDHHMMZ time and
+    `render_text.raw_metar` says how old it is."""
     now = datetime.now(timezone.utc)
+    newest_stale: tuple[datetime, str, float, str] | None = None
     for icao, km in loc.get("stations") or []:
         if km > STATION_MAX_KM:
             break
         raw = store._find_metar_raw(icao)
-        if raw and (now - raw[1]) <= timedelta(minutes=max_age_min):
+        if not raw:
+            continue
+        if (now - raw[1]) <= timedelta(minutes=max_age_min):
             return icao, float(km), raw[0]
+        ts = metar_observed_at(raw[0], raw[1]) or raw[1]
+        if (now - ts) <= timedelta(minutes=stale_max_age_min) and (
+                newest_stale is None or ts > newest_stale[0]):
+            newest_stale = (ts, icao, float(km), raw[0])
+    if newest_stale is not None:
+        return newest_stale[1], newest_stale[2], newest_stale[3]
     return None
 
 

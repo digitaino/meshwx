@@ -27,6 +27,7 @@ from pyiem.nws.ugc import UGC, UGCProvider
 
 from meshcore_weather.core.vtec_names import event_code
 from meshcore_weather.parser.weather import (
+    EMWINProduct,
     WeatherStore,
     _expand_zone_ranges,
     extract_warning_polygon,
@@ -314,6 +315,7 @@ def _extract_warnings_pyiem(store: WeatherStore, now: datetime | None = None) ->
         del _parsed_cache[stale]
 
     parsed_items: list[tuple] = []
+    failed: list[EMWINProduct] = []
     for prod in products:
         if prod.product_type not in _WARNING_PRODUCT_TYPES:
             continue
@@ -322,14 +324,33 @@ def _extract_warnings_pyiem(store: WeatherStore, now: datetime | None = None) ->
             try:
                 parsed = pyiem_parser(prod.raw_text, ugc_provider=provider)
             except Exception as exc:  # pyIEM can raise on malformed input
-                logger.debug("pyIEM parse failed for %s: %s", prod.filename, exc)
+                # Once per product (the cache remembers the failure), at a
+                # level that is read: a dropped warning used to leave no trace
+                # above DEBUG.
+                logger.warning("pyIEM parse failed for %s: %s", prod.filename, exc)
                 parsed = _PARSE_FAILED
             _parsed_cache[prod.filename] = parsed
         if parsed is _PARSE_FAILED:
+            failed.append(prod)
             continue
         parsed_items.append((parsed, prod))
 
     results: list[dict] = []
+
+    # -- Products pyIEM rejected: the regex extractor, one product at a time --
+    # At least the headline, zones and VTEC expiry survive, so the warning is
+    # broadcast rather than silently missing. The fallback knows nothing of
+    # the lifecycle, so a later CAN for the same event is only honoured when
+    # it, too, is in a product pyIEM rejected (`_is_cancelled` reads the
+    # product's own VTEC action).
+    for prod in failed:
+        try:
+            entry = _fallback_entry(store, prod, now)
+        except Exception as exc:  # noqa: BLE001 - one unreadable product must not cost the rest
+            logger.warning("Fallback extraction failed for %s too: %s", prod.filename, exc)
+            continue
+        if entry is not None:
+            results.append(entry)
 
     # -- VTEC events: replay the lifecycle -----------------------------------
     tracker = VtecTracker()
@@ -531,8 +552,6 @@ def _parse_vtec_end_datetime(end_str: str) -> datetime | None:
 
 def _extract_warnings_fallback(store: WeatherStore) -> list[dict]:
     """Legacy hand-rolled extraction. Only used if pyIEM parsing crashes globally."""
-    from meshcore_weather.parser.weather import parse_vtec  # local import to avoid cycles
-
     now = datetime.now(timezone.utc)
     results: list[dict] = []
     seen: set[str] = set()
@@ -544,65 +563,79 @@ def _extract_warnings_fallback(store: WeatherStore) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        if store._is_cancelled(prod.raw_text):
-            continue
-
-        vertices = extract_warning_polygon(prod.raw_text)
-        zones = _expand_zone_ranges(prod.raw_text)
-        if len(vertices) < 3 and not zones:
-            continue
-
-        wtype = PRODUCT_TYPE_MAP.get(prod.product_type, WARN_OTHER)
-        vtec = parse_vtec(prod.raw_text)
-        expires_at: datetime | None = None
-        if vtec:
-            severity = VTEC_SEVERITY_MAP.get(vtec["significance"], SEV_WARNING)
-            expires_at = _parse_vtec_end_datetime(vtec["end"])
-        else:
-            severity = SEV_WARNING
-
-        expires_estimated = expires_at is None
-        if expires_at is None:
-            # Last-resort default: 2 hours from now. Only applied in the
-            # fallback path for products with no VTEC.
-            expires_at = now.replace(second=0, microsecond=0)
-            expires_at = expires_at.replace(hour=(expires_at.hour + 2) % 24)
-
-        if expires_at <= now:
-            continue  # expired
-
-        expiry_minutes = max(0, int((expires_at - now).total_seconds() / 60))
-
-        # Fallback path has no VTEC onset; assume effective immediately
-        onset_at = now
-
-        results.append({
-            "warning_type": wtype,
-            "severity": severity,
-            "onset_at": onset_at,
-            "onset_unix_min": int(onset_at.timestamp() / 60),
-            # No parsed product header on this path, and the filename's time is
-            # when the bot received the file, not when NWS issued it: say
-            # nothing rather than something wrong (spec 3, revision 5).
-            "issued_at": None,
-            "expires_at": expires_at,
-            "expires_estimated": expires_estimated,
-            "expiry_minutes": expiry_minutes,
-            "vertices": vertices,
-            "headline": _shorten_headline(store._short_headline(prod.raw_text)),
-            "description": _extract_warning_description(prod.raw_text),
-            "zones": sorted(zones),
-            "ugcs": sorted(zones),
-            "product_type": prod.product_type,
-            "filename": prod.filename,
-            "source": getattr(prod, "source", ""),
-            "vtec_action": (vtec or {}).get("action"),
-            "vtec_phenomenon": (vtec or {}).get("phenomenon"),
-            "vtec_significance": (vtec or {}).get("significance"),
-            "vtec_office": None,
-            "vtec_etn": None,
-        })
+        entry = _fallback_entry(store, prod, now)
+        if entry is not None:
+            results.append(entry)
     return results
+
+
+def _fallback_entry(store: WeatherStore, prod: EMWINProduct, now: datetime) -> dict | None:
+    """One product's warning by regex alone: the first VTEC line, the UGC
+    zones, the polygon and the headline. None when the product is cancelled,
+    expired, or names no area. Used for every product when pyIEM crashes
+    outright, and for the one product pyIEM refuses to parse."""
+    from meshcore_weather.parser.weather import parse_vtec  # local import to avoid cycles
+
+    if store._is_cancelled(prod.raw_text):
+        return None
+
+    vertices = extract_warning_polygon(prod.raw_text)
+    zones = _expand_zone_ranges(prod.raw_text)
+    if len(vertices) < 3 and not zones:
+        return None
+
+    wtype = PRODUCT_TYPE_MAP.get(prod.product_type, WARN_OTHER)
+    vtec = parse_vtec(prod.raw_text)
+    expires_at: datetime | None = None
+    if vtec:
+        severity = VTEC_SEVERITY_MAP.get(vtec["significance"], SEV_WARNING)
+        expires_at = _parse_vtec_end_datetime(vtec["end"])
+    else:
+        severity = SEV_WARNING
+
+    expires_estimated = expires_at is None
+    if expires_at is None:
+        # Last-resort default: 2 hours from now. Only applied in the
+        # fallback path for products with no VTEC.
+        expires_at = now.replace(second=0, microsecond=0)
+        expires_at = expires_at.replace(hour=(expires_at.hour + 2) % 24)
+
+    if expires_at <= now:
+        return None  # expired
+
+    expiry_minutes = max(0, int((expires_at - now).total_seconds() / 60))
+
+    # Fallback path has no VTEC onset; assume effective immediately
+    onset_at = now
+
+    return {
+        "warning_type": wtype,
+        "severity": severity,
+        "onset_at": onset_at,
+        "onset_unix_min": int(onset_at.timestamp() / 60),
+        # No parsed product header on this path, and the filename's time is
+        # when the bot received the file, not when NWS issued it: say
+        # nothing rather than something wrong (spec 3, revision 5).
+        "issued_at": None,
+        "expires_at": expires_at,
+        "expires_estimated": expires_estimated,
+        "expiry_minutes": expiry_minutes,
+        "vertices": vertices,
+        # (`store._short_headline` was called here, and never existed: the
+        # global fallback had been crashing on its first product.)
+        "headline": _shorten_headline(_extract_headline_from_body(prod.raw_text)),
+        "description": _extract_warning_description(prod.raw_text),
+        "zones": sorted(zones),
+        "ugcs": sorted(zones),
+        "product_type": prod.product_type,
+        "filename": prod.filename,
+        "source": getattr(prod, "source", ""),
+        "vtec_action": (vtec or {}).get("action"),
+        "vtec_phenomenon": (vtec or {}).get("phenomenon"),
+        "vtec_significance": (vtec or {}).get("significance"),
+        "vtec_office": None,
+        "vtec_etn": None,
+    }
 
 
 # -- Public API ---------------------------------------------------------------

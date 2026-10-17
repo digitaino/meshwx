@@ -30,6 +30,10 @@ _CLIENT_DATA = Path(__file__).resolve().parent.parent / "client_data"
 LIFE_SAFETY = {"TO.W", "SV.W", "FF.W", "EW.W"}
 
 OBS_MAX_AGE_MIN = 120
+# `>o ICAO` with nothing fresh within reach answers with the newest report up
+# to this old, so the phone shows the weather as last seen with its age rather
+# than "No current conditions" (services.OBS_STALE_MAX_AGE_MIN, owner 2026-10-16).
+OBS_STALE_MAX_AGE_MIN = 720
 # `>o ICAO` for a station with nothing fresh answers with the nearest station
 # within this distance of it that has a report (spec 8.2, revision 8). The same
 # 40 km the app will still show a reading from, attributed to its station.
@@ -520,21 +524,22 @@ def station_obs_message(seq: int, bot: int, store: WeatherStore, icao: str,
     know that 309 of those 2,237 stations send nothing on the feed: Dayton's
     nearest, Wright-Patterson AFB, never reports, so every `>o KFFO` came back
     Not available while Dayton International, 16.6 km away, reported hourly.
-    None only when nothing within `max_km` has a fresh report.
+    When nothing within `max_km` has a fresh report, the same walk is made
+    again admitting reports up to `OBS_STALE_MAX_AGE_MIN` old: a batch of
+    one whose `ts` is that report's own time, so the phone dates it exactly
+    and shows it with its age. None only when nothing within `max_km` has
+    reported in twelve hours.
     """
     icao = icao.upper()
-    msg = obs_message(seq, bot, store, [icao], source=source)
-    if msg is not None:
-        return msg
     resolver.load()
     here = resolver._stations.get(icao)
+    near: list[tuple[float, str]] = []
     try:
         lat, lon = here["la"], here["lo"]
     except (KeyError, TypeError):
-        return None
-    near: list[tuple[float, str]] = []
+        lat = lon = None                 # not in stations.json: no neighbours, its own report only
     for other, st in resolver._stations.items():
-        if other == icao or tables.station(other) is None:
+        if lat is None or other == icao or tables.station(other) is None:
             continue
         try:
             km = _haversine_km(lat, lon, st["la"], st["lo"])
@@ -543,13 +548,22 @@ def station_obs_message(seq: int, bot: int, store: WeatherStore, icao: str,
         if km <= max_km:
             near.append((km, other))
     # Nearest first, stopping at the first that answers: each look is a scan
-    # of the store, and a dense metro can put a dozen stations in range.
-    for km, other in sorted(near):
-        msg = obs_message(seq, bot, store, [other], source=source)
+    # of the store, and a dense metro can put a dozen stations in range. A
+    # fresh neighbour beats the station's own stale report, as it does for
+    # the text path (services.observation_for).
+    for max_age_min in (OBS_MAX_AGE_MIN, OBS_STALE_MAX_AGE_MIN):
+        msg = obs_message(seq, bot, store, [icao], source=source, max_age_min=max_age_min)
         if msg is not None:
-            logger.info("Observations: %s has nothing fresh; answered with %s, %.0f km from it",
-                        icao, other, km)
+            if max_age_min > OBS_MAX_AGE_MIN:
+                logger.info("Observations: %s has nothing fresh within %.0f km; answered with "
+                            "its own report, over %d min old", icao, max_km, OBS_MAX_AGE_MIN)
             return msg
+        for km, other in sorted(near):
+            msg = obs_message(seq, bot, store, [other], source=source, max_age_min=max_age_min)
+            if msg is not None:
+                logger.info("Observations: %s has nothing fresh; answered with %s, %.0f km from it%s",
+                            icao, other, km, "" if max_age_min == OBS_MAX_AGE_MIN else ", not current either")
+                return msg
     return None
 
 
@@ -578,7 +592,7 @@ def _feels_delta(temp_f: int | None, rh: int | None, wind_mph: int | None) -> in
 
 
 def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str],
-                source: int | None = None) -> bytes | None:
+                source: int | None = None, max_age_min: int = OBS_MAX_AGE_MIN) -> bytes | None:
     """One Observations batch, with every station's own age (spec 6).
 
     The batch's `ts` is the newest METAR in it and each station says how far
@@ -590,6 +604,12 @@ def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str],
     (152 bytes already, 159 with them, over the 157 a bot sends). A full batch
     therefore drops its farthest station — the list arrives nearest first —
     rather than leave the phone to guess which readings the timestamp describes.
+
+    `max_age_min` admits reports up to that old; the hourly batch keeps the
+    default. A caller admitting stale reports (`station_obs_message`) gets
+    only the stations the age nibble can place honestly: one more than
+    `OBS_AGE_MAX_MIN` behind the newest would go out saturated, and the phone
+    would date it fresher than it is.
 
     A batch is aggregated from many products, so `source` defaults to the
     store-wide answer: `mixed` whenever the store holds both kinds (spec
@@ -608,7 +628,7 @@ def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str],
         # The product's time is when the collective arrived, the same for every
         # station in it; the report's own DDHHMMZ group is when it was taken.
         ts = metar_observed_at(text, ts) or ts
-        if (now - ts) > timedelta(minutes=OBS_MAX_AGE_MIN):
+        if (now - ts) > timedelta(minutes=max_age_min):
             continue
         f = parse_metar(text)
         if not f:
@@ -635,6 +655,13 @@ def obs_message(seq: int, bot: int, store: WeatherStore, stations: list[str],
             logger.warning("Observation %s left out: %s", icao, e)
             continue
         rows.append((row, ts))
+    if max_age_min > OBS_MAX_AGE_MIN and rows:
+        # Honest ages only: a nibble is 0-150 minutes behind the batch's
+        # newest, and 15 means "150 or more" (spec 6.1), which the phone
+        # cannot date. Below the rounding edge, never at it.
+        newest = max(ts for _, ts in rows)
+        limit = timedelta(minutes=v5.OBS_AGE_MAX_MIN - v5.OBS_AGE_STEP_MIN // 2)
+        rows = [(row, ts) for row, ts in rows if (newest - ts) < limit]
     if not rows:
         return None
     while True:

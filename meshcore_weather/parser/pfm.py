@@ -330,9 +330,15 @@ def _split_glued_headers(lines: list[str]) -> list[str]:
             out.append(line[:m.start()].rstrip())
             line = line[m.start():]
         else:
-            # Generic: a row label glued after data ("...  Y  YTstms   S")
+            # Generic: a row label glued after data ("...  Y  YTstms   S").
+            # The row before the label may be an hour header rather than a
+            # data row: "UTC 6hrly  06 12 18 00 ... 18 00Min/Max  34  67"
+            # (JKL 2026-10-17, and 2.6% of PFMs over three days) read as a
+            # UTC hour of 34 and lost the point.
             for gm in _GLUED_ROW_RE.finditer(line):
-                if gm.start() >= 14 and line[:gm.start()].strip() and _classify_row(line) is not None:
+                if gm.start() >= 14 and line[:gm.start()].strip() and (
+                        _classify_row(line) is not None
+                        or _HRLY_UTC_RE.match(line) or _HRLY_LOCAL_RE.match(line)):
                     out.append(line[:gm.start()].rstrip())
                     line = line[gm.end():] if gm.end() > gm.start() else line[gm.start():]
                     break
