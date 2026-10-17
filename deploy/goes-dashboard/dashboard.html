@@ -55,6 +55,7 @@ td a{color:var(--acc);text-decoration:none}
   <div class="prose">
    <p class="hint" id="botSub"></p>
    <p class="hint" id="botSource"></p>
+   <p class="hint" id="botLag"></p>
    <p>The dish receives the GOES-19 HRIT downlink. NOAA relays EMWIN inside it: every National Weather Service text product for the whole country. The bot parses those products as they arrive and answers over LoRa on the MeshCore mesh. Normally no internet connection is involved. A reply is one mesh packet.</p>
    <p><b>To use it on the Austin mesh</b></p>
    <ol>
@@ -155,7 +156,7 @@ function render(d){state=d;
  drawConst(s.const||[]);if(d.history)drawHist(d.history)}
 function renderImages(list){const g=$('imgs');if(!list||!list.length)return;g.innerHTML='';list.forEach(i=>{const a=document.createElement('a');a.href='/img/'+i.path;a.target='_blank';a.innerHTML=`<img loading="lazy" src="/thumb/${i.path}"><span title="${i.name}">${i.name.replace(/^GOES1[89]_/,'').replace(/\.jpg$/,'')} · ${fmtAge(Math.round(Date.now()/1000-i.mtime))} ago</span>`;g.appendChild(a)})}
 function renderEmwin(list,counts){const t=$('emwin');t.innerHTML='';(list||[]).forEach(f=>{const tr=document.createElement('tr');tr.innerHTML=`<td><a href="/img/${f.path}" target="_blank">${f.name}</a></td><td class="r">${f.src==='net'?'<span style="color:#ffd27e" title="fetched over the internet by the bot while the dish is silent">net</span> ':''}${fmtT(f.mtime)}</td>`;t.appendChild(tr)});
- if(!list||!list.length)t.innerHTML='<tr><td class="hint">no EMWIN files yet</td></tr>';if(counts)$('emcount').textContent=`· ${counts.emwin_today} today, ${counts.emwin} total`+(counts.internet_backup_on?` · ${counts.emwin_inet_today||0} via internet backup today`:'')}
+ if(!list||!list.length)t.innerHTML='<tr><td class="hint">no EMWIN files yet</td></tr>';if(counts)$('emcount').textContent=`· ${counts.emwin_today} today (UTC), ${counts.emwin} total`+(counts.internet_backup_on?` · ${counts.emwin_inet_today||0} via internet backup today`:'')}
 function drawConst(pts){const c=$('const'),W=c.width=c.clientWidth*dpr,H=c.height=240*dpr,x=c.getContext('2d');x.clearRect(0,0,W,H);
  x.strokeStyle='#30363d';x.beginPath();x.moveTo(W/2,0);x.lineTo(W/2,H);x.moveTo(0,H/2);x.lineTo(W,H/2);x.stroke();
  if(!pts.length){x.fillStyle='#8b949e';x.font=(12*dpr)+'px system-ui';x.fillText('no samples',10*dpr,20*dpr);return}
@@ -215,16 +216,19 @@ function botLine(ev){const ts=new Date(ev.t*1000).toLocaleTimeString([],{hour:'2
   default:body=esc(ev.text||ev.reason||ev.kind)}
  return `<div data-id="${ev.id}" data-dv="${dvKey(ev)}"><span class="t">${ts}</span> <span class="${cls}">${ev.dir==='in'?'←':'→'}</span> <span class="tag">${tr||ev.kind}</span> ${who}${body}</div>`}
 function renderBot(d){const b=$('botBadge');
- if(!d.online){b.textContent='BOT OFFLINE';b.className='badge bad';$('botSub').textContent=d.error||'';return}
+ if(!d.online){b.textContent='BOT OFFLINE';b.className='badge bad';$('botSub').textContent=d.error||'';$('botLag').textContent='';return}
  const bot=d.bot||{},r=d.radio,st=d.stats||{},w=(st.windows||{})['24h']||{},lt=st.lifetime||{},lat=st.latency||{};
  b.textContent=bot.connected?(bot.tx_enabled?'BOT ON AIR':'BOT RX ONLY'):'BOT: NO RADIO';b.className='badge '+(bot.connected&&bot.tx_enabled?'ok':'warn');
  if(bot.name){$('botName').textContent=bot.name;$('botNameDm').textContent=bot.name}
- $('botSub').textContent=`up ${fmtAge(bot.uptime_s||0)} · ${bot.products||0} NWS products in memory`+(bot.lat!=null?` · ${(+bot.lat).toFixed(2)}, ${(+bot.lon).toFixed(2)}`:'')+(d.peers&&d.peers.length?` · peers: ${d.peers.map(p=>p.name).join(', ')}`:'');
+ $('botSub').textContent=`up ${fmtAge(bot.uptime_s||0)} · ${bot.products||0} NWS products in memory`+(d.peers&&d.peers.length?` · peers: ${d.peers.map(p=>p.name||'?').join(', ')}`:'');
  const fd=d.feed||{},ib=fd.internet_backup||null,src=$('botSource');
  if(fd.source==='internet'){src.textContent='Products come over the internet: this bot has no satellite receiver.';src.style.color=''}
  else if(ib&&ib.on){const since=ib.since?Date.parse(ib.since)/1000:null;src.textContent=`The dish is silent, so products are coming from the NOAA internet backup${since?' (on for '+fmtAge(Math.max(0,Math.round(d.t-since)))+')':''}: ${ib.added||0} products that way so far.`;src.style.color='#ffd27e'}
  else if(fd.source==='sdr'){src.textContent='Products come from the dish (GOES-19 HRIT).';src.style.color=''}
  else{src.textContent=''}
+ const lag=[];if(fd.lag_min!=null&&fd.lag_min>=30){const h=Math.floor(fd.lag_min/60),m=fd.lag_min%60;lag.push(`products ≈ ${h?h+'h ':''}${m}m behind`)}
+ if(ib&&ib.on){const now=d.t||Date.now()/1000;if(ib.last_ok)lag.push(`last fetch OK ${fmtAge(Math.max(0,Math.round(now-ib.last_ok)))} ago`);if(ib.last_error)lag.push(`last fetch error: ${ib.last_error}`)}
+ $('botLag').textContent=lag.join(' · ');
  if(r)$('botRadio').textContent=`${r.preset?r.preset+': ':''}${r.freq_mhz} MHz, ${r.bw_khz} kHz, SF${r.sf}, CR${r.cr}`;
  const ch=(d.channels||{});if(ch.text){$('botChannel').textContent=ch.text;$('botChannel2').textContent=ch.text}if(ch.data)$('botDataChannel').textContent=ch.data;
  $('botReplyHow').textContent=bot.reply_mode==='channel'?'Replies currently go out on the channel.':bot.reply_mode==='dm_only'?'Replies go by DM only, so the bot needs your advert (next step).':'Replies go by DM when the bot knows your node. Otherwise it answers once on the channel and adverts so the next exchange can be a DM.';

@@ -7,12 +7,12 @@ and a "pointing" mode that swaps the dongle over to an rtl_power SNR meter.
 Runs as goes-dashboard.service on http://0.0.0.0:8080
 """
 import collections
-import glob
 import hashlib
 import ipaddress
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -30,6 +30,9 @@ import signal_monitor  # noqa: E402  (pointing-mode Monitor class)
 HOME = "/home/digitaino"
 IMG_ROOT = f"{HOME}/goes-images"
 THUMB_DIR = f"{HOME}/goes/thumbs"
+THUMB_MAX, THUMB_KEEP = 600, 500   # thumbnail cache: once past MAX files, drop the oldest down to KEEP
+SSE_MAX = 24                       # concurrent /events viewers; each costs a thread and two JSON dumps per second
+SSE_CLIENTS, SSE_LOCK = 0, threading.Lock()
 PORT = int(os.environ.get("PORT", "8080"))
 # The mesh weather bot's admin portal (meshcore-weather.service). Only its
 # read-only public bundle is proxied here; the portal itself stays LAN-only.
@@ -55,6 +58,43 @@ def sh(cmd):
         return subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout.strip()
     except Exception as e:  # noqa: BLE001
         return f"error: {e}"
+
+
+DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def recent_files(root, days=2, ext=None):
+    """(path, mtime, size) of every file in the newest `days` date directories
+    (YYYY-MM-DD; goesproc and the bot both file by UTC day) of each product under
+    root. The product tree above the dates is a handful of directories, so only
+    those day directories get listed and stat'ed; the recursive glob this replaces
+    stat'ed every file ever received, every 5 s."""
+    out = []
+    for cur, dirs, _ in os.walk(root):
+        dated = sorted(d for d in dirs if DATE_DIR.match(d))
+        dirs[:] = [d for d in dirs if d not in dated]
+        for d in dated[-days:]:
+            try:
+                with os.scandir(os.path.join(cur, d)) as it:
+                    for e in it:
+                        if e.is_file() and (ext is None or e.name.endswith(ext)):
+                            st = e.stat()
+                            out.append((e.path, st.st_mtime, st.st_size))
+            except OSError:
+                pass
+    return out
+
+
+def throttled():
+    """The firmware's throttle flags as a hex string: "0x0" is clean; bit 0 under-voltage
+    now, bit 2 throttled now, bits 16/18 the same has happened since boot. Some kernels
+    expose it in sysfs; this Pi's does not, so vcgencmd is the working fallback."""
+    try:
+        return hex(int(open("/sys/devices/platform/soc/soc:firmware/get_throttled").read().strip(), 16))
+    except (OSError, ValueError):
+        pass
+    out = sh(["vcgencmd", "get_throttled"])  # "throttled=0x50005"
+    return out.split("=", 1)[1] if out.startswith("throttled=0x") else None
 
 
 # ----------------------------------------------------------------------------- goesrecv stats
@@ -185,6 +225,8 @@ class Status:
     def __init__(self):
         self.lock = threading.Lock()
         self.data = {}
+        self.files, self.files_at = {}, 0.0            # file counts + listings, refreshed at most every 20 s
+        self.watchdog = {"restarts": 0, "last": None}  # goesrecv alive-but-dead restarts, see watch_goesrecv
         threading.Thread(target=self.run, daemon=True).start()
 
     def run(self):
@@ -204,40 +246,73 @@ class Status:
         except Exception:  # noqa: BLE001
             temp = None
         du = shutil.disk_usage(HOME)
-        today = time.strftime("%Y-%m-%d")
+        up = sh(["systemctl", "show", "goesrecv", "-p", "ActiveEnterTimestampMonotonic", "--value"])
+        up_s = None if not up.isdigit() else int(time.clock_gettime(time.CLOCK_MONOTONIC) - int(up) / 1e6)
+        self.watch_goesrecv(services.get("goesrecv"), up_s)
+        thr = throttled()
+        # The probes above are cheap and run every 5 s; the directory scans every 20 s
+        # (they used to walk and stat all ~40k received files on every cycle).
+        if time.time() - self.files_at >= 20:
+            self.files, self.files_at = self.scan_files(), time.time()
+        with self.lock:
+            self.data = {"services": services, "temp": temp, "disk_free_gb": round(du.free / 1e9, 1),
+                         "disk_used_pct": round(100 * (du.total - du.free) / du.total),
+                         **self.files,
+                         "host": sh(["hostname"]), "load": open("/proc/loadavg").read().split()[0],
+                         "goesrecv_up_s": up_s, "throttled": thr, "watchdog": dict(self.watchdog),
+                         "time": int(time.time())}
+
+    def scan_files(self):
+        """File counts plus the newest imagery and EMWIN products: the expensive part
+        of the status (a directory walk and two days' worth of stats)."""
+        today = time.strftime("%Y-%m-%d", time.gmtime())  # goesproc's day directories are UTC dates
         counts = {}
         for cat in ("emwin", "goes19", "goes18", "dcs", "nws", "text"):
             counts[cat] = sum(len(f) for _, _, f in os.walk(f"{IMG_ROOT}/{cat}"))
         counts["emwin_today"] = sum(len(f) for _, _, f in os.walk(f"{IMG_ROOT}/emwin/{today}"))
-        imgs = glob.glob(f"{IMG_ROOT}/goes19/**/*.jpg", recursive=True) + glob.glob(f"{IMG_ROOT}/goes18/**/*.jpg", recursive=True)
-        imgs.sort(key=os.path.getmtime, reverse=True)
+        imgs = recent_files(f"{IMG_ROOT}/goes19", ext=".jpg") + recent_files(f"{IMG_ROOT}/goes18", ext=".jpg")
+        imgs.sort(key=lambda f: f[1], reverse=True)
         latest_imgs = [{"path": os.path.relpath(p, IMG_ROOT), "name": os.path.basename(p),
-                        "mtime": int(os.path.getmtime(p)), "size": os.path.getsize(p)} for p in imgs[:12]]
-        em = [(p, "sat") for p in glob.glob(f"{IMG_ROOT}/emwin/*/*")]
+                        "mtime": int(m), "size": s} for p, m, s in imgs[:12]]
+        em = [(p, m, s, "sat") for p, m, s in recent_files(f"{IMG_ROOT}/emwin")]
         # While the bot's internet backup is carrying the mesh, list its products
         # too, tagged "net", so this panel does not sit on the dish's last files.
         bot = globals().get("BOT")
         backup = ((bot.get().get("feed") or {}).get("internet_backup") or {}) if bot else {}
         inet_today = 0
         if backup.get("on"):
-            days = sorted(glob.glob(f"{INET_DIR}/*"))[-2:]
-            em += [(p, "net") for d in days for p in glob.glob(f"{d}/*")]
-            today_utc = f"{INET_DIR}/{time.strftime('%Y-%m-%d', time.gmtime())}"
-            inet_today = len(os.listdir(today_utc)) if os.path.isdir(today_utc) else 0
-        em.sort(key=lambda t: os.path.getmtime(t[0]), reverse=True)
+            em += [(p, m, s, "net") for p, m, s in recent_files(INET_DIR)]
+            today_inet = f"{INET_DIR}/{today}"
+            inet_today = len(os.listdir(today_inet)) if os.path.isdir(today_inet) else 0
+        em.sort(key=lambda f: f[1], reverse=True)
         latest_emwin = [{"path": ("inet/" + os.path.relpath(p, INET_DIR)) if src == "net" else os.path.relpath(p, IMG_ROOT),
                          "name": os.path.basename(p), "src": src,
-                         "mtime": int(os.path.getmtime(p)), "size": os.path.getsize(p)} for p, src in em[:15]]
+                         "mtime": int(m), "size": s} for p, m, s, src in em[:15]]
         counts["emwin_inet_today"] = inet_today
         counts["internet_backup_on"] = bool(backup.get("on"))
-        up = sh(["systemctl", "show", "goesrecv", "-p", "ActiveEnterTimestampMonotonic", "--value"])
-        with self.lock:
-            self.data = {"services": services, "temp": temp, "disk_free_gb": round(du.free / 1e9, 1),
-                         "disk_used_pct": round(100 * (du.total - du.free) / du.total),
-                         "counts": counts, "latest_images": latest_imgs, "latest_emwin": latest_emwin,
-                         "host": sh(["hostname"]), "load": open("/proc/loadavg").read().split()[0],
-                         "goesrecv_up_s": None if not up.isdigit() else int(time.clock_gettime(time.CLOCK_MONOTONIC) - int(up) / 1e6),
-                         "time": int(time.time())}
+        return {"counts": counts, "latest_images": latest_imgs, "latest_emwin": latest_emwin}
+
+    def watch_goesrecv(self, active, up_s):
+        """goesrecv can sit 'active' with the dongle wedged: up for hours, not one packet
+        decoded in 10 min. A restart re-opens the dongle (and re-asserts the bias tee);
+        goesproc's nanomsg subscriber simply reconnects. Never while pointing (goesrecv
+        is stopped on purpose then), never while it is already (re)starting, and at most
+        once per 30 min so a real signal loss does not turn into a restart loop."""
+        now = time.time()
+        if active != "active" or up_s is None or up_s < 600:
+            return
+        if self.watchdog["last"] and now - self.watchdog["last"] < 1800:
+            return
+        hist = [h for h in STATS.history_list() if h[0] > now - 600]  # per second: [t, vit, packets, drops, rs]
+        if len(hist) < 540 or any(h[2] for h in hist):               # need the full 10 min of history, all at 0 packets
+            return
+        with MODE.lock:  # serialised with the pointing-mode switches
+            if MODE.mode != "receive":
+                return
+            self.watchdog = {"restarts": self.watchdog["restarts"] + 1, "last": int(now)}
+            print(time.strftime("%Y-%m-%d %H:%M:%S"), f"watchdog: goesrecv active for {up_s} s but no packets in 10 min,"
+                  f" restarting it ({self.watchdog['restarts']} so far)", file=sys.stderr, flush=True)
+            sh(["sudo", "-n", "systemctl", "restart", "goesrecv"])
 
     def get(self):
         with self.lock:
@@ -285,8 +360,8 @@ class Mode:
 
 
 STATS = Stats()
+MODE = Mode()      # before STATUS: its refresh thread consults MODE (watchdog) from the first cycle
 STATUS = Status()
-MODE = Mode()
 
 
 # ----------------------------------------------------------------------------- mesh weather bot
@@ -298,27 +373,52 @@ class Bot:
 
     def __init__(self):
         self.lock = threading.Lock()
+        self.fetch_lock = threading.Lock()  # single-flight: concurrent cache misses make one request, the rest reuse it
         self.data = {"online": False, "error": "not fetched yet"}
         self.fetched = 0.0
 
+    def fresh(self):
+        with self.lock:
+            return dict(self.data) if time.time() - self.fetched < 3 else None
+
     def get(self):
-        with self.lock:
-            if time.time() - self.fetched < 3:
-                return dict(self.data)
-        try:
-            with urllib.request.urlopen(f"{BOT_URL}/api/public/bot?n=60", timeout=3) as r:
-                d = json.loads(r.read())
-            d["online"] = True
-            d["error"] = None
-        except Exception as e:  # noqa: BLE001  (bot stopped, portal restarting)
-            d = {"online": False, "error": f"bot not reachable ({e.__class__.__name__})"}
-        with self.lock:
-            self.data = d
-            self.fetched = time.time()
-        return dict(d)
+        d = self.fresh()
+        if d is not None:
+            return d
+        with self.fetch_lock:
+            d = self.fresh()  # another request fetched while we waited for the lock
+            if d is not None:
+                return d
+            try:
+                with urllib.request.urlopen(f"{BOT_URL}/api/public/bot?n=60", timeout=3) as r:
+                    d = json.loads(r.read())
+                d["online"] = True
+                d["error"] = None
+            except Exception as e:  # noqa: BLE001  (bot stopped, portal restarting)
+                d = {"online": False, "error": f"bot not reachable ({e.__class__.__name__})"}
+            with self.lock:
+                self.data = d
+                self.fetched = time.time()
+            return dict(d)
 
 
 BOT = Bot()
+
+
+def prune_thumbs():
+    """Keep the thumbnail cache bounded: past THUMB_MAX files, drop the oldest down to
+    THUMB_KEEP. Only called right after a new thumbnail was written, so normally it is
+    one listing of a few hundred names."""
+    try:
+        with os.scandir(THUMB_DIR) as it:
+            entries = [e for e in it if e.is_file()]
+        if len(entries) <= THUMB_MAX:
+            return
+        entries.sort(key=lambda e: e.stat().st_mtime)
+        for e in entries[:len(entries) - THUMB_KEEP]:
+            os.remove(e.path)
+    except OSError:  # a parallel request pruning the same files; the next write retries
+        pass
 
 
 def thumb_for(rel):
@@ -328,13 +428,21 @@ def thumb_for(rel):
     key = hashlib.md5(f"{rel}:{os.path.getmtime(src)}".encode()).hexdigest()
     out = f"{THUMB_DIR}/{key}.jpg"
     if not os.path.exists(out):
+        tmp = f"{out}.{threading.get_ident()}.tmp"  # written aside then renamed: a parallel request never serves a half file
         try:
             from PIL import Image
-            im = Image.open(src)
-            im.thumbnail((640, 640))
-            im.convert("RGB").save(out, "JPEG", quality=80)
+            with Image.open(src) as im:
+                im.draft("RGB", (640, 640))  # libjpeg decodes the 5424 px full disks at 1/8 scale instead of full size
+                im.thumbnail((640, 640))
+                im.convert("RGB").save(tmp, "JPEG", quality=80)
+            os.replace(tmp, out)
         except Exception:  # noqa: BLE001
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
             return src
+        prune_thumbs()
     return out
 
 
@@ -355,6 +463,7 @@ def is_lan_address(ip: str) -> bool:
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    timeout = 30  # socket timeout: idle keep-alive and half-open connections are reaped instead of parking a thread
 
     def log_message(self, *a):
         pass
@@ -448,28 +557,50 @@ class Handler(BaseHTTPRequestHandler):
         return d
 
     def sse(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-        n = 0
+        global SSE_CLIENTS
+        with SSE_LOCK:
+            if SSE_CLIENTS >= SSE_MAX:
+                return self._send(503, b"too many live viewers right now, try again in a minute\n", "text/plain",
+                                  {"Retry-After": "60"})
+            SSE_CLIENTS += 1
         try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            n = 0
             while True:
                 d = self.state(full=(n % 10 == 0))
                 self.wfile.write(f"data: {json.dumps(clean(d))}\n\n".encode())
                 self.wfile.flush()
                 n += 1
                 time.sleep(0.5)
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except OSError:  # reset, broken pipe or the 30 s socket timeout: the viewer is gone
             return
+        finally:
+            self.close_connection = True
+            with SSE_LOCK:
+                SSE_CLIENTS -= 1
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 64  # listen backlog; the default of 5 drops bursts of viewers reconnecting through the tunnel
+
+    def handle_error(self, request, client_address):
+        """Peers going away mid-request (resets, broken pipes, the idle timeout) are routine
+        on a public site and used to fill the journal with tracebacks; anything else still
+        gets the standard traceback."""
+        if isinstance(sys.exception(), (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
 
 
 if __name__ == "__main__":
     # default state is receiving: if a previous pointing session left goesrecv stopped, bring it back
     if sh(["systemctl", "is-active", "goesrecv"]) != "active":
         sh(["sudo", "-n", "systemctl", "start", "goesrecv", "goesproc"])
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    srv.daemon_threads = True
+    srv = Server(("0.0.0.0", PORT), Handler)
     print(f"GOES dashboard on http://0.0.0.0:{PORT}", flush=True)
     srv.serve_forever()
