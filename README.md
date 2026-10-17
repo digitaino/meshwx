@@ -38,7 +38,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 | EMWIN from the GOES-19 dish (goestools, `MCW_EMWIN_SOURCE=sdr`) | production |
 | EMWIN over the internet (`MCW_EMWIN_SOURCE=internet`) | works; the alternative for a bot without a dish |
 | pyIEM product parsing | shipped |
-| MeshWX v5 wire format, spec revision 12 | shipped |
+| MeshWX v5 wire format, spec revision 13 | shipped |
 | Text replies for people, paged with `more` | shipped |
 | Echo tracking and one byte-identical resend | shipped |
 | DM replies: ACK tries, one reply at a time per person, resends of a request recognised | shipped |
