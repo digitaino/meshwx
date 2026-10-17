@@ -386,8 +386,15 @@ export const MeshWXPresentation = Object.freeze({
 
   // MARK: - Staleness (spec §10.3, §5)
 
-  /** Observations older than this are stale. */
+  /** Observations older than this are stale: still shown, but with their age. */
   observationStaleAfterMinutes: 120,
+  /**
+   * **Tunable**: observations older than this are not shown at all. Between the two a reading is
+   * the weather as last seen, labelled "5 h old", rather than "No current conditions" (owner
+   * decision 2026-10-16). The bot answers `>o` with reports up to the same twelve hours
+   * (`OBS_STALE_MAX_AGE_MIN` in meshcore_weather/protocol/v5_builders.py).
+   */
+  observationShownForMinutes: 720,
   /** Forecasts older than this are stale. */
   forecastStaleAfterMinutes: 720,
   /**
@@ -410,6 +417,10 @@ export const MeshWXPresentation = Object.freeze({
 
   isObservationStale({ timestampMinutes, now }) {
     return now > timestampMinutes + MeshWXPresentation.observationStaleAfterMinutes;
+  },
+
+  isObservationTooOld({ timestampMinutes, now }) {
+    return now > timestampMinutes + MeshWXPresentation.observationShownForMinutes;
   },
 
   isForecastStale({ issuedMinutes, now }) {

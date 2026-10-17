@@ -207,6 +207,14 @@ export const WeatherStoredObservation = {
       timestampMinutes: stored.timestampMinutes,
       now: MeshWXPresentation.unixMinutes({ for: at })
     })
+  },
+
+  /** Past `MeshWXPresentation.observationShownForMinutes`: too old to show even with its age. */
+  isTooOld(stored, { at }) {
+    return MeshWXPresentation.isObservationTooOld({
+      timestampMinutes: stored.timestampMinutes,
+      now: MeshWXPresentation.unixMinutes({ for: at })
+    })
   }
 }
 

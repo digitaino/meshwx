@@ -722,12 +722,18 @@ export const WeatherCopy = Object.freeze({
    *
    * With no station name — a reading the block already attributes above its number (§3.1 U-2a)
    * — it is the time alone: "As of 6:56 AM".
+   *
+   * A stale reading — over two hours old, shown until twelve rather than replaced by "No current
+   * conditions" (owner decision 2026-10-16) — ends with its age: "Camp Mabry · 6 km · as of
+   * 2:24 PM · 5 h old". The clock time alone reads as recent at a glance; the age cannot.
    */
-  conditionsSource({ stationName = null, kilometres = null, observedAt, now, timeZone, locale }) {
+  conditionsSource({ stationName = null, kilometres = null, observedAt, now, timeZone, locale, isStale = false }) {
     const asOf = t('weather.stations.asOf', WeatherFormatting.clockTime(observedAt, { now, timeZone, locale }))
-    if (stationName == null) return WeatherFormatting.sentenceStart(asOf)
-    if (kilometres == null) return `${stationName} · ${asOf}`
-    return `${stationName} · ${WeatherFormatting.kilometres(kilometres)} · ${asOf}`
+    const parts = [asOf]
+    if (isStale) parts.push(WeatherFormatting.age(observedAt, { now }))
+    if (stationName == null) return WeatherFormatting.sentenceStart(parts.join(' · '))
+    if (kilometres != null) parts.unshift(WeatherFormatting.kilometres(kilometres))
+    return [stationName, ...parts].join(' · ')
   },
 
   /**

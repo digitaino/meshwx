@@ -138,8 +138,8 @@ export const updateJustReceived = ({ source }) => copy('updateJustReceived', [{ 
 export const everythingCurrent = ({ source, asOf, now, timeZone, locale }) =>
   copy('everythingCurrent', [{ source, asOf, now, timeZone, locale }], () => t('weather.update.currentUnknown'))
 
-export const conditionsSource = ({ stationName, kilometres: km, observedAt, now, timeZone, locale }) =>
-  copy('conditionsSource', [{ stationName, kilometres: km, observedAt, now, timeZone, locale }])
+export const conditionsSource = ({ stationName, kilometres: km, observedAt, now, timeZone, locale, isStale = false }) =>
+  copy('conditionsSource', [{ stationName, kilometres: km, observedAt, now, timeZone, locale, isStale }])
 
 export const nearbyReadingLead = ({ stationName, kilometres: km }) =>
   copy('nearbyReadingLead', [{ stationName, kilometres: km }])
