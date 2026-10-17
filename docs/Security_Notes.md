@@ -12,7 +12,7 @@ Checked against the code on 2026-09-15.
 | App requests (`>` prefix) | anyone, by DM or on `#meshwx` | same control-character cleaning; the first word picks the answer and the rest is looked up as a warning identity, a UGC code, an ICAO code, a point index or a place. An unknown word gets a Not available message, and an exception while building an answer becomes a Not available (bot error) |
 | Adverts | anyone | contact name cleaned; the contact table on the node is bounded by firmware, the bot's name→key map is capped |
 | `@lat,lon` prefix | DM senders | parsed as floats, range-checked, capped table |
-| `sat` / `>sat` | anyone | answered from the receiver dashboard sample the bot already holds, with no request to goesrecv: lock, signal quality, dropped packets, goesproc state, age of the newest EMWIN file. Nothing about the host, the network or the settings |
+| `sat` / `>sat` | anyone | answered from the receiver dashboard sample the bot already holds, with no request to goesrecv: lock, signal quality, dropped packets, goesproc state, age of the newest EMWIN file, how far behind the uplink the products run, and since when the internet backup is on. Nothing about the host, the network or the settings |
 | EMWIN products | the satellite (unauthenticated broadcast) | every parser is wrapped per product or per point; a bad product is skipped, never fatal |
 | Portal HTTP API | anyone who can reach the portal port (8081 on the Pi; no login by design) | see below |
 | Public dashboard | anyone the goestools dashboard is exposed to | read-only; see below |
@@ -54,7 +54,13 @@ Every reply costs the mesh. Budgets, all enforced before a reply is built:
 - a channel packet no repeater echoed is sent again at most 30 times per
   hour in total (DM tries are bounded by the DM rules above instead);
 - `reply_mode=channel` (every reply a flood) is a test setting, shown as a
-  red dot in the portal's status strip.
+  red dot in the portal's status strip;
+- status lines (`MCW_STATUS_CHANNEL`, empty by default; 2026-10-17) answer
+  nobody, so nobody can call one up: they follow the station's state, at
+  most six an hour, on a channel of their own and never the request
+  channel. The channel is public, and a line can name the Pi's disk use,
+  CPU temperature and throttle flags once they cross their limits; nothing
+  about the network or the settings.
 
 Per-sender state (rate limits, paging, learned names, cached locations,
 recent DM requests: 32 per sender, 5000 senders) is pruned so a flood of

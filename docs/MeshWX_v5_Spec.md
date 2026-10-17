@@ -483,7 +483,11 @@ not be reaching them at all.
 
 Known limitation: a quiet home office and a dead satellite feed are
 indistinguishable in this byte. The bot does not currently publish a
-whole-feed liveness figure.
+whole-feed liveness figure on the wire. A person can ask `>sat` (section
+8.2), which gives the age of the newest file the dish wrote and, from 17
+October 2026, how far behind the uplink the products run: on 2026-10-16
+NOAA replayed a backlog for ten hours, every file arrived seconds old and
+every product in it five to ten hours old.
 
 ## 6. Observations (type 4)
 
@@ -532,10 +536,23 @@ the bot answers with the **nearest station within 40 km of it that has
 one**: still `n = 1`, under the index of the station that reported, never
 the one asked for (revision 8). A phone that asked for Wright-Patterson
 AFB (KFFO), which never reports on the feed, gets Dayton International
-(KDAY, 16.6 km away) and files it under KDAY. Not available (reason 0)
-only when nothing within 40 km reports. A phone matching the answer to
-its request accepts a single station within 40 km of the one it named
-from the bot it asked.
+(KDAY, 16.6 km away) and files it under KDAY. A phone matching the
+answer to its request accepts a single station within 40 km of the one it
+named from the bot it asked.
+
+When nothing within 40 km has a report that fresh, the bot answers with
+the newest one **up to 12 hours old** (from 17 October 2026). It walks
+the same stations again, the named one first and then the rest nearest
+first, admitting reports up to 720 minutes old, so a fresh neighbour
+still beats the station's own old report. The answer is the same
+message: `n = 1`, `ts` the report's own `DDHHMMZ` time and its age 0, so
+the phone dates it exactly and shows it as stale, with its age (section
+10.3). No byte changed. Not available (reason 0) only when nothing within
+40 km has reported in 12 hours. The owner's decision of 2026-10-16:
+while NOAA's uplink ran five to ten hours behind, the apps said "No
+current conditions" for Austin, and asking the bot brought Not available,
+while the phone and the bot both held Camp Mabry's report from a few
+hours before. The hourly batch and the bare `>o` keep the 120 minutes.
 
 ### 6.1 Per-station ages (flags bit 0, new in revision 5)
 
@@ -1171,7 +1188,7 @@ type and get a text DM back.
 | `>part 212 1,4,6` | Those packets of Area sweep or Text `group` 212 again (section 7C.2, revision 10), identical but for a fresh `seq`. Not available `p` reason 0 when the bot no longer holds the group or none of the indexes exist; silence when every index asked for went out again in the last 30 s |
 | `>wt SV.W.EWX.42` | The warning's narrative as Text, subject 0 |
 | `>o` | Observations for the coverage stations |
-| `>o KAUS` | Observations, one station: that one, or the nearest within 40 km that reports (section 6, revision 8) |
+| `>o KAUS` | Observations, one station: that one, or the nearest within 40 km that reports (section 6, revision 8). With nothing within 40 km under 120 minutes old, the newest report up to 12 hours old, `ts` its own time (section 6, from 17 October 2026) |
 | `>f` | Forecast for the bot's home point |
 | `>f 102` | Forecast for point index 102; `point` is 102 whenever the forecast is at that point's coordinates (section 7) |
 | `>f round rock tx` | Forecast for a place the bot resolves (nearest point; `point` may be 0xFFFF) |
@@ -1181,14 +1198,14 @@ type and get a text DM back.
 | `>space` | Space weather summary, Text subject 2 |
 | `>metar KAUS` | That station's own METAR from the last 120 minutes, Text subject 5, starting `METAR KAUS`. Never another station's: without one, Not available reason 0, request `m` |
 | `>taf KAUS` | That station's own current TAF, Text subject 5, starting `TAF KAUS` (an amendment reads `TAF KAUS AMD ...`). Never another station's: without one, Not available reason 0, request `t` |
-| `>metar round rock tx`, `>taf round rock tx`, bare `>metar` / `>taf` | The nearest station with a report (the bot's home without an argument), Text subject 5, labelled with that station and its distance, e.g. `METAR (KGTU 15km) KGTU 151155Z ...` |
+| `>metar round rock tx`, `>taf round rock tx`, bare `>metar` / `>taf` | The nearest station with a report (the bot's home without an argument), Text subject 5, labelled with that station and its distance, e.g. `METAR (KGTU 15km) KGTU 151155Z ...`. A METAR is one from the last 120 minutes or, with none, the newest up to 12 hours old, labelled with its age: `METAR (KAUS 45km, 5h old) KAUS 170153Z ...` (from 17 October 2026) |
 | `>storm TX` `>rain TX` `>hwo` | Text, subjects 3, 4, 6 |
 | `>radar` | Radar (section 7D, revision 11): the zoom 0 tile around the bot's home point, one packet |
 | `>radar 30.270,-97.740` | The zoom 0 tile for that coordinate, decimal degrees, three decimals: the tile whose centre is nearest (section 7D.1). An app sends this form |
 | `>radar 30.270,-97.740 z2` | The same at zoom 2. The zoom is its own last token, `z0` to `z3`; anything else after the place is part of the place, so `>radar zion il` is a town. `z4` and up gets Not available reason 1 |
 | `>radar round rock tx`, `>radar 78701 z1` | A place or a ZIP the bot resolves, as `>f` does |
 | `>radar 30.270,-97.740 loop`, `>radar 30.270,-97.740 z1 loop 2353 2338` | The last hour of that tile (section 7D.4, revision 13): up to five pictures, oldest first, leaving out those whose UTC `HHMM` follow `loop`. `loop` followed by anything but four-digit groups is part of the place: `>radar loop tx` is Loop, Texas |
-| `>sat` | The bot's GOES receiver now, one line, Text subject 8: lock, signal good/fair/poor, packets dropped in the last minute, age of the newest EMWIN file. A receiver that is not reporting is answered as Text saying so. A Not available for it would carry `s`, the letter `>space` and `>storm` use |
+| `>sat` | The bot's GOES receiver now, one line, Text subject 8: lock, signal good/fair/poor, packets dropped in the last minute, age of the newest EMWIN file the dish wrote, and, when they run 30 minutes or more late, how far behind the uplink the products are (`products ~5h behind`, from 17 October 2026); with the internet backup on, since when. A line that would not fit one page of a text reply (section 10.4) leaves out the packet count. A receiver that is not reporting is answered as Text saying so. A Not available for it would carry `s`, the letter `>space` and `>storm` use |
 | `>cov` | Coverage (section 7A), one packet: the bot's centre, radius, offices and zone runs. It describes the bot, not a place, so coverage never filters it and it is answerable at any time. A bot that knows neither a centre nor a zone answers Not available reason 0, request `c` |
 
 A request "names a station" when its argument is a 4-character ICAO code
@@ -1498,6 +1515,17 @@ honestly knows is that every reading is somewhere in the two hours before
 `ts`; say "as of" no more precisely than that, and fall back to the old
 rule, stale when `ts` itself is over 2 hours old.
 
+Stale is not hidden. A reading 2 to 12 hours old is the weather as last
+seen: show it with its age beside the time, "as of 2:24 PM · 5 h old",
+in a colour that marks it old, rather than "No current conditions".
+Past 12 hours, leave it out and offer to ask the bot, which answers
+`>o KAUS` with a report up to that old (section 6). Prefer a reading
+young enough to show over a nearer one too old to show. This is the
+owner's decision of 2026-10-16, which the web client (`web/`) and the
+iOS app were changed to follow on 17 October 2026: during NOAA's backlog
+that day a page said "No current conditions" while the phone held a
+reading from a few hours before.
+
 ### 10.4 Text fallback for people
 
 The bot's text commands (send on `#meshwx` or by DM). Replies come by DM;
@@ -1541,7 +1569,7 @@ metar <ICAO|city ST|ZIP>  latest airport observation
 taf <ICAO|city ST|ZIP>    terminal aerodrome forecast
 outlook <city ST|ZIP>     hazardous weather outlook
 space                 space weather
-sat                   satellite receiver: lock, signal, drops, newest EMWIN
+sat                   satellite receiver: lock, signal, drops, newest EMWIN, how far behind
 cov                   what this bot covers: area, offices, stations, alert list
 more                  next page of the last long reply
 help                  the command list
@@ -1693,7 +1721,8 @@ range shows old data; saying so is the feature.
 7. Stale badges from `ts` and the station's own age, `issued`, `expires`,
    `feed_health`. "As of" is per station (section 6.1); "issued" on a
    warning comes from its issue time (section 3), never from when the
-   packet arrived (section 10.5).
+   packet arrived (section 10.5). A stale reading is shown with its age
+   up to 12 hours old, not hidden (section 10.3).
 8. Text fallback screen with the human commands and `more`.
 9. Take the bot's area from Coverage (7A), never from the stations or
    warnings you have seen; read a cut list as incomplete, not as a denial.

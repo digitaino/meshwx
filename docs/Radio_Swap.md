@@ -25,7 +25,8 @@ The bot therefore keeps a **node profile** in `data/node_profile.json`
 | contacts (people only, newest 200) | contact table | `add_contact` each |
 
 Channels are not in the profile: the bot creates `#meshwx` on any node
-that lacks it, and MeshCore derives a hashtag channel's key from its name,
+that lacks it (and the status channel, `MCW_STATUS_CHANNEL`, when one is
+set), and MeshCore derives a hashtag channel's key from its name,
 so the new radio gets the identical key on its own.
 
 When a radio answers on the port with a key that is not the profile's,

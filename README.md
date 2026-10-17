@@ -24,7 +24,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 - **Discovery by advert.** The node is named `WX-<city>` (e.g. `WX-AUS`); apps list adverts whose name starts with `WX-`. No discovery channel, no beacon.
 - **A broadcast schedule** of four v5 jobs (warnings on change, digest, observations, home forecast), edited in the portal and kept in `data/broadcast_config.json`.
 - **Radio swaps.** The bot keeps a profile of its node (identity key, name, position, LoRa settings, contacts) and can write it onto a replacement radio, asking first by default. See [`docs/Radio_Swap.md`](docs/Radio_Swap.md).
-- **Receiver status on the mesh.** `sat` (or `>sat` from an app) answers with the dish's lock, signal quality, packets dropped in the last minute and the age of the newest EMWIN file.
+- **Receiver status on the mesh.** `sat` (or `>sat` from an app) answers with the dish's lock, signal quality, packets dropped in the last minute and the age of the newest EMWIN file, how far behind the uplink the products run when that is half an hour or more (`products ~5h behind`: on 2026-10-16 NOAA replayed a backlog for ten hours while every file was seconds old), and since when the internet backup is on. With `MCW_STATUS_CHANNEL` set, the bot also reports trouble unasked: one short line on a status channel of its own when the lock is lost or back, the backup goes on or off, or the products fall an hour behind.
 - **An admin portal** for the radio, receiver, text bot, schedule, logs and settings, and a **public dashboard** on the Pi that shows the receiver and a redacted live feed of the bot.
 - **An accuracy audit.** `scripts/audit.py` compares the bot's answers with api.weather.gov, IEM, aviationweather.gov and SWPC; `deploy/` has an hourly timer for it and the portal's Overview shows the result.
 - **CoreScope hooks.** Optional MQTT publishing of every raw packet the radio hears, for the CoreScope packet analyzer (`corescope/`), and an optional CoreScope lookup that records who heard each packet and can veto a resend.
@@ -43,7 +43,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 | Echo tracking and one byte-identical resend | shipped |
 | DM replies: ACK tries, one reply at a time per person, resends of a request recognised | shipped |
 | Radio swap: node profile, adoption, health verdict | shipped |
-| Receiver status (`sat`, `>sat`) | shipped |
+| Receiver status (`sat`, `>sat`), feed lag, status channel (`MCW_STATUS_CHANNEL`) | shipped |
 | Coverage statement (`cov`, `>cov`, broadcast every 3 h) | shipped |
 | Radar tiles from the dish's EMWIN radar pictures (`radar`, `>radar`, spec revision 11), the last hour as a loop (revision 13) | shipped, request only |
 | Admin portal and public dashboard | shipped |
@@ -174,10 +174,10 @@ send channel datagrams (`CMD_SEND_CHANNEL_DATA`, 0x3E).
 | `>w` | Warnings in coverage (at most 6, newest first), then a Digest |
 | `>w SV.W.EWX.42`, `>w TXC453`, `>w TXZ192` | One warning by identity, or the warnings touching a county or zone |
 | `>wt SV.W.EWX.42` | That warning's narrative as Text |
-| `>o`, `>o KAUS` | Observations for the coverage stations, or for one station |
+| `>o`, `>o KAUS` | Observations for the coverage stations, or for one station: that one or the nearest within 40 km with a report under 2 h old, and with none, the newest up to 12 h old, which the app shows with its age |
 | `>f`, `>f 102`, `>f round rock tx`, `>f 78701` | Forecast for the home point, a PFM point index (1-4 digits), a place, or a ZIP (5 digits or ZIP+4) |
 | `>afd EWX` | Forecast discussion |
-| `>metar KAUS`, `>taf KAUS` | That station's own report, or Not available; a place or ZIP gets the nearest reporting station |
+| `>metar KAUS`, `>taf KAUS` | That station's own report (a METAR from the last 2 h), or Not available; a place or ZIP gets the nearest reporting station, and a METAR for one, with none under 2 h old, is the newest up to 12 h old, labelled with its age |
 | `>space`, `>storm TX`, `>rain TX`, `>hwo` | Space weather, storm reports, rainfall, hazardous weather outlook |
 | `>radar`, `>radar 30.270,-97.740`, `>radar austin tx z1` | One tile of the newest radar picture, 32 x 32 cells in four precipitation levels, always one packet. `z0` to `z3` widens it from 2 to 16 degrees. Needs the dish: the pictures are EMWIN GIFs |
 | `>radar 30.270,-97.740 loop`, `... z1 loop 2353 2338` | The last hour of a tile: up to five pictures of one product, oldest first, one packet each, leaving out the ones the app lists (UTC `HHMM`) |
@@ -524,7 +524,13 @@ live feed of what it sees on its channel. That card is fed by the admin
 portal's `/api/public/bot` bundle (read from `BOT_URL`, default
 `http://127.0.0.1:8081`), proxied at `/api/bot` on the same port, so the
 portal itself never has to be exposed. DMs are redacted in the bundle
-(command and reply length only). To update the page:
+(command and reply length only), and it carries no key and no position, the
+bot's or its peers' ([`docs/Security_Notes.md`](docs/Security_Notes.md)).
+Its `feed` object says where the products come from (the dish, or NOAA's
+internet backup with its last good fetch and last error) and how far behind
+the uplink they run (`lag_min`, the median over the dish's last 50 files of
+the last hour; times in the bundle are Unix seconds), and the card shows
+both. To update the page:
 
 ```bash
 scp deploy/goes-dashboard/dashboard.* digitaino@mesh-wx.digitaino.com:goes/
@@ -548,7 +554,7 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_SERIAL_BAUD` | `115200` | Serial baud rate |
 | `MCW_MESHCORE_CHANNEL` | `#meshwx` | The request channel for people and apps; created on a free slot if the node lacks it. Never slot 0 (public) |
 | `MCW_MESHWX_CHANNEL` | `#meshwx` | The data channel for v5 datagrams and `>` answers. The same name as `MCW_MESHCORE_CHANNEL` shares one slot, which is where v5 apps listen; a different name takes a second slot. Empty = no broadcasts and no `>` answers |
-| `MCW_STATUS_CHANNEL` | *(empty)* | A public channel for the station's status lines, e.g. `#meshwx-status`: GOES lock lost (after 10 min) or back, the internet backup on or off, products running an hour or more behind the uplink, the receiver dashboard unreachable, the Pi's disk, temperature or throttle flags. One line per change, the same condition at most every 30 min and six lines an hour in all. Created on a free slot like the others; never the request channel. Empty = no status lines |
+| `MCW_STATUS_CHANNEL` | *(empty)* | A public channel for the station's status lines, e.g. `#meshwx-status`: GOES lock lost (after 10 min) or back, the internet backup on or off, products running an hour or more behind the uplink (and current again under half an hour), the receiver dashboard unreachable (after 5 min), the Pi's disk, temperature or throttle flags. One line per change, `WX-AUS status: GOES lock lost 10m`, the same condition at most every 30 min and six lines an hour in all. Created on a free slot like the others; never the request channel. Only with `MCW_EMWIN_SOURCE=sdr`: the lines come from the dashboard poll. Empty = no status lines |
 | `MCW_TX_ENABLED` | `true` | `false` = receive only: adverts, replies, datagrams, status lines and resends become logged no-ops. Receiving, MQTT and the portal continue |
 | `MCW_ADVERT_INTERVAL_HOURS` | `6` | Hours between flood adverts |
 | `MCW_CONTACT_HOUSEKEEPING` | `true` | Keep the node's contact table for people: store companions only, remove repeaters, rooms and sensors, and the people heard longest ago when free slots run low. The admin and peer bots are never removed. `false` = firmware behaviour |
@@ -592,9 +598,9 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_EMWIN_BASE_URL` | `https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip` | Bundle loaded at start (`internet`) |
 | `MCW_EMWIN_POLL_URL` | `https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txtmin02.zip` | Bundle polled after that (`internet`) |
 | `MCW_EMWIN_MAX_AGE_HOURS` | `12` | Hours a product stays in the store; warning-class products stay at least 48 h and storm reports at least 24 h |
-| `MCW_SDR_EMWIN_DIR` | `~/goes-images/emwin` | goesproc's EMWIN output (`YYYY-MM-DD/` directories) |
+| `MCW_SDR_EMWIN_DIR` | `~/goes-images/emwin` | goesproc's EMWIN output (`YYYY-MM-DD/` directories). Created when missing, so the watcher and the internet backup still run |
 | `MCW_SDR_POLL_INTERVAL` | `30` | Seconds between directory scans |
-| `MCW_SDR_INTERNET_FALLBACK_MIN` | `10` | The dish's internet backup: after this many minutes with no new file from goesproc, the bot also takes NOAA's internet bundle (the last hour once, then every 2 minutes) until the dish writes again. Products are matched by file name, so none is held twice; the ones from the internet are kept under `data/emwin_internet/` so a restart keeps them. Radar has no backup (the bundle has no pictures). A fetch that fails is made good by taking the last-hour bundle at the next poll, and every 30 min regardless. `0` turns it off |
+| `MCW_SDR_INTERNET_FALLBACK_MIN` | `10` | The dish's internet backup: after this many minutes with no new file of the dish's own (`_C_KWIN_`) from goesproc, the bot also takes NOAA's internet bundle (the last hour once, then every 2 minutes, each fetch timing out after 10 s) until the dish writes again (`MCW_SDR_RESUME_MIN_FILES`). Products are matched by file name, so none is held twice; the ones from the internet are kept under `data/emwin_internet/` so a restart keeps them. Radar has no backup (the bundle has no pictures). A fetch that fails is made good by taking the last-hour bundle at the next poll, and every 30 min regardless. `0` turns it off |
 | `MCW_SDR_RESUME_MIN_FILES` | `20` | The backup goes off again only once the dish has written this many of its own (`_C_KWIN_`) files in the last 10 minutes; a marginal lock that trickles one file every few minutes keeps it on |
 | `MCW_RADAR_DIR` | empty | Where the EMWIN radar GIFs are (`YYYY-MM-DD/*-RAD*.GIF`). Empty means `MCW_SDR_EMWIN_DIR` when the source is `sdr`, and no radar otherwise: the internet bundle carries no images |
 | `MCW_SDR_DASHBOARD_URL` | `http://127.0.0.1:8080` | The goestools dashboard the bot polls (every 10 s) and posts mode changes to: the `sat` reply, receiver log lines, the status channel, the portal's Satellite page and Overview. Keep it the local address |
@@ -676,18 +682,18 @@ as dropped, "conversation, not a request". By DM every message is a request.
 
 | Command | Example | Reply |
 |---------|---------|-------|
-| `wx <city ST, station or ZIP>` | `wx Austin TX`, `wx KAUS`, `wx AUS`, `wx 78701` | Current conditions, today's high/low, active warnings |
+| `wx <city ST, station or ZIP>` | `wx Austin TX`, `wx KAUS`, `wx AUS`, `wx 78701` | Current conditions, today's high/low, active warnings. With no nearby report under 2 h old, the newest up to 12 h old, labelled with its age: `63F dp37 N23g35 bkn (KAUS 45km, 5h old)`; past 12 h, none. A forecast more than 13 h old adds its issue time: `70/49 20% fc issued Wed 1:33AM` |
 | `wx`, `wx <state>` | `wx TX`, `TX`, `wx texas` | National or state overview |
 | `forecast <city ST or ZIP>` | `forecast Miami FL`, `forecast 02134` | Daily forecast from the nearest PFM point, from today on. One more than 13 h old (the dish missed an issuance) gives its issue time and as many days as fit one packet, four at most: `Lockhart, TX (San Marcos Airport 19km, issued Wed 1:33AM): Thu …`. With a point nearby and no forecast held: `no recent forecast received` |
 | `warn`, `warn <ST>`, `warn <city ST or ZIP>` | `warn KS`, `warn 78701` | Active watches, warnings and advisories: national, a state, or a place |
 | `outlook <city ST or ZIP>` | `outlook Des Moines IA` | Hazardous weather outlook |
 | `storm [ST or city ST]` | `storm SD` | Storm reports from the last 6 hours (the home state without an argument) |
 | `rain [ST or city ST]` | `rain FL` | Rainfall reports (the home state without an argument) |
-| `metar <ICAO, city ST or ZIP>` | `metar KJFK`, `metar 78701` | Raw METAR |
+| `metar <ICAO, city ST or ZIP>` | `metar KJFK`, `metar 78701` | Raw METAR from the nearest station with one under 2 h old; with none, the newest up to 12 h old, labelled: `METAR (KAUS 45km, 5h old) KAUS 170153Z …`. Past 12 h: `no METAR within 12h from nearby stations` |
 | `taf <ICAO, city ST or ZIP>` | `taf KJFK` | Terminal aerodrome forecast |
 | `space` | `space` | Space weather |
 | `radar [city ST or ZIP]` | `radar Dallas TX` | The newest radar picture in words: its time and age, what is over the place, the nearest precipitation and the nearest heavy core (the home city without an argument). A bot without a dish says it has none |
-| `sat` | `sat` | The bot's GOES receiver: lock, signal quality, packets dropped in the last minute, age of the newest EMWIN file. A bot on internet EMWIN says it has no receiver |
+| `sat` | `sat` | The bot's GOES receiver: lock, signal quality, packets dropped in the last minute, age of the newest file the dish wrote, and how far behind the uplink the products run when that is 30 min or more (`products ~5h behind`); with the internet backup on, since when. A reply that would not fit one message leaves out the packet count. A bot on internet EMWIN says it has no receiver |
 | `cov` | `cov` | What this bot covers: the area and how far it reaches, the NWS offices in it, how many stations it reports hourly, how often the alert list goes out |
 | `more` | `more` | The next page of the last long reply |
 | `help` | `help` | The command list |
@@ -774,6 +780,7 @@ meshcore_weather/
 ├── traffic.py             # What the text bot heard and said: live feed, counters, redacted public view
 ├── activity.py            # Broadcast log (data-channel events) for the portal
 ├── sdr_monitor.py         # Reads the goestools dashboard: receiver log lines and the sat reply
+├── status_channel.py      # Status lines on MCW_STATUS_CHANNEL: lock, internet backup, feed lag, dashboard, the Pi
 │
 ├── core/                  # One implementation per product, shared by text and binary
 │   ├── services.py        # Observation, forecast, warnings, outlook, storm reports, rain, METAR/TAF for a place
@@ -784,7 +791,7 @@ meshcore_weather/
 │   └── vtec_names.py      # Names for VTEC phenomenon.significance pairs
 │
 ├── emwin/
-│   ├── fetcher.py         # InternetSource (NOAA zip bundles) and SDRSource (goesproc directory)
+│   ├── fetcher.py         # InternetSource (NOAA zip bundles) and SDRSource (goesproc directory, its internet backup, feed lag)
 │   └── retention.py       # How long each product type stays in the store
 │
 ├── parser/
@@ -877,8 +884,8 @@ right.
 
 ## Safety
 
-- **Channel isolation**: the radio driver never transmits on channel 0 (public) and sends only on the bot's configured text and data channel slots.
-- **Receive-only switch**: `MCW_TX_ENABLED=false` turns every advert, reply, datagram and resend into a logged no-op.
+- **Channel isolation**: the radio driver never transmits on channel 0 (public) and sends only on the bot's configured text and data channel slots, and on the status channel's slot when `MCW_STATUS_CHANNEL` is set (status lines only, never the request channel).
+- **Receive-only switch**: `MCW_TX_ENABLED=false` turns every advert, reply, datagram, status line and resend into a logged no-op.
 - **Text reply limits**: 5 seconds per sender, 40 per sender and 400 in total per hour; a sender the bot cannot DM gets at most one channel reply per 10 minutes, 12 per hour overall, and only within the hop limit.
 - **App request limits**: 2 seconds per sender and 240 answer packets per hour, checked before an answer is built; over the budget, one "busy" a minute per radio. Every limit is a setting (`MCW_APP_PACKETS_PER_HOUR`, `MCW_APP_SENDER_GAP_S`, `MCW_SWEEP_WINDOW_S`, `MCW_RADAR_WINDOW_S`, `MCW_PART_RESEND_FLOOR_S`, `MCW_TEXT_REPLIES_PER_HOUR`, `MCW_TEXT_REPLIES_PER_SENDER_PER_HOUR`, `MCW_STRANGER_REPLIES_PER_HOUR`, `MCW_STRANGER_REPLY_GAP_S`), set live on the portal.
 - **Resend limits**: one resend per packet by default, 30 per hour, none while no repeater has been heard for 10 minutes.
@@ -914,7 +921,8 @@ Shipped:
 - [x] DM-first replies: reply modes, hop-limited channel replies for strangers, admin commands
 - [x] Contact housekeeping
 - [x] Radio swap: node profile, adoption, udev rule, health verdict
-- [x] Receiver status: `sat` and `>sat`
+- [x] Receiver status: `sat` and `>sat`, with how far behind the uplink the products run, and a status channel that reports outages unasked
+- [x] Observations up to 12 h old served with their age when nothing nearby is current (`wx`, `metar`, `>o`), instead of left out
 - [x] Coverage statement: `cov`, `>cov`, and one packet every 3 h, so an app never guesses the bot's area
 - [x] Admin portal: overview, text bot feed and console, broadcasts, radio, satellite, logs and settings
 - [x] Public dashboard card with a redacted live feed
