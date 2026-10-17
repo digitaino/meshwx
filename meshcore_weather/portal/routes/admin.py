@@ -842,6 +842,7 @@ def _coverage_info(bot) -> dict:
         "wfos": list(src.get("wfos") or []),
         "radius_km": settings.home_radius_km,
         "zones": 0 if empty else len(cov.zones),
+        "counties": 0 if empty else len(cov.counties),
         "summary": "No coverage filter: broadcasts cover everything the feed carries" if empty else cov.summary(),
     }
 

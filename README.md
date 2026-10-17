@@ -652,7 +652,7 @@ Every message is derived from an official NWS product received over EMWIN. Parsi
 
 | Product | Used for |
 |---|---|
-| Warnings, watches and advisories with VTEC (TOR, SVR, SVS, FFW, FLW, FLS, WSW, NPW, RFW, MWW, ...) and SPS | `warn`, `wx`; v5 Warning, Cancel and Digest; `>w`, `>wt` |
+| Warnings, watches and advisories with VTEC (TOR, SVR, SVS, FFW, FLW, FLS, WSW, NPW, RFW, MWW, WCN, ...) and SPS | `warn`, `wx`; v5 Warning, Cancel and Digest; `>w`, `>wt` |
 | METAR collectives (SAH) | `wx` conditions, `metar`; v5 Observations; `>metar` |
 | PFM (Point Forecast Matrix) | `forecast`, `wx`; v5 Forecast |
 | TAF | `taf`; `>taf` |

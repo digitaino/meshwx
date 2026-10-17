@@ -405,10 +405,37 @@ def _decimate(points: list, n: int) -> list:
     return [points[round(i * step)] for i in range(n)]
 
 
+def _runs_first(areas: list, keep) -> list:
+    """The area runs, those naming any UGC in `keep` first, in wire order
+    within each group, so a cut to 30 (or 12, or 6) runs keeps the bot's own
+    area. County numbers are odd, so each county is a run of its own, and a
+    watch over more than 30 counties of one office (LWX's on 2026-10-16: 49
+    counties and 14 marine zones, 50 runs) lost every run after the 30th in
+    state order, whatever the bot covered. Spec 3 has no flag for a cut area
+    list, so this is the most the wire allows."""
+    if not keep:
+        return areas
+    index = {code: i for i, code in enumerate(tables.states)}
+    wanted = set()
+    for raw in keep:
+        ugc = str(raw).upper()
+        if len(ugc) == 6 and ugc[2] in ("C", "Z") and ugc[3:].isdigit() and ugc[:2] in index:
+            wanted.add((index[ugc[:2]], ugc[2] == "C", int(ugc[3:])))
+
+    def touches(r) -> bool:
+        state, is_county, start, run = r
+        return any((state, is_county, n) in wanted for n in range(start, start + run))
+    return [r for r in areas if touches(r)] + [r for r in areas if not touches(r)]
+
+
 def warning_message(seq: int, bot: int, w: dict, update: bool = False,
-                    source: int | None = None) -> bytes | None:
+                    source: int | None = None, keep=None) -> bytes | None:
     """One Warning packet. `source` defaults to the source of the product this
-    warning was extracted from, which the entry carries (spec 2.2.1)."""
+    warning was extracted from, which the entry carries (spec 2.2.1).
+
+    `keep`: UGC codes (the bot's coverage, or the county asked about) whose
+    runs survive first when the area list is longer than a packet carries;
+    the runs that go out are still in ascending order."""
     ident = warning_identity(w)
     if ident is None:
         return None
@@ -419,7 +446,12 @@ def warning_message(seq: int, bot: int, w: dict, update: bool = False,
     if len(polygon) < 3:
         polygon = []
     tables.load()
-    areas = v5.areas_from_ugcs(list(w.get("ugcs") or []), tables.states)
+    ranked = _runs_first(v5.areas_from_ugcs(list(w.get("ugcs") or []), tables.states), keep)
+
+    def areas(n: int) -> list:
+        """The first n runs by rank, back in wire order."""
+        return sorted(ranked[:n])
+
     kwargs = dict(event=event, office=office, etn=etn, expires_min=expires_min(w),
                   tornado=int(w.get("tornado_tag") or 0), flood_source=int(w.get("flood_source") or 0),
                   flood_damage=int(w.get("flood_damage") or 0), hail_qin=int(w.get("hail_qin") or 0),
@@ -431,12 +463,12 @@ def warning_message(seq: int, bot: int, w: dict, update: bool = False,
     # the radio heard it, the other whether it is in effect at all, and a
     # vertex costs twice as much (spec 3, revisions 5 and 12).
     attempts = [
-        (polygon[:30], areas[:30]),
-        (_decimate(polygon, 16), areas[:30]),
-        (_decimate(polygon, 16), areas[:12]),
-        (_decimate(polygon, 10), areas[:6]),
+        (polygon[:30], areas(30)),
+        (_decimate(polygon, 16), areas(30)),
+        (_decimate(polygon, 16), areas(12)),
+        (_decimate(polygon, 10), areas(6)),
         (_decimate(polygon, 8), []),
-        ([], areas[:30]),
+        ([], areas(30)),
     ]
     for poly, ar in attempts:
         if not poly and not ar:

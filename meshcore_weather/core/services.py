@@ -292,8 +292,13 @@ def forecast_point_near(lat: float, lon: float, max_km: float = FORECAST_MAX_KM)
 
 def warnings_for(store: WeatherStore, loc: dict, all_active: list[dict] | None = None) -> list[dict]:
     """Active warnings that apply to the location: any whose UGC list
-    includes the location's zone, or whose storm-based polygon contains the
-    point. Uses the pyIEM extractor (the same one the broadcasts use)."""
+    includes the location's zone, any without a polygon whose UGC list
+    includes the location's county (a tornado or severe thunderstorm watch
+    names counties only), and any whose storm-based polygon contains the
+    point. A storm-based warning's counties are only the ones its polygon
+    touches, so for one the polygon decides. Uses the pyIEM extractor (the
+    same one the broadcasts use)."""
+    from meshcore_weather.geodata import resolver
     from meshcore_weather.protocol.coverage import _point_in_polygon
     from meshcore_weather.protocol.warnings import extract_active_warnings
 
@@ -301,13 +306,21 @@ def warnings_for(store: WeatherStore, loc: dict, all_active: list[dict] | None =
         all_active = extract_active_warnings(store, coverage=None)
     zone = loc["zones"][0] if loc.get("zones") else ""
     lat, lon = loc.get("lat"), loc.get("lon")
+    county: str | None = None
     out = []
     for w in all_active:
         ugcs = set(w.get("ugcs") or w.get("zones") or [])
         if zone and zone in ugcs:
             out.append(w)
             continue
-        if lat is not None and w.get("vertices") and _point_in_polygon(lat, lon, w["vertices"]):
+        has_polygon = len(w.get("vertices") or []) >= 3
+        if not has_polygon:
+            if lat is not None and county is None and any(u[2:3] == "C" for u in ugcs):
+                county = resolver.county_for_point(lat, lon) or ""
+            if county and county in ugcs:
+                out.append(w)
+            continue
+        if lat is not None and _point_in_polygon(lat, lon, w["vertices"]):
             out.append(w)
     # Most urgent first: warnings, then watches, then advisories; sooner expiry first.
     sev_rank = {"W": 0, "A": 1, "Y": 2, "S": 3}

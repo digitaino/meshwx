@@ -148,10 +148,17 @@ _WARNING_PRODUCT_TYPES = {
     "SMW", "SWO", "DSW", "EWW", "SQW", "CFW",
     # River products (VTEC-based)
     "RVA",  # River Watch/Warning — flood stage warnings with VTEC
-    # SPC watch products (VTEC-based). NOTE: "AWW" is the Airport Weather
-    # Warning (no VTEC, airport ops only) — not an SPC watch; do not add it.
-    "WCN",  # Watch County Notification — counties in a watch
-    "WOU",  # Watch Outline Update — zone/county list for an SPC watch
+    # Tornado and severe thunderstorm watches. NOTE: "AWW" is the Airport
+    # Weather Warning (no VTEC, airport ops only) — not an SPC watch; do not
+    # add it.
+    "WCN",  # Watch County Notification: each office's counties in a watch
+    # Not "WOU", SPC's Watch Outline Update. It carries the same watch under
+    # office WNS with every office's counties, so each watch would go out
+    # twice; it re-sends shrinking county lists as CON without clearing the
+    # counties it drops, and ends the watch with state-wide codes (DCZ000) a
+    # per-zone replay cannot apply, so a WNS event would outlive the watch.
+    # The WCNs are what NWS (api.weather.gov) lists, county by county; on 14
+    # and 16 Oct 2026 the dish's WCNs named every county the WOUs did.
     # Hurricane products (VTEC-based)
     "HLS",  # Hurricane Local Statement
 }
@@ -399,6 +406,10 @@ def _segment_to_entry(
         # The event's current zones and times come from the lifecycle replay,
         # not from this one segment.
         ugcs = sorted(tracker_state.active_zones(now))
+    # The area is the UGC list, zones (TXZ192) and counties (TXC453) alike.
+    # A watch (WCN) names counties only and has no polygon; requiring a
+    # polygon or a zone here dropped every tornado and severe thunderstorm
+    # watch before anything downstream saw it.
     if not ugcs:
         return None
 
@@ -459,13 +470,9 @@ def _segment_to_entry(
     else:
         return None
 
-    # Polygon and zone splitting
+    # Polygon, and the zones among the UGCs (`ugcs` keeps the counties too)
     vertices = _polygon_from_sbw(seg.sbw)
     zones = [u for u in ugcs if len(u) == 6 and u[2] == "Z"]
-
-    # Need something renderable
-    if len(vertices) < 3 and not zones:
-        return None
 
     # Headline: prefer pyIEM's canonical ...HEADLINE... block.
     # Fall back to extracting ...TEXT... from the raw product if empty.
@@ -571,17 +578,18 @@ def _extract_warnings_fallback(store: WeatherStore) -> list[dict]:
 
 def _fallback_entry(store: WeatherStore, prod: EMWINProduct, now: datetime) -> dict | None:
     """One product's warning by regex alone: the first VTEC line, the UGC
-    zones, the polygon and the headline. None when the product is cancelled,
-    expired, or names no area. Used for every product when pyIEM crashes
-    outright, and for the one product pyIEM refuses to parse."""
+    zones and counties, the polygon and the headline. None when the product
+    is cancelled, expired, or names no area. Used for every product when
+    pyIEM crashes outright, and for the one product pyIEM refuses to parse."""
     from meshcore_weather.parser.weather import parse_vtec  # local import to avoid cycles
 
     if store._is_cancelled(prod.raw_text):
         return None
 
     vertices = extract_warning_polygon(prod.raw_text)
-    zones = _expand_zone_ranges(prod.raw_text)
-    if len(vertices) < 3 and not zones:
+    ugcs = _expand_zone_ranges(prod.raw_text)      # zones and counties
+    zones = {u for u in ugcs if u[2] == "Z"}
+    if len(vertices) < 3 and not ugcs:
         return None
 
     wtype = PRODUCT_TYPE_MAP.get(prod.product_type, WARN_OTHER)
@@ -626,7 +634,7 @@ def _fallback_entry(store: WeatherStore, prod: EMWINProduct, now: datetime) -> d
         "headline": _shorten_headline(_extract_headline_from_body(prod.raw_text)),
         "description": _extract_warning_description(prod.raw_text),
         "zones": sorted(zones),
-        "ugcs": sorted(zones),
+        "ugcs": sorted(ugcs),
         "product_type": prod.product_type,
         "filename": prod.filename,
         "source": getattr(prod, "source", ""),
@@ -699,17 +707,24 @@ def extract_active_warnings(
     filter_active = coverage is not None and not coverage.is_empty()
     results: list[dict] = []
     for w in raw:
-        if filter_active:
-            ugcs = w.get("ugcs") or w.get("zones", [])
-            if ugcs and coverage.covers_any(ugcs):
-                pass
-            elif w.get("vertices") and coverage.covers_polygon(w["vertices"]):
-                pass
-            else:
-                continue
+        if filter_active and not _in_coverage(w, coverage):
+            continue
         results.append(w)
 
     return results
+
+
+def _in_coverage(w: dict, coverage: Coverage) -> bool:
+    """A warning is in coverage when its area touches it. A storm-based
+    warning's area is its polygon: the counties on its UGC line are only the
+    ones the polygon touches, so they do not count on their own (its zones
+    still do). A product without a polygon is its zones and counties: a
+    tornado watch for Travis County is in an Austin bot's coverage."""
+    ugcs = w.get("ugcs") or w.get("zones", [])
+    has_polygon = len(w.get("vertices") or []) >= 3
+    if ugcs and coverage.covers_any(ugcs, by_county=not has_polygon):
+        return True
+    return has_polygon and coverage.covers_polygon(w["vertices"])
 
 
 def warnings_to_binary(warnings: list[dict], prefer_zones: bool = True) -> list[bytes]:

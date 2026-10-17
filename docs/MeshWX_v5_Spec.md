@@ -1257,11 +1257,13 @@ out from the broadcasts you happen to have received.
 to mark those replies complete.
 
 **County codes versus zone codes.** Storm-based warnings (tornado, severe
-thunderstorm, flash flood) carry county codes such as `TXC453`.
-Advisories, watches and most other products carry public zone codes such
-as `TXZ192`. A county query matches nothing while only zone-coded products
-are active, and the reverse. When you do not know which is in force, query
-the zone.
+thunderstorm, flash flood) carry county codes such as `TXC453`, and so do
+tornado and severe thunderstorm watches, which have no polygon: their
+counties are their whole area (the bot sends them from 17 October 2026;
+before, it dropped every one). Advisories, flood and winter watches and
+most other products carry public zone codes such as `TXZ192`. A county
+query matches nothing while only zone-coded products are active, and the
+reverse. When you do not know which is in force, ask for both.
 
 ### 8.3 Not available (type 7)
 

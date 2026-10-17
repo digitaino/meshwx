@@ -5,7 +5,8 @@ Bundled data files (~1.7 MB total):
     places.json  - 32,333 US Census places with coordinates
     stations.json - 2,237 active US METAR stations with coordinates
 ZIPs come from the app bundle's client_data/zips.json, so the bot and the
-app resolve a ZIP from the same table.
+app resolve a ZIP from the same table, and counties (the area a watch names)
+from its counties.json and counties.geojson.
 """
 
 import json
@@ -70,6 +71,11 @@ class LocationResolver:
         self._poly_geoms: list = []
         self._poly_codes: list[str] = []
         self._poly_tried = False
+        self._counties: dict | None = None   # county UGC -> {name, state, lat, lon}, on first use
+        self._county_tree = None    # shapely STRtree over county outlines
+        self._county_geoms: list = []
+        self._county_codes: list[str] = []
+        self._county_tried = False
 
     def load(self) -> None:
         if self._loaded:
@@ -282,6 +288,84 @@ class LocationResolver:
             d = self._poly_geoms[i].distance(pt)
             if d < best_d:
                 best, best_d = self._poly_codes[i], d
+        return best
+
+    # -- Counties ------------------------------------------------------------------
+    #
+    # Watches (WCN) name counties, not zones, and carry no polygon, so where a
+    # place or the coverage circle is has to be answered in counties too. The
+    # table and outlines are the app bundle's (client_data/counties.json and
+    # counties.geojson), so the bot and the phone place a county alike.
+
+    def counties(self) -> dict:
+        """County UGC -> {name, state, lat, lon} (lat/lon a point inside the
+        county), from client_data/counties.json; empty if the file is missing."""
+        if self._counties is None:
+            try:
+                path = Path(__file__).resolve().parent.parent / "client_data" / "counties.json"
+                self._counties = json.loads(path.read_text())
+            except (OSError, ValueError) as exc:   # missing or bad file: no county is known
+                logger.warning("County table unavailable (%s)", exc)
+                self._counties = {}
+        return self._counties
+
+    def _load_county_polygons(self) -> bool:
+        """Lazily build an STRtree over the county outlines. False, and never
+        retried, without shapely or client_data/counties.geojson."""
+        if self._county_tree is not None:
+            return True
+        if self._county_tried:
+            return False
+        self._county_tried = True
+        try:
+            from shapely.errors import ShapelyError
+            from shapely.geometry import shape
+            from shapely.strtree import STRtree
+            gj_path = Path(__file__).resolve().parent.parent / "client_data" / "counties.geojson"
+            gj = json.loads(gj_path.read_text())
+        except (ImportError, OSError, ValueError) as exc:  # shapely missing, file missing, bad JSON
+            logger.warning("County outlines unavailable (%s); using county points", exc)
+            return False
+        geoms, codes = [], []
+        for feat in gj.get("features", []):
+            code = (feat.get("properties") or {}).get("code")
+            if not code:
+                continue
+            try:
+                geoms.append(shape(feat["geometry"]))
+                codes.append(code)
+            except (KeyError, TypeError, ValueError, AttributeError, ShapelyError):   # that county only
+                continue
+        if not geoms:
+            return False
+        self._county_tree = STRtree(geoms)
+        self._county_geoms = geoms
+        self._county_codes = codes
+        logger.info("County outlines loaded: %d counties", len(codes))
+        return True
+
+    def county_for_point(self, lat: float, lon: float, max_deg: float = 0.5) -> str | None:
+        """The county UGC (TXC453) a point is in: the outline that contains
+        it, else the one whose edge is nearest within ~max_deg degrees (a
+        coastal point outside the simplified outlines), else, without
+        outlines, the county whose inside point is nearest within 50 km."""
+        if self._load_county_polygons():
+            from shapely.geometry import Point
+            pt = Point(lon, lat)
+            for i in self._county_tree.query(pt):
+                if self._county_geoms[i].covers(pt):
+                    return self._county_codes[i]
+            best, best_d = None, float("inf")
+            for i in self._county_tree.query(pt.buffer(max_deg)):
+                d = self._county_geoms[i].distance(pt)
+                if d < best_d:
+                    best, best_d = self._county_codes[i], d
+            return best
+        best, best_km = None, 50.0
+        for code, c in self.counties().items():
+            d = _haversine(lat, lon, c["lat"], c["lon"])
+            if d < best_km:
+                best, best_km = code, d
         return best
 
     # -- Station ranking --------------------------------------------------------

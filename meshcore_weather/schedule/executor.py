@@ -50,6 +50,7 @@ def _build_warnings(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     now = time.time()
     active = [w for w in extract_active_warnings(ctx.store, coverage=ctx.coverage)
               if b.warning_identity(w) is not None]
+    keep = ctx.coverage.zones | ctx.coverage.counties   # cut a long area list to these first
     out: list[bytes] = []
     seen: set[str] = set()
     for w in active:
@@ -60,13 +61,13 @@ def _build_warnings(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
         st = ctx.warning_state.get(key)
         if st is not None and st.get("fp") == fp:
             if st.get("repeat_at") and now >= st["repeat_at"]:
-                msg = b.warning_message(ctx.seq.next(), ctx.bot, w, update=False)
+                msg = b.warning_message(ctx.seq.next(), ctx.bot, w, update=False, keep=keep)
                 if msg:
                     out.append(msg)
                     logger.info("Warning %s: life-safety repeat", key)
                 st["repeat_at"] = None
             continue
-        msg = b.warning_message(ctx.seq.next(), ctx.bot, w, update=st is not None)
+        msg = b.warning_message(ctx.seq.next(), ctx.bot, w, update=st is not None, keep=keep)
         if msg is None:
             continue
         out.append(msg)

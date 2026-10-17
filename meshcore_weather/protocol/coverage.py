@@ -57,6 +57,39 @@ def zones_within_radius(lat: float, lon: float, radius_km: float) -> set[str]:
             if _haversine(lat, lon, z["la"], z["lo"]) <= radius_km}
 
 
+def counties_within_radius(lat: float, lon: float, radius_km: float) -> set[str]:
+    """Counties whose outline intersects the circle: the same rule as the
+    zones, for the products that name counties (watches). Falls back to each
+    county's inside point within the radius if outlines are unavailable."""
+    if resolver._load_county_polygons():
+        circle = _circle(lat, lon, radius_km)
+        return {resolver._county_codes[i] for i in resolver._county_tree.query(circle)
+                if resolver._county_geoms[i].intersects(circle)}
+    from meshcore_weather.geodata import _haversine
+    return {code for code, c in resolver.counties().items()
+            if _haversine(lat, lon, c["lat"], c["lon"]) <= radius_km}
+
+
+def counties_of_offices(wfos: Iterable[str]) -> set[str]:
+    """Counties an NWS office serves: those whose inside point lies in one of
+    its public zones. Offices' areas follow county lines, so a county is one
+    office's, and its point settles which."""
+    wfos = set(wfos)
+    resolver.load()
+    states = {z["s"] for z in resolver._zones.values() if z.get("w") in wfos}
+    out = set()
+    for code, c in resolver.counties().items():
+        if c.get("state") not in states:
+            continue
+        zone = resolver.zone_containing(c["lat"], c["lon"])
+        if zone is None:
+            nearest = resolver._nearest_zones(c["lat"], c["lon"], n=1)
+            zone = nearest[0] if nearest else None
+        if zone and resolver._zones.get(zone, {}).get("w") in wfos:
+            out.add(code)
+    return out
+
+
 logger = logging.getLogger(__name__)
 
 BBox = tuple[float, float, float, float]  # (north, south, west, east)
@@ -68,12 +101,18 @@ def _split_csv(s: str) -> list[str]:
 
 
 class Coverage:
-    """Canonical set of NWS zones that the bot cares about.
+    """Canonical set of NWS zones, and of counties, that the bot cares about.
 
     Sources (all optional, all additive):
-      - Cities: "Austin TX" → each city's resolved zones
-      - States: "TX" → all zones where zone.s == "TX"
-      - WFOs: "EWX" → all zones where zone.w == "EWX"
+      - Cities: "Austin TX" → each city's resolved zone and its county
+      - Radius around the first city → every zone and county whose outline
+        intersects the circle
+      - States: "TX" → all zones where zone.s == "TX", and the state's counties
+      - WFOs: "EWX" → all zones where zone.w == "EWX", and the counties it serves
+
+    The counties are there for the products that name counties and carry no
+    polygon: tornado and severe thunderstorm watches (WCN). Matching only
+    zones dropped every one of them.
 
     Empty coverage (no sources) means "broadcast everything" — legacy behavior.
     """
@@ -82,8 +121,10 @@ class Coverage:
         self,
         zones: set[str] | None = None,
         sources: dict | None = None,
+        counties: set[str] | None = None,
     ):
         self.zones: set[str] = zones or set()
+        self.counties: set[str] = counties or set()
         self.sources: dict = sources or {"cities": [], "states": [], "wfos": []}
         self.center: tuple[float, float] | None = self.sources.get("center")
         self.radius_km: float = float(self.sources.get("radius_km") or 0)
@@ -134,33 +175,41 @@ class Coverage:
 
         resolver.load()
         zones: set[str] = set()
+        counties: set[str] = set()
         center: tuple[float, float] | None = None
 
-        # Cities → the zone each city is in (polygon), plus the radius circle
-        # around the first one.
+        # Cities → the zone and the county each city is in (polygon), plus
+        # the radius circle around the first one.
         for city in cities:
             loc = resolver.resolve(city)
             if loc and loc.get("zones"):
                 zones.add(loc["zones"][0])
+                county = resolver.county_for_point(loc["lat"], loc["lon"])
+                if county:
+                    counties.add(county)
                 if center is None:
                     center = (loc["lat"], loc["lon"])
         if center is not None and radius_km > 0:
             zones.update(zones_within_radius(center[0], center[1], radius_km))
+            counties.update(counties_within_radius(center[0], center[1], radius_km))
 
-        # States → all zones in that state
+        # States → all zones and counties in that state
         if states:
             for code, z in resolver._zones.items():
                 if z.get("s") in states:
                     zones.add(code)
+            counties.update(code for code, c in resolver.counties().items() if c.get("state") in states)
 
-        # WFOs → all zones served by that office
+        # WFOs → all zones and counties served by that office
         if wfos:
             for code, z in resolver._zones.items():
                 if z.get("w") in wfos:
                     zones.add(code)
+            counties.update(counties_of_offices(wfos))
 
         return cls(
             zones=zones,
+            counties=counties,
             sources={"cities": cities, "states": states, "wfos": wfos,
                      "center": center, "radius_km": radius_km if center else 0},
         )
@@ -214,16 +263,19 @@ class Coverage:
         """Is this exact zone code in our coverage?"""
         return zone_code in self.zones
 
-    def covers_any(self, zone_codes: Iterable[str]) -> bool:
+    def covers_any(self, zone_codes: Iterable[str], by_county: bool = True) -> bool:
         """Does any of these UGC codes intersect our coverage?
 
-        Accepts both NWS zone codes (TXZ192) and county FIPS (TXC029). Match
+        Accepts both NWS zone codes (TXZ192) and county codes (TXC453). Match
         rules, in order:
           1. Exact zone match against our zones set (narrow, precise)
-          2. If the operator explicitly covers a state (home_states or a WFO
-             in that state), accept any UGC whose 2-letter prefix matches.
-             This handles warnings whose UGC line uses county FIPS codes,
-             which are NOT in our zones set.
+          2. Exact county match against our counties set. A watch (WCN)
+             names counties and has no polygon, so this is the only way one
+             is in coverage. `by_county=False` skips it, for a storm-based
+             warning: its UGC line lists the counties its polygon touches,
+             not the area warned, and the caller judges it by the polygon.
+          3. If the operator explicitly covers a state (home_states),
+             accept any UGC whose 2-letter prefix matches.
         """
         if not self.zones:
             return True  # empty coverage = accept everything
@@ -231,6 +283,10 @@ class Coverage:
         for code in codes:
             if code in self.zones:
                 return True
+        if by_county:
+            for code in codes:
+                if code in self.counties:
+                    return True
         if self.explicit_states:
             for code in codes:
                 if len(code) >= 2 and code[:2].upper() in self.explicit_states:
@@ -280,4 +336,4 @@ class Coverage:
             parts.append(f"states={','.join(self.sources['states'])}")
         if self.sources.get("wfos"):
             parts.append(f"wfos={','.join(self.sources['wfos'])}")
-        return f"{len(self.zones)} zones ({', '.join(parts)})"
+        return f"{len(self.zones)} zones, {len(self.counties)} counties ({', '.join(parts)})"

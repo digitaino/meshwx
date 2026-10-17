@@ -478,6 +478,9 @@ class AppResponder:
         if cmd == "w":
             active = extract_active_warnings(self.store, coverage=None if arg else self.coverage)
             active = [w for w in active if b.warning_identity(w) is not None]
+            # A watch can name more counties than one packet carries: the
+            # ones asked about, or else the bot's own, are kept first.
+            keep = self.coverage.zones | self.coverage.counties
             if arg:
                 ident = b.parse_identity(arg)
                 if ident is not None:
@@ -487,11 +490,12 @@ class AppResponder:
                     if len(ugc) != 6:
                         return [b.not_available(seq.next(), bot, "w", v5.REASON_UNKNOWN_LOCATION)]
                     active = [w for w in active if ugc in (w.get("ugcs") or [])]
+                    keep = {ugc}
                 if not active:
                     return [b.not_available(seq.next(), bot, "w", v5.REASON_NO_DATA)]
             active.sort(key=lambda w: w.get("onset_unix_min") or 0, reverse=True)
             out = [m for w in active[:MAX_WARNINGS_PER_REQUEST]
-                   if (m := b.warning_message(seq.next(), bot, w, update=True))]
+                   if (m := b.warning_message(seq.next(), bot, w, update=True, keep=keep))]
             if not arg:
                 out.append(b.digest_message(seq.next(), bot, active,
                                             b.feed_health(self.store, ctx.home_offices),
