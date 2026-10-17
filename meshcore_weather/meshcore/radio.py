@@ -189,6 +189,7 @@ class MeshcoreRadio:
         self._running = False
         self._channel_idx: int | None = None
         self._data_channel_idx: int | None = None
+        self._status_channel_idx: int | None = None   # status lines (status_channel.py), never requests
         self._channel_handler: Callable | None = None
         self._channel_request_handler: Callable | None = None
         # The node's message queue (see _drain_queue): one drain at a time, a
@@ -517,6 +518,23 @@ class MeshcoreRadio:
                         logger.warning("Could not create data channel '%s' — no free slots",
                                        settings.meshwx_channel)
 
+        # The status channel: operational lines only, joined by name like the
+        # others so anyone can add it on their own node. A slot of its own,
+        # never the one requests come in on.
+        if settings.status_channel:
+            if settings.status_channel in (settings.meshcore_channel, settings.meshwx_channel):
+                logger.warning("MCW_STATUS_CHANNEL %s is the request channel; no status lines will be posted",
+                               settings.status_channel)
+            else:
+                try:
+                    self._status_channel_idx = await self._resolve_channel(settings.status_channel)
+                except ValueError:
+                    self._status_channel_idx = await self._create_channel(settings.status_channel)
+                if self._status_channel_idx is None:
+                    logger.warning("Could not create status channel '%s' — no free slots", settings.status_channel)
+                else:
+                    logger.info("Status channel %d (%s)", self._status_channel_idx, settings.status_channel)
+
         # Subscribe to channel messages, DMs, and new adverts
         self._mc.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_msg)
         # GRP_DATA on a channel (RESP_CODE_CHANNEL_DATA_RECV, 0x1B): an app's
@@ -714,8 +732,8 @@ class MeshcoreRadio:
         if not self._mc:
             logger.error("Cannot send - not connected")
             return False
-        if channel == 0 or channel != self._channel_idx:
-            logger.warning("Blocked send on ch %d (our ch is %d)", channel, self._channel_idx)
+        if channel == 0 or channel not in (self._channel_idx, self._status_channel_idx):
+            logger.warning("Blocked send on ch %d (our ch is %s)", channel, self._channel_idx)
             return False
         budget = self.channel_text_budget()
         if len(text.encode()) > budget:
@@ -1350,7 +1368,8 @@ class MeshcoreRadio:
             "manual_add_contacts": si.get("manual_add_contacts"),
             "path_hash_size": self.path_hash_size(),
             "battery_mv": None,
-            "channels": {"text": self._channel_idx, "data": self._data_channel_idx},
+            "channels": {"text": self._channel_idx, "data": self._data_channel_idx,
+                         "status": self._status_channel_idx},
         }
         try:
             bat = await mc.commands.get_bat()
@@ -1388,6 +1407,8 @@ class MeshcoreRadio:
             return "text"
         if idx == self._data_channel_idx:
             return "data"
+        if idx == self._status_channel_idx:
+            return "status"
         return None
 
     # Role -> (index attribute, settings attribute). The bot listens/sends on
@@ -1395,6 +1416,7 @@ class MeshcoreRadio:
     _ROLES = {
         "text": ("_channel_idx", "meshcore_channel"),
         "data": ("_data_channel_idx", "meshwx_channel"),
+        "status": ("_status_channel_idx", "status_channel"),
     }
 
     async def _slots(self) -> dict[int, str]:
@@ -1455,6 +1477,8 @@ class MeshcoreRadio:
             return None
         if not name.startswith("#") and not name.isdigit():
             raise ValueError("channel names start with '#'")
+        if role == "status" and name in (settings.meshcore_channel, settings.meshwx_channel):
+            raise ValueError("the status channel cannot be the request channel")
         # v5: one channel carries text and data. Nothing to create or rename.
         if role == "data" and self._channel_idx is not None and name == settings.meshcore_channel:
             self._data_channel_idx = self._channel_idx
@@ -1648,4 +1672,8 @@ class MeshcoreRadio:
     @property
     def data_channel_idx(self) -> int | None:
         return self._data_channel_idx
+
+    @property
+    def status_channel_idx(self) -> int | None:
+        return self._status_channel_idx
 

@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     serial_port: str = "/dev/cu.usbserial-0001"
     serial_baud: int = 115200
     meshcore_channel: str = "#meshwx"  # request channel: one name for every bot, everywhere
+    # Operational status lines (status_channel.py): lock lost or back, the
+    # internet backup on or off, products running hours behind, the Pi's
+    # dashboard, disk or temperature. One short line per change, on a public
+    # hashtag channel anyone can join by name. Never the request channel.
+    # Empty = no status lines.
+    status_channel: str = ""
 
     # EMWIN data source
     emwin_source: str = "internet"  # "internet" or "sdr"
@@ -32,12 +38,24 @@ class Settings(BaseSettings):
     # either way, so nothing is held twice, and each product keeps the
     # source it came by. 0 = never.
     sdr_internet_fallback_min: int = 10
+    # ... and it stays on until the dish has written this many of its own
+    # (_C_KWIN_) files in the last 10 minutes. On 2026-10-16 a marginal lock
+    # trickled one file every few minutes; each one switched the backup off
+    # and the next quiet spell switched it on again, with a gap every time.
+    sdr_resume_min_files: int = 20
     # Radar pictures (spec 7D): a directory of EMWIN `*-RAD*.GIF` under YYYY-MM-DD/.
     # Empty means the dish's own EMWIN directory when the source is "sdr", and
     # no radar at all otherwise: the internet bundle carries no images.
     radar_dir: str = ""
-    # goestools dashboard (signal stats, pointing mode) proxied into the admin portal
+    # goestools dashboard (signal stats, pointing mode): the address the bot
+    # polls (/api/state every 10 s) and posts mode changes to. On the Pi that
+    # is the dashboard itself on localhost, never its public hostname: a poll
+    # that leaves the house and comes back through Cloudflare fails with it.
     sdr_dashboard_url: str = "http://127.0.0.1:8080"
+    # ... and the address a person is given for it (the portal's link, the
+    # public bundle): the public hostname when the dashboard has one. Empty =
+    # the same as sdr_dashboard_url.
+    sdr_dashboard_public_url: str = ""
     # How often the bot floods an advert so phones can DM it (hours)
     advert_interval_hours: int = 6
     # How text replies go out:
@@ -187,6 +205,11 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
+
+    @property
+    def dashboard_link(self) -> str:
+        """The dashboard address to show a person: the public one when set."""
+        return self.sdr_dashboard_public_url or self.sdr_dashboard_url
 
 
 settings = Settings()

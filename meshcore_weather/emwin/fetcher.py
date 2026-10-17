@@ -18,9 +18,11 @@ import logging
 import os
 import re
 import shutil
+import statistics
 import time
 import zipfile
 from abc import ABC, abstractmethod
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -37,6 +39,18 @@ EMWIN_FILENAME_RE = re.compile(
 )
 
 EMWIN_TS_RE = re.compile(r"_(\d{14})_")
+
+# The dish's own files carry the uplink's station tag and, after it, the
+# product's creation time: `..._C_KWIN_20261016095401_...`. A file written by
+# anything else (a disabled backup once left `_C_INET_` files in the dish's
+# directory) is a product, but not a sign of life from the dish.
+KWIN_TS_RE = re.compile(r"_C_KWIN_(\d{14})_")
+
+# While the internet backup is on, the last-hour bundle is taken again this
+# often, and after any fetch that failed: NOAA's server answered a truncated
+# ZIP or 403 one to three times an hour during the Oct 14-16 outage, and each
+# failed 2-minute bundle used to be lost for good.
+HOUR_BUNDLE_EVERY_S = 1800
 
 
 def read_bundle(data: bytes, source: str = "internet") -> list[dict]:
@@ -297,6 +311,21 @@ class SDRSource(EMWINSource):
     internet are written under `fallback_root` in the same day folders, so
     a restart in the middle of an outage still has them; that folder is
     scanned with the dish's and pruned the same way.
+
+    The backup goes off again only once the dish has written
+    `sdr_resume_min_files` of its own files in the last ten minutes: a
+    marginal lock that trickles one file every few minutes keeps it on. Any
+    fetch that fails is made good by taking the hour's bundle at the next
+    poll (and every half hour regardless); the file-name dedup makes a bundle
+    taken twice cost nothing.
+
+    **How late the products are.** goesproc writes a file the moment it comes
+    off the air, so the file's mtime against the creation time in its name is
+    how far behind the uplink is running: on 2026-10-16 NOAA replayed a
+    backlog for ten hours and every product arrived five to ten hours old,
+    on the dish and on the internet alike, while every file was "17 s old".
+    `feed_lag_min` is the median over the last 50 of the dish's files, of
+    those written in the last hour.
     """
 
     def __init__(self, root: Path | None = None, fallback_root: Path | None = None):
@@ -313,16 +342,29 @@ class SDRSource(EMWINSource):
         self._running = False
         self._seen_initial = False
         self.newest_mtime: float | None = None    # newest file the DISH wrote, for `sat`
+        self._dish_mtimes: deque[float] = deque(maxlen=5000)   # its writes in the last ten minutes
+        self._lag_samples: deque[tuple[float, float]] = deque(maxlen=50)   # (mtime, minutes behind), per file
+        self.newest_product_ts: datetime | None = None         # the newest creation time the dish gave us
         self.fallback_since: datetime | None = None   # the internet backup is on (since when)
         self.fallback_added = 0                       # products it brought in this time
+        self.fallback_last_ok: datetime | None = None     # last fetch that brought a product
+        self.fallback_last_error: str | None = None       # "403 Forbidden at 14:03Z", until a fetch works
+        self.fallback_last_error_at: datetime | None = None
         self._fallback_fetched = 0.0                  # monotonic time of its last fetch
+        self._hour_fetched: float | None = None       # monotonic time the hour bundle last came in whole
+        self._refetch_hour = False                    # a fetch failed: take the hour bundle next
+        self._get_error: str | None = None            # what the last _get ran into, for the record
         self._client: "httpx.AsyncClient | None" = None
 
     async def start(self) -> None:
         if not self.root.is_dir():
-            raise FileNotFoundError(
-                f"SDR EMWIN directory {self.root} does not exist "
-                "(MCW_SDR_EMWIN_DIR; goesproc must be writing there)")
+            # The cleanup used to remove an emwin/ root left empty by a long
+            # outage, and the bot then ran with no directory to watch and no
+            # internet backup. goesproc writes into a directory that already
+            # exists just the same.
+            logger.warning("SDR EMWIN directory %s does not exist (MCW_SDR_EMWIN_DIR); creating it "
+                           "so the watcher and the internet backup can run", self.root)
+            self.root.mkdir(parents=True, exist_ok=True)
         self._running = True
         added = await asyncio.get_running_loop().run_in_executor(None, self.scan)
         logger.info("SDR source: %d products on disk under %s", added, self.root)
@@ -366,6 +408,24 @@ class SDRSource(EMWINSource):
             return float("inf")
         return ((now or time.time()) - self.newest_mtime) / 60
 
+    def dish_files_recent(self, now: float | None = None, window_s: int = 600) -> int:
+        """How many of its own files the dish wrote in the last `window_s`."""
+        since = (now or time.time()) - window_s
+        return sum(1 for m in self._dish_mtimes if m >= since)
+
+    @property
+    def feed_lag_min(self) -> int | None:
+        """How far behind the uplink is running, in minutes: the median over
+        the dish's last 50 files, once there are five to go by. Only files
+        written in the last hour count: a dish that has gone quiet says
+        nothing about how late the uplink runs now, and the lag of a replay
+        that has ended must not be reported as current."""
+        since = time.time() - 3600
+        recent = [lag for mtime, lag in self._lag_samples if mtime >= since]
+        if len(recent) < 5:
+            return None
+        return int(statistics.median(recent))
+
     async def check_fallback(self, now: datetime | None = None, wall: float | None = None) -> int:
         """Turn the internet backup on or off by how long the dish has been
         quiet, and fetch when it is on.  Returns the products it added."""
@@ -374,48 +434,88 @@ class SDRSource(EMWINSource):
             return 0
         now = now or datetime.now(timezone.utc)
         quiet = self.dish_quiet_min(wall)
-        if quiet < limit:
-            if self.fallback_active:
+        mono = time.monotonic()
+        if self.fallback_active:
+            # Off only when the dish is really back: writing, and steadily.
+            if quiet < limit and self.dish_files_recent(wall) >= settings.sdr_resume_min_files:
                 logger.info("EMWIN: the dish is writing again; internet backup off after %s, "
                             "%d products came that way", _span(now - self.fallback_since), self.fallback_added)
                 self.fallback_since = None
-            return 0
-        if not self.fallback_active:
+                return 0
+            if mono - self._fallback_fetched < settings.emwin_poll_interval:
+                return 0
+            hour_due = self._hour_fetched is None or mono - self._hour_fetched >= HOUR_BUNDLE_EVERY_S
+            url = settings.emwin_base_url if self._refetch_hour or hour_due else settings.emwin_poll_url
+        elif quiet >= limit:
             self.fallback_since = now
             self.fallback_added = 0
             self._fallback_fetched = 0.0
+            self._hour_fetched = None
+            self._refetch_hour = False
             logger.warning("EMWIN: nothing from the dish for %s; taking NOAA's internet feed until it writes again",
                            "ever" if quiet == float("inf") else f"{quiet:.0f} min")
             url = settings.emwin_base_url          # the last hour, to cover the gap
-        elif time.monotonic() - self._fallback_fetched >= settings.emwin_poll_interval:
-            url = settings.emwin_poll_url
         else:
             return 0
         added = await self._fetch_internet(url, now)
-        self._fallback_fetched = time.monotonic()
+        self._fallback_fetched = mono
+        if added is None:
+            self._refetch_hour = True              # make it good with the hour bundle next time
+            return 0
+        if url == settings.emwin_base_url:
+            self._hour_fetched = mono
+            self._refetch_hour = False
         self.fallback_added += added
         if added:
             logger.info("EMWIN (internet backup): +%d new products (%d total)", added, len(self._products))
         return added
 
+    def _make_client(self) -> httpx.AsyncClient:
+        # The fetch runs inside the scan loop: a WAN that hangs used to hold
+        # the dish watcher for up to 60 s a cycle.
+        return httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
+
     async def _get(self, url: str) -> "bytes | None":
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=60.0)
+            self._client = self._make_client()
         try:
             resp = await self._client.get(url)
             resp.raise_for_status()
             return resp.content
+        except httpx.TimeoutException:
+            self._get_error = "timeout"
+        except httpx.HTTPStatusError as e:
+            self._get_error = f"{e.response.status_code} {e.response.reason_phrase}".strip()
         except httpx.HTTPError as e:
-            logger.warning("EMWIN internet backup: %s", e)
-            return None
+            self._get_error = type(e).__name__
+        logger.warning("EMWIN internet backup: %s (%s)", self._get_error, url)
+        return None
 
-    async def _fetch_internet(self, url: str, now: datetime) -> int:
+    async def _fetch_internet(self, url: str, now: datetime) -> int | None:
+        """The bundle at `url` into the store: how many products were new, or
+        None when the fetch failed (no answer, not a ZIP, nothing in it)."""
+        self._get_error = None
         data = await self._get(url)
         if not data:
-            return 0
+            self._fetch_failed(self._get_error or "no response", now)
+            return None
+        if not zipfile.is_zipfile(io.BytesIO(data)):
+            self._fetch_failed("invalid zip", now)
+            return None
         loop = asyncio.get_running_loop()
         products = await loop.run_in_executor(None, read_bundle, data, "internet")
-        return await loop.run_in_executor(None, self._take_internet, products, now)
+        if not products:
+            self._fetch_failed("empty bundle", now)
+            return None
+        added = await loop.run_in_executor(None, self._take_internet, products, now)
+        self.fallback_last_error = self.fallback_last_error_at = None
+        if added:
+            self.fallback_last_ok = now
+        return added
+
+    def _fetch_failed(self, what: str, now: datetime) -> None:
+        self.fallback_last_error = f"{what} at {now:%H:%MZ}"
+        self.fallback_last_error_at = now
 
     def _take_internet(self, products: list[dict], now: datetime) -> int:
         """Hold the bundle's products the dish has not given us, and write
@@ -479,7 +579,8 @@ class SDRSource(EMWINSource):
         """Pick up new .TXT files, drop expired ones. Returns the number added."""
         now = now or datetime.now(timezone.utc)
         oldest = now - timedelta(hours=longest_hours())
-        settle = now.timestamp() - 2          # skip files goesproc may still be writing
+        wall = now.timestamp()
+        settle = wall - 2                     # skip files goesproc may still be writing
         added = 0
         notable: list[str] = []
         folders = [(d, "sdr") for d in self._candidate_dirs(now)]
@@ -518,8 +619,11 @@ class SDRSource(EMWINSource):
                     if prod:
                         self._products[name] = prod
                         added += 1
-                        if source == "sdr":
+                        if source == "sdr" and "_C_KWIN_" in name.upper():
                             self.newest_mtime = max(self.newest_mtime or 0.0, st.st_mtime)
+                            if st.st_mtime >= wall - 600:
+                                self._dish_mtimes.append(st.st_mtime)
+                            self._note_lag(name, st.st_mtime, wall)
                         if (prod.get("awips_id") or "")[:3] in _NOTABLE:
                             notable.append(prod["awips_id"])
         if notable and self._seen_initial:
@@ -532,6 +636,22 @@ class SDRSource(EMWINSource):
         if before != len(self._products):
             logger.debug("SDR source: expired %d products", before - len(self._products))
         return added
+
+    def _note_lag(self, name: str, mtime: float, wall: float) -> None:
+        """One of the dish's files: how long after its creation it arrived."""
+        m = KWIN_TS_RE.search(name)
+        if not m:
+            return
+        try:
+            created = datetime.strptime(m.group(1) + "+0000", "%Y%m%d%H%M%S%z")    # the name's time is UTC
+        except ValueError:
+            return
+        if self.newest_product_ts is None or created > self.newest_product_ts:
+            self.newest_product_ts = created
+        # The backlog at start is days of files in no particular order; only
+        # what the dish wrote in the last hour says anything about now.
+        if mtime >= wall - 3600:
+            self._lag_samples.append((mtime, max(0.0, (mtime - created.timestamp()) / 60)))
 
     async def fetch_products(self) -> list[dict]:
         return list(self._products.values())

@@ -463,9 +463,11 @@ account. systemd reads `.env` as well, and it does not strip comments after
 a value, so keep comments on their own lines.
 
 `MCW_EMWIN_SOURCE=sdr` makes the bot read goesproc's `emwin/YYYY-MM-DD/` tree
-directly; no EMWIN is fetched from the internet. `MCW_SDR_DASHBOARD_URL`
-(`http://127.0.0.1:8080`) is the goestools dashboard that the `sat` reply,
-the receiver log lines and the Satellite page read. The bot starts without a
+directly; the internet is only the backup while the dish is quiet.
+`MCW_SDR_DASHBOARD_URL` (`http://127.0.0.1:8080`) is the goestools dashboard
+that the `sat` reply, the receiver log lines and the Satellite page read:
+keep it the local address, and put the dashboard's public hostname in
+`MCW_SDR_DASHBOARD_PUBLIC_URL` for the links people see. The bot starts without a
 radio and keeps retrying every minute, trying `/dev/meshcore` and every USB
 serial port when the configured one does not answer, so the radio can be
 plugged in later. To try text commands from the Pi's shell:
@@ -546,7 +548,8 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_SERIAL_BAUD` | `115200` | Serial baud rate |
 | `MCW_MESHCORE_CHANNEL` | `#meshwx` | The request channel for people and apps; created on a free slot if the node lacks it. Never slot 0 (public) |
 | `MCW_MESHWX_CHANNEL` | `#meshwx` | The data channel for v5 datagrams and `>` answers. The same name as `MCW_MESHCORE_CHANNEL` shares one slot, which is where v5 apps listen; a different name takes a second slot. Empty = no broadcasts and no `>` answers |
-| `MCW_TX_ENABLED` | `true` | `false` = receive only: adverts, replies, datagrams and resends become logged no-ops. Receiving, MQTT and the portal continue |
+| `MCW_STATUS_CHANNEL` | *(empty)* | A public channel for the station's status lines, e.g. `#meshwx-status`: GOES lock lost (after 10 min) or back, the internet backup on or off, products running an hour or more behind the uplink, the receiver dashboard unreachable, the Pi's disk, temperature or throttle flags. One line per change, the same condition at most every 30 min and six lines an hour in all. Created on a free slot like the others; never the request channel. Empty = no status lines |
+| `MCW_TX_ENABLED` | `true` | `false` = receive only: adverts, replies, datagrams, status lines and resends become logged no-ops. Receiving, MQTT and the portal continue |
 | `MCW_ADVERT_INTERVAL_HOURS` | `6` | Hours between flood adverts |
 | `MCW_CONTACT_HOUSEKEEPING` | `true` | Keep the node's contact table for people: store companions only, remove repeaters, rooms and sensors, and the people heard longest ago when free slots run low. The admin and peer bots are never removed. `false` = firmware behaviour |
 | `MCW_CONTACT_SLOTS` | `100` | Contact capacity to assume when the firmware does not report one |
@@ -591,9 +594,11 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_EMWIN_MAX_AGE_HOURS` | `12` | Hours a product stays in the store; warning-class products stay at least 48 h and storm reports at least 24 h |
 | `MCW_SDR_EMWIN_DIR` | `~/goes-images/emwin` | goesproc's EMWIN output (`YYYY-MM-DD/` directories) |
 | `MCW_SDR_POLL_INTERVAL` | `30` | Seconds between directory scans |
-| `MCW_SDR_INTERNET_FALLBACK_MIN` | `10` | The dish's internet backup: after this many minutes with no new file from goesproc, the bot also takes NOAA's internet bundle (the last hour once, then every 2 minutes) until the dish writes again. Products are matched by file name, so none is held twice; the ones from the internet are kept under `data/emwin_internet/` so a restart keeps them. Radar has no backup (the bundle has no pictures). `0` turns it off |
+| `MCW_SDR_INTERNET_FALLBACK_MIN` | `10` | The dish's internet backup: after this many minutes with no new file from goesproc, the bot also takes NOAA's internet bundle (the last hour once, then every 2 minutes) until the dish writes again. Products are matched by file name, so none is held twice; the ones from the internet are kept under `data/emwin_internet/` so a restart keeps them. Radar has no backup (the bundle has no pictures). A fetch that fails is made good by taking the last-hour bundle at the next poll, and every 30 min regardless. `0` turns it off |
+| `MCW_SDR_RESUME_MIN_FILES` | `20` | The backup goes off again only once the dish has written this many of its own (`_C_KWIN_`) files in the last 10 minutes; a marginal lock that trickles one file every few minutes keeps it on |
 | `MCW_RADAR_DIR` | empty | Where the EMWIN radar GIFs are (`YYYY-MM-DD/*-RAD*.GIF`). Empty means `MCW_SDR_EMWIN_DIR` when the source is `sdr`, and no radar otherwise: the internet bundle carries no images |
-| `MCW_SDR_DASHBOARD_URL` | `http://127.0.0.1:8080` | The goestools dashboard: the `sat` reply, receiver log lines, the portal's Satellite page and Overview |
+| `MCW_SDR_DASHBOARD_URL` | `http://127.0.0.1:8080` | The goestools dashboard the bot polls (every 10 s) and posts mode changes to: the `sat` reply, receiver log lines, the status channel, the portal's Satellite page and Overview. Keep it the local address |
+| `MCW_SDR_DASHBOARD_PUBLIC_URL` | *(empty)* | The dashboard's address for people (the portal's link, the public bundle), e.g. its public hostname. Empty = `MCW_SDR_DASHBOARD_URL` |
 
 **Coverage**
 

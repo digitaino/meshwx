@@ -193,7 +193,12 @@ class WeatherBot:
         await loop.run_in_executor(None, resolver.load)   # also sets home from MCW_HOME_CITIES
         if settings.emwin_source == "sdr":
             from meshcore_weather.sdr_monitor import SdrMonitor
-            self._sdr_monitor = SdrMonitor()
+            status = None
+            if settings.status_channel:
+                from meshcore_weather.status_channel import StatusReporter
+                status = StatusReporter(send=self._post_status, name=self._node_name)
+                logger.info("  Status channel: %s", settings.status_channel)
+            self._sdr_monitor = SdrMonitor(status=status, feed=self.emwin)
             self._sdr_monitor.start()
         self.radio.on_channel_message(self._handle_channel_message)
         self.radio.on_channel_request(self._handle_channel_request)
@@ -251,6 +256,19 @@ class WeatherBot:
             self._broadcaster = AppResponder(self.store, self.radio, ready=self._store_ready,
                                              render_text=self._process_command)
             await self._broadcaster.start()
+
+    def _node_name(self) -> str | None:
+        """The bot's name on the node, as its messages carry it."""
+        mc = getattr(self.radio, "_mc", None)
+        return ((getattr(mc, "self_info", None) or {}).get("name") or None) if mc else None
+
+    async def _post_status(self, text: str) -> bool:
+        """One status line on the status channel (status_channel.py). Never
+        the request channel: without a slot of its own nothing is sent."""
+        idx = getattr(self.radio, "status_channel_idx", None)
+        if idx is None or idx in (self.radio.channel_idx, self.radio.data_channel_idx):
+            return False
+        return await self.radio.send_channel_message(idx, text)
 
     async def _handle_radio_lost(self, reason: str) -> None:
         """The radio reports its link is gone: reconnect in the background
@@ -1458,13 +1476,17 @@ class WeatherBot:
         if command == "sat":
             if self._sdr_monitor is None:
                 return "No satellite receiver on this bot: its EMWIN comes over the internet"
-            line = self._sdr_monitor.report(emwin_mtime=getattr(self.emwin, "newest_mtime", None))
+            facts = {"emwin_mtime": getattr(self.emwin, "newest_mtime", None),
+                     "lag_min": getattr(self.emwin, "feed_lag_min", None)}
+            line = self._sdr_monitor.report(**facts)
             since = getattr(self.emwin, "fallback_since", None)
-            if since is not None:
-                # The dish is quiet and the bot is on NOAA's internet feed:
-                # the one thing a person asking `sat` most needs to know.
-                line += f". Internet backup on since {since.strftime('%H:%MZ')}"
-            return line
+            # The dish is quiet and the bot is on NOAA's internet feed: the
+            # one thing a person asking `sat` most needs to know.
+            tail = f". Internet backup on since {since.strftime('%H:%MZ')}" if since is not None else ""
+            if len(line + tail) > self.page_budget():
+                # One message, not a "more": the packet count is what goes.
+                line = self._sdr_monitor.report(**facts, brief=True)
+            return line + tail
 
         if command == "cov":
             return self._coverage_reply()

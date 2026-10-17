@@ -37,7 +37,8 @@ ENV_WRITABLE = {
     "MCW_MESHCORE_CHANNEL", "MCW_MESHWX_CHANNEL",
     "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_HOME_STATES", "MCW_HOME_WFOS",
     "MCW_TIMEZONE", "MCW_TX_ENABLED", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR",
-    "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_LOG_LEVEL",
+    "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_SDR_DASHBOARD_PUBLIC_URL", "MCW_LOG_LEVEL",
+    "MCW_STATUS_CHANNEL", "MCW_SDR_RESUME_MIN_FILES",
     "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
     "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE",
     "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
@@ -230,7 +231,7 @@ async def radio_set_channel(request: Request) -> JSONResponse:
     role = await _run(_radio_call(request).set_channel_name(idx, name, secret))
     note = None
     if role:
-        key = {"text": "MCW_MESHCORE_CHANNEL", "data": "MCW_MESHWX_CHANNEL"}[role]
+        key = {"text": "MCW_MESHCORE_CHANNEL", "data": "MCW_MESHWX_CHANNEL", "status": "MCW_STATUS_CHANNEL"}[role]
         _write_env({key: name})
         note = f"slot {idx} is the bot's {role} channel; the bot now uses {name}"
     return JSONResponse({"ok": True, "role": role, "note": note,
@@ -320,6 +321,11 @@ async def _feed_stats(bot) -> dict:
         "warnings_last_hour": warn,
         "newest_age_s": int((now - newest).total_seconds()) if newest else None,
         "top_types_last_hour": types.most_common(12),
+        # How far behind the uplink the dish's products run, and the newest
+        # creation time it has delivered (SDRSource): a fresh file is not
+        # fresh news when NOAA is replaying a backlog.
+        "lag_min": getattr(bot.emwin, "feed_lag_min", None),
+        "newest_product_at": _unix(getattr(bot.emwin, "newest_product_ts", None)),
         # The dish's internet backup (emwin/fetcher.py SDRSource): on while
         # goesproc has written nothing for `sdr_internet_fallback_min`.
         "internet_backup": {
@@ -327,16 +333,24 @@ async def _feed_stats(bot) -> dict:
             "on": bool(getattr(bot.emwin, "fallback_active", False)),
             "since": since.isoformat() if (since := getattr(bot.emwin, "fallback_since", None)) else None,
             "added": getattr(bot.emwin, "fallback_added", 0),
+            "last_ok": _unix(getattr(bot.emwin, "fallback_last_ok", None)),
+            "last_error": getattr(bot.emwin, "fallback_last_error", None),
             "from_internet_last_hour": sum(1 for p in last_hour if p.get("source") == "internet"),
         } if settings.emwin_source == "sdr" else None,
     }
+
+
+def _unix(dt: datetime | None) -> int | None:
+    return int(dt.timestamp()) if dt else None
 
 
 @router.get("/sdr")
 async def sdr_state(request: Request) -> JSONResponse:
     state = await _dashboard("/api/state")
     feed = await _feed_stats(_bot(request))
-    return JSONResponse({"dashboard_url": settings.sdr_dashboard_url, "receiver": state, "feed": feed})
+    # The link is for the person reading the page: the public address when
+    # the dashboard has one, while the bot itself polls `sdr_dashboard_url`.
+    return JSONResponse({"dashboard_url": settings.dashboard_link, "receiver": state, "feed": feed})
 
 
 @router.get("/sdr/history")
@@ -465,7 +479,9 @@ def _preset_label(info: dict | None) -> str | None:
 async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSONResponse:
     """Read-only bundle for the public dashboard: who the bot is, how to reach
     it, what it answers, the request/reply counters and the recent traffic in
-    its redacted (public) form. No settings, no contacts, no keys of others."""
+    its redacted (public) form. No settings, no contacts, no keys, and no
+    position of the bot or of the other bots it knows: a public page needs
+    none of them, and the mesh gives them to anyone who listens anyway."""
     bot = _bot(request)
     radio = bot.radio
     info = await _radio_info_cached(radio)
@@ -476,8 +492,6 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
         "t": time.time(),
         "bot": {
             "name": (info or {}).get("name"),
-            "public_key": (info or {}).get("public_key"),
-            "lat": (info or {}).get("adv_lat"), "lon": (info or {}).get("adv_lon"),
             "connected": radio.connected,
             "tx_enabled": settings.tx_enabled,
             "reply_mode": settings.reply_mode,
@@ -491,25 +505,34 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
             "sf": info.get("radio_sf"), "cr": info.get("radio_cr"),
             "tx_power_dbm": info.get("tx_power"), "preset": _preset_label(info),
         },
-        "channels": {"text": settings.meshcore_channel, "data": settings.meshwx_channel},
+        "channels": {"text": settings.meshcore_channel, "data": settings.meshwx_channel,
+                     "status": settings.status_channel or None},
         "coverage": {"home": settings.home_cities, "radius_km": settings.home_radius_km,
                      "states": settings.home_states, "timezone": settings.timezone},
         "commands": PUBLIC_COMMANDS,
         "help": HELP_TEXT,
-        # Where the products come from right now. With the dish as the source,
-        # the internet backup is on while goesproc has written nothing for
-        # `sdr_internet_fallback_min`; the public page says so, so a reader
-        # knows whether a warning came off the satellite or over the internet.
+        "dashboard_url": settings.dashboard_link,
+        # Where the products come from right now, and how late they are. With
+        # the dish as the source, the internet backup is on while goesproc has
+        # written nothing for `sdr_internet_fallback_min`; `lag_min` is how far
+        # behind the uplink runs (hours, on 2026-10-16, while every file was
+        # seconds old). The public page says so, so a reader knows whether a
+        # warning came off the satellite or over the internet, and how old.
+        # Times are unix seconds.
         "feed": {
             "source": settings.emwin_source,
+            "lag_min": getattr(bot.emwin, "feed_lag_min", None),
+            "newest_product_at": _unix(getattr(bot.emwin, "newest_product_ts", None)),
             "internet_backup": {
                 "after_min": settings.sdr_internet_fallback_min,
                 "on": bool(getattr(bot.emwin, "fallback_active", False)),
-                "since": since.isoformat() if (since := getattr(bot.emwin, "fallback_since", None)) else None,
+                "since": _unix(getattr(bot.emwin, "fallback_since", None)),
                 "added": getattr(bot.emwin, "fallback_added", 0),
+                "last_ok": _unix(getattr(bot.emwin, "fallback_last_ok", None)),
+                "last_error": getattr(bot.emwin, "fallback_last_error", None),
             } if settings.emwin_source == "sdr" else None,
         },
-        "peers": [{"name": p["name"], "lat": p["lat"], "lon": p["lon"]} for p in peers],
+        "peers": [{"name": p["name"]} for p in peers],
         "stats": _traffic_stats(),
         "broadcasts": {"24h": activity_log.stats(1440), "1h": activity_log.stats(60)},
         "recent": traffic_log.recent(n, public=True),
@@ -941,6 +964,7 @@ _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADI
               "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_TX_ENABLED",
               "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
               "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE", "MCW_SDR_DASHBOARD_URL",
+              "MCW_SDR_DASHBOARD_PUBLIC_URL", "MCW_SDR_RESUME_MIN_FILES",
               "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
               "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN",
               "MCW_RELAYED_REPLY_DELAY_S"} | set(LIMIT_KEYS)
@@ -949,7 +973,8 @@ _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADI
 # persisted, because the next start would refuse the file.
 _INT_KEYS = {"MCW_SERIAL_BAUD", "MCW_HOME_RADIUS_KM", "MCW_SDR_POLL_INTERVAL", "MCW_CHANNEL_REPLY_MAX_HOPS",
              "MCW_ADVERT_INTERVAL_HOURS", "MCW_CONTACT_KEEP_FREE", "MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR",
-             "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_RX_SILENT_MIN"} | (set(LIMIT_KEYS) - {"MCW_APP_SENDER_GAP_S"})
+             "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_RX_SILENT_MIN", "MCW_SDR_RESUME_MIN_FILES"} \
+    | (set(LIMIT_KEYS) - {"MCW_APP_SENDER_GAP_S"})
 _FLOAT_KEYS = {"MCW_ECHO_WINDOW_S", "MCW_APP_SENDER_GAP_S"}
 _SECONDS_KEYS = {"MCW_RELAYED_REPLY_DELAY_S"}          # 0 allowed: off
 # A budget of 0 would refuse everything: that is switching the bot off, which
@@ -986,7 +1011,7 @@ def _validate_updates(updates: dict[str, str]) -> None:
                     raise ValueError
             except ValueError:
                 raise HTTPException(400, f"{key}: must be a number of seconds from 0 to 10")
-        if key == "MCW_SCOPE_URL" and not val.startswith(("http://", "https://")):
+        if key in ("MCW_SCOPE_URL", "MCW_SDR_DASHBOARD_PUBLIC_URL") and not val.startswith(("http://", "https://")):
             raise HTTPException(400, f"{key}: must start with http:// or https://")
         if key in _BOOL_KEYS and val.lower() not in _TRUE + _FALSE:
             raise HTTPException(400, f"{key}: must be true or false")
@@ -1016,6 +1041,10 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
             settings.reply_mode = val
         elif key == "MCW_SDR_DASHBOARD_URL":
             settings.sdr_dashboard_url = val
+        elif key == "MCW_SDR_DASHBOARD_PUBLIC_URL":
+            settings.sdr_dashboard_public_url = val
+        elif key == "MCW_SDR_RESUME_MIN_FILES":
+            settings.sdr_resume_min_files = int(val)
         elif key in ("MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS"):
             setattr(settings, key[4:].lower(), int(val))
         elif key == "MCW_PEER_BOT_PREFIX":

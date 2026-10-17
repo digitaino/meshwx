@@ -113,12 +113,14 @@ prefixes; a public viewer gets a read-only page, and every POST is refused.
 
 For the bot it proxies one portal endpoint, `/api/public/bot`, fetched at
 most every 3 s however many viewers there are. That bundle holds the bot's
-name, public key and advertised position, the radio preset, channels,
-coverage, the command list, counters and the recent traffic in redacted
-form: channel traffic as anyone on `#meshwx` heard it, DMs as the command
-and reply length only, admin and console traffic not at all. No settings,
-no contacts, no other node's key (peer bots appear by name and position).
-The portal serves the same endpoint on its own port, like the rest of it.
+name, the radio preset, channels, coverage, the command list, counters,
+where the products come from (the dish or its internet backup, and how far
+behind the uplink they run) and the recent traffic in redacted form:
+channel traffic as anyone on `#meshwx` heard it, DMs as the command and
+reply length only, admin and console traffic not at all. No settings, no
+contacts, no key and no position, the bot's own included (peer bots appear
+by name only). The portal serves the same endpoint on its own port, like
+the rest of it.
 
 ## What the traffic log writes to disk
 

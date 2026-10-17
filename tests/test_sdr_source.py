@@ -6,8 +6,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
-
 from meshcore_weather.emwin.fetcher import InternetSource, SDRSource, parse_emwin_file
 
 FIX = Path(__file__).parent / "fixtures" / "swpc"
@@ -56,9 +54,15 @@ def test_expiry_drops_products_as_time_passes(tmp_path):
     assert asyncio.run(src.fetch_products()) == []
 
 
-def test_start_requires_directory(tmp_path):
-    with pytest.raises(FileNotFoundError):
-        asyncio.run(SDRSource(root=tmp_path / "missing").start())
+def test_start_creates_a_missing_directory(tmp_path, caplog):
+    # The cleanup once removed the empty root after a long outage and the bot
+    # ran with no watcher at all (tests/test_feed_health.py has the rest).
+    src = SDRSource(root=tmp_path / "missing")
+    with caplog.at_level("WARNING"):
+        asyncio.run(src.start())
+    asyncio.run(src.stop())
+    assert (tmp_path / "missing").is_dir()
+    assert any("creating it" in r.message for r in caplog.records)
 
 
 def test_parse_emwin_file_is_shared_with_zip_path():
@@ -105,6 +109,9 @@ def _backup(tmp_path, monkeypatch, bundles):
     from meshcore_weather.config import settings
     monkeypatch.setattr(settings, "sdr_internet_fallback_min", 10)
     monkeypatch.setattr(settings, "emwin_poll_interval", 120)
+    # One file from the dish is enough to switch the backup off here; the
+    # hysteresis over the real default is tests/test_feed_health.py's.
+    monkeypatch.setattr(settings, "sdr_resume_min_files", 1)
     dish, backup = tmp_path / "dish", tmp_path / "backup"
     dish.mkdir()
     src = SDRSource(root=dish, fallback_root=backup)
