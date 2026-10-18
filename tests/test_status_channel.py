@@ -98,17 +98,48 @@ def test_the_internet_backup_on_and_off_are_transitions_not_a_state():
     assert _check(StatusReporter(send=None), T, feed=None) == []
 
 
-def test_products_behind_the_uplink_cross_an_hour_up_and_half_an_hour_down():
+def test_products_behind_the_uplink_need_two_hours_held_and_clear_after_an_hour_under_45m():
+    """17 Oct: NOAA's feed swung between about 20 and 90 minutes late all
+    day, and a one-hour line with no hold posted "behind" and "current
+    again" every hour. Now two hours, held twenty minutes; clear under 45
+    minutes, held an hour."""
     r = _reporter()
-    assert _check(r, T, feed=_feed(lag=45)) == []
-    assert _check(r, T + 10, feed=_feed(lag=61)) == ["products ~61m behind the uplink"]
-    assert _check(r, T + 20, feed=_feed(lag=300)) == []                    # said; worse is not news
-    assert _check(r, T + 30, feed=_feed(lag=None)) == []
-    assert _check(r, T + 40, feed=_feed(lag=59)) == []                     # not yet clear
-    assert _check(r, T + 50, feed=_feed(lag=20)) == ["products current again (~20m behind)"]
-    assert _check(r, T + 60, feed=_feed(lag=20)) == []
-    assert _check(StatusReporter(send=None), T, feed=_feed(lag=180)) == \
-        ["products ~3h behind the uplink"]
+    assert _check(r, T, feed=_feed(lag=90)) == []                          # the usual swing: not news
+    assert _check(r, T + 600, feed=_feed(lag=130)) == []                   # two hours, not held yet
+    assert _check(r, T + 1500, feed=_feed(lag=100)) == []                  # dipped: the hold starts again
+    assert _check(r, T + 1600, feed=_feed(lag=300)) == []
+    assert _check(r, T + 2800, feed=_feed(lag=300)) == ["products ~5h behind the uplink"]
+    assert _check(r, T + 2900, feed=_feed(lag=600)) == []                  # said; worse is not news
+    assert _check(r, T + 3000, feed=_feed(lag=None)) == []
+    assert _check(r, T + 3100, feed=_feed(lag=30)) == []                   # under 45, not for an hour yet
+    assert _check(r, T + 4000, feed=_feed(lag=50)) == []                   # back over: the hold starts again
+    assert _check(r, T + 4100, feed=_feed(lag=20)) == []
+    assert _check(r, T + 7700, feed=_feed(lag=20)) == ["products current again (~20m behind)"]
+    assert _check(r, T + 7800, feed=_feed(lag=20)) == []
+
+
+def test_what_was_said_survives_a_restart(tmp_path):
+    """Two restarts on 17 Oct each posted the lag line again."""
+    f = tmp_path / "status_state.json"
+    sent: list[str] = []
+
+    async def send(line: str) -> bool:
+        sent.append(line)
+        return True
+
+    one = StatusReporter(send=send, state_file=f)
+    asyncio.run(one.tick(T, _state(), True, _feed(lag=300)))
+    asyncio.run(one.tick(T + 1200, _state(), True, _feed(lag=300)))
+    assert sent == ["status: products ~5h behind the uplink"]
+    two = StatusReporter(send=send, state_file=f)                          # the bot restarted
+    asyncio.run(two.tick(T + 1300, _state(), True, _feed(lag=300)))
+    asyncio.run(two.tick(T + 2600, _state(), True, _feed(lag=300)))
+    assert sent == ["status: products ~5h behind the uplink"]              # not said again
+    asyncio.run(two.tick(T + 2700, _state(), True, _feed(lag=10)))
+    asyncio.run(two.tick(T + 6300, _state(), True, _feed(lag=10)))
+    assert sent[-1] == "status: products current again (~10m behind)"      # and cleared, as said before
+    three = StatusReporter(send=send, state_file=tmp_path / "missing" / "state.json")
+    assert three._lag_said is False                                        # no file yet: a fresh start
 
 
 def test_the_dashboard_unreachable_five_minutes_and_back():
@@ -168,8 +199,8 @@ def test_at_most_six_lines_an_hour_and_an_alert_waits_its_turn():
     got = []
     got += _check(r, T + 10, feed=_feed(on=True))
     got += _check(r, T + 20, feed=_feed(on=False, added=1))
-    got += _check(r, T + 30, feed=_feed(lag=100))
-    got += _check(r, T + 40, feed=_feed(lag=10))
+    got += _check(r, T + 30, _state(disk=90))
+    got += _check(r, T + 40, _state(disk=70))
     _check(r, T + 50, None, reachable=False)
     got += _check(r, T + 350, None, reachable=False)
     got += _check(r, T + 360)
@@ -207,7 +238,8 @@ def test_tick_keeps_lines_short_and_respects_transmit(monkeypatch):
     import meshcore_weather.status_channel as status_channel
     monkeypatch.setattr(status_channel, "MAX_LEN", 80)
     two = StatusReporter(send=send)
-    _check(two, T, _state(locked=False), feed=_feed(lag=None))
+    _check(two, T - 600, _state(), feed=_feed(lag=600))                   # the lag's hold starts
+    _check(two, T, _state(locked=False), feed=_feed(lag=600))
     out = asyncio.run(two.tick(T + 600, _state(locked=False, disk=90, temp=75.0, throttled="0x50005"), True,
                                _feed(lag=600)))
     assert out == ["status: GOES lock lost 10m; products ~10h behind the uplink",
@@ -297,4 +329,5 @@ def test_nothing_is_looked_at_until_the_node_has_the_status_slot():
     r = StatusReporter(send=send, ready=lambda: ready["slot"])
     assert asyncio.run(r.tick(T, _state(), True, _feed(lag=180))) == []
     ready["slot"] = True
-    assert asyncio.run(r.tick(T + 10, _state(), True, _feed(lag=180))) == ["status: products ~3h behind the uplink"]
+    assert asyncio.run(r.tick(T + 10, _state(), True, _feed(lag=180))) == []
+    assert asyncio.run(r.tick(T + 1210, _state(), True, _feed(lag=180))) == ["status: products ~3h behind the uplink"]

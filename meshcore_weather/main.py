@@ -198,7 +198,8 @@ class WeatherBot:
             if settings.status_channel:
                 from meshcore_weather.status_channel import StatusReporter
                 status = StatusReporter(send=self._post_status,
-                                        ready=lambda: getattr(self.radio, "status_channel_idx", None) is not None)
+                                        ready=lambda: getattr(self.radio, "status_channel_idx", None) is not None,
+                                        state_file=settings.data_dir / "status_state.json")
                 logger.info("  Status channel: %s", settings.status_channel)
             self._sdr_monitor = SdrMonitor(status=status, feed=self.emwin)
             self._sdr_monitor.start()

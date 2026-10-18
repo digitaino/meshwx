@@ -14,8 +14,8 @@ What makes a line, and what clears it:
   not an outage); "locked again" on recovery.
 - The internet backup on (how long the dish had been quiet) and off (how
   many products came that way).
-- Products running an hour or more behind the uplink (NOAA's replay of
-  2026-10-16); cleared once under half an hour.
+- Products two hours or more behind the uplink, held for twenty minutes
+  (NOAA's replay of 2026-10-16); cleared once under 45 minutes for an hour.
 - The receiver dashboard unreachable for five minutes; reachable again.
 - The Pi: disk 85 % full, CPU at 70 C, or the firmware's throttle flags set;
   one line, and one when all three are back to normal, with a margin so a
@@ -31,10 +31,13 @@ dropped, a stale "all clear" being worse than none.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from meshcore_weather.config import settings
 
@@ -42,7 +45,13 @@ logger = logging.getLogger("meshcore_weather.status")
 
 LOCK_LOST_AFTER_S = 600
 DASHBOARD_DOWN_AFTER_S = 300
-LAG_ON_MIN, LAG_OFF_MIN = 60, 30
+# Products behind the uplink: said once the lag has stayed at two hours or
+# more for twenty minutes (an observation is "current" for two hours, so less
+# is not news), cleared once it has stayed under 45 minutes for an hour. On
+# 17 Oct NOAA's feed swung between about 20 and 90 minutes all day, and a
+# one-hour line with no hold posted "behind" and "current again" every hour.
+LAG_ON_MIN, LAG_ON_HOLD_S = 120, 1200
+LAG_OFF_MIN, LAG_OFF_HOLD_S = 45, 3600
 DISK_PCT, DISK_OK_PCT = 85, 80
 TEMP_C, TEMP_OK_C = 70.0, 65.0
 REPEAT_S = 1800
@@ -79,7 +88,8 @@ class StatusReporter:
     not go out. The firmware puts the node's name before every channel
     message, so a line starts "status:", not the name again."""
 
-    def __init__(self, send: Callable[[str], Awaitable[bool]], ready: Callable[[], bool] = lambda: True):
+    def __init__(self, send: Callable[[str], Awaitable[bool]], ready: Callable[[], bool] = lambda: True,
+                 state_file: Path | str | None = None):
         self._send = send
         self._ready = ready
         self._unlocked_since: float | None = None
@@ -88,10 +98,54 @@ class StatusReporter:
         self._down_said = False
         self._backup_on: bool | None = None        # None until the first look: a start is not a change
         self._lag_said = False
+        self._lag_high_since: float | None = None
+        self._lag_low_since: float | None = None
         self._host_said = False
         self._posted_at: dict[str, float] = {}
         self._hour: deque[float] = deque()
         self.recent: deque[tuple[float, str]] = deque(maxlen=20)
+        self._state_file = state_file
+        self._saved: dict | None = None
+        self._load()
+
+    # What has been said survives a restart: a bot restarted in the middle of
+    # an outage must not say it again, nor say "back to normal" for a line
+    # nobody heard. Two restarts on 17 Oct each posted the lag line anew.
+    _KEPT = ("_lock_said", "_down_said", "_backup_on", "_lag_said", "_host_said", "_posted_at")
+
+    def _snapshot(self) -> dict:
+        snap = {k: getattr(self, k) for k in self._KEPT}
+        snap["_hour"] = list(self._hour)
+        return snap
+
+    def _load(self) -> None:
+        if self._state_file is None:
+            return
+        try:
+            data = json.loads(Path(self._state_file).read_text())
+        except (OSError, ValueError):
+            return
+        for k in self._KEPT:
+            if k in data:
+                setattr(self, k, data[k])
+        self._hour = deque(float(t) for t in data.get("_hour", []))
+        self._saved = self._snapshot()
+
+    def _save(self) -> None:
+        if self._state_file is None:
+            return
+        snap = self._snapshot()
+        if snap == self._saved:
+            return
+        path = Path(self._state_file)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(snap))
+            os.replace(tmp, path)
+            self._saved = snap
+        except OSError:
+            logger.exception("status state not saved to %s", path)
 
     def check(self, now: float, state: dict | None, reachable: bool, feed=None) -> list[str]:
         """One look at the station: `state` is the dashboard's /api/state
@@ -128,11 +182,12 @@ class StatusReporter:
                 logger.exception("status line not sent: %s", line)
                 sent = False
             if sent:
-                logger.info("status: %s", line)
+                logger.info("status line sent: %s", line)
                 self.recent.append((now, line))
                 out.append(line)
             else:
                 logger.warning("status line not sent (no status channel on the node?): %s", line)
+        self._save()
         return out
 
     def _say(self, key: str, text: str, now: float, lines: list[str]) -> bool:
@@ -182,9 +237,11 @@ class StatusReporter:
         lag = getattr(feed, "feed_lag_min", None)
         if lag is None:
             return
-        if not self._lag_said and lag >= LAG_ON_MIN:
+        self._lag_high_since = (self._lag_high_since or now) if lag >= LAG_ON_MIN else None
+        self._lag_low_since = (self._lag_low_since or now) if lag < LAG_OFF_MIN else None
+        if not self._lag_said and self._lag_high_since and now - self._lag_high_since >= LAG_ON_HOLD_S:
             self._lag_said = self._say("lag", f"products ~{_behind(lag)} behind the uplink", now, lines)
-        elif self._lag_said and lag < LAG_OFF_MIN:
+        elif self._lag_said and self._lag_low_since and now - self._lag_low_since >= LAG_OFF_HOLD_S:
             self._say("lag_ok", f"products current again (~{lag}m behind)", now, lines)
             self._lag_said = False
 
