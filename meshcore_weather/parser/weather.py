@@ -408,7 +408,6 @@ class WeatherStore:
         if not station:
             return None
         head = station + " "
-        best: tuple[str, datetime] | None = None
         for prod in sorted(self._products.values(), key=lambda p: p.timestamp, reverse=True):
             if prod.product_type != "SAH" and "METAR" not in prod.raw_text[:200]:
                 continue
@@ -429,10 +428,11 @@ class WeatherStore:
                     if not nxt[:1].isspace():
                         break
                     report += " " + nxt.strip()
-                if best is None or prod.timestamp > best[1]:
-                    best = (report.rstrip("="), prod.timestamp)
-                break
-        return best
+                # Products are walked newest first, so the first one holding
+                # the station is its newest: no need to read the rest (the
+                # NWS METAR feed's files hold thousands of reports each).
+                return report.rstrip("="), prod.timestamp
+        return None
 
 
     def _parse_zfp_zone(self, text: str, zone: str) -> str:

@@ -33,6 +33,7 @@ import httpx
 
 from meshcore_weather import __version__
 from meshcore_weather.config import settings
+from meshcore_weather.emwin.nws_metar import NwsMetarFeed
 from meshcore_weather.emwin.retention import is_expired, longest_hours, max_age_hours
 
 logger = logging.getLogger(__name__)
@@ -293,6 +294,30 @@ class _NoaaBundles:
             self.newest_product_ts = created
         return created
 
+    # -- NWS's own METAR feed (emwin/nws_metar.py) ----------------------------
+
+    _nws: "NwsMetarFeed | None" = None
+
+    async def _poll_nws_metar(self, now: datetime) -> list[dict]:
+        """New files from NWS's METAR feed as products, when it is on and due.
+
+        Off (`nws_metar_enabled`) drops the feed's state, so switching it on
+        again starts over with the last 75 minutes. It shares the bundles'
+        client, its timeouts and its User-Agent."""
+        if not settings.nws_metar_enabled:
+            if self._nws is not None:
+                logger.info("NWS METAR feed off")
+            self._nws = None
+            return []
+        if self._nws is None:
+            self._nws = NwsMetarFeed()
+            logger.info("NWS METAR feed on: current airport reports from %s", self._nws.url)
+        if not self._nws.due(now):
+            return []
+        if self._client is None:
+            self._client = self._make_client()
+        return await self._nws.poll(self._client, now)
+
     def _note_lag(self, name: str, mtime: float, wall: float) -> None:
         """A product that arrived at `mtime`: how long after its creation."""
         created = self._note_created(name)
@@ -435,6 +460,10 @@ class InternetSource(_NoaaBundles, EMWINSource):
             self._refusals += 1
             logger.warning("EMWIN internet: NOAA answered %s; waiting ~%.0f s before the next poll",
                            self._get_error, self.poll_wait_s(jitter=False))
+        try:
+            self._take(await self._poll_nws_metar(now), now, fresh=False)
+        except Exception:
+            logger.exception("Error in the NWS METAR feed")
         self._expire_old(now)
         if new:
             logger.info("Poll: +%d new products (%d total)", len(new), len(self._products))
@@ -720,6 +749,10 @@ class SDRSource(_NoaaBundles, EMWINSource):
                 await self.check_fallback()
             except Exception:
                 logger.exception("Error in the internet backup")
+            try:
+                await self.check_nws_metar()
+            except Exception:
+                logger.exception("Error in the NWS METAR feed")
 
     # -- the internet backup ------------------------------------------------
 
@@ -779,6 +812,18 @@ class SDRSource(_NoaaBundles, EMWINSource):
         self.fallback_added += added
         if added:
             logger.info("EMWIN (internet backup): +%d new products (%d total)", added, len(self._products))
+        return added
+
+    async def check_nws_metar(self, now: datetime | None = None) -> int:
+        """NWS's METAR feed into the store when it is on: how many products
+        were new. Held in memory only; after a restart the first poll takes
+        the last 75 minutes again."""
+        now = now or datetime.now(timezone.utc)
+        added = 0
+        for prod in await self._poll_nws_metar(now):
+            if prod["filename"] not in self._products:
+                self._products[prod["filename"]] = prod
+                added += 1
         return added
 
     # The fetch runs inside the scan loop: _NoaaBundles' client gives up

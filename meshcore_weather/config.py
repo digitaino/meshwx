@@ -194,6 +194,15 @@ class Settings(BaseSettings):
     # trickled one file every few minutes; each one switched the backup off
     # and the next quiet spell switched it on again, with a gap every time.
     sdr_resume_min_files: int = 20
+    # Current airport reports from NWS's ordinary text feed on tgftp, alongside
+    # whatever EMWIN source is in use (emwin/nws_metar.py). For when EMWIN runs
+    # late: on 2026-10-17/18 the dish and NOAA's EMWIN bundles were both ~3 h
+    # behind while this feed had each METAR within minutes. The freshest report
+    # wins, so it is safe to leave on; it is off by default because it is the
+    # internet, and turned on and off by hand (MCW_NWS_METAR_ENABLED).
+    nws_metar_enabled: bool = False
+    nws_metar_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/DF.an/DC.sflnd/DS.metar/"
+    nws_metar_poll_interval: int = 300   # seconds; the feed writes a file every ~5 min
     # Radar pictures (spec 7D): a directory of EMWIN `*-RAD*.GIF` under YYYY-MM-DD/.
     # Empty means the dish's own EMWIN directory when the source is "sdr", and
     # no radar at all otherwise: the internet bundle carries no images.
