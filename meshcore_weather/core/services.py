@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from meshcore_weather.geodata.names import place_name
-from meshcore_weather.parser.pfm import PFMPoint, downsample_to_daily, parse_pfm
+from meshcore_weather.parser.pfm import TZ_ABBR_OFFSET, PFMPoint, downsample_to_daily, parse_pfm
 from meshcore_weather.parser.weather import EMWINProduct, WeatherStore
 from meshcore_weather.protocol.encoders import parse_metar, metar_observed_at
 from meshcore_weather.protocol.meshwx import (
@@ -489,9 +489,12 @@ def product_state(prod: EMWINProduct) -> str:
     return prod.state
 
 
-_TZ_ABBR_OFFSET = {"EST": -5, "EDT": -4, "CST": -6, "CDT": -5, "MST": -7, "MDT": -6, "PST": -8, "PDT": -7,
-                   "AKST": -9, "AKDT": -8, "HST": -10, "AST": -4, "CHST": 10, "SST": -11, "HDT": -9}
-_LSR_HDR_RE = re.compile(r"^\d{3,4} [AP]M ([A-Z]{3,4}) \w{3} \w{3} \d{1,2} \d{4}", re.M)
+# Hours from UTC for each zone abbreviation a product header carries (one
+# table, parser/pfm.py). The header's abbreviation is mixed case on Guam
+# ("1015 PM ChST Sat Oct 17 2026"): the pattern read only capitals, so every
+# Guam storm report was taken as UTC and fell outside the six-hour window.
+_TZ_ABBR_OFFSET = {k.upper(): v for k, v in TZ_ABBR_OFFSET.items()}
+_LSR_HDR_RE = re.compile(r"^\d{3,4} [AP]M ([A-Za-z]{3,4}) \w{3} \w{3} \d{1,2} \d{4}", re.M)
 LSR_RECENT_HOURS = 6
 
 
@@ -505,7 +508,10 @@ def _lsr_entry_time(entry: dict, tz_abbr: str | None) -> datetime | None:
         local = datetime.strptime(f"{d} {tm}", "%m/%d/%Y %I%M %p")
     except ValueError:
         return None
-    off = _TZ_ABBR_OFFSET.get((tz_abbr or "").upper(), 0)
+    off = _TZ_ABBR_OFFSET.get((tz_abbr or "").upper())
+    if off is None:
+        logger.debug("Storm report header zone %r unknown; read as UTC", tz_abbr)
+        off = 0
     return (local - timedelta(hours=off)).replace(tzinfo=timezone.utc)
 
 

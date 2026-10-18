@@ -226,41 +226,66 @@ def forecast(loc: dict, fc: Forecast | None, days: int = 5) -> str:
     return _cap(head + " " + " | ".join(parts))
 
 
+def event_label(w: dict) -> str:
+    """'Flash Flood Wrn', 'Air Quality Alert': a warning's name for a reply."""
+    if w.get("event_name"):
+        return _title(w["event_name"])
+    return _title(short_name(w.get("vtec_phenomenon"), w.get("vtec_significance")))
+
+
+def _until(w: dict, tz: ZoneInfo) -> str:
+    """'til 7:15PM', or 'until further notice' for a warning NWS gave no end
+    (VTEC 000000T0000Z): its wire expiry is invented and never shown."""
+    if w.get("until_further_notice"):
+        return "until further notice"
+    return f"til {_when(w['expires_at'], tz)}"
+
+
 def warnings(loc: dict, ws: list[dict]) -> str:
     if not ws:
         return _cap(f"No active warnings for {place_label(loc)}")
     items = []
     tz = tz_for_loc(loc)
     for w in ws:
-        name = _title(short_name(w.get("vtec_phenomenon"), w.get("vtec_significance")))
+        name = event_label(w)
         exp = w.get("expires_at")
         onset = w.get("onset_at")
         now = datetime.now(timezone.utc)
         if onset and onset > now:
-            items.append(f"{name} {_when(onset, tz)}-{_when(exp, tz)}")
+            end = "until further notice" if w.get("until_further_notice") else _when(exp, tz)
+            items.append(f"{name} {_when(onset, tz)}-{end}")
         else:
-            items.append(f"{name} til {_when(exp, tz)}")
+            items.append(f"{name} {_until(w, tz)}")
     head = f"{len(ws)} active, {place_label(loc)}: " if len(ws) > 1 else f"{place_label(loc)}: "
     return fit_list(head, items)
 
 
-def summary(loc: dict, ob: Observation | None, ws: list[dict], fc: Forecast | None) -> str:
+def summary(loc: dict, ob: Observation | None, ws: list[dict], fc: Forecast | None,
+            now: datetime | None = None) -> str:
     """The 'wx <place>' reply: warnings first, then obs, then tomorrow.
 
     What is old says so. "Woodcreek, TX 78676: !Wind Adv til 7:00PM | 70/49
     20%" (2026-10-16) read as complete while the forecast was five hours old
     and the observation had been left out for being over two hours old; now
     the observation comes with its age and the forecast with its issue time.
+
+    The forecast's first day is named when it is not today at the place:
+    Taunton MA showed Tuesday's 59/44 bare on Saturday (2026-10-17), read as
+    today's, when the first three days had not been parsed.
     """
     bits = []
     if ws:
         w = ws[0]
-        bits.append(f"!{_title(short_name(w.get('vtec_phenomenon'), w.get('vtec_significance')))} til {_when(w['expires_at'], tz_for_loc(loc))}")
+        bits.append(f"!{event_label(w)} {_until(w, tz_for_loc(loc))}")
     if ob:
         bits.append(f"{_conditions(ob, full=False)} ({_station(ob)})")
     if fc and fc.periods:
         p = fc.periods[0]
         seg = f"{p['high_f']}/{p['low_f']}"
+        if fc.start_date is not None:
+            today = (now or datetime.now(UTC)).astimezone(tz_for_loc(loc)).date()
+            if fc.start_date.date() != today:
+                seg = f"{fc.start_date:%a} {seg}"
         if p.get("precip_pct", 0) >= 20:
             seg += f" {p['precip_pct']}%"
         if fc.stale and fc.issued_at:
