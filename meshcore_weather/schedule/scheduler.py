@@ -4,17 +4,32 @@ so the sequence counter and the spacing are shared).
 
 Each tick: reload the config if the portal changed it, run the jobs that
 are due, send what they built with a gap between packets, keep per-job
-stats. Warning state (what was sent, with which fingerprint) and the next
-header seq are persisted so a restart neither re-sends every active warning
-as new nor jumps the sequence apps track.
+stats. Warning state (what was sent, with which fingerprint), the next
+header seq, when each job last ran and when the node last adverted are
+persisted, so a restart neither re-sends every active warning as new, nor
+jumps the sequence apps track, nor puts the digest, observations, forecast,
+coverage statement and an advert on the air again just because the
+process started.
+
+Two more guards for a bot nobody is watching:
+
+- a ceiling on scheduled packets per hour, every job together
+  (MCW_SCHEDULED_PACKETS_PER_HOUR). Life-safety warnings and their repeat
+  always go and count; past it the other jobs wait (WARNING once an hour,
+  and a row on the portal's limits card);
+- a per-bot jitter, from the node's public key, on when each periodic job
+  first runs after a start, so two bots that boot together do not stay in
+  lock-step.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
+from collections import deque
 from pathlib import Path
 
 from meshcore_weather.activity import EventDir, activity_log
@@ -35,8 +50,36 @@ TX_SPACING = 2.0                 # seconds between consecutive packets
 TICK_INTERVAL_SECONDS = 30
 FIRST_TICK_DELAY_S = 15          # settle before the first tick (after the backlog, see _tick_loop)
 DIGEST_AFTER_CANCEL_S = 60
+# The first run of a periodic job after a start waits up to this long, by a
+# fraction taken from the node's key and the job (and at most a quarter of
+# the job's interval). The warnings job is not delayed: it sends changes only.
+START_JITTER_MAX_S = 300
+CEILING_LOG_EVERY_S = 3600
+BLOCKED_LOG_EVERY_S = 3600
 
 _STATE_PATH = Path(settings.data_dir) / "warning_state.json"
+
+
+def load_advert_record() -> dict | None:
+    """The last advert this bot's node sent before the restart, as the
+    scheduler saved it: {"at": unix time, "key": public key}. main.py hands
+    it to the radio before it connects, so a restart does not flood a new
+    advert when the last one is recent."""
+    try:
+        d = json.loads(_STATE_PATH.read_text())
+        rec = d.get("advert")
+        if isinstance(rec, dict) and isinstance(rec.get("at"), (int, float)):
+            return {"at": float(rec["at"]), "key": str(rec.get("key") or "")}
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass                                     # no file, or not ours to read: advert as usual
+    return None
+
+
+def jitter_fraction(seed: str, job_id: str) -> float:
+    """A number in [0, 1) that is the same for this node and job on every
+    start, and different between nodes."""
+    h = hashlib.sha256(f"{seed}|{job_id}".encode()).digest()
+    return int.from_bytes(h[:4], "big") / 2**32
 
 
 class Scheduler:
@@ -53,7 +96,6 @@ class Scheduler:
         self._ready = ready
         self.executor = BroadcastExecutor()
         self._config: BroadcastConfig = BroadcastConfig()
-        self._coverage: Coverage = Coverage.empty()
         self._config_mtime: float = 0.0
         self._config_lock = asyncio.Lock()
         self._last_run: dict[str, float] = {}
@@ -70,6 +112,21 @@ class Scheduler:
         self._digest_due_at: float | None = None
         self._task: asyncio.Task | None = None
         self._running = False
+        # Coverage fails closed: until the first build there is none, and a
+        # build that raises keeps the last good one (reload_coverage).
+        self._coverage: Coverage = Coverage.unavailable("coverage not built yet")
+        self._good_coverage: Coverage | None = None
+        self._blocked_logged_at = 0.0
+        # No job runs before this after a start (job id -> unix time): the
+        # per-bot jitter, and what a restored last_run still owes.
+        self._hold_until: dict[str, float] = {}
+        # The ceiling: when each scheduled packet went out (the last hour),
+        # and what it held back.
+        self._sched_sent: deque[float] = deque()
+        self._ceiling_skips: deque[tuple[float, str, int]] = deque()
+        self._ceiling_logged_at = 0.0
+        self._ceiling_hit_at = 0.0
+        self._home_offices: tuple[tuple[float, float] | None, set[str]] = (None, set())
 
     # -- lifecycle --
 
@@ -77,6 +134,7 @@ class Scheduler:
         self.reload_coverage()
         self._load_state()
         await self._reload_config()
+        self._plan_start(time.time())
         self._running = True
         self._task = asyncio.create_task(self._tick_loop())
         logger.info("Broadcast scheduler started: %d jobs, tick every %ds", len(self._config.jobs), TICK_INTERVAL_SECONDS)
@@ -94,11 +152,24 @@ class Scheduler:
     # -- coverage and identity --
 
     def reload_coverage(self) -> None:
+        """Build the coverage from the settings. A build that raises keeps
+        the last good coverage; with none, the area broadcasts send nothing.
+        Never "everything": that is MCW_COVERAGE=national, on purpose."""
         try:
-            self._coverage = Coverage.from_config()
+            cov = Coverage.from_config()
         except Exception:
-            logger.exception("Coverage could not be built; broadcasting everything")
-            self._coverage = Coverage.empty()
+            if self._good_coverage is not None:
+                logger.exception("Coverage could not be rebuilt; keeping the last good one (%s)",
+                                 self._good_coverage.summary())
+                self._coverage = self._good_coverage
+            else:
+                logger.exception("Coverage could not be built; scheduled warnings, digest and "
+                                 "observations send nothing")
+                self._coverage = Coverage.unavailable("coverage could not be built (see the log)")
+            return
+        self._coverage = cov
+        if not cov.blocked:
+            self._good_coverage = cov
 
     @property
     def coverage(self) -> Coverage:
@@ -108,10 +179,19 @@ class Scheduler:
     def next_seq(self) -> int:
         return self._next_seq
 
-    def bot_id(self) -> int:
+    def _node(self) -> dict:
         mc = getattr(self.radio, "_mc", None)
-        key = (getattr(mc, "self_info", None) or {}).get("public_key") if mc else None
-        return b.bot_id(key)
+        si = getattr(mc, "self_info", None) if mc else None
+        return si if isinstance(si, dict) else {}
+
+    def bot_id(self) -> int:
+        return b.bot_id(self._node().get("public_key"))
+
+    def _jitter_seed(self) -> str:
+        """The node's public key, else its name: what makes this bot's start
+        offsets its own."""
+        si = self._node()
+        return str(si.get("public_key") or si.get("name") or "")
 
     def context(self) -> ExecutorContext:
         home = None
@@ -121,11 +201,15 @@ class Scheduler:
             pass
         offices = set(self._coverage.sources.get("wfos") or []) if self._coverage else set()
         if not offices and home is not None:
-            try:
-                loc = resolver.resolve_by_coords(home[0], home[1]) or {}
-                offices = set(loc.get("wfos") or [])
-            except Exception:
-                pass
+            # resolve_by_coords scans every place (~0.1 s on a laptop, more
+            # on a Pi) and the answer only changes with the home: once per home.
+            if self._home_offices[0] != home:
+                try:
+                    loc = resolver.resolve_by_coords(home[0], home[1]) or {}
+                    self._home_offices = (home, set(loc.get("wfos") or []))
+                except Exception:
+                    self._home_offices = (None, set())
+            offices = set(self._home_offices[1])
         # A scratch counter: builders number their messages, transmit restamps them.
         return ExecutorContext(store=self.store, coverage=self._coverage, seq=b.SeqCounter(), bot=self.bot_id(),
                                warning_state=self._warning_state, home=home,
@@ -141,21 +225,106 @@ class Scheduler:
                     self._next_seq = d["next_seq"] & 0xFF
                 self._warning_state = {k: v for k, v in d.get("warnings", {}).items()
                                        if v.get("expires", 0) > b.now_min()}
-                logger.info("Warning state: %d active identities restored, next seq %d",
-                            len(self._warning_state), self._next_seq)
+                now = time.time()
+                # When each job last ran (absent before 2026-10-17). A time in
+                # the future (a clock set back) counts as now.
+                for job_id, t in (d.get("last_run") or {}).items():
+                    if isinstance(t, (int, float)) and t > 0:
+                        self._last_run[str(job_id)] = min(float(t), now)
+                self._sched_sent = deque(sorted(t for t in d.get("sched_sent") or []
+                                                if isinstance(t, (int, float)) and 0 <= now - t <= 3600))
+                logger.info("Warning state: %d active identities restored, next seq %d, %d job run times",
+                            len(self._warning_state), self._next_seq, len(self._last_run))
         except Exception as e:
             logger.warning("Ignoring warning state file: %s", e)
             self._warning_state = {}
+
+    def _advert_record(self) -> dict | None:
+        """When the radio last adverted, and as which key, for the next start."""
+        at = getattr(self.radio, "last_advert_at", None)
+        if not isinstance(at, (int, float)) or isinstance(at, bool) or at <= 0:
+            return load_advert_record()      # nothing new from this radio: keep what was saved
+        key = self._node().get("public_key")
+        return {"at": float(at), "key": key if isinstance(key, str) else ""}
 
     def _save_state(self, next_seq: int | None = None) -> None:
         try:
             _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
             tmp = _STATE_PATH.with_suffix(".tmp")
             seq = self._next_seq if next_seq is None else next_seq
-            tmp.write_text(json.dumps({"warnings": self._warning_state, "next_seq": seq}))
+            now = time.time()
+            state = {"warnings": self._warning_state, "next_seq": seq,
+                     "last_run": {k: v for k, v in self._last_run.items() if v > 0},
+                     "sched_sent": [t for t in self._sched_sent if now - t <= 3600]}
+            advert = self._advert_record()
+            if advert is not None:
+                state["advert"] = advert
+            tmp.write_text(json.dumps(state))
             tmp.replace(_STATE_PATH)
         except Exception as e:
             logger.warning("Could not write warning state: %s", e)
+
+    def _plan_start(self, now: float) -> None:
+        """When each job may first run after this start: not before its
+        restored last run plus its interval (a restart is not a reason to
+        send the digest again), and a periodic job not before its own offset
+        either (up to START_JITTER_MAX_S, from the node key), so bots that
+        boot together drift apart and this bot's jobs do not all leave in
+        the same tick."""
+        seed = self._jitter_seed()
+        self._hold_until = {}
+        for job in self._config.jobs:
+            interval = job.interval_minutes * 60
+            due = self._last_run.get(job.id, 0.0) + interval
+            if job.product != "warnings":
+                span = min(START_JITTER_MAX_S, interval * 0.25)
+                due = max(due, now + jitter_fraction(seed, job.id) * span)
+            if due > now:
+                self._hold_until[job.id] = due
+        if self._last_run:
+            waiting = sorted((t, j) for j, t in self._hold_until.items())
+            logger.info("Restored job run times: %s", ", ".join(f"{j} in {int(t - now)}s" for t, j in waiting)
+                        or "every job is due")
+
+    def _due(self, job, now: float) -> bool:
+        if now < self._hold_until.get(job.id, 0.0):
+            return False
+        return now - self._last_run.get(job.id, 0.0) >= job.interval_minutes * 60
+
+    # -- the ceiling on scheduled packets --
+
+    def _sched_used(self, now: float) -> int:
+        while self._sched_sent and now - self._sched_sent[0] > 3600:
+            self._sched_sent.popleft()
+        return len(self._sched_sent)
+
+    def _ceiling_hit(self, job_id: str, held: int, now: float) -> None:
+        """Something waited for the ceiling: remember it for the portal, and
+        say so in the log once an hour."""
+        self._ceiling_hit_at = now
+        self._ceiling_skips.append((now, job_id, held))
+        while self._ceiling_skips and now - self._ceiling_skips[0][0] > 3600:
+            self._ceiling_skips.popleft()
+        if now - self._ceiling_logged_at >= CEILING_LOG_EVERY_S:
+            self._ceiling_logged_at = now
+            logger.warning("Scheduled broadcasts reached their ceiling of %d packets an hour "
+                           "(MCW_SCHEDULED_PACKETS_PER_HOUR): job %s waits; life-safety warnings still go out",
+                           settings.scheduled_packets_per_hour, job_id)
+
+    def ceiling_status(self, now: float | None = None) -> dict:
+        """For the portal: the ceiling, what the last hour used, what waited."""
+        now = time.time() if now is None else now
+        used = self._sched_used(now)
+        cap = settings.scheduled_packets_per_hour
+        skips = [s for s in self._ceiling_skips if now - s[0] <= 3600]
+        return {"cap": cap, "used": used, "left": max(0, cap - used), "spent": used >= cap,
+                "opens_in_s": int(3600 - (now - self._sched_sent[0])) if used >= cap and self._sched_sent else 0,
+                "waits_last_hour": len(skips), "jobs_waited": sorted({s[1] for s in skips}),
+                "last_hit_at": self._ceiling_hit_at or None}
+
+    def reset_ceiling(self) -> None:
+        self._sched_sent.clear()
+        self._ceiling_skips.clear()
 
     # -- config --
 
@@ -208,10 +377,14 @@ class Scheduler:
         ctx = self.context()
         now = time.time()
         sent = 0
+        blocked = getattr(self._coverage, "blocked", None)
+        if blocked and now - self._blocked_logged_at >= BLOCKED_LOG_EVERY_S:
+            self._blocked_logged_at = now
+            logger.error("Scheduled warnings, digest, observations and the coverage statement are off: %s", blocked)
         for job in list(self._config.jobs):
             if not job.enabled:
                 continue
-            if now - self._last_run.get(job.id, 0.0) < job.interval_minutes * 60:
+            if not self._due(job, now):
                 continue
             sent += await self._run(job, ctx)
         if ctx.cancel_sent:
@@ -227,13 +400,32 @@ class Scheduler:
         return sent
 
     async def _run(self, job, ctx: ExecutorContext) -> int:
+        """Run one job under the ceiling. A job other than warnings that does
+        not fit waits, without counting as run, so the next tick tries it
+        again; the warnings job runs with the room left (ctx.budget) and its
+        builder holds back what does not fit."""
+        now = time.time()
+        left = settings.scheduled_packets_per_hour - self._sched_used(now)
+        if job.product == "warnings":
+            ctx.budget, ctx.held_back = left, 0
+        elif left <= 0:
+            self._ceiling_hit(job.id, 1, now)
+            return 0
         try:
             msgs = self.executor.run_job(job, ctx)
         except Exception:
             logger.exception("Scheduler: exception running job %s", job.id)
             msgs = []
+        finally:
+            ctx.budget = None
+        if job.product != "warnings" and len(msgs) > left:
+            self._ceiling_hit(job.id, len(msgs), now)
+            return 0
+        if job.product == "warnings" and ctx.held_back:
+            self._ceiling_hit(job.id, ctx.held_back, now)
         now = time.time()
         self._last_run[job.id] = now
+        self._hold_until.pop(job.id, None)
         self._total_runs[job.id] = self._total_runs.get(job.id, 0) + 1
         if not msgs:
             self._last_msg_count[job.id] = 0
@@ -241,6 +433,7 @@ class Scheduler:
             logger.debug("job %s: nothing to send", job.id)
             return 0
         n, nbytes = await self.transmit(msgs, f"job {job.id} ({job.product})")
+        self._sched_sent.extend([time.time()] * n)
         self._last_msg_count[job.id] = n
         self._last_bytes[job.id] = nbytes
         self._total_bytes[job.id] = self._total_bytes.get(job.id, 0) + nbytes
@@ -356,13 +549,14 @@ class Scheduler:
         if job is None:
             return {"job_id": job_id, "found": False}
         last_run = self._last_run.get(job_id, 0.0)
-        next_due = last_run + job.interval_minutes * 60 if last_run else now
+        next_due = max(last_run + job.interval_minutes * 60 if last_run else now,
+                       self._hold_until.get(job_id, 0.0))
         return {
             "job_id": job_id, "found": True, "enabled": job.enabled,
             "last_run_unix": last_run if last_run else None,
             "last_run_seconds_ago": int(now - last_run) if last_run else None,
             "next_run_unix": next_due,
-            "next_run_in_seconds": max(0, int(next_due - now)) if last_run else 0,
+            "next_run_in_seconds": max(0, int(next_due - now)),
             "total_runs": self._total_runs.get(job_id, 0),
             "total_bytes": self._total_bytes.get(job_id, 0),
             "last_bytes": self._last_bytes.get(job_id, 0),

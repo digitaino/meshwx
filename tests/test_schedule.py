@@ -277,7 +277,9 @@ class TestBootstrap:
         assert set(by_id) == {"warnings", "digest", "observations", "forecast", "coverage"}
         assert by_id["warnings"].interval_minutes == 2 and by_id["digest"].interval_minutes == 180
         assert by_id["observations"].location_type == "coverage"
-        assert by_id["forecast"].location_type == "city" and by_id["forecast"].location_id == "Austin TX"
+        # The home point by reference, resolved when the job runs: never a
+        # place name baked into a file that gets copied to another city.
+        assert by_id["forecast"].location_type == "coverage" and by_id["forecast"].location_id == "home"
         # The coverage statement rides with the digest: one packet every 3 h.
         assert by_id["coverage"].product == "coverage" and by_id["coverage"].interval_minutes == 180
         assert by_id["coverage"].location_type == "coverage" and by_id["coverage"].enabled

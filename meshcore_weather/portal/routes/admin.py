@@ -43,21 +43,77 @@ ENV_WRITABLE = {
     "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE",
     "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
     "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN", "MCW_RELAYED_REPLY_DELAY_S",
+    # Who NOAA's administrators can reach (emwin/fetcher.py User-Agent); read at start.
+    "MCW_OPERATOR_CONTACT",
 }
+# MCW_RADIO_REGION, MCW_COVERAGE=national and MCW_PORTAL_* are deliberately not
+# here: where the bot may transmit, whether it floods the whole national feed
+# and who may reach this page are set in .env by whoever owns the box.
 
 # The limits on what the bot spends answering (config.py), set on the Text bot
 # page's "Limits and cooldowns" card and applied live.
 LIMIT_KEYS = ("MCW_APP_PACKETS_PER_HOUR", "MCW_APP_SENDER_GAP_S", "MCW_SWEEP_WINDOW_S", "MCW_RADAR_WINDOW_S",
               "MCW_PART_RESEND_FLOOR_S", "MCW_TEXT_REPLIES_PER_SENDER_PER_HOUR", "MCW_TEXT_REPLIES_PER_HOUR",
-              "MCW_STRANGER_REPLIES_PER_HOUR", "MCW_STRANGER_REPLY_GAP_S")
+              "MCW_STRANGER_REPLIES_PER_HOUR", "MCW_STRANGER_REPLY_GAP_S", "MCW_SCHEDULED_PACKETS_PER_HOUR")
 ENV_WRITABLE |= set(LIMIT_KEYS)
 
-# Radio presets an operator can apply with one click.
+# Radio presets an operator can apply with one click. Only the presets of
+# MCW_RADIO_REGION are offered, and a frequency outside the region's band is
+# refused whichever way it is asked for (meshcore/radio.py).
 RADIO_PRESETS = {
-    "us_meshcore": {"label": "US MeshCore default", "freq_mhz": 910.525, "bw_khz": 62.5, "sf": 7, "cr": 5},
-    "us_wide": {"label": "US 250 kHz / SF10", "freq_mhz": 910.525, "bw_khz": 250, "sf": 10, "cr": 5},
-    "eu_meshcore": {"label": "EU 869.525 MHz", "freq_mhz": 869.525, "bw_khz": 62.5, "sf": 7, "cr": 5},
+    "us_meshcore": {"label": "US MeshCore default", "freq_mhz": 910.525, "bw_khz": 62.5, "sf": 7, "cr": 5,
+                    "region": "US"},
+    "us_wide": {"label": "US 250 kHz / SF10", "freq_mhz": 910.525, "bw_khz": 250, "sf": 10, "cr": 5,
+                "region": "US"},
+    "eu_meshcore": {"label": "EU 869.525 MHz", "freq_mhz": 869.525, "bw_khz": 62.5, "sf": 7, "cr": 5,
+                    "region": "EU"},
 }
+
+
+def region_presets() -> dict:
+    """The presets of the configured radio region."""
+    region = (settings.radio_region or "").strip().upper()
+    return {k: p for k, p in RADIO_PRESETS.items() if p.get("region") == region}
+
+
+def config_problems(bot) -> list[dict]:
+    """What the configuration gets wrong right now, for the Overview and the
+    System page: coverage errors, a node name off the WX-<IATA> convention,
+    a refused admin key, a radio outside its region's band, the scheduled
+    ceiling reached. Each is {"level": "error" | "warning", "text": ...}."""
+    from meshcore_weather.config import frequency_problem, node_name_problem
+    out: list[dict] = []
+    cov = _coverage_obj(bot)
+    if cov is not None:
+        out += [{"level": "error", "text": f"Coverage: {e}"} for e in cov.errors]
+        if getattr(cov, "unconfigured", False):
+            out.append({"level": "error", "text": f"Coverage: {cov.blocked}"})
+        out += [{"level": "warning", "text": f"Coverage: {w}"} for w in cov.warnings]
+    out += [{"level": "error", "text": r} for r in settings.rejected]
+    radio = getattr(bot, "radio", None)
+    if radio is not None and getattr(radio, "connected", False):
+        mc = getattr(radio, "_mc", None)
+        si = getattr(mc, "self_info", None) if mc else None
+        si = si if isinstance(si, dict) else {}
+        name_problem = node_name_problem(si.get("name")) if si else None
+        if name_problem:
+            out.append({"level": "warning", "text": name_problem})
+        freq = si.get("radio_freq")
+        if isinstance(freq, (int, float)):
+            fp = frequency_problem(freq, si.get("radio_bw"))
+            if fp:
+                out.append({"level": "error", "text": f"Radio: {fp}; transmit is off until it is fixed"})
+    elif frequency_problem(None):
+        out.append({"level": "error", "text": frequency_problem(None)})
+    responder = getattr(bot, "_broadcaster", None)
+    sched = getattr(responder, "scheduler", None) if responder is not None else None
+    if sched is not None and hasattr(sched, "ceiling_status"):
+        cs = sched.ceiling_status()
+        if cs.get("jobs_waited"):
+            out.append({"level": "warning", "text": (
+                f"Scheduled broadcasts hit their ceiling of {cs['cap']} packets an hour "
+                f"(MCW_SCHEDULED_PACKETS_PER_HOUR); waited: {', '.join(cs['jobs_waited'])}")})
+    return out
 
 
 def _radio(request: Request):
@@ -113,7 +169,10 @@ async def radio_state(request: Request) -> JSONResponse:
             "text": settings.meshcore_channel,
             "data": settings.meshwx_channel,
         },
-        "presets": RADIO_PRESETS,
+        "presets": region_presets(),
+        "radio_region": settings.radio_region,
+        "region_problem": getattr(radio, "region_problem", None),
+        "name_problem": getattr(radio, "name_problem", None),
         "reply_mode": settings.reply_mode,
         "channel_reply_max_hops": settings.channel_reply_max_hops,
         "peer_bots": radio.peer_bots() if radio.connected and hasattr(radio, "peer_bots") else [],
@@ -167,16 +226,24 @@ async def radio_set_name(request: Request) -> JSONResponse:
 
 @router.post("/radio/params")
 async def radio_set_params(request: Request) -> JSONResponse:
+    from meshcore_weather.config import frequency_problem
     body = await _body(request)
     if body.get("preset"):
         p = RADIO_PRESETS.get(body["preset"])
         if not p:
             raise HTTPException(400, "unknown preset")
-        body = {**p}
+        if p["region"] != settings.radio_region.strip().upper():
+            raise HTTPException(400, f"preset {body['preset']} is for {p['region']}, not MCW_RADIO_REGION="
+                                     f"{settings.radio_region}")
+        body = {k: v for k, v in p.items() if k in ("freq_mhz", "bw_khz", "sf", "cr")}
     try:
         freq, bw, sf, cr = float(body["freq_mhz"]), float(body["bw_khz"]), int(body["sf"]), int(body["cr"])
     except (KeyError, TypeError, ValueError):
         raise HTTPException(400, "freq_mhz, bw_khz, sf and cr are required")
+    # Refused before the node is asked (the radio checks again, for any caller).
+    problem = frequency_problem(freq, bw)
+    if problem:
+        raise HTTPException(400, problem)
     await _run(_radio_call(request).set_radio_params(freq, bw, sf, cr))
     return JSONResponse({"ok": True, "freq_mhz": freq, "bw_khz": bw, "sf": sf, "cr": cr})
 
@@ -262,6 +329,11 @@ async def radio_tx(request: Request) -> JSONResponse:
     """Flip transmit on or off. Applies immediately and persists to .env."""
     body = await _body(request)
     enabled = bool(body.get("enabled"))
+    radio = _radio(request)
+    if enabled and radio.connected and hasattr(radio, "band_problem"):
+        problem = radio.band_problem()
+        if problem:
+            raise HTTPException(400, f"transmit stays off: {problem}. Apply a {settings.radio_region} preset first")
     was = settings.tx_enabled
     settings.tx_enabled = enabled
     _write_env({"MCW_TX_ENABLED": "true" if enabled else "false"})
@@ -321,9 +393,10 @@ async def _feed_stats(bot) -> dict:
         "warnings_last_hour": warn,
         "newest_age_s": int((now - newest).total_seconds()) if newest else None,
         "top_types_last_hour": types.most_common(12),
-        # How far behind the uplink the dish's products run, and the newest
-        # creation time it has delivered (SDRSource): a fresh file is not
-        # fresh news when NOAA is replaying a backlog.
+        # How far behind the uplink the products run, and the newest creation
+        # time the feed has delivered (SDRSource: the dish's; InternetSource:
+        # NOAA's 2-minute bundle): a fresh file is not fresh news when NOAA
+        # is replaying a backlog.
         "lag_min": getattr(bot.emwin, "feed_lag_min", None),
         "newest_product_at": _unix(getattr(bot.emwin, "newest_product_ts", None)),
         # The dish's internet backup (emwin/fetcher.py SDRSource): on while
@@ -337,6 +410,13 @@ async def _feed_stats(bot) -> dict:
             "last_error": getattr(bot.emwin, "fallback_last_error", None),
             "from_internet_last_hour": sum(1 for p in last_hour if p.get("source") == "internet"),
         } if settings.emwin_source == "sdr" else None,
+        # An internet-only bot's own fetches (InternetSource): the last one
+        # that brought a product, and what the last failed one ran into
+        # ("403 Forbidden at 14:03Z") until a bundle comes in whole.
+        "internet": {
+            "last_ok": _unix(getattr(bot.emwin, "last_ok", None)),
+            "last_error": getattr(bot.emwin, "last_error", None),
+        } if settings.emwin_source == "internet" else None,
     }
 
 
@@ -531,6 +611,12 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
                 "last_ok": _unix(getattr(bot.emwin, "fallback_last_ok", None)),
                 "last_error": getattr(bot.emwin, "fallback_last_error", None),
             } if settings.emwin_source == "sdr" else None,
+            # With the internet as the source: its last fetch that brought a
+            # product, and what the last failed one ran into.
+            "internet": {
+                "last_ok": _unix(getattr(bot.emwin, "last_ok", None)),
+                "last_error": getattr(bot.emwin, "last_error", None),
+            } if settings.emwin_source == "internet" else None,
         },
         "peers": [{"name": p["name"]} for p in peers],
         "stats": _traffic_stats(),
@@ -663,6 +749,26 @@ def _limit_rows(bot) -> list[dict]:
                 "resettable": bool(cooling),
             })
 
+        # The scheduled jobs' own ceiling (schedule/scheduler.py): what the
+        # warnings, digest, observations, forecast and coverage jobs may put
+        # on the air in an hour, life-safety warnings always included.
+        sched = getattr(responder, "scheduler", None)
+        if sched is not None and hasattr(sched, "ceiling_status"):
+            cs = sched.ceiling_status(now)
+            waited = cs.get("jobs_waited") or []
+            rows.append({
+                "id": "scheduled",
+                "name": "Scheduled broadcasts",
+                "rule": (f"{cs['cap']} packets an hour, every scheduled job together; tornado, severe "
+                         "thunderstorm, flash flood and extreme wind warnings always go"),
+                "detail": (f"{cs['used']} of {cs['cap']} packets in the last hour"
+                           + (f"; waited for room: {', '.join(waited)}" if waited else "")),
+                "used": cs["used"], "cap": cs["cap"],
+                "state": "spent" if cs["spent"] else "ready",
+                "opens_in_s": cs["opens_in_s"],
+                "resettable": bool(cs["used"] or waited),
+            })
+
     replies = [t for t in getattr(bot, "_channel_replies", []) if now - t <= 3600]
     # People's text commands: one budget per person and one for everyone.
     hour_ago = time.time() - 3600
@@ -760,6 +866,8 @@ async def limits_reset(request: Request) -> JSONResponse:
         responder._parts.clear_floors()
     elif which == "radar" and hasattr(responder, "clear_radar_cooldowns"):
         responder.clear_radar_cooldowns()
+    elif which == "scheduled" and hasattr(getattr(responder, "scheduler", None), "reset_ceiling"):
+        responder.scheduler.reset_ceiling()
     elif which == "text":
         getattr(bot, "_all_replies", []).clear()
         getattr(bot, "_reply_history", {}).clear()
@@ -824,18 +932,30 @@ def _host() -> dict:
     return out
 
 
-def _coverage_info(bot) -> dict:
-    """The coverage the broadcasts filter on, as configured right now."""
+def _coverage_obj(bot):
+    """The coverage the scheduler uses, or the one the settings give."""
     from meshcore_weather.protocol.coverage import Coverage
     broadcaster = getattr(bot, "_broadcaster", None)
-    cov = broadcaster.coverage if broadcaster is not None else None
+    cov = getattr(broadcaster, "coverage", None) if broadcaster is not None else None
     if cov is None:
         try:
             cov = Coverage.from_config()
         except Exception:
             cov = None
+    return cov
+
+
+def _coverage_info(bot) -> dict:
+    """The coverage the broadcasts filter on, as configured right now. A
+    blocked coverage (errors, or nothing set without MCW_COVERAGE=national)
+    says so in the summary: the scheduled area broadcasts are off."""
+    cov = _coverage_obj(bot)
     src = (cov.sources if cov is not None else None) or {}
     empty = cov is None or cov.is_empty()
+    if cov is None:
+        summary = "Coverage could not be built: scheduled warnings, digest and observations send nothing"
+    else:
+        summary = cov.summary()
     return {
         "cities": list(src.get("cities") or []),
         "states": list(src.get("states") or []),
@@ -843,7 +963,13 @@ def _coverage_info(bot) -> dict:
         "radius_km": settings.home_radius_km,
         "zones": 0 if empty else len(cov.zones),
         "counties": 0 if empty else len(cov.counties),
-        "summary": "No coverage filter: broadcasts cover everything the feed carries" if empty else cov.summary(),
+        "summary": summary,
+        "blocked": cov.blocked if cov is not None else "not built",
+        "national": bool(getattr(cov, "national", False)),
+        "errors": list(getattr(cov, "errors", []) or []),
+        "warnings": list(getattr(cov, "warnings", []) or []),
+        "home": getattr(cov, "home_name", None),
+        "center": list(cov.center) if cov is not None and cov.center else None,
     }
 
 
@@ -864,6 +990,7 @@ async def system(request: Request) -> JSONResponse:
         },
         "host": _host(),
         "coverage": _coverage_info(bot),
+        "problems": config_problems(bot),
         "settings": safe,
         "env_writable": sorted(ENV_WRITABLE),
         "live_keys": sorted(_LIVE_KEYS),
@@ -951,8 +1078,15 @@ async def overview(request: Request) -> JSONResponse:
             "running": broadcaster is not None,
             "jobs_total": jobs_total, "jobs_enabled": jobs_enabled, "next_run_in_s": next_in,
             "1h": activity_log.stats(60), "24h": activity_log.stats(1440),
+            # Why the area jobs send nothing (coverage fails closed), and the
+            # scheduled ceiling's hour.
+            "blocked": getattr(getattr(broadcaster, "coverage", None), "blocked", None) if broadcaster else None,
+            "ceiling": broadcaster.scheduler.ceiling_status()
+            if broadcaster is not None and hasattr(broadcaster.scheduler, "ceiling_status") else None,
         },
-        "problems": {"last_hour": counts.get("problems", 0)},
+        # `config`: what the configuration gets wrong now (config_problems),
+        # beside the log's count.
+        "problems": {"last_hour": counts.get("problems", 0), "config": config_problems(bot)},
         "audit": _audit_summary(),
         "host": _host(),
         "bot": {"uptime_s": int(time.time() - started) if started else None, "git": _git_rev()},
@@ -981,7 +1115,9 @@ _SECONDS_KEYS = {"MCW_RELAYED_REPLY_DELAY_S"}          # 0 allowed: off
 # A budget of 0 would refuse everything: that is switching the bot off, which
 # is MCW_TX_ENABLED's job.
 _MIN_ONE_KEYS = {"MCW_APP_PACKETS_PER_HOUR", "MCW_TEXT_REPLIES_PER_SENDER_PER_HOUR", "MCW_TEXT_REPLIES_PER_HOUR",
-                 "MCW_STRANGER_REPLIES_PER_HOUR"}
+                 "MCW_STRANGER_REPLIES_PER_HOUR", "MCW_SCHEDULED_PACKETS_PER_HOUR"}
+# Free text with a shorter cap than the 200 every value gets.
+_MAX_LEN = {"MCW_OPERATOR_CONTACT": 100}
 _BOOL_KEYS = {"MCW_TX_ENABLED", "MCW_CONTACT_HOUSEKEEPING"}
 _CHOICES = {"MCW_REPLY_MODE": ("dm", "channel", "dm_only"), "MCW_EMWIN_SOURCE": ("sdr", "internet"),
             "MCW_LOG_LEVEL": ("DEBUG", "INFO", "WARNING", "ERROR"), "MCW_SCOPE_MODE": ("stats", "decide"),
@@ -1020,19 +1156,45 @@ def _validate_updates(updates: dict[str, str]) -> None:
             raise HTTPException(400, f"{key}: must be one of " + ", ".join(_CHOICES[key]))
         if key.endswith("_CHANNEL") and not (val.startswith("#") or val.isdigit()):
             raise HTTPException(400, f"{key}: must start with '#' or be a slot number")
+        if key in _MAX_LEN and len(val) > _MAX_LEN[key]:
+            raise HTTPException(400, f"{key}: at most {_MAX_LEN[key]} characters")
+        if key == "MCW_TIMEZONE":
+            from zoneinfo import ZoneInfo
+            try:
+                ZoneInfo(val)
+            except Exception:
+                raise HTTPException(400, f"{key}: {val!r} is not an IANA time zone (e.g. America/Denver)")
+        if key == "MCW_HOME_CITIES":
+            # Coverage fails closed on a home city that does not resolve; the
+            # portal refuses one before it reaches .env, so a typo here never
+            # switches a running bot's broadcasts off.
+            from meshcore_weather.protocol.coverage import check_place
+            for city in [c.strip() for c in val.split(",") if c.strip()]:
+                _loc, err, _warn = check_place(city)
+                if err:
+                    raise HTTPException(400, f"{key}: {err}")
+        if key in ("MCW_HOME_STATES", "MCW_HOME_WFOS"):
+            from meshcore_weather.geodata import resolver
+            resolver.load()
+            field = "s" if key == "MCW_HOME_STATES" else "w"
+            known = {z.get(field) for z in resolver._zones.values()}
+            bad = [c for c in (x.strip().upper() for x in val.split(",")) if c and c not in known]
+            if bad:
+                raise HTTPException(400, f"{key}: not known to the NWS zones: {', '.join(bad)}")
 
 
 async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
     """Apply what can be applied now; return the keys that were."""
     import logging
-    from meshcore_weather.geodata import resolver
     applied: list[str] = []
     coverage_changed = False
     for key, val in updates.items():
         if key not in _LIVE_KEYS or val == "":
             continue                      # an emptied key takes its default at the next start
         if key == "MCW_TIMEZONE":
+            from meshcore_weather.config import timezone_set_by_operator
             settings.timezone = val
+            timezone_set_by_operator()
         elif key == "MCW_LOG_LEVEL":
             logging.getLogger().setLevel(getattr(logging, val.upper(), logging.INFO))
             settings.log_level = val
@@ -1078,15 +1240,27 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
             setattr(settings, key[4:].lower(), float(val) if key in _FLOAT_KEYS else int(val))
         applied.append(key)
     if coverage_changed:
+        # The resolver's home moves with the first home city (it ranks bare
+        # place names and centres the observations and the home forecast):
+        # `_set_home_from_settings` alone keeps the home it already has.
+        from meshcore_weather.config import fill_timezone
+        from meshcore_weather.protocol.coverage import refresh_home
         try:
-            resolver._set_home_from_settings()
+            home = refresh_home()
+            logger.info("Portal: home point now %s", home)
         except Exception:
-            pass
+            logger.exception("Portal: could not move the home point")
+        try:
+            fill_timezone()           # a zone taken from the old home city follows the new one
+        except Exception:
+            logger.exception("Portal: could not take the time zone from the new home city")
+        if hasattr(bot, "_coverage_cache"):
+            bot._coverage_cache = None
         if bot._broadcaster is not None:
             try:
                 bot._broadcaster.scheduler.reload_coverage()
             except Exception:
-                pass
+                logger.exception("Portal: coverage reload failed")
     if "MCW_SERIAL_PORT" in applied or "MCW_SERIAL_BAUD" in applied:
         await bot.reconnect_radio()
     return applied
@@ -1102,6 +1276,10 @@ async def settings_env(request: Request) -> JSONResponse:
     if bad:
         raise HTTPException(400, f"not writable: {', '.join(sorted(bad))}")
     _validate_updates(updates)
+    radio = _bot(request).radio
+    if (updates.get("MCW_TX_ENABLED", "").lower() in _TRUE and getattr(radio, "connected", False)
+            and hasattr(radio, "band_problem") and radio.band_problem()):
+        raise HTTPException(400, f"MCW_TX_ENABLED: transmit stays off: {radio.band_problem()}")
     _write_env(updates)
     applied = await _apply_live(_bot(request), updates)
     pending = sorted(set(updates) - set(applied))

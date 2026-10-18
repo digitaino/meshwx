@@ -51,7 +51,8 @@ def load_config() -> BroadcastConfig:
             data["jobs"] = _migrate_jobs(data["jobs"])
         data.pop("radar_grid_size", None)
         cfg = BroadcastConfig(**data)
-        if _ensure_core_jobs(cfg):
+        migrated = _home_forecast_to_home(cfg)
+        if _ensure_core_jobs(cfg) or migrated:
             try:
                 save_config(cfg)
             except Exception as exc:
@@ -134,6 +135,33 @@ def _migrate_jobs(jobs: list[dict]) -> list[dict]:
     return out
 
 
+def _same_place(a: str, b: str) -> bool:
+    """'Austin TX', 'austin, tx' and 'Austin  TX' name the same place."""
+    def norm(x: str) -> str:
+        return " ".join((x or "").replace(",", " ").upper().split())
+    return bool(a.strip()) and norm(a) == norm(b)
+
+
+def _home_forecast_to_home(cfg: BroadcastConfig) -> bool:
+    """A forecast job written for the home city by name ("Austin TX", which
+    every bot bootstrapped before 2026-10-17 got) becomes the `home` job: the
+    first MCW_HOME_CITIES entry resolved when it runs, so a bot copied to
+    another city, or a home city changed on the portal, forecasts its own
+    home and not Austin. Only a job naming the configured home city moves; a
+    forecast for another place is the operator's own. Returns True if one did."""
+    home = (_split_csv(settings.home_cities) or [""])[0]
+    changed = False
+    for i, job in enumerate(cfg.jobs):
+        if job.product != "forecast" or job.location_type != "city" or not _same_place(job.location_id, home):
+            continue
+        name = "Forecast: home" if job.name.strip() == f"Forecast: {job.location_id}".strip() else job.name
+        cfg.jobs[i] = job.model_copy(update={"location_type": "coverage", "location_id": "home", "name": name})
+        logger.info("Broadcast job %s: forecast for %r is now the home forecast (location 'home')",
+                    job.id, job.location_id)
+        changed = True
+    return changed
+
+
 def _ensure_core_jobs(cfg: BroadcastConfig) -> bool:
     """Add any of the five v5 jobs that are missing. Returns True if it did.
 
@@ -141,7 +169,6 @@ def _ensure_core_jobs(cfg: BroadcastConfig) -> bool:
     the coverage job the next time it loads one."""
     have = {j.product for j in cfg.jobs}
     added = False
-    home_cities = _split_csv(settings.home_cities)
     defaults = [
         BroadcastJob(id="warnings", name="Warnings on change", product="warnings",
                      location_type="coverage", interval_minutes=2),
@@ -149,9 +176,10 @@ def _ensure_core_jobs(cfg: BroadcastConfig) -> bool:
                      location_type="coverage", interval_minutes=180),
         BroadcastJob(id="observations", name="Observations, coverage stations", product="observations",
                      location_type="coverage", interval_minutes=60),
-        BroadcastJob(id="forecast", name=f"Forecast: {home_cities[0]}" if home_cities else "Forecast: home",
-                     product="forecast", location_type="city" if home_cities else "coverage",
-                     location_id=home_cities[0] if home_cities else "", interval_minutes=360),
+        # The home point, resolved when the job runs: never a place name
+        # baked into the file (executor._build_forecast).
+        BroadcastJob(id="forecast", name="Forecast: home", product="forecast",
+                     location_type="coverage", location_id="home", interval_minutes=360),
         BroadcastJob(id="coverage", name="Coverage statement", product="coverage",
                      location_type="coverage", interval_minutes=180),
     ]

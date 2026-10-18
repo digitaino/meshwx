@@ -14,7 +14,7 @@ Checked against the code on 2026-09-15.
 | `@lat,lon` prefix | DM senders | parsed as floats, range-checked, capped table |
 | `sat` / `>sat` | anyone | answered from the receiver dashboard sample the bot already holds, with no request to goesrecv: lock, signal quality, dropped packets, goesproc state, age of the newest EMWIN file, how far behind the uplink the products run, and since when the internet backup is on. Nothing about the host, the network or the settings |
 | EMWIN products | the satellite (unauthenticated broadcast) | every parser is wrapped per product or per point; a bad product is skipped, never fatal |
-| Portal HTTP API | anyone who can reach the portal port (8081 on the Pi; no login by design) | see below |
+| Portal HTTP API | whoever can reach the portal port (8081 on the Pi; `127.0.0.1` by default since 2026-10-17; no login by design) with a `Host` it answers | see below |
 | Public dashboard | anyone the goestools dashboard is exposed to | read-only; see below |
 
 Nothing the bot receives is ever passed to a shell, a SQL engine, `eval`,
@@ -68,6 +68,43 @@ invented names cannot grow memory. One exception: the
 app request limiter keeps each sender's last request time until the bot
 restarts, so invented names on `>` channel lines each leave a small entry.
 
+## What a new operator's mistakes can put on the air
+
+Added 2026-10-17, before handing the bot to volunteers in other cities. An
+adversarial review found that a configuration mistake went straight on the
+air; each of these now fails closed, and `meshcore-weather --check` reports
+all of them before the first start (exit 1 on any error; it never
+transmits, and it never opens a serial port another process holds).
+
+- **Coverage.** A home city that did not resolve was skipped in silence, and
+  an empty coverage meant "accept everything": the national warning feed on
+  a city mesh. Now an unresolvable or ambiguous home city (a bare name in
+  several states), or an unknown state or office code, is an error logged at
+  start and shown on the portal, and with errors or with no coverage at all
+  the scheduled warnings, digest, observations and coverage statement send
+  nothing. Every warning in the country takes `MCW_COVERAGE=national`, which
+  the portal cannot set. A rebuild that raises keeps the last good coverage
+  (none yet: nothing is sent). The portal refuses a home city that does not
+  resolve before writing `.env`.
+- **Volume.** `MCW_SCHEDULED_PACKETS_PER_HOUR` (120) caps every scheduled job
+  together; tornado, severe thunderstorm, flash flood and extreme wind
+  warnings and their one repeat always go and count. A restart no longer
+  re-broadcasts the digest, observations, forecast, coverage statement and
+  an advert: each job's last run and the last advert are kept in
+  `data/warning_state.json`.
+- **Frequency.** `MCW_RADIO_REGION` (US: 902-928 MHz, EU: 863-870 MHz) bounds
+  the whole channel, centre ± half the bandwidth. The radio driver and the
+  portal refuse anything outside it, the portal offers only the region's
+  presets, and a node found outside it at connect has transmit switched off
+  (the portal will not switch it on again until the node is retuned). The
+  region is `.env`-only.
+- **Austin defaults.** `MCW_TIMEZONE` and `MCW_MQTT_IATA` no longer default to
+  Austin's: the zone comes from the home city's state, the MQTT region from
+  the node's `WX-<IATA>` name (MQTT stays off without one). The default
+  forecast job is `home`, resolved when it runs, and an old job naming the
+  configured home city is migrated to it. The example `.env` files ship an
+  empty home city and transmit off.
+
 ## Identity and spoofing
 
 - A channel message carries the sender's *name* only. The bot maps it to a
@@ -82,14 +119,35 @@ restarts, so invented names on `>` channel lines each leave a small entry.
   hex characters**. Set `MCW_ADMIN_KEY` to exactly the first 12 of your own
   key (the Radio page shows every contact's key): a longer value never
   matches, and an 8-character prefix is a 32-bit search for anyone willing
-  to grind keypairs.
+  to grind keypairs. A value shorter than 8 hex characters, or not hex at
+  all, is refused when the settings are read: logged as an error, shown by
+  `--check`, and treated as unset (no admin), never as a prefix that a
+  short key would match by chance.
+- The node's name should follow `WX-<IATA>` (`^WX-[A-Z0-9]{2,8}$`); apps find
+  bots by it and other bots ignore `WX-` senders on the channel. A name off
+  the convention is a warning in the log, on the portal and in `--check`.
 - Other bots (`WX-*`) are ignored as command sources on the channel, text
   and `>` lines alike. A DM from one is handled like anyone's.
 
 ## Portal
 
-The portal has no login on purpose; access control belongs at the edge
-(LAN only, or a tunnel with its own auth). What it still guards against:
+The portal has no login on purpose; access control belongs at the edge.
+Since 2026-10-17 it **binds `127.0.0.1` by default** (`MCW_PORTAL_HOST`):
+the operator comes in over an SSH tunnel, and the goestools dashboard on
+the same Pi calls `http://127.0.0.1:8081` for the public bundle. In Docker
+the app must listen on `0.0.0.0` inside the container (Docker forwards a
+published port to the container's address, not its loopback), so
+`docker-compose.yml` sets that and publishes the port on the host's
+`127.0.0.1:8080` only. What it guards against:
+
+- **DNS rebinding.** A page on an attacker's domain can re-point that domain
+  at 127.0.0.1 and then talk to the portal as same-origin, which the header
+  check below cannot stop. Every request must carry a `Host` the portal was
+  told about: `localhost`, `127.0.0.1`, `[::1]`, a specific bind address,
+  or a name in `MCW_PORTAL_ALLOWED_HOSTS`. Anything else gets 400 before a
+  route runs (Starlette's TrustedHostMiddleware, with IPv6 literals
+  understood). Tested over TCP: the dashboard's own request and an SSH
+  tunnel's (`Host: localhost:<port>`) are answered, a foreign `Host` is not.
 
 - **Cross-site requests.** Every POST/PUT/DELETE must carry
   `X-Requested-With: meshcore-portal`, a header a web page on another origin
@@ -143,7 +201,10 @@ the public page.
 ## Residual risks, stated plainly
 
 1. Anyone who can reach the portal can operate it, including pointing mode,
-   which stops reception. That is the chosen model.
+   which stops reception. That is the chosen model; the defaults now keep
+   "anyone who can reach it" to the machine itself. An operator who binds
+   it to a LAN address (and lists the name in `MCW_PORTAL_ALLOWED_HOSTS`)
+   is back to "anyone on the LAN".
 2. A determined attacker can generate a keypair matching the admin prefix.
    The most the bot can compare is 12 hex characters (48 bits); use all 12.
 3. The satellite feed is unauthenticated. A local transmitter on 1.694 GHz
@@ -153,7 +214,11 @@ the public page.
    cannot do.
 4. Channel names are public knowledge; anyone can post requests, text or
    `>`. The budgets bound the cost; region scope on the repeaters bounds the
-   reach.
+   reach. A channel name cannot: repeaters forward the ciphertext of every
+   flood they hear, whatever its channel.
+6. The scheduled ceiling is per bot. Two bots whose coverages overlap each
+   send their own warnings for the overlap until cross-bot coordination
+   exists; `dm` reply mode and an honest radius keep the rest apart.
 5. The dashboard's LAN test compares text prefixes, and `172.2` also matches
    public addresses (172.2.x.x, 172.200.x.x and up). Such an address
    reaching port 8080 directly, not through Cloudflare, gets the controls.

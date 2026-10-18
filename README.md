@@ -303,13 +303,32 @@ MCW_HOME_WFOS=EWX,FWD
 
 Coverage decides which warnings the scheduled broadcasts and the bare `>w`
 carry; the observation stations are the ones within the radius of the home
-point. Commands and requests that name a place are answered nationwide. With
-no coverage set at all, broadcasts carry every warning.
+point. Commands and requests that name a place are answered nationwide.
+
+Coverage **fails closed**. A home city that does not resolve, a bare name
+that is a place in several states (`Austin` is in seven: write `Austin TX`),
+or an unknown state or office code is an error: logged as `Coverage error:`
+at start, shown on the portal's System page and by `meshcore-weather
+--check`, and until it is fixed the scheduled warnings, digest, observations
+and coverage statement send **nothing**. So does a bot with no coverage at
+all. To broadcast every warning in the country you have to say so:
+`MCW_COVERAGE=national`. If a coverage rebuild fails while the bot runs, it
+keeps the last good one. At start the log says what it built:
+
+```
+[INFO] meshcore_weather.protocol.coverage: Coverage: 36 zones, 36 counties (120 km around 30.27,-97.74, 1 cities)
+[INFO] meshcore_weather.protocol.coverage: Home point: Austin, TX (30.2672, -97.7431)
+```
+
+The portal refuses a home city that does not resolve before it reaches
+`.env`, and a live change of the home city moves the home point (the radius
+centre, the observations, the home forecast and how bare place names are
+ranked) and, when `MCW_TIMEZONE` is empty, the time zone with it.
 
 ### The default schedule
 
-On first start the bot writes `data/broadcast_config.json` with four jobs.
-Only these four products can be scheduled; everything narrative is
+On first start the bot writes `data/broadcast_config.json` with five jobs.
+Only these five products can be scheduled; everything narrative is
 request-only.
 
 | Job | Every | Sends |
@@ -317,14 +336,33 @@ request-only.
 | `warnings` | 2 min | New and changed warnings in coverage, a Cancel for one that ended early, and one repeat of a tornado, severe thunderstorm, flash flood or extreme wind warning 90 s later |
 | `digest` | 180 min | The active-warning Digest (also a minute after any Cancel) |
 | `observations` | 60 min | One packet for up to 12 stations within the radius that reported in the last 120 min |
-| `forecast` | 360 min | The forecast for the first home city |
+| `forecast` | 360 min | The forecast for the home point (location `home`: the first home city, resolved when the job runs) |
+| `coverage` | 180 min | The Coverage statement: centre, radius, offices and zones this bot carries |
 
 The scheduler checks every 30 s and spaces packets 2 s apart; the radio
 keeps the same gap between any two transmissions, resends, text replies
 and DMs included. A job's
 location is `coverage`, `city`, `pfm_point` or `station` (observations for
 one station). A v4 job file is migrated when it loads: retired products are
-dropped and a forecast job runs no more often than every 3 h.
+dropped and a forecast job runs no more often than every 3 h. A forecast job
+that names the configured home city (`Austin TX`, as every file written
+before 2026-10-17 does) becomes the `home` job when it loads, so a copied
+file never forecasts somebody else's city.
+
+Two guards hold whatever the schedule says:
+
+- **A ceiling**: `MCW_SCHEDULED_PACKETS_PER_HOUR` (120) packets an hour for
+  every scheduled job together. Tornado, severe thunderstorm, flash flood
+  and extreme wind warnings and their one repeat always go out (and count);
+  past the ceiling everything else waits for room, keeps its state and goes
+  out later. The log says so once an hour, and the Text Bot page's Limits
+  card shows it as "Scheduled broadcasts".
+- **Restarts are quiet**: when each job last ran, the hour's count and the
+  last advert are kept in `data/warning_state.json`, so a restart (or a
+  reconnect of the radio) sends no digest, observations, forecast, coverage
+  statement or advert that was not due anyway. Each periodic job's first run
+  after a start also waits a few minutes, by an offset taken from the node's
+  public key, so two bots that boot together do not stay in step.
 
 ### Then manage everything else from the admin portal
 
@@ -342,10 +380,14 @@ Each setting lives in exactly one place, next to the status it affects:
 
 Settings are written to `.env` and applied live where the bot can (the
 response says which keys need a restart). Values are validated before the
-file is touched. The portal has no login: keep it on the LAN or gate it at
-the edge. Every state-changing request must carry the header
-`X-Requested-With: meshcore-portal`, so a web page opened on the LAN cannot
-change anything through someone's browser.
+file is touched. The portal has no login, so it listens on `127.0.0.1` by
+default (`MCW_PORTAL_HOST`): from another machine, open an SSH tunnel
+(`ssh -N -L 8081:127.0.0.1:8081 you@the-pi`, then `http://localhost:8081`).
+It answers only requests whose `Host` is `localhost`, `127.0.0.1`, `[::1]`,
+its bind address or a name in `MCW_PORTAL_ALLOWED_HOSTS` (anything else gets
+400, which is what stops a DNS-rebinding page), and every state-changing
+request must carry the header `X-Requested-With: meshcore-portal`, so a web
+page opened in someone's browser cannot change anything.
 
 ## Quick start
 
@@ -355,7 +397,8 @@ change anything through someone's browser.
 git clone https://github.com/digitaino/meshwx.git
 cd meshwx
 cp .env.example .env
-# Edit .env: MCW_HOME_CITIES, MCW_ADMIN_KEY, the channels
+# Edit .env: MCW_HOME_CITIES, MCW_ADMIN_KEY (leave the channels on #meshwx)
+docker compose run --rm meshcore-weather --check
 docker compose up -d meshcore-weather
 ```
 
@@ -365,16 +408,26 @@ under `corescope/`; naming the service starts the bot alone. The compose
 file points the bot at `tcp://host.docker.internal:4403`, a TCP bridge to
 the radio on the host: on macOS `scripts/start.sh` runs socat for it and
 then starts the whole compose stack. The portal is on
-`http://localhost:8080` when `MCW_PORTAL_ENABLED=true`.
+`http://localhost:8080` when `MCW_PORTAL_ENABLED=true`, published on the
+host's `127.0.0.1` only: inside the container the compose file sets
+`MCW_PORTAL_HOST=0.0.0.0` (Docker forwards the published port to the
+container's own address, not its loopback), and the `ports:` line keeps it
+off the LAN.
 
 ### Without Docker
 
+Needs a **64-bit OS** (Raspberry Pi OS 64-bit, Debian or Ubuntu arm64 or
+x86_64, macOS) and **Python 3.11 or newer**. The scientific wheels pyIEM
+pulls in, and `psycopg[binary]` (which brings its own libpq, so no
+`apt install libpq5`), have no builds for 32-bit ARM.
+
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[portal]"
 cp .env.example .env
 # Edit .env
+meshcore-weather --check
 meshcore-weather
 ```
 
@@ -406,13 +459,16 @@ On the first start you should see log lines like these (slot numbers vary):
 
 ```
 [INFO] meshcore_weather.geodata: Location data loaded: 4029 zones, 34937 places, 2237 stations
+[INFO] meshcore_weather.main:   Time zone: America/Chicago (from the home city's state (TX))
+[INFO] meshcore_weather.protocol.coverage: Coverage: 36 zones, 36 counties (120 km around 30.27,-97.74, 1 cities)
+[INFO] meshcore_weather.protocol.coverage: Home point: Austin, TX (30.2672, -97.7431)
 [INFO] meshcore_weather.meshcore.radio: Listening on channel 1 (#meshwx)
 [INFO] meshcore_weather.meshcore.radio: Data channel 1 (#meshwx, shared with text)
 [INFO] meshcore_weather.main: Meshcore radio connected 10.4 s after start
-[INFO] meshcore_weather.schedule.store: Bootstrap schedule: 4 default jobs
-[INFO] meshcore_weather.schedule.scheduler: Broadcast scheduler started: 4 jobs, tick every 30s
+[INFO] meshcore_weather.schedule.store: Bootstrap schedule: 5 default jobs
+[INFO] meshcore_weather.schedule.scheduler: Broadcast scheduler started: 5 jobs, tick every 30s
 [INFO] meshcore_weather.schedule.scheduler: Broadcasts held until the product backlog is loaded
-[INFO] meshcore_weather.portal.server: Portal running at http://0.0.0.0:8080
+[INFO] meshcore_weather.portal.server: Portal running at http://127.0.0.1:8080 (answers Host: localhost, 127.0.0.1, [::1], ::1)
 [INFO] meshcore_weather.main: Weather bot is running. Listening on channel 1 (#meshwx) + DMs
 [INFO] meshcore_weather.main: Backlog loaded: 14508 products in 39.3 s
 ```
@@ -422,7 +478,13 @@ air, and `Backlog loaded` is when the answers became real ones. A stop
 (`systemctl stop`, Ctrl-C, or Restart from the portal) cancels every task,
 logs `Weather bot stopped` and exits 0.
 
-Open `http://localhost:8080/#broadcasts` to see the four jobs, and type
+Any `[ERROR]` line before `Weather bot is running` is a configuration
+mistake: `Coverage error:` (nothing is broadcast until it is fixed),
+`Radio: … outside the US band` (transmit is switched off), `MCW_ADMIN_KEY
+ignored`. A `Node name: … WX-<IATA>` warning means apps will not find the
+bot by name.
+
+Open `http://localhost:8080/#broadcasts` to see the five jobs, and type
 `help` or `wx austin tx` into Text Bot > Try a command.
 
 ## CLI tools
@@ -434,12 +496,22 @@ meshcore-weather-cli fetch              # Load products from the configured EMWI
 meshcore-weather-cli query "Austin TX"  # The wx reply for a place, from those products (no radio)
 meshcore-weather-cli interactive        # Type commands as a person would; "more" pages, "sat" reads the receiver
 meshcore-weather-cli sat                # The sat reply: one read of the goestools dashboard, no products loaded
+meshcore-weather-cli check              # Same as meshcore-weather --check (below)
 meshcore-weather-cli contacts           # List the contacts on the radio
 meshcore-weather-cli remove <name>      # Remove a contact by name
 meshcore-weather-cli clear-contacts     # Remove every contact
 ```
 
 The last three open the radio themselves; stop the bot first.
+
+`meshcore-weather --check` (`--no-radio` to leave the radio alone) reads the
+configuration the bot would start with and prints one line per check: home
+city and coverage, home point, time zone, EMWIN source and directory, serial
+port, channels, radio region, ceiling, reply mode, admin key, portal bind,
+and the node's name and frequency when it can read them. It exits 1 if any
+line is an `ERROR`. It never transmits: the node is read from the running
+bot's portal on this machine, or by opening a serial port no other process
+holds (APP_START only); a port the bot holds is left alone.
 
 ## Running on the receiver Pi (no Docker)
 
@@ -451,7 +523,8 @@ has no room for the image build); a venv is enough:
 git clone https://github.com/digitaino/meshwx.git ~/meshcore-weather
 cd ~/meshcore-weather
 python3 -m venv .venv && .venv/bin/pip install -e ".[portal]"
-cp deploy/pi.env.example .env        # edit: serial port, home city, admin key, then MCW_TX_ENABLED
+cp deploy/pi.env.example .env        # edit: serial port, home city, admin key (TX stays off)
+.venv/bin/meshcore-weather --check   # exit 1 on any error; never transmits
 sudo cp deploy/meshcore-weather.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now meshcore-weather
 journalctl -u meshcore-weather -f
@@ -540,6 +613,76 @@ ssh digitaino@mesh-wx.digitaino.com sudo systemctl restart goes-dashboard
 The admin portal's Text Bot page shows the same feed unredacted (sender names,
 DM text, admin and console commands, and why a request was not answered).
 
+## Running a bot in another city
+
+A weather bot spends airtime on a mesh other people built, so a new one
+starts quiet and checked. In order:
+
+1. **A radio of its own**, not your phone's companion: flashed with the
+   MeshCore **companion (USB)** firmware, version 1.15 or newer, on your
+   mesh's local preset (in the US the MeshCore default, 910.525 MHz,
+   62.5 kHz, SF7). Name it `WX-<IATA>`, the code of your nearest airport
+   (`WX-DEN`, `WX-SAT`); listen for adverts first and make sure nobody near
+   you already uses that name. Apps find bots by the `WX-` prefix, and the
+   bot warns at start (and in `--check`) about a name off the convention.
+2. **Install** on a 64-bit OS with Python 3.11+ (*Without Docker* above, or
+   *Running on the receiver Pi* below).
+3. **Copy `.env.example` to `.env`** (on a receiver Pi, `deploy/pi.env.example`).
+4. **`MCW_HOME_CITIES="City ST"`**, your city and state, then run
+   `meshcore-weather --check`: the Coverage and Home point lines must be
+   the place you meant. A bare name or a typo is an error, and the bot sends
+   nothing scheduled until it is fixed.
+5. **`MCW_HOME_RADIUS_KM`** = how far your mesh really reaches, not how far
+   you would like it to. Warnings for the whole circle go to everyone on it.
+6. **`MCW_TIMEZONE`**: empty takes your state's zone; set it if your state
+   has two (the check says so).
+7. **The serial port**: `MCW_SERIAL_PORT=/dev/ttyUSB0` (or `/dev/ttyACM0`),
+   or install `deploy/99-meshcore-radio.rules` for a stable `/dev/meshcore`,
+   and put the bot's user in the `dialout` group.
+8. **The portal stays on `127.0.0.1`** (the default). Reach it with
+   `ssh -N -L 8081:127.0.0.1:8081 you@the-bot` and `http://localhost:8081`.
+   It has no login; do not put it on the LAN or the internet.
+9. **`MCW_ADMIN_KEY`** = the first 12 hex characters of *your own* public
+   key (your phone's, as the bot logs it with every DM). Shorter than 8 is
+   refused.
+10. **Leave the channels on `#meshwx`.** Every bot and app uses that one
+    name (*When two bots meet*, below).
+11. **The feed**: `MCW_EMWIN_SOURCE=internet` (NOAA's bundles; set
+    `MCW_OPERATOR_CONTACT` to your email) needs nothing else; `sdr` needs
+    your own GOES dish and goestools writing EMWIN into `MCW_SDR_EMWIN_DIR`.
+12. **Start with transmit off** (`MCW_TX_ENABLED=false`, as the example
+    ships), run `--check` until it says `0 error(s)`, start the bot and
+    watch the log for a day: no `[ERROR]` lines, `Coverage:` and
+    `Home point:` as expected, products coming in, requests heard.
+13. **Talk to your repeater operators** before the first packet: what the
+    bot will send (warnings on change, a digest and coverage statement
+    every 3 h, observations hourly, a forecast every 6 h, at most
+    `MCW_SCHEDULED_PACKETS_PER_HOUR` in any hour, plus answers to requests),
+    the area it covers, and whether they want it inside a region scope.
+14. **Then switch transmit on**, in the portal (Radio > Transmit) or with
+    `MCW_TX_ENABLED=true` and a restart. The portal refuses while the node
+    is on a frequency outside `MCW_RADIO_REGION`.
+
+### When two bots meet
+
+There is one request channel, `#meshwx`, for every bot everywhere, on
+purpose. A MeshCore channel's key is derived from its name, so a phone needs
+one slot to talk to any bot it can hear, and an app needs no per-city
+setup. A city name in the channel (`#meshwx-aus`) would not keep anything
+local either: repeaters cannot read a channel packet, they forward the
+ciphertext of every flood they hear within the hop limit, whatever channel
+it is on, so per-city names only cost every user another slot. What keeps
+floods local is the radius of each bot's coverage, the hop limits and,
+where the operators adopt it, MeshCore region scope on the repeaters.
+
+Where two meshes overlap, use `MCW_REPLY_MODE=dm` (the default): a DM goes
+along one path, while a channel reply floods both meshes. Requests that name
+a place are already answered only by the nearest bot the others have heard
+adverts from; requests without a place are answered by each bot that hears
+them. Proper cross-bot coordination (who carries which warnings where
+coverages overlap) is coming; until then, keep the radius honest and agree
+the overlap with the other bot's operator.
+
 ## Configuration reference
 
 All settings are environment variables prefixed with `MCW_`, read from the
@@ -555,7 +698,8 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_MESHCORE_CHANNEL` | `#meshwx` | The request channel for people and apps; created on a free slot if the node lacks it. Never slot 0 (public) |
 | `MCW_MESHWX_CHANNEL` | `#meshwx` | The data channel for v5 datagrams and `>` answers. The same name as `MCW_MESHCORE_CHANNEL` shares one slot, which is where v5 apps listen; a different name takes a second slot. Empty = no broadcasts and no `>` answers |
 | `MCW_STATUS_CHANNEL` | *(empty)* | A public channel for the station's status lines, e.g. `#meshwx-status`: GOES lock lost (after 10 min) or back, the internet backup on or off, products running an hour or more behind the uplink (and current again under half an hour), the receiver dashboard unreachable (after 5 min), the Pi's disk, temperature or throttle flags. One line per change, `WX-AUS status: GOES lock lost 10m`, the same condition at most every 30 min and six lines an hour in all. Created on a free slot like the others; never the request channel. Only with `MCW_EMWIN_SOURCE=sdr`: the lines come from the dashboard poll. Empty = no status lines |
-| `MCW_TX_ENABLED` | `true` | `false` = receive only: adverts, replies, datagrams, status lines and resends become logged no-ops. Receiving, MQTT and the portal continue |
+| `MCW_TX_ENABLED` | `true` | `false` = receive only: adverts, replies, datagrams, status lines and resends become logged no-ops. Receiving, MQTT and the portal continue. `.env.example` ships `false`: switch it on after `--check` |
+| `MCW_RADIO_REGION` | `US` | Where the radio may transmit: `US` (902-928 MHz) or `EU` (863-870 MHz). A frequency outside the band (the whole channel, centre ± half the bandwidth) is refused from the portal and the radio driver, the portal offers only the region's presets, and a node found on such a frequency at start has transmit switched off until it is retuned |
 | `MCW_ADVERT_INTERVAL_HOURS` | `6` | Hours between flood adverts |
 | `MCW_CONTACT_HOUSEKEEPING` | `true` | Keep the node's contact table for people: store companions only, remove repeaters, rooms and sensors, and the people heard longest ago when free slots run low. The admin and peer bots are never removed. `false` = firmware behaviour |
 | `MCW_CONTACT_SLOTS` | `100` | Contact capacity to assume when the firmware does not report one |
@@ -570,8 +714,8 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_REPLY_MODE` | `dm` | `dm`, `dm_only` or `channel` (see "How replies go out") |
 | `MCW_CHANNEL_REPLY_MAX_HOPS` | `2` | A sender the bot cannot DM gets a channel reply only within this many hops |
 | `MCW_PEER_BOT_PREFIX` | `WX-` | Name prefix of other weather bots; their channel messages are ignored |
-| `MCW_ADMIN_KEY` | *(empty)* | Hex public-key prefix allowed to run admin commands by DM |
-| `MCW_TIMEZONE` | `America/Chicago` | Time zone for times in text replies; the wire is always UTC |
+| `MCW_ADMIN_KEY` | *(empty)* | Hex public-key prefix allowed to run admin commands by DM: the first 12 characters of your own key. Fewer than 8, or not hex, is logged as an error and ignored |
+| `MCW_TIMEZONE` | *(empty)* | Time zone for times in text replies (IANA name); the wire is always UTC. Empty = the zone of the home city's state; set it where a state has more than one |
 
 **Delivery**
 
@@ -594,7 +738,8 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MCW_EMWIN_SOURCE` | `internet` | `internet` (NOAA bundles) or `sdr` (the goesproc directory) |
-| `MCW_EMWIN_POLL_INTERVAL` | `120` | Seconds between store refreshes; with `internet`, also between bundle downloads |
+| `MCW_EMWIN_POLL_INTERVAL` | `60` | Seconds between store refreshes; with `internet`, also between bundle downloads |
+| `MCW_OPERATOR_CONTACT` | *(empty)* | Optional; appended to the User-Agent sent to NOAA, e.g. an email address, so NOAA can reach you instead of blocking. Printable, at most 100 characters; read at start |
 | `MCW_EMWIN_BASE_URL` | `https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txthrs01.zip` | Bundle loaded at start (`internet`) |
 | `MCW_EMWIN_POLL_URL` | `https://tgftp.nws.noaa.gov/SL.us008001/CU.EMWIN/DF.xt/DC.gsatR/OPS/txtmin02.zip` | Bundle polled after that (`internet`) |
 | `MCW_EMWIN_MAX_AGE_HOURS` | `12` | Hours a product stays in the store; warning-class products stay at least 48 h and storm reports at least 24 h |
@@ -614,14 +759,17 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_HOME_RADIUS_KM` | `120` | Every forecast zone within this radius of the home point is covered; `0` = no radius |
 | `MCW_HOME_STATES` | *(empty)* | Comma-separated states, covered whole |
 | `MCW_HOME_WFOS` | *(empty)* | Comma-separated NWS offices, covered whole |
+| `MCW_COVERAGE` | *(empty)* | `national` = no area filter: the scheduled broadcasts carry every warning the feed has. The only way to get that; empty = the home area, and no home area means nothing is broadcast |
+| `MCW_SCHEDULED_PACKETS_PER_HOUR` | `120` | Ceiling on scheduled packets an hour, every job together; life-safety warnings and their repeat always go. Also on the portal's Limits card |
 
 **Portal**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MCW_PORTAL_ENABLED` | `false` | Run the admin portal (needs the `[portal]` extra) |
-| `MCW_PORTAL_HOST` | `0.0.0.0` | Portal bind address |
+| `MCW_PORTAL_HOST` | `127.0.0.1` | Portal bind address. No login: keep it on this machine and use an SSH tunnel |
 | `MCW_PORTAL_PORT` | `8080` | Portal port |
+| `MCW_PORTAL_ALLOWED_HOSTS` | *(empty)* | Comma-separated `Host` names the portal answers besides `localhost`, `127.0.0.1`, `[::1]` and a specific bind address, e.g. `mesh-wx.local,10.0.0.51`. Anything else gets 400 |
 | `MCW_BRIDGE_TOKEN` | *(empty)* | Set it to turn on the debug bridge (needs the portal too): a development client reads the transmitted datagrams and posts `>` requests over HTTP. Empty = the bridge answers 404. See "The debug bridge" |
 
 **MQTT (CoreScope)**
@@ -632,7 +780,7 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_MQTT_HOST` | `mosquitto` | Broker host |
 | `MCW_MQTT_PORT` | `1883` | Broker port |
 | `MCW_MQTT_TOPIC_PREFIX` | `meshcore` | Topics are `<prefix>/<iata>/<public key>/packets` |
-| `MCW_MQTT_IATA` | `AUS` | Region code in the topic |
+| `MCW_MQTT_IATA` | *(empty)* | Region code in the topic. Empty = the code in the node's `WX-<IATA>` name; with neither, MQTT stays off (logged) |
 | `MCW_MQTT_USERNAME`, `MCW_MQTT_PASSWORD` | *(empty)* | Broker credentials |
 | `MCW_MQTT_ORIGIN` | `meshcore-weather` | Observer name in each published message |
 
@@ -892,7 +1040,10 @@ right.
 - **Input sanitization**: control characters are stripped, messages cut to 200 characters and places to 50.
 - **Admin authentication**: admin commands only by DM, matched on the sender's public key, not their name.
 - **Identity**: a radio that is not the node in the saved profile sends no adverts until it is adopted or a new profile is started.
-- **Portal**: no login, so keep it on the LAN; state-changing requests need the `X-Requested-With: meshcore-portal` header. The public page gets a redacted bundle.
+- **Portal**: no login, so it binds `127.0.0.1` by default and answers only a known `Host` (`MCW_PORTAL_ALLOWED_HOSTS`); state-changing requests need the `X-Requested-With: meshcore-portal` header. The public page gets a redacted bundle.
+- **Coverage fails closed**: a home city that does not resolve, or no coverage at all, means the scheduled area broadcasts send nothing; every warning in the country only with `MCW_COVERAGE=national`.
+- **Scheduled ceiling**: 120 scheduled packets an hour (`MCW_SCHEDULED_PACKETS_PER_HOUR`), life-safety warnings always included; restarts do not re-broadcast.
+- **Radio region**: frequencies outside `MCW_RADIO_REGION`'s band are refused, and a node found on one has transmit switched off.
 
 ## Roadmap
 

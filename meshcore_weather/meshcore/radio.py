@@ -17,7 +17,7 @@ from typing import Any
 from meshcore import MeshCore, EventType
 
 from meshcore_weather.bridge import datagram_feed
-from meshcore_weather.config import settings
+from meshcore_weather.config import frequency_problem, iata_from_name, node_name_problem, settings
 from meshcore_weather.meshcore import profile
 from meshcore_weather.meshcore.delivery import (
     PAYLOAD_GRP_DATA,
@@ -205,6 +205,13 @@ class MeshcoreRadio:
         self._contacts_task: asyncio.Task | None = None
         self._mqtt: MqttPublisher | None = None
         self.last_advert_at: float = 0.0
+        # The last advert before this radio object existed, {"at", "key"}: the
+        # scheduler's state file after a restart (main.py), the old radio
+        # after a reconnect. Recent and from the same key, it stands in for
+        # the advert a connect would otherwise send.
+        self.restored_advert: dict | None = None
+        self.region_problem: str | None = None   # the node's frequency is outside MCW_RADIO_REGION's band
+        self.name_problem: str | None = None     # the node's name is off the WX-<IATA> convention
         self.device: dict = {}                 # DEVICE_INFO: firmware build, model, capacity
         self.max_contacts: int = settings.contact_slots
         self.port: str | None = None           # the port the node actually answered on
@@ -482,8 +489,54 @@ class MeshcoreRadio:
                 "result": d.get("result") or "pending", "echo_ms": d.get("echo_ms"), "via": d.get("via"),
                 "snr": d.get("snr"), "attempts": d.get("attempts"), "skipped": d.get("skipped")}
 
+    def band_problem(self) -> str | None:
+        """Why this node may not transmit where MCW_RADIO_REGION says the bot
+        is, or None: its frequency (and bandwidth) outside the region's band,
+        or a region the bot does not know."""
+        si = (self._mc.self_info if self._mc else None) or {}
+        freq = si.get("radio_freq")
+        return frequency_problem(freq if isinstance(freq, (int, float)) else None, si.get("radio_bw"))
+
+    def _check_identity_and_band(self) -> None:
+        """At connect, before anything is sent: a node on a frequency outside
+        the region's band (a board flashed with another country's preset)
+        gets its transmit switched off, loudly; a name off the WX-<IATA>
+        convention is a warning."""
+        si = (self._mc.self_info if self._mc else None) or {}
+        self.name_problem = node_name_problem(si.get("name"))
+        if self.name_problem:
+            logger.warning("Node name: %s. Set it under Radio > Node (WX- and your nearest airport's "
+                           "IATA code; check nobody nearby uses it)", self.name_problem)
+        self.region_problem = self.band_problem()
+        if self.region_problem:
+            if settings.tx_enabled:
+                settings.tx_enabled = False
+                logger.error("Radio: %s. Transmit is OFF until the node is on a %s frequency "
+                             "(Radio > LoRa parameters, then switch transmit on)",
+                             self.region_problem, settings.radio_region)
+            else:
+                logger.error("Radio: %s", self.region_problem)
+
+    def _restored_advert_fresh(self) -> bool:
+        """Did this node advert recently enough, before the restart, that a
+        connect needs no advert of its own? Same key only: a node with a new
+        identity must tell the mesh."""
+        rec = self.restored_advert or {}
+        at = rec.get("at")
+        key = ((self._mc.self_info if self._mc else None) or {}).get("public_key") or ""
+        if not isinstance(at, (int, float)) or not key or rec.get("key") != key:
+            return False
+        age = time.time() - at
+        if not 0 <= age < max(1, settings.advert_interval_hours) * 3600:
+            return False
+        self.last_advert_at = max(self.last_advert_at, float(at))
+        logger.info("Advert not repeated: this node adverted %d min ago, before the restart; next one in %d min",
+                    age // 60, (max(1, settings.advert_interval_hours) * 3600 - age) // 60)
+        return True
+
     async def _configure_node(self) -> None:
         """Resolve (or create) the bot's channels, subscribe, advertise."""
+        self._check_identity_and_band()
         # Text channel: create it if the node does not have it yet (a fresh
         # flash has only slot 0). Never slot 0: that is the public channel.
         try:
@@ -599,7 +652,7 @@ class MeshcoreRadio:
         await self.housekeep_contacts()
         if self.pending_adoption:
             logger.warning("Advert held: this radio is not the node in the profile (adopt it under Radio > Hardware)")
-        else:
+        elif not self._restored_advert_fresh():
             await self._send_advert()
 
         # Periodic tasks: re-advert, refresh contacts, watch the link
@@ -616,12 +669,17 @@ class MeshcoreRadio:
         if settings.mqtt_enabled:
             try:
                 pubkey = self._mc.self_info.get("public_key", "") or ""
-                if pubkey:
+                # The topic's region: MCW_MQTT_IATA, else the IATA code of the
+                # node's own WX-<IATA> name. Never someone else's city.
+                iata = settings.mqtt_iata.strip() or iata_from_name(self._mc.self_info.get("name"))
+                if not iata:
+                    logger.error("MQTT not started: set MCW_MQTT_IATA (or name the node WX-<IATA>)")
+                elif pubkey:
                     self._mqtt = MqttPublisher(
                         host=settings.mqtt_host,
                         port=settings.mqtt_port,
                         topic_prefix=settings.mqtt_topic_prefix,
-                        iata=settings.mqtt_iata,
+                        iata=iata,
                         pubkey=pubkey,
                         username=settings.mqtt_username,
                         password=settings.mqtt_password,
@@ -1274,8 +1332,14 @@ class MeshcoreRadio:
         return True
 
     async def _advert_loop(self) -> None:
+        first = True
         while self._running:
-            await asyncio.sleep(max(1, settings.advert_interval_hours) * 3600)
+            interval = max(1, settings.advert_interval_hours) * 3600
+            # The first wait counts from the last advert, which a restart may
+            # have restored (_restored_advert_fresh) rather than sent.
+            wait = interval - (time.time() - self.last_advert_at) if first and self.last_advert_at else interval
+            first = False
+            await asyncio.sleep(max(1.0, wait))
             await self._send_advert()
             # Refresh contacts right after advert to pick up new peers
             try:
@@ -1513,6 +1577,9 @@ class MeshcoreRadio:
         if res.type != EventType.OK:
             raise RuntimeError(f"radio refused set_name: {res.payload}")
         mc.self_info["name"] = name
+        self.name_problem = node_name_problem(name)
+        if self.name_problem:
+            logger.warning("Node name: %s", self.name_problem)
 
     async def set_radio_params(self, freq_mhz: float, bw_khz: float, sf: int, cr: int) -> None:
         mc = self._require()
@@ -1520,12 +1587,17 @@ class MeshcoreRadio:
             raise ValueError("frequency must be 400-1000 MHz")
         if bw_khz not in (7.8, 10.4, 15.6, 20.8, 31.25, 41.7, 62.5, 125, 250, 500):
             raise ValueError("bandwidth must be a LoRa bandwidth in kHz (62.5, 125, 250, 500 ...)")
+        # Never onto a frequency the operator's region does not allow.
+        problem = frequency_problem(freq_mhz, bw_khz)
+        if problem:
+            raise ValueError(problem)
         if not (5 <= sf <= 12) or not (5 <= cr <= 8):
             raise ValueError("sf must be 5-12 and cr 5-8")
         res = await mc.commands.set_radio(freq_mhz, bw_khz, sf, cr)
         if res.type != EventType.OK:
             raise RuntimeError(f"radio refused set_radio: {res.payload}")
         mc.self_info.update({"radio_freq": freq_mhz, "radio_bw": bw_khz, "radio_sf": sf, "radio_cr": cr})
+        self.region_problem = None             # in band now; transmit is the operator's to switch on
 
     def path_hash_size(self) -> int | None:
         """Bytes per repeater hash on the paths of packets this node

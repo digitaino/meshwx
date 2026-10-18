@@ -1,8 +1,159 @@
-"""Application configuration via environment variables and .env file."""
+"""Application configuration via environment variables and .env file.
 
+Besides the settings themselves, the checks a new operator's mistakes must
+meet before they reach the air (`meshcore-weather --check` runs all of
+them, and the bot logs the same ones at start): the radio region's band,
+the node name convention, the admin key, the portal's allowed hosts and
+the time zone taken from the home city.
+"""
+
+import re
 from pathlib import Path
 
+from pydantic import PrivateAttr, model_validator
 from pydantic_settings import BaseSettings
+
+# Where the bot may transmit, per MCW_RADIO_REGION: the licence-free band the
+# region's MeshCore presets sit in (MHz). A frequency outside it is refused,
+# and a node found on one at start has its transmit switched off. US: FCC
+# 15.247 902-928 MHz. EU: the 863-870 MHz SRD band (MeshCore's 869.525 MHz
+# preset is in its 869.4-869.65 MHz sub-band).
+REGION_BANDS: dict[str, tuple[float, float]] = {
+    "US": (902.0, 928.0),
+    "EU": (863.0, 870.0),
+}
+
+# WX-<IATA>: every weather bot adverts under this name, and apps find bots by
+# the WX- prefix. 2-8 capitals or digits after it.
+NODE_NAME_RE = re.compile(r"^WX-[A-Z0-9]{2,8}$")
+
+# Shorter admin prefixes are refused: 8 hex characters is a 32-bit search for
+# anyone willing to grind keypairs, and the DM sender is only ever 12.
+ADMIN_KEY_MIN_HEX = 8
+ADMIN_KEY_MAX_HEX = 12
+
+# Always answered by the portal's Host check (portal/server.py), whatever
+# MCW_PORTAL_ALLOWED_HOSTS says: the Pi's own dashboard and an SSH tunnel.
+PORTAL_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]", "::1")
+
+# States whose counties do not all keep the state's main time zone: the
+# zone filled in from the home city is a guess there, and --check says so.
+SPLIT_TZ_STATES = {"AK", "AZ", "FL", "ID", "IN", "KS", "KY", "MI", "ND", "NE", "NV", "OR", "SD", "TN", "TX"}
+
+
+def _csv(value: str) -> list[str]:
+    return [p.strip() for p in (value or "").split(",") if p.strip()]
+
+
+def admin_key_problem(key: str) -> str | None:
+    """Why MCW_ADMIN_KEY cannot be used, or None (empty is fine: no admin)."""
+    key = (key or "").strip()
+    if not key:
+        return None
+    if not re.fullmatch(r"[0-9a-fA-F]+", key):
+        return "it must be hex, the first 12 characters of your public key"
+    if len(key) < ADMIN_KEY_MIN_HEX:
+        return (f"{len(key)} hex characters is too short to identify anyone; use at least "
+                f"{ADMIN_KEY_MIN_HEX}, ideally the first {ADMIN_KEY_MAX_HEX} of your public key")
+    return None
+
+
+def node_name_problem(name: str | None) -> str | None:
+    """Why a node name breaks the WX-<IATA> convention, or None."""
+    if not name:
+        return "the node has no name"
+    if NODE_NAME_RE.match(name):
+        return None
+    return (f"node name {name!r} does not follow the WX-<IATA> convention (e.g. WX-AUS): "
+            "apps find weather bots by it, and other bots ignore WX- names on the channel")
+
+
+def iata_from_name(name: str | None) -> str | None:
+    """'WX-AUS' -> 'AUS'; None for a name off the convention."""
+    return name[3:] if name and NODE_NAME_RE.match(name) else None
+
+
+def region_band(region: str | None = None) -> tuple[float, float] | None:
+    """The (low, high) MHz band MCW_RADIO_REGION allows, or None when unknown."""
+    return REGION_BANDS.get((region if region is not None else settings.radio_region).strip().upper())
+
+
+def frequency_problem(freq_mhz: float | None, bw_khz: float | None = None,
+                      region: str | None = None) -> str | None:
+    """Why the radio may not transmit on this frequency in the configured
+    region, or None. The whole channel (centre +/- half the bandwidth) must
+    sit inside the band."""
+    region = (region if region is not None else settings.radio_region).strip().upper()
+    band = REGION_BANDS.get(region)
+    if band is None:
+        return (f"MCW_RADIO_REGION={region or '(empty)'} is not a region the bot knows "
+                f"({', '.join(sorted(REGION_BANDS))}); every frequency is refused")
+    if freq_mhz is None:
+        return None
+    half = (float(bw_khz or 0) / 1000.0) / 2
+    lo, hi = band
+    if float(freq_mhz) - half < lo or float(freq_mhz) + half > hi:
+        return (f"{float(freq_mhz):g} MHz is outside the {region} band {lo:g}-{hi:g} MHz "
+                f"(MCW_RADIO_REGION={region})")
+    return None
+
+
+def portal_allowed_hosts() -> list[str]:
+    """Host header values the portal answers: loopback always, the bind
+    address when it is a specific one, and MCW_PORTAL_ALLOWED_HOSTS."""
+    out = list(PORTAL_LOOPBACK_HOSTS)
+    bind = (settings.portal_host or "").strip()
+    if bind and bind not in ("0.0.0.0", "::", "[::]"):
+        out.append(bind)
+    out.extend(h.lower() for h in _csv(settings.portal_allowed_hosts))
+    seen: set[str] = set()
+    return [h for h in out if not (h in seen or seen.add(h))]
+
+
+# -- Time zone ----------------------------------------------------------------------
+#
+# MCW_TIMEZONE used to default to America/Chicago, which made every new bot
+# outside Central time print the wrong clock. Left empty it is now taken from
+# the home city's state at start; render_text reads settings.timezone, so it
+# is filled in there.
+
+_tz_from_home = False   # settings.timezone was filled in here, not set by the operator
+
+
+def home_timezone() -> tuple[str | None, str]:
+    """(IANA zone of the first home city's state, how it was found)."""
+    first = (_csv(settings.home_cities) or [""])[0]
+    if not first:
+        return None, "MCW_HOME_CITIES is empty"
+    from meshcore_weather.core.render_text import _STATE_TZ
+    from meshcore_weather.geodata import resolver
+    loc = resolver.resolve(first)
+    zones = (loc or {}).get("zones") or []
+    if not zones:
+        return None, f"the home city {first!r} does not resolve"
+    state = zones[0][:2]
+    name = _STATE_TZ.get(state)
+    if not name:
+        return None, f"no time zone known for {state}"
+    return name, f"from the home city's state ({state})"
+
+
+def fill_timezone() -> tuple[str, str]:
+    """Fill settings.timezone from the home city when MCW_TIMEZONE is empty
+    (again after the home city changed). Returns (zone or "", source)."""
+    global _tz_from_home
+    if settings.timezone and not _tz_from_home:
+        return settings.timezone, "MCW_TIMEZONE"
+    name, how = home_timezone()
+    settings.timezone = name or ""
+    _tz_from_home = bool(name)
+    return settings.timezone, how
+
+
+def timezone_set_by_operator() -> None:
+    """MCW_TIMEZONE was set (the portal): a home city change no longer moves it."""
+    global _tz_from_home
+    _tz_from_home = False
 
 
 class Settings(BaseSettings):
@@ -26,7 +177,7 @@ class Settings(BaseSettings):
 
     # EMWIN data source
     emwin_source: str = "internet"  # "internet" or "sdr"
-    emwin_poll_interval: int = 120  # seconds between data refreshes
+    emwin_poll_interval: int = 60   # seconds between data refreshes
     # "sdr": goesproc's emwin output tree (YYYY-MM-DD/ dirs of .TXT files)
     sdr_emwin_dir: str = "~/goes-images/emwin"
     sdr_poll_interval: int = 30     # seconds between directory scans
@@ -155,7 +306,10 @@ class Settings(BaseSettings):
     meshwx_refresh_cooldown: int = 300    # min seconds between app refreshes per region
 
     # Coverage targeting — bot broadcasts only data affecting these areas.
-    # Comma-separated lists, all optional, all additive (union). Empty = broadcast everything.
+    # Comma-separated lists, all additive (union). Coverage fails closed
+    # (protocol/coverage.py): a home city that does not resolve, or a bare
+    # name that is in several states, is an error, and with no coverage at
+    # all the scheduled warnings, digest and observations send nothing.
     home_cities: str = ""  # e.g. "Austin TX,San Antonio TX,Dallas TX"
     # Coverage radius (km) around the FIRST home city. The bot covers every
     # public forecast zone whose polygon lies within this circle, plus any
@@ -163,11 +317,26 @@ class Settings(BaseSettings):
     home_radius_km: int = 120
     home_states: str = ""  # e.g. "TX,OK"
     home_wfos: str = ""    # e.g. "EWX,FWD,HGX"
+    # "national" = no area filter: the scheduled broadcasts carry every
+    # warning the feed has. The only way to get that; empty = the home area.
+    coverage: str = ""
+    # Ceiling on what the scheduled jobs put on the air, every job together
+    # (schedule/scheduler.py). Tornado, severe thunderstorm, flash flood and
+    # extreme wind warnings and their one repeat always go out and count;
+    # past the ceiling everything else waits for the hour to free up.
+    scheduled_packets_per_hour: int = 120
 
-    # Local web portal
+    # Local web portal. No login: 127.0.0.1 and an SSH tunnel, or a LAN
+    # address you trust. The Docker image binds 0.0.0.0 inside the container
+    # and docker-compose publishes it on the host's 127.0.0.1 only.
     portal_enabled: bool = False
-    portal_host: str = "0.0.0.0"
+    portal_host: str = "127.0.0.1"
     portal_port: int = 8080
+    # Host names the portal answers to besides localhost, 127.0.0.1 and
+    # [::1] (and MCW_PORTAL_HOST when it is a specific address):
+    # comma-separated, e.g. "mesh-wx.local,10.0.0.51". Anything else gets 400,
+    # which is what stops a DNS-rebinding page from reaching the portal.
+    portal_allowed_hosts: str = ""
 
     # Debug bridge: a development client (the iOS app in the simulator, over
     # an SSH tunnel) reads the datagrams this bot transmits and posts `>`
@@ -176,8 +345,14 @@ class Settings(BaseSettings):
     # for users: it is how the app is developed without a radio.
     bridge_token: str = ""
 
-    # Admin: pubkey prefix of admin user (can run admin DM commands)
+    # Admin: pubkey prefix of admin user (can run admin DM commands). At least
+    # 8 hex characters, ideally the 12 a DM carries; a shorter or non-hex
+    # value is logged as an error and treated as unset.
     admin_key: str = ""
+
+    # Where the radio may transmit: a key of REGION_BANDS. Frequencies outside
+    # the region's band are refused, and the portal offers only its presets.
+    radio_region: str = "US"
 
     # Radio transmit master switch. False = receive-only passive observer:
     # every outbound RF path (adverts, channel messages, binary datagrams,
@@ -192,7 +367,9 @@ class Settings(BaseSettings):
     mqtt_host: str = "mosquitto"  # Docker service name of the broker
     mqtt_port: int = 1883
     mqtt_topic_prefix: str = "meshcore"
-    mqtt_iata: str = "AUS"
+    # Region code in the topic. Empty = the IATA code in the node's WX-<IATA>
+    # name; with neither, MQTT publishing stays off (logged).
+    mqtt_iata: str = ""
     mqtt_username: str = ""
     mqtt_password: str = ""
     # "origin" field in each published JSON envelope — this is the
@@ -200,16 +377,41 @@ class Settings(BaseSettings):
     mqtt_origin: str = "meshcore-weather"
 
     # Local time zone for human-readable replies (IANA name). Wire messages
-    # always carry UTC; only the text renderer uses this.
-    timezone: str = "America/Chicago"
+    # always carry UTC; only the text renderer uses this. Empty = the zone of
+    # the home city's state, filled in at start (fill_timezone below).
+    timezone: str = ""
 
     # Logging
     log_level: str = "INFO"
+
+    # What the checks below refused while the settings were read, for the
+    # start-up log and --check (nothing is logged this early).
+    _rejected: list[str] = PrivateAttr(default_factory=list)
+
+    @model_validator(mode="after")
+    def _refuse_weak_admin_key(self) -> "Settings":
+        problem = admin_key_problem(self.admin_key)
+        if problem:
+            self._rejected.append(f"MCW_ADMIN_KEY ignored: {problem}; admin commands are off")
+            self.admin_key = ""
+        return self
+
+    @property
+    def rejected(self) -> list[str]:
+        """Settings refused when they were read (an admin key too short)."""
+        return list(self._rejected)
 
     @property
     def dashboard_link(self) -> str:
         """The dashboard address to show a person: the public one when set."""
         return self.sdr_dashboard_public_url or self.sdr_dashboard_url
+
+    # Appended by the internet-feed work (emwin/fetcher.py user_agent): how
+    # NOAA's server administrators can reach this bot's operator, an email
+    # address or URL, added to the User-Agent of every bundle fetch
+    # ("meshcore-weather/0.1.0 (+https://github.com/digitaino/meshwx; you@example.org)").
+    # Empty = the project's address only.
+    operator_contact: str = ""
 
 
 settings = Settings()

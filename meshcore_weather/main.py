@@ -191,6 +191,7 @@ class WeatherBot:
         # against it, and it is seconds, not minutes. In a thread so the
         # loop keeps running while the JSON is read.
         await loop.run_in_executor(None, resolver.load)   # also sets home from MCW_HOME_CITIES
+        await loop.run_in_executor(None, self._log_configuration)
         if settings.emwin_source == "sdr":
             from meshcore_weather.sdr_monitor import SdrMonitor
             status = None
@@ -218,7 +219,10 @@ class WeatherBot:
 
         # The radio may not be plugged in yet (a Pi whose Heltec arrives
         # later, a USB cable pulled). Keep serving the store, portal and
-        # CLI, and keep trying the radio until it answers.
+        # CLI, and keep trying the radio until it answers. The node's last
+        # advert before this restart comes along, so a restart does not
+        # flood a new one when that one is recent.
+        self.radio.restored_advert = self._saved_advert()
         try:
             await self.radio.start()
         except Exception as e:
@@ -246,6 +250,33 @@ class WeatherBot:
             )
         else:
             logger.info("Weather bot is running without a radio (store, portal and CLI only)")
+
+    def _log_configuration(self) -> None:
+        """The start-up lines a new operator needs: the coverage and home
+        point (protocol/coverage.py logs them, errors loudly), the time
+        zone, and any setting refused while it was read. `--check` says the
+        same before the bot ever starts."""
+        from meshcore_weather.config import fill_timezone
+        from meshcore_weather.protocol.coverage import Coverage
+        for problem in settings.rejected:
+            logger.error("%s", problem)
+        tz, how = fill_timezone()
+        if tz:
+            logger.info("  Time zone: %s (%s)", tz, how)
+        else:
+            logger.warning("  Time zone: none (%s); text replies give UTC times. Set MCW_TIMEZONE", how)
+        try:
+            self._coverage_cache = Coverage.from_config()
+        except Exception:
+            logger.exception("Coverage could not be built; scheduled warnings, digest and observations send nothing")
+
+    @staticmethod
+    def _saved_advert() -> dict | None:
+        try:
+            from meshcore_weather.schedule.scheduler import load_advert_record
+        except ImportError:
+            return None
+        return load_advert_record()
 
     async def _after_radio_connected(self) -> None:
         """Start the data-channel broadcaster once a radio with a data channel
@@ -294,7 +325,16 @@ class WeatherBot:
             except Exception:
                 pass
             self._broadcaster = None
+        old = self.radio
         self.radio = MeshcoreRadio()
+        # A reconnect is not news to the mesh: the old link's last advert
+        # (same key) stands, as it does across a restart.
+        last = getattr(old, "last_advert_at", 0.0)
+        key = getattr(old, "public_key", "") if isinstance(getattr(old, "public_key", ""), str) else ""
+        if isinstance(last, (int, float)) and last > 0 and key:
+            self.radio.restored_advert = {"at": float(last), "key": key}
+        else:
+            self.radio.restored_advert = getattr(old, "restored_advert", None)
         self.radio.on_channel_message(self._handle_channel_message)
         self.radio.on_channel_request(self._handle_channel_request)
         self.radio.on_dm(self._handle_dm)
@@ -1585,6 +1625,11 @@ def _signalled(bot: WeatherBot, sig: signal.Signals) -> None:
 
 
 def main():
+    # `meshcore-weather --check`: validate the configuration and exit, never
+    # transmitting (cli_check.py). Exit code 1 when anything is an error.
+    if "--check" in sys.argv[1:]:
+        from meshcore_weather.cli_check import main as check_main
+        return check_main([a for a in sys.argv[1:] if a != "--check"])
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper()),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
