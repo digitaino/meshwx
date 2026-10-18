@@ -162,6 +162,31 @@ describe('WeatherService', () => {
     assert.deepStrictEqual(Object.keys(loaded.warnings), [identityKey(F.svw43)])
   })
 
+  // Spec §10.7: a digest stamped ahead of the clock is refused, and one saved before the phone
+  // refused them is dropped when the state is read back, or it would turn every real one away.
+  it('a digest from the future is neither applied nor saved, and a saved one is dropped on load', async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.warning({ seq: 1, identity: F.svw42 }))
+    const changes = await h.service.ingest(F.digest({ seq: 2, nowMinutes: 0xffffff00, entries: [] }))
+    assert.deepStrictEqual(changes.map((change) => change.kind), ['futureTimeRejected'])
+    assert.equal(h.store.states[String(F.botID)].digest, null)
+    assert.equal(Object.keys(h.store.states[String(F.botID)].warnings).length, 1)
+
+    const { WeatherStoredDigest } = await import('../src/weather/index.js')
+    const poisoned = {
+      ...h.store.states[String(F.botID)],
+      digest: WeatherStoredDigest.make({ digest: F.digest({ seq: 2, nowMinutes: 0xffffff00 }), receivedAt: F.t0 })
+    }
+    const store = new InMemoryWeatherStateStore({ states: { [String(F.botID)]: poisoned } })
+    const clock = new F.WeatherTestClock()
+    const service = new WeatherService({
+      transport: await F.makeTransport(), store, now: () => clock.now, tables, decode: F.fixtureDecode
+    })
+    assert.equal((await service.state({ for: F.botID })).digest, null)
+    const real = await service.ingest(F.digest({ seq: 3, entries: [[F.svw42, 45]] }))
+    assert.deepStrictEqual(real.map((change) => change.kind), ['digestApplied'])
+  })
+
   it('session info records when monitoring started and clears on stop', async () => {
     const h = await makeHarness()
     assert.equal(h.service.sessionInfo().startedAt, null)
@@ -868,7 +893,8 @@ describe('WeatherService', () => {
     for (let offset = 0; offset < 70; offset += 1) {
       await h.service.ingest(F.observations({
         seq: (2 + offset) & 0xff,
-        timestampMinutes: F.t0Minutes + offset,
+        // Each an hour or so old, so none of them is ahead of the phone's clock (spec §10.7).
+        timestampMinutes: F.t0Minutes - 70 + offset,
         stations: [[1000 + offset, 70]]
       }))
     }

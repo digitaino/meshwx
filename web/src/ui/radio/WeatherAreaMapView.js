@@ -418,8 +418,9 @@ export function WeatherAreaMapScreen({ app, page }) {
             askable
               ? Line(WeatherAreaMapCopy.cost(model?.areaSweepCost?.({ pageID, includesAdvisories }) ?? 0))
               : null,
-            AskButton({ app, page, title: WeatherAreaMapCopy.askTitle(selection), request, showsFootnotes: true }),
-            picture.parts.length > 0 && askable ? Line(t('weather.areaMap.tapHint', page?.sourceName ?? '')) : null)),
+            // No tap hint under the ask: there is no shaded area here to tap. It lives on the map
+            // itself, the one place a tap does something (docs/MESHWX_UI.md §3.1 U-54).
+            AskButton({ app, page, title: WeatherAreaMapCopy.askTitle(selection), request, showsFootnotes: true }))),
 
         Card({ key: 'source' },
           h('div', { class: 'status-line' },
@@ -532,7 +533,7 @@ export function WeatherAreaListScreen({ app, page, group }) {
               app, page, area: { ugc: code, event: group.event, part: group.partOf?.(code) ?? 0 },
             })),
           }))),
-        h('p', { class: 'list__note' }, t('weather.areaMap.tapHint', page?.sourceName ?? '')),
+        // No tap hint in the footer: a list has no shaded area to tap (§3.1 U-54).
         PendingBar({ app, requestsOnScreen: [] }),
       )
     },

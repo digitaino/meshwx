@@ -5,7 +5,7 @@
 // value, the error, and the service.
 
 import {
-  MeshWXEncoder, MeshWXGeo, MeshWXRadar, MeshWXRadarTile, MeshWXTables, MeshWXWire,
+  MeshWXAreaRun, MeshWXEncoder, MeshWXGeo, MeshWXRadar, MeshWXRadarTile, MeshWXTables, MeshWXWire,
   decode as decodeMessage
 } from '../meshwx/index.js'
 import { WeatherBot } from './WeatherBot.js'
@@ -246,6 +246,8 @@ export class WeatherService {
     this.unschedule = unschedule
     this.identity = identity
     this.decode = decode
+    /** The bundle's centre of a county or zone, for what a digest speaks for (spec §5). */
+    this.areaCentre = WeatherService.areaCentres(tables)
 
     this.states = {}
     this.isLoaded = false
@@ -375,6 +377,9 @@ export class WeatherService {
       state = WeatherStateReducer.prunePendingUpgrades(state, {
         olderThan: now - WeatherService.pendingUpgradeRetention * 1000
       })
+      // Saved before the phone turned away times from the future (spec §10.7): a digest stamped
+      // ahead of the clock would otherwise go on refusing every real one as older.
+      state = WeatherStateReducer.dropFutureTimes(state, { now })
       this.states[key] = state
     }
     this.#yield(WeatherEvent.stateLoaded)
@@ -576,7 +581,9 @@ export class WeatherService {
     const key = String(botID)
     const receivedAt = this.now()
     const before = this.states[key] ?? WeatherBotState.make({ botID })
-    const { state: applied, changes } = WeatherStateReducer.apply(message, { to: before, receivedAt })
+    const { state: applied, changes } = WeatherStateReducer.apply(message, {
+      to: before, receivedAt, areaCentre: this.areaCentre
+    })
     let state = applied
 
     const isDuplicate = changes.some((change) => change.kind === 'duplicate')
@@ -610,13 +617,22 @@ export class WeatherService {
     }
     for (const change of changes) {
       if (change.kind === 'digestApplied' && message.name === 'digest') {
+        // `>w <area>` reads the list's slot itself, and only for an area the list speaks for
+        // (`#answerSlots`): a list says nothing about a county outside the bot's area.
         const builtAt = dateFromUnixMinutes(message.now_min)
         fill(botID, 'digest', builtAt)
         fill(botID, 'activeWarnings', builtAt)
-        fill(botID, 'warningsTouching', builtAt)
       } else if (change.kind === 'warningStored' && message.name === 'warning') {
         fill(botID, 'activeWarnings')
-        fill(botID, 'warningsTouching')
+        // `>w <area>` by the area asked: a warning for one county is no answer about another.
+        // Every code the warning names, and the code this phone asked about when the warning
+        // settled its request — the bot may have cut the list that would have named it.
+        const named = this.tables?.namedAreas?.({ for: message }) ?? []
+        const codes = new Set(named.map((area) => area.ugc.toUpperCase()))
+        for (const request of settled) {
+          if (request.kind === 'warningsTouching') codes.add(request.ugc.toUpperCase())
+        }
+        for (const ugc of codes) fill(botID, warningsTouchingSlot(ugc))
         fill(null, `warning.${identityKey(change.value)}`)
       } else if (change.kind === 'observationsStored' && message.name === 'observations'
         && change.stations.length > 0) {
@@ -859,7 +875,13 @@ export class WeatherService {
       }
       case 'forecast': return one(answerSlotKey(null, `forecast.${request.point}`))
       case 'activeWarnings': return one(answerSlotKey(botID, 'activeWarnings'))
-      case 'warningsTouching': return one(answerSlotKey(botID, 'warningsTouching'))
+      case 'warningsTouching': {
+        // The area's own slot, and the bot's list where the list speaks for the area: one with
+        // no complete statement of the bot's coverage held, or one inside it (spec §5).
+        const slots = [answerSlotKey(botID, warningsTouchingSlot(request.ugc))]
+        if (this.#digestSpeaksFor(request.ugc, { botID })) slots.push(answerSlotKey(botID, 'digest'))
+        return slots
+      }
       case 'warning': {
         const named = this.identity({ from: request.identity, tables: this.tables })
         return named == null ? [] : one(answerSlotKey(null, `warning.${identityKey(named)}`))
@@ -891,6 +913,20 @@ export class WeatherService {
       case 'parts': case 'forecastAt': return []
       default: return []
     }
+  }
+
+  /**
+   * Whether the bot's digest speaks for one county or zone (`WeatherStateReducer.digestSpeaksFor`).
+   * A code the bundle cannot read is one nothing can say it speaks for.
+   */
+  #digestSpeaksFor(ugc, { botID }) {
+    const key = MeshWXAreaRun.key({ forUGC: ugc, states: this.tables?.states ?? [] })
+    if (key == null) return false
+    const area = { areas: [{ state: key.state, county: key.county, start: key.number, run: 1 }], polygon: null }
+    return WeatherStateReducer.digestSpeaksFor(area, {
+      coverage: this.states[String(botID)]?.coverage?.coverage ?? null,
+      areaCentre: this.areaCentre
+    })
   }
 
   /**
@@ -1367,6 +1403,22 @@ export class WeatherService {
     return false
   }
 
+  /**
+   * The bundle's centre of one county or zone, `{ latitude, longitude }`, from the area-run
+   * fields `{ state, county, number }`; null for an area the bundle does not know. What the
+   * reducer judges a county against a bot's stated circle with (spec §5).
+   */
+  static areaCentres(tables) {
+    return ({ state, county, number }) => {
+      const code = tables?.stateCode?.(state)
+      if (code == null) return null
+      const ugc = `${code}${county ? 'C' : 'Z'}${MeshWXAreaRun.ugcDigits(number)}`
+      const area = county ? tables.county(ugc) : tables.zone(ugc)
+      if (area?.lat == null || area?.lon == null) return null
+      return { latitude: area.lat, longitude: area.lon }
+    }
+  }
+
   // MARK: Persistence
 
   async #persist() {
@@ -1456,6 +1508,11 @@ const NATIONAL_SWEEP_SCOPE = '*'
 /** `areaSweep.TXOK` — the selection, as both sides of the rule spell it. */
 function sweepSlot(scope) {
   return `areaSweep.${scope}`
+}
+
+/** `warningsTouching.TXC453` — one `>w <area>`, by the code asked, upper case. */
+function warningsTouchingSlot(ugc) {
+  return `warningsTouching.${String(ugc).toUpperCase()}`
 }
 
 /** `radar.32,-98,0` — the lattice square, as both sides of the rule spell it (spec §7D). */

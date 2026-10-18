@@ -3,8 +3,9 @@
 // Deviation from the Swift: Swift takes `state` `inout` and returns the changes. JS reducers stay
 // pure (PORTING.md §3), so every entry point here returns the new state:
 //
-//   apply(message, { to, receivedAt })            -> { state, changes }
+//   apply(message, { to, receivedAt, areaCentre }) -> { state, changes }
 //   pruneExpired(state, { expiredBefore })        -> { state, expired }
+//   dropFutureTimes(state, { now })               -> state
 //   prunePendingUpgrades(state, { olderThan })    -> state
 //   pruneTexts(state, { receivedBefore, limit })  -> state
 //   pruneForecasts(state, { receivedBefore, limit }) -> state
@@ -13,7 +14,9 @@
 // `message.type`, `message.flags`, `message.name` for the payload kind, `message.source` for the
 // header's data source, and the payload's own fields flat on the same object.
 
-import { MeshWXRadar, MeshWXRadarTile, MeshWXWire } from '../meshwx/index.js'
+import {
+  MeshWXAreaRun, MeshWXCoverage, MeshWXGeo, MeshWXRadar, MeshWXRadarTile, MeshWXWire
+} from '../meshwx/index.js'
 import {
   UNASKED_FORECAST_KEY,
   UNSTATED_SOURCE,
@@ -111,6 +114,18 @@ export const WeatherStateChange = Object.freeze({
    */
   radarIgnoredOlder({ takenMinutes }) { return { kind: 'radarIgnoredOlder', takenMinutes } },
   notAvailable(notAvailable) { return { kind: 'notAvailable', value: notAvailable } },
+  /**
+   * The message's own time — a digest's `now`, a batch's `ts`, a forecast's issue, a sweep's
+   * build, a picture's `taken`, a warning's issue — is more than `futureTolerance` ahead of the
+   * phone's clock. No bot sends that honestly: every one of them is a time something already
+   * happened. A digest, batch, forecast, sweep or picture is dropped whole, because kept it would
+   * stand as "newest" over everything real until the clock caught up — one digest stamped
+   * `0xFFFFFF00` would make every real digest "older", and its empty list would end every warning
+   * held. A
+   * warning is still stored, without the issue time (it is still a warning), and the change
+   * comes before its `warningStored`.
+   */
+  futureTimeRejected({ minutes }) { return { kind: 'futureTimeRejected', minutes } },
   unknownType({ rawType }) { return { kind: 'unknownType', rawType } }
 })
 
@@ -147,6 +162,36 @@ export const WeatherStateReducer = {
    */
   recentCancelRetention: 60 * 60,
   /**
+   * How far ahead of the phone's clock a time on the wire may be and still be a time (spec
+   * §10.7, 17 October 2026). Every time a bot sends is something that already happened, so this
+   * only absorbs a bot's clock and the phone's disagreeing — and the bot truncating to the minute.
+   * Seconds.
+   */
+  futureTolerance: 15 * 60,
+  /**
+   * The furthest ahead an expiry is believed, from when the warning was heard (spec §10.7). A
+   * product in force until further notice reaches the phone with an expiry the bot invented 12
+   * hours ahead (spec §3), re-sent as it moves, and every real product ends well inside this; an
+   * expiry past it is clamped here, so a forged or corrupt one cannot pin a warning to the screen
+   * for years. Measured from receipt rather than from the issue time: the until-further-notice
+   * flood warning keeps its original issue time, and a cap from that would end a warning the
+   * bot still says is in force. Seconds.
+   */
+  warningHorizon: 14 * 24 * 60 * 60,
+  /**
+   * How far past a bot's stated circle the centre of a county may lie and the county still reach
+   * into it (`touchesCoverage`). The bot covers every county whose outline meets the circle; the
+   * phone has only the county's centre, so the margin is half a county of the plains. Where it is
+   * short the error is the safe one: a watch the list was not speaking for ends by its cancel or
+   * its expiry instead of by the list. Kilometres.
+   */
+  countyReachKilometres: 25,
+  /**
+   * For a statement with no circle (an area made of states or offices): how near a warning must
+   * come to the centre of a stated area to touch it (`touchesCoverage`). Kilometres.
+   */
+  areaReachKilometres: 25,
+  /**
    * How recently a held warning must have arrived for its `seq` to be compared with a late one:
    * `seq` wraps, so an old copy's number says nothing about order. Seconds.
    */
@@ -162,7 +207,7 @@ export const WeatherStateReducer = {
    * other; observations, forecasts and text already keep the newest by their own times; a
    * coverage statement has no time of its own, so it yields to one already held.
    */
-  apply(message, { to, receivedAt }) {
+  apply(message, { to, receivedAt, areaCentre = null }) {
     const seq = message.seq
     const fingerprint = WeatherStateReducer.fingerprint(message)
     const isLongSilence = to.lastHeardAt != null
@@ -235,17 +280,28 @@ export const WeatherStateReducer = {
     // carry it. Unstated for a bot older than revision 7, and for a Cancel always.
     const source = message.source ?? UNSTATED_SOURCE
 
+    // A message whose own time is in the future is not stored as the newest of anything (spec
+    // §10.7). A warning's is its issue time, and that one costs only the issue time.
+    const ownMinutes = messageMinutes(message)
+    if (ownMinutes != null && WeatherStateReducer.isAhead(ownMinutes, { of: receivedAt })) {
+      changes.push(WeatherStateChange.futureTimeRejected({ minutes: ownMinutes }))
+      if (message.name !== 'warning') return { state, changes }
+    }
+
     switch (message.name) {
       case 'warning':
         if (!(isOutOfOrder && wouldRollBack(message, { seq, state, receivedAt }))) {
-          changes.push(storeWarning(message, { state, receivedAt, seq, source }))
+          changes.push(storeWarning(
+            WeatherStateReducer.cappedWarning(message, { receivedAt }),
+            { state, receivedAt, seq, source }
+          ))
         }
         break
       case 'cancel':
         changes.push(removeWarning(message, { state, receivedAt, isOutOfOrder }))
         break
       case 'digest':
-        changes.push(applyDigest(message, { state, receivedAt }))
+        changes.push(applyDigest(message, { state, receivedAt, areaCentre }))
         break
       case 'observations':
         changes.push(storeObservations(message, { state, receivedAt, source }))
@@ -318,6 +374,150 @@ export const WeatherStateReducer = {
     const warnings = { ...state.warnings }
     for (const identity of expired) delete warnings[identityKey(identity)]
     return { state: { ...state, warnings }, expired }
+  },
+
+  // MARK: - Times ahead of the phone's clock (spec §10.7)
+
+  /** Whether a wire time in Unix minutes is more than `futureTolerance` ahead of `of` (ms). */
+  isAhead(minutes, { of: now }) {
+    return dateFromUnixMinutes(minutes) > now + WeatherStateReducer.futureTolerance * 1000
+  },
+
+  /**
+   * A warning as the phone may believe it, heard at `receivedAt`: an issue time ahead of the
+   * clock is dropped, and the start with it, since both ride on the same expiry; an expiry past
+   * `warningHorizon` is clamped to it; and a start that no longer falls before the expiry goes.
+   * The same object when nothing needed changing.
+   */
+  cappedWarning(warning, { receivedAt }) {
+    const ceiling = Math.floor(receivedAt / 60_000) + WeatherStateReducer.warningHorizon / 60
+    let issued = warning.issued_min ?? null
+    let begins = warning.begins_min ?? null
+    if (issued != null && WeatherStateReducer.isAhead(issued, { of: receivedAt })) {
+      issued = null
+      begins = null
+    }
+    const expires = Math.min(warning.expires_min, ceiling)
+    if (begins != null && begins >= expires) begins = null
+    if (expires === warning.expires_min && issued === (warning.issued_min ?? null)
+      && begins === (warning.begins_min ?? null)) {
+      return warning
+    }
+    return { ...warning, expires_min: expires, issued_min: issued, begins_min: begins }
+  },
+
+  /**
+   * Takes out of persisted state anything stamped ahead of `now`: state saved before the phone
+   * checked (spec §10.7). A digest built in the future is forgotten with the list it named — or
+   * it would go on turning every real digest away as older — and so are readings, forecasts,
+   * sweeps and radar pictures from the future, which would go on standing as the newest. A held
+   * warning keeps its place, capped as `cappedWarning` would have capped it on arrival.
+   */
+  dropFutureTimes(state, { now }) {
+    const ahead = (minutes) => minutes != null && WeatherStateReducer.isAhead(minutes, { of: now })
+    let next = state
+    const change = (patch) => { next = { ...next, ...patch } }
+    if (next.digest != null && ahead(next.digest.digest.now_min)) {
+      change({ digest: null, missingFromDigest: [] })
+    }
+    const observations = {}
+    let observationsChanged = false
+    for (const [key, stored] of Object.entries(next.observations ?? {})) {
+      if (ahead(stored.timestampMinutes)) { observationsChanged = true; continue }
+      if (ahead(stored.lastBatchMinutes)) {
+        observationsChanged = true
+        observations[key] = { ...stored, lastBatchMinutes: null }
+        continue
+      }
+      observations[key] = stored
+    }
+    if (observationsChanged) change({ observations })
+    for (const field of ['forecasts', 'unbundledForecasts']) {
+      const held = next[field] ?? {}
+      const kept = Object.fromEntries(
+        Object.entries(held).filter(([, stored]) => !ahead(stored.forecast.issued_min))
+      )
+      if (Object.keys(kept).length !== Object.keys(held).length) change({ [field]: kept })
+    }
+    const sweeps = (next.areaSweeps ?? []).filter((sweep) => !ahead(sweep.builtMinutes))
+    if (sweeps.length !== (next.areaSweeps ?? []).length) change({ areaSweeps: sweeps })
+    const tiles = (next.radarTiles ?? []).filter((stored) => !ahead(stored.radar.taken_min))
+    if (tiles.length !== (next.radarTiles ?? []).length) change({ radarTiles: tiles })
+
+    const warnings = {}
+    let warningsChanged = false
+    const futureAt = now + WeatherStateReducer.futureTolerance * 1000
+    for (const [key, stored] of Object.entries(next.warnings ?? {})) {
+      const warning = WeatherStateReducer.cappedWarning(stored.warning, { receivedAt: now })
+      // The start rides on the issue time (spec §3), so it goes with one from the future.
+      const issuedAt = stored.issuedAt != null && stored.issuedAt > futureAt ? null : stored.issuedAt
+      let beginsAt = issuedAt == null && stored.issuedAt != null ? null : stored.beginsAt
+      if (beginsAt != null && beginsAt >= dateFromUnixMinutes(warning.expires_min)) beginsAt = null
+      if (warning === stored.warning && issuedAt === stored.issuedAt && beginsAt === stored.beginsAt) {
+        warnings[key] = stored
+        continue
+      }
+      warningsChanged = true
+      warnings[key] = { ...stored, warning, issuedAt, beginsAt }
+    }
+    if (warningsChanged) change({ warnings })
+    return next
+  },
+
+  // MARK: - What a digest speaks for (spec §5, 17 October 2026)
+
+  /**
+   * Whether this bot's digest speaks for a held warning, so that its absence from the list
+   * ends it. A bot answers a place-named `>w` anywhere in the country (spec §8.2), but its
+   * digest lists only what is active in its own coverage, so a warning the phone fetched from it
+   * for a place outside that coverage is absent from every digest it will ever send — and is not
+   * over. With the bot's own complete statement of its area held (Coverage, spec §7A), a digest
+   * ends only what touches that area; a warning outside it ends by its expiry, its cancel, or a
+   * fresh answer. Without a complete statement nothing says where the area stops, and the digest
+   * speaks for everything, as it always did.
+   *
+   * `areaCentre({ state, county, number })` is the bundle's centre of one county or zone,
+   * `{ latitude, longitude }` or null; without it a county is judged by the stated runs alone.
+   */
+  digestSpeaksFor(warning, { coverage, areaCentre = null }) {
+    if (coverage == null || !MeshWXCoverage.isComplete(coverage)) return true
+    return WeatherStateReducer.touchesCoverage(warning, coverage, { areaCentre })
+  },
+
+  /**
+   * Whether a warning's area touches a bot's stated coverage, by the bot's own rule (its
+   * `_in_coverage`): a zone it lists; for a product without a polygon (a watch by county), a
+   * county it covers; for a storm-based warning, the polygon against the circle — the counties
+   * on such a warning are only the ones its polygon crosses, so they do not count on their own.
+   *
+   * The statement lists zones, not the counties the bot derives from its circle, so a county is
+   * judged by its centre against the circle, `countyReachKilometres` generous. A statement
+   * without a circle is an area of states or offices, and there the warning must come within
+   * `areaReachKilometres` of a stated area's centre. Nothing here ever reads an office: WX-AUS
+   * lists HGX because a few Houston zones reach its circle, and Houston is not in its area.
+   */
+  touchesCoverage(warning, coverage, { areaCentre = null } = {}) {
+    if (MeshWXCoverage.hasNoAreaFilter(coverage)) return true
+    const polygon = warning.polygon ?? []
+    const hasPolygon = polygon.length >= 3
+    const runs = warning.areas ?? []
+    const stated = coverage.areas ?? []
+    for (const run of runs) {
+      if (run.county && hasPolygon) continue
+      if (stated.some((one) => runsOverlap(run, one))) return true
+    }
+    const counties = hasPolygon ? [] : centresOf(runs.filter((run) => run.county), areaCentre)
+    const centre = MeshWXCoverage.centre(coverage)
+    if (centre != null && coverage.radius_km > 0) {
+      if (hasPolygon) return polygonReaches(polygon, centre, coverage.radius_km)
+      const reach = coverage.radius_km + WeatherStateReducer.countyReachKilometres
+      if (counties.some((point) => kilometres(point, centre) <= reach)) return true
+    }
+    if (!hasPolygon && counties.length === 0) return false
+    const statedCentres = centresOf(stated, areaCentre)
+    const reach = WeatherStateReducer.areaReachKilometres
+    if (hasPolygon) return statedCentres.some((point) => polygonReaches(polygon, point, reach))
+    return counties.some((county) => statedCentres.some((point) => kilometres(county, point) <= reach))
   },
 
   /**
@@ -623,6 +823,83 @@ function wouldRollBack(warning, { seq, state, receivedAt }) {
     && (receivedAt - held.receivedAt) / 1000 < WeatherStateReducer.reorderRecency
 }
 
+/**
+ * The time a message states for itself, which a future one must not be (spec §10.7): null for a
+ * message with none (Cancel, Text, Coverage, Not available) and for a warning without an issue
+ * time. A warning's expiry is in the future by nature and is capped instead (`cappedWarning`).
+ */
+function messageMinutes(message) {
+  switch (message.name) {
+    case 'digest': return message.now_min
+    case 'observations': return message.ts_min
+    case 'forecast': return message.issued_min
+    case 'area_sweep': return message.built_min
+    case 'radar': return message.taken_min
+    case 'warning': return message.issued_min ?? null
+    default: return null
+  }
+}
+
+/** Two area runs of one kind in one state that share a number. */
+function runsOverlap(lhs, rhs) {
+  return lhs.state === rhs.state && lhs.county === rhs.county
+    && lhs.start < rhs.start + rhs.run && rhs.start < lhs.start + lhs.run
+}
+
+/** The bundle centres of every county or zone in `runs`, those it knows. */
+function centresOf(runs, areaCentre) {
+  if (areaCentre == null) return []
+  const out = []
+  for (const run of runs) {
+    for (const number of MeshWXAreaRun.numbers(run)) {
+      const point = areaCentre({ state: run.state, county: run.county, number })
+      if (point != null) out.push(point)
+    }
+  }
+  return out
+}
+
+function kilometres(lhs, rhs) {
+  return MeshWXGeo.distanceKilometres({
+    fromLat: lhs.latitude, fromLon: lhs.longitude, toLat: rhs.latitude, toLon: rhs.longitude
+  })
+}
+
+/**
+ * Whether a polygon (`[latitude, longitude]` pairs) comes within `radius` kilometres of a point:
+ * the point is inside it, or one of its edges passes that close. On a flat projection around the
+ * point, which over a warning's few tens of kilometres is far inside the margins used.
+ */
+function polygonReaches(polygon, point, radius) {
+  const cosLatitude = Math.cos((point.latitude * Math.PI) / 180)
+  const planar = polygon.map(([latitude, longitude]) => {
+    let east = longitude - point.longitude
+    if (east > 180) east -= 360
+    else if (east < -180) east += 360
+    return { x: east * 111.32 * cosLatitude, y: (latitude - point.latitude) * 110.574 }
+  })
+  let inside = false
+  for (let index = 0, previous = planar.length - 1; index < planar.length; previous = index, index += 1) {
+    const a = planar[index]
+    const b = planar[previous]
+    if ((a.y > 0) !== (b.y > 0) && a.x + ((b.x - a.x) * -a.y) / (b.y - a.y) > 0) inside = !inside
+  }
+  if (inside) return true
+  for (let index = 0; index < planar.length; index += 1) {
+    if (segmentDistance(planar[index], planar[(index + 1) % planar.length]) <= radius) return true
+  }
+  return false
+}
+
+/** The distance from the origin to the segment `a`–`b`. */
+function segmentDistance(a, b) {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const length = dx * dx + dy * dy
+  const along = length === 0 ? 0 : Math.max(0, Math.min(1, -(a.x * dx + a.y * dy) / length))
+  return Math.hypot(a.x + along * dx, a.y + along * dy)
+}
+
 function markGap(state, date) {
   state.needsDigest = true
   state.gapDetectedAt = Math.max(state.gapDetectedAt ?? date, date)
@@ -720,7 +997,7 @@ function boundingBox(polygon) {
 
 // MARK: - Digest
 
-function applyDigest(digest, { state, receivedAt }) {
+function applyDigest(digest, { state, receivedAt, areaCentre }) {
   if (state.digest != null && digest.now_min < state.digest.digest.now_min) {
     return WeatherStateChange.digestIgnoredOlder({ builtMinutes: digest.now_min })
   }
@@ -732,16 +1009,23 @@ function applyDigest(digest, { state, receivedAt }) {
   const horizon = digest.entries.length >= MeshWXWire.digestMayBeCutAt
     ? Math.max(...digest.entries.map((entry) => entry.expires_min))
     : null
+  // The list speaks only for the bot's own area (spec §5, 17 October 2026): what the bot stated
+  // about itself, when it stated all of it.
+  const coverage = state.coverage?.coverage ?? null
+  const speaksFor = (warning) => WeatherStateReducer.digestSpeaksFor(warning, { coverage, areaCentre })
 
   // Spec §5: "an identity the app holds that is absent from the digest has ended" — for
   // identities the list could have known about.
   const removed = Object.values(state.warnings)
     .filter((stored) => !listed.has(identityKey(stored.warning))
       && stored.receivedAt < speaksBefore
-      && !(horizon != null && stored.warning.expires_min >= horizon))
+      && !(horizon != null && stored.warning.expires_min >= horizon)
+      && speaksFor(stored.warning))
     .map((stored) => identityOf(stored.warning))
     .sort(WeatherStateReducer.identityOrder)
   for (const identity of removed) delete state.warnings[identityKey(identity)]
+  // The list's expiries are believed no further ahead than a warning's own (`cappedWarning`).
+  const ceiling = Math.floor(receivedAt / 60_000) + WeatherStateReducer.warningHorizon / 60
 
   const missing = []
   for (const entry of digest.entries) {
@@ -753,15 +1037,18 @@ function applyDigest(digest, { state, receivedAt }) {
     }
     // The digest's expiry is absolute (`now + rel`). It replaces the held one when the list
     // is newer than the warning message; otherwise it may only extend it.
+    const expires = Math.min(entry.expires_min, ceiling)
     const replaces = held.receivedAt < speaksBefore
-    if (held.warning.expires_min !== entry.expires_min
-      && (replaces || entry.expires_min > held.warning.expires_min)) {
-      state.warnings[key] = { ...held, warning: { ...held.warning, expires_min: entry.expires_min } }
+    if (held.warning.expires_min !== expires && (replaces || expires > held.warning.expires_min)) {
+      state.warnings[key] = { ...held, warning: { ...held.warning, expires_min: expires } }
     }
   }
 
+  // A marker outside the bot's area is not the list's to settle, for the same reason.
   state.pendingUpgrades = Object.fromEntries(
-    Object.entries(state.pendingUpgrades).filter(([, pending]) => pending.cancelledAt >= speaksBefore)
+    Object.entries(state.pendingUpgrades).filter(
+      ([, pending]) => pending.cancelledAt >= speaksBefore || !speaksFor(pending.warning)
+    )
   )
   if (state.gapDetectedAt != null) {
     if (state.gapDetectedAt < speaksBefore) {

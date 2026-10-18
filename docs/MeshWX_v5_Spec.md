@@ -303,8 +303,13 @@ coverage, and again when something material changes: the expiry changed
 (to the minute), the start changed (to the minute, revision 12), tags
 changed, area changed. Not sent for wording-only
 updates. The one exception to the minute rule is an expiry the bot had to
-invent (a product in force until further notice is given one 12 hours
-ahead): that counts only when it moves by 30 minutes.
+invent: that counts only when it moves by 30 minutes. A product in force
+until further notice (VTEC end `000000T0000Z`) is given the time the bot
+keeps it until: its segment's UGC expiry plus 24 hours, unless a CAN or EXP
+arrives first (from 17 October 2026). That time moves only when a new
+statement arrives, so the warning is not re-sent every half hour as a
+moving "now + 12 hours" would make it; a bot that cannot tell (no UGC
+expiry) still invents 12 hours ahead.
 
 Flags nibble: bit 0 = update of an identity already sent (informational;
 the app replaces by identity either way). Bit 1 = the issue time is present
@@ -472,6 +477,36 @@ do from 1 October 2026). A whole list of 24 read that way only keeps an
 ended warning until it expires or the next digest says otherwise, and it
 lets a bot cut at 24, inside 157 bytes, once the apps that wait for
 exactly 25 are no longer in use.
+
+**The digest speaks for the bot's coverage, not for the country**
+(app rule from 17 October 2026; no byte changed). The list is everything
+active in the bot's coverage, but a bot answers a request that names a
+place anywhere (section 8.2), so an app can hold a warning from a bot
+that no digest of that bot will ever list. WX-AUS answers `>w TXC201`
+for a phone watching Houston; its next digest, which lists only Austin's
+warnings, ended the Houston warning on that phone and took its
+notification down. So the rule above applies only to a held identity
+whose area touches the bot's last **complete** Coverage statement
+(section 7A, both cut flags clear), judged the way the bot judges its own
+broadcasts: a zone the statement lists; for a storm-based warning, its
+polygon against the stated circle (the counties on such a warning are
+only the ones its polygon crosses); for a product with no polygon, such
+as a tornado watch by county, the county's centre within the circle,
+allowing about 25 km for the county's size; and for a statement with no
+circle, within about 25 km of the centre of an area it lists. The office
+list never counts: WX-AUS lists HGX because a few Houston zones reach its
+circle. A held identity outside the area ends by its own expiry, its
+Cancel, or a fresh `>w` answer; an upgrade marker outside it (section 4)
+is likewise not the digest's to clear. With no complete statement held,
+nothing says where the area stops and the digest speaks for every
+identity held from that bot, as before. One bot's digest never ends
+another bot's copy of the same identity, so an app takes down a
+notification for a warning a digest dropped only once no bot holds it.
+The iOS and web clients do this from 17 October 2026.
+
+A digest whose `now` is more than 15 minutes ahead of the phone's clock
+is not applied at all (section 10.7): it would end every warning it does
+not list and then turn every real digest away as older.
 
 `feed_health` measures one office's quietness, not the satellite link. The
 home office is the one resolved from the bot's home coordinate unless the
@@ -1620,6 +1655,42 @@ range shows old data; saying so is the feature.
 - Play a loop only when the person asks, with each picture's own time on
   screen, and show a missing picture as a gap rather than stretching the
   one before it.
+
+### 10.7 Times ahead of the phone's clock
+
+App rule from 17 October 2026; no byte changed. Every bot is two
+self-asserted bytes on the wire (section 2.2), so until messages are
+signed anyone on `#meshwx` can send one in a bot's name, and a corrupt
+clock can do the same damage. Every time a bot sends is something that
+already happened — a Digest's `now`, an Observations `ts` and so every
+station's report time, a Forecast's `issued`, an Area sweep's `built`, a
+Radar picture's `taken`, a Warning's issue time — except a Warning's
+expiry and its start. A time more than **15 minutes** ahead of the
+phone's clock is therefore not believed. The 15 minutes absorb a bot and
+a phone whose clocks disagree; nothing honest is further ahead.
+
+- **A Digest, Observations, Forecast, Area sweep or Radar** stamped that
+  far ahead is dropped whole, and the app may log it. Kept, it would stand
+  as the newest of its kind over everything real until the clock caught
+  up: a digest stamped `0xFFFFFF00` with no entries ended every warning a
+  phone held and then made every real digest "older"; one radar picture
+  from the future retired every real one as hours behind it.
+- **A Warning** with an issue time that far ahead is kept, without the
+  issue time and the start that rides on it (say nothing, as for a
+  warning with no issue time). Dropping it would lose a warning; dropping
+  the time loses one line of copy.
+- **An expiry** is believed at most **14 days** past the moment the phone
+  heard the warning, or the digest that extended it; clamp it there. A
+  product in force until further notice arrives with an expiry the bot
+  invented (section 3: its keep-until time), re-sent as it moves, under its
+  original issue time, so the horizon is counted from receipt, never from
+  issuance, or a river flood warning in force for three weeks would end
+  while the bot still says it is in force. A start (revision 12) that no
+  longer falls before the clamped expiry is dropped.
+
+State an app saved before it applied this rule is cleaned the same way
+when it is read back: a held digest, reading, forecast, sweep or picture
+stamped ahead of the clock is forgotten, and a held warning is clamped.
 
 ## 11. Search and place resolution
 

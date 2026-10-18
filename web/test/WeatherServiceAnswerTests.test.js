@@ -194,6 +194,54 @@ describe('WeatherService answers', () => {
     )
   })
 
+  // `>w <area>` is keyed by the code asked (spec §8.2): one county's answer is not another's.
+  it('a warning answers a request for the areas it names, and not for any other', async () => {
+    const h = await makeHarness()
+    // The suite's warning names Travis County, TXC453.
+    await h.service.ingest(F.warning({ seq: 1, identity: F.svw42 }))
+    assert.equal(
+      await h.service.send(WeatherRequest.warningsTouching({ ugc: 'TXC453' }), { to: F.bot }), null
+    )
+    assert.equal(
+      await h.service.send(WeatherRequest.warningsTouching({ ugc: 'txc453' }), { to: F.bot }), null
+    )
+    assert.notEqual(
+      await h.service.send(WeatherRequest.warningsTouching({ ugc: 'TXC201' }), { to: F.bot }), null,
+      "a warning for Travis County says nothing about Harris County's"
+    )
+  })
+
+  // The bot may cut a warning's area list to fit it in a packet (spec §3), so the answer to this
+  // phone's own `>w <area>` need not name the area; it still answers it.
+  it('the answer to this phone\'s own area request fills that area, whatever its list names', async () => {
+    const h = await makeHarness()
+    await h.service.send(WeatherRequest.warningsTouching({ ugc: 'TXC209' }), { to: F.bot })
+    await h.clock.advance(2)
+    await h.service.ingest(F.warning({ seq: 1, identity: F.svw43, areas: [] }))
+    assert.equal(F.settlements(h.events).length, 1)
+    await h.clock.advance(30)
+    assert.equal(
+      await h.service.send(WeatherRequest.warningsTouching({ ugc: 'TXC209' }), { to: F.bot }), null
+    )
+  })
+
+  // Spec §5, 17 October 2026: the list speaks for the bot's own area, and with the bot's
+  // complete statement held that is the area its answer to `>w <area>` stands for.
+  it("with the bot's area stated, its list answers area requests inside it and not outside", async () => {
+    const h = await makeHarness()
+    await h.service.ingest(F.coverage({ seq: 1 }))
+    await h.service.ingest(F.digest({ seq: 2, entries: [] }))
+    for (const ugc of ['TXZ192', 'TXC453']) {
+      assert.equal(
+        await h.service.send(WeatherRequest.warningsTouching({ ugc }), { to: F.bot }), null, ugc
+      )
+    }
+    assert.notEqual(
+      await h.service.send(WeatherRequest.warningsTouching({ ugc: 'TXC201' }), { to: F.bot }), null,
+      "Houston is not in WX-AUS's area, so WX-AUS's list is no answer about it"
+    )
+  })
+
   // The list itself is what shows a warning never arrived; asking again is the repair.
   it("warnings requests are sent while the bot's list names a warning this phone lacks", async () => {
     const h = await makeHarness()
