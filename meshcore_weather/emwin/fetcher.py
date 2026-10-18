@@ -1,14 +1,15 @@
-"""EMWIN product sources: the NOAA internet bundle, or the goestools
-output directory fed by a GOES satellite receiver (SDRSource).
+"""EMWIN product sources: NOAA's internet bundles (InternetSource), or the
+goestools output directory fed by a GOES satellite receiver (SDRSource),
+which takes the same internet bundles as its backup while the dish is quiet.
 
-Internet strategy:
-1. On startup, download the 3-hour bundle for initial coverage
-2. Every 2 minutes, download the 2-minute bundle (~43KB) for new products
-3. Accumulate products over time, expire after 12 hours
-4. This ensures zone forecasts (issued every 6-12h) stay available
+Both take NOAA's bundles the same way (_NoaaBundles): the last hour's bundle
+first, then the 2-minute one every poll, the hour's again after any fetch
+that failed and every half hour regardless; the file-name dedup makes a
+product that comes twice cost nothing. Products are held for their retention
+(emwin/retention.py: 12 hours, warnings and forecasts longer).
 
-The EMWIN ZIP bundles use the same file format as the GOES satellite
-downlink, so switching to SDR later requires no parser changes.
+The EMWIN ZIP bundles use the same file names and bodies as the GOES
+satellite downlink, so the parser cannot tell the two apart.
 """
 
 import asyncio
@@ -16,18 +17,21 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import statistics
+import threading
 import time
 import zipfile
 from abc import ABC, abstractmethod
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timezone, timedelta
 from pathlib import Path
 
 import httpx
 
+from meshcore_weather import __version__
 from meshcore_weather.config import settings
 from meshcore_weather.emwin.retention import is_expired, longest_hours, max_age_hours
 
@@ -46,11 +50,36 @@ EMWIN_TS_RE = re.compile(r"_(\d{14})_")
 # directory) is a product, but not a sign of life from the dish.
 KWIN_TS_RE = re.compile(r"_C_KWIN_(\d{14})_")
 
-# While the internet backup is on, the last-hour bundle is taken again this
-# often, and after any fetch that failed: NOAA's server answered a truncated
-# ZIP or 403 one to three times an hour during the Oct 14-16 outage, and each
-# failed 2-minute bundle used to be lost for good.
+# While the internet is the feed (InternetSource, or the dish's backup), the
+# last-hour bundle is taken again this often, and after any fetch that
+# failed: NOAA's server answered a truncated ZIP or 403 one to three times an
+# hour during the Oct 14-16 outage, and 200 with 0 bytes twice on Oct 17 at
+# 20:24Z, and each failed 2-minute bundle used to be lost for good.
 HOUR_BUNDLE_EVERY_S = 1800
+
+# A fetch that hangs gives up after this (per read, 5 s to connect): the
+# 2-minute bundle is ~43 KB, and a WAN that hung used to hold a poll a minute.
+FETCH_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+
+# NOAA refusing (403), throttling (429) or failing (5xx): the internet source
+# waits twice as long after each such answer, up to this, and goes back to
+# the poll interval at the first bundle that comes in whole. Every wait is
+# moved by up to POLL_JITTER either way, so bots started together (a power
+# cut, a release) do not poll in step.
+BACKOFF_MAX_S = 900
+POLL_JITTER = 0.10
+
+PROJECT_URL = "https://github.com/digitaino/meshwx"
+
+
+def user_agent() -> str:
+    """How the bot names itself to NOAA's server: the project, its version
+    and, when MCW_OPERATOR_CONTACT is set, whom to ask, so an administrator
+    who sees the traffic can write before blocking it. (httpx sent
+    "python-httpx/x" before, which says nothing.)"""
+    contact = "".join(c for c in (getattr(settings, "operator_contact", "") or "")
+                      if " " <= c <= "~" and c not in "()").strip()
+    return f"meshcore-weather/{__version__} (+{PROJECT_URL}{'; ' + contact if contact else ''})"
 
 
 def read_bundle(data: bytes, source: str = "internet") -> list[dict]:
@@ -141,17 +170,194 @@ def parse_emwin_file(filename: str, raw_text: str, source: str = "") -> dict | N
     }
 
 
-class InternetSource(EMWINSource):
-    """Fetch EMWIN products, accumulate over time, expire old ones."""
+# The internet source's cache file is a journal: each poll appends the
+# products it brought, and the file is rewritten as the live products alone
+# once it holds more than CACHE_COMPACT_FACTOR lines per live product plus
+# CACHE_COMPACT_SLACK. At the dish's measured 21.6 files a minute that is an
+# append of ~85 KB a minute and a rewrite about twice a day; the whole store
+# (~100 MB) used to be rewritten on the event loop after every poll.
+CACHE_COMPACT_FACTOR = 2
+CACHE_COMPACT_SLACK = 2000
 
-    def __init__(self):
+
+def _cache_line(prod: dict) -> str:
+    rec = dict(prod)
+    rec["timestamp"] = rec["timestamp"].isoformat()
+    return json.dumps(rec) + "\n"
+
+
+class _NoaaBundles:
+    """NOAA's internet bundles, taken the same way by both sources.
+
+    The first fetch is the last hour's bundle (`emwin_base_url`), then the
+    2-minute one (`emwin_poll_url`) at every poll. A fetch that fails (no
+    answer, an error status, a timeout, 0 bytes, not a ZIP — a truncated one
+    is not — or a ZIP with no product in it) is made good by the hour's
+    bundle at the next poll, and the hour's is taken every
+    HOUR_BUNDLE_EVERY_S regardless. Products are keyed by file name, so a
+    bundle taken twice holds nothing twice.
+
+    A class using this sets `_client`, `_hour_fetched`, `_refetch_hour`,
+    `_get_error`, `_get_status`, `_lag_samples` and `newest_product_ts`, and
+    says what a failed fetch leaves on record (`_fetch_failed`).
+    """
+
+    _net_label = "EMWIN internet"          # how its log lines start
+
+    def _make_client(self, transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncClient:
+        # `transport` is for tests (httpx.MockTransport); the bot passes none.
+        return httpx.AsyncClient(timeout=FETCH_TIMEOUT, headers={"User-Agent": user_agent()},
+                                 transport=transport)
+
+    async def _get(self, url: str) -> bytes | None:
+        if self._client is None:
+            self._client = self._make_client()
+        try:
+            resp = await self._client.get(url)
+            resp.raise_for_status()
+            return resp.content
+        except httpx.TimeoutException:
+            self._get_error = "timeout"
+        except httpx.HTTPStatusError as e:
+            self._get_status = e.response.status_code
+            self._get_error = f"{e.response.status_code} {e.response.reason_phrase}".strip()
+        except httpx.HTTPError as e:
+            self._get_error = type(e).__name__
+        logger.warning("%s: %s (%s)", self._net_label, self._get_error, url)
+        return None
+
+    def _bundle_url(self, mono: float) -> str:
+        """The bundle the next fetch takes."""
+        hour_due = self._hour_fetched is None or mono - self._hour_fetched >= HOUR_BUNDLE_EVERY_S
+        return settings.emwin_base_url if self._refetch_hour or hour_due else settings.emwin_poll_url
+
+    def _bundle_done(self, url: str, ok: bool, mono: float) -> None:
+        if not ok:
+            self._refetch_hour = True              # make it good with the hour bundle next time
+        elif url == settings.emwin_base_url:
+            self._hour_fetched = mono
+            self._refetch_hour = False
+
+    async def _read_internet(self, url: str, now: datetime) -> list[dict] | None:
+        """The bundle at `url` as product dicts, or None when the fetch failed."""
+        self._get_error = None
+        self._get_status = None
+        data = await self._get(url)
+        if not data:
+            # 200 with 0 bytes: twice on 2026-10-17 at 20:24Z.
+            what = self._get_error or ("0 bytes" if data is not None else "no response")
+        elif not zipfile.is_zipfile(io.BytesIO(data)):
+            what = "invalid zip"
+        else:
+            products = await asyncio.get_running_loop().run_in_executor(None, read_bundle, data, "internet")
+            if products:
+                return products
+            what = "empty bundle"
+        if self._get_error is None:                # _get has said its own
+            logger.warning("%s: %s (%s)", self._net_label, what, url)
+        self._fetch_failed(what, now)
+        return None
+
+    def _fetch_failed(self, what: str, now: datetime) -> None:
+        raise NotImplementedError
+
+    # -- how late the products are ----------------------------------------------
+
+    @property
+    def feed_lag_min(self) -> int | None:
+        """How far behind the uplink is running, in minutes: the median over
+        the last 50 products that arrived fresh, once there are five to go
+        by. Only arrivals in the last hour count: a feed that has gone quiet
+        says nothing about how late the uplink runs now, and the lag of a
+        replay that has ended must not be reported as current."""
+        since = time.time() - 3600
+        recent = [lag for mtime, lag in self._lag_samples if mtime >= since]
+        if len(recent) < 5:
+            return None
+        return int(statistics.median(recent))
+
+    def _note_created(self, name: str) -> datetime | None:
+        """The creation time in a product's name, kept when it is the newest."""
+        m = KWIN_TS_RE.search(name)
+        if not m:
+            return None
+        try:
+            created = datetime.strptime(m.group(1) + "+0000", "%Y%m%d%H%M%S%z")    # the name's time is UTC
+        except ValueError:
+            return None
+        if self.newest_product_ts is None or created > self.newest_product_ts:
+            self.newest_product_ts = created
+        return created
+
+    def _note_lag(self, name: str, mtime: float, wall: float) -> None:
+        """A product that arrived at `mtime`: how long after its creation."""
+        created = self._note_created(name)
+        if created is None:
+            return
+        # The backlog at start is days of files in no particular order; only
+        # what arrived in the last hour says anything about now.
+        if mtime >= wall - 3600:
+            self._lag_samples.append((mtime, max(0.0, (mtime - created.timestamp()) / 60)))
+
+
+class InternetSource(_NoaaBundles, EMWINSource):
+    """NOAA's EMWIN bundles over the internet: the feed of every bot without
+    a dish.
+
+    **Fetching.** The hour's bundle at start, then the 2-minute bundle every
+    `emwin_poll_interval`, with the hour's again after any failed fetch and
+    every half hour (_NoaaBundles). When NOAA answers 403, 429 or 5xx the
+    wait doubles with each such answer, up to BACKOFF_MAX_S, until a bundle
+    comes in whole; every wait is moved by up to ±POLL_JITTER. Requests name
+    the bot and its operator (`user_agent`).
+
+    **Health**, under SDRSource's names where they mean the same:
+    `feed_lag_min` (median minutes between a product's creation and its
+    arrival in the 2-minute bundle; the hour's bundle is catch-up and does
+    not count), `newest_product_ts`, `last_ok` (the last fetch that brought
+    a product) and `last_error` / `last_error_at` ("403 Forbidden at
+    14:03Z", until a bundle comes in whole).
+
+    **The cache file** (data/emwin_cache/products.jsonl, one product per
+    line) lets a restart answer at once. Each poll appends what it brought,
+    in the executor; the file is rewritten as the live products, through a
+    temp file and os.replace, only once it has grown to twice their number
+    (CACHE_COMPACT_FACTOR). A line torn by a crash is skipped at load.
+    """
+
+    _net_label = "EMWIN internet"
+
+    def __init__(self, cache_file: Path | None = None):
+        self.cache_file = Path(cache_file) if cache_file is not None else \
+            Path(settings.data_dir) / "emwin_cache" / "products.jsonl"
         self._client: httpx.AsyncClient | None = None
         self._products: dict[str, dict] = {}  # keyed by filename for dedup
         self._poll_task: asyncio.Task | None = None
         self._running = False
+        self._rng = random.Random()
+        # The fetching (_NoaaBundles)
+        self._hour_fetched: float | None = None       # monotonic time the hour bundle last came in whole
+        self._refetch_hour = False                    # a fetch failed: take the hour bundle next
+        self._get_error: str | None = None            # what the last _get ran into, for the record
+        self._get_status: int | None = None           # ... and the HTTP status NOAA answered with
+        self._refusals = 0                            # 403/429/5xx in a row: the backoff
+        # Health
+        self.last_ok: datetime | None = None          # last fetch that brought a product
+        self.last_error: str | None = None            # "403 Forbidden at 14:03Z", until a bundle comes in whole
+        self.last_error_at: datetime | None = None
+        self.newest_product_ts: datetime | None = None  # the newest creation time NOAA gave us
+        self._lag_samples: deque[tuple[float, float]] = deque(maxlen=50)   # (arrival, minutes behind)
+        # The cache file
+        self._cache_lock = threading.Lock()
+        self._unsaved: list[dict] = []    # taken, not yet on the file
+        self._cache_lines = 0             # lines in the file, live or not
+        self._cache_loaded = False        # it was read: only then may it be rewritten
+        self._cache_dirty = False         # a write failed: rewrite it whole next time
+        self._cache_torn = False          # it ends mid-line (a crash in an append)
 
     async def start(self) -> None:
-        self._client = httpx.AsyncClient(timeout=60.0)
+        if self._client is None:
+            self._client = self._make_client()
         self._running = True
 
         # Restore cached products from disk. In a thread: it is thousands of
@@ -159,9 +365,11 @@ class InternetSource(EMWINSource):
         # loads the backlog behind the radio).
         await asyncio.get_running_loop().run_in_executor(None, self._load_cache)
 
-        # Initial load: 3-hour bundle for broad coverage
-        logger.info("Initial load from 3-hour bundle...")
-        await self._fetch_bundle(settings.emwin_base_url)
+        # The first fetch is the last hour's bundle, for the time the bot was down.
+        try:
+            await self.poll_once()
+        except Exception:
+            logger.exception("Error in the first EMWIN fetch")
 
         self._poll_task = asyncio.create_task(self._poll_loop())
         logger.info(
@@ -179,51 +387,96 @@ class InternetSource(EMWINSource):
             except asyncio.CancelledError:
                 pass
         if self._client is None:
-            return          # a start cut short: saving now would empty the cache file
-        self._save_cache()
+            return          # never started
+        # Every product went to the file as it came; this is only what a
+        # cancelled poll or a failed write left over.
+        if self._unsaved or self._cache_dirty:
+            await self._persist()
         await self._client.aclose()
+        self._client = None
         logger.info("EMWIN source stopped (%d products in store)", len(self._products))
+
+    # -- polling ----------------------------------------------------------------
+
+    def poll_wait_s(self, jitter: bool = True) -> float:
+        """Seconds to the next poll: the interval, doubled for each refusal
+        in a row up to BACKOFF_MAX_S, moved by up to ±POLL_JITTER."""
+        interval = max(1.0, float(settings.emwin_poll_interval))
+        wait = interval
+        if self._refusals:
+            wait = min(interval * 2 ** min(self._refusals, 16), max(float(BACKOFF_MAX_S), interval))
+        if jitter:
+            wait *= self._rng.uniform(1 - POLL_JITTER, 1 + POLL_JITTER)
+        return wait
 
     async def _poll_loop(self) -> None:
         while self._running:
-            await asyncio.sleep(settings.emwin_poll_interval)
+            await asyncio.sleep(self.poll_wait_s())
             try:
-                # Poll the small 2-minute bundle for new products
-                new = await self._fetch_bundle(settings.emwin_poll_url)
-                self._expire_old()
-                if new:
-                    logger.info(
-                        "Poll: +%d new products (%d total)",
-                        new, len(self._products),
-                    )
-                    self._save_cache()
+                await self.poll_once()
             except Exception:
                 logger.exception("Error polling EMWIN data")
 
-    async def _fetch_bundle(self, url: str) -> int:
-        """Download a ZIP bundle and add products to the store. Returns count of new products."""
-        logger.info("Fetching %s", url)
-        try:
-            resp = await self._client.get(url)
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            logger.warning("HTTP error: %s", e)
-            return 0
+    async def poll_once(self, now: datetime | None = None) -> int | None:
+        """One fetch of the bundle due, into the store and onto the cache
+        file. Returns how many products were new, or None when it failed."""
+        now = now or datetime.now(UTC)
+        mono = time.monotonic()
+        url = self._bundle_url(mono)
+        new = await self._fetch(url, now)
+        self._bundle_done(url, new is not None, mono)
+        if new is not None:
+            self._refusals = 0
+        elif self._get_status is not None and (self._get_status in (403, 429) or self._get_status >= 500):
+            self._refusals += 1
+            logger.warning("EMWIN internet: NOAA answered %s; waiting ~%.0f s before the next poll",
+                           self._get_error, self.poll_wait_s(jitter=False))
+        self._expire_old(now)
+        if new:
+            logger.info("Poll: +%d new products (%d total)", len(new), len(self._products))
+        await self._persist()
+        return None if new is None else len(new)
 
-        # Unzipping and splitting a bundle is CPU work; off the event loop it
-        # cannot stall the radio's serial reads.
-        extracted = await asyncio.get_running_loop().run_in_executor(None, self._extract_zip, resp.content)
-        new_count = 0
-        for prod in extracted:
-            fname = prod.get("filename", "")
-            if fname and fname not in self._products:
-                self._products[fname] = prod
-                new_count += 1
-        return new_count
+    async def _fetch(self, url: str, now: datetime) -> list[dict] | None:
+        """The bundle at `url` into the store: the products that were new,
+        or None when the fetch failed."""
+        products = await self._read_internet(url, now)
+        if products is None:
+            return None
+        new = self._take(products, now, fresh=url != settings.emwin_base_url)
+        self.last_error = self.last_error_at = None
+        if new:
+            self.last_ok = now
+        return new
 
-    def _expire_old(self) -> None:
+    def _fetch_failed(self, what: str, now: datetime) -> None:
+        self.last_error = f"{what} at {now:%H:%MZ}"
+        self.last_error_at = now
+
+    def _take(self, products: list[dict], now: datetime, fresh: bool) -> list[dict]:
+        """Hold the products not held yet. `fresh`: they came in the
+        2-minute bundle, so their arrival says how late the uplink runs; the
+        hour's bundle is catch-up and says nothing about that."""
+        wall = now.timestamp()
+        new: list[dict] = []
+        for prod in products:
+            name = prod.get("filename") or ""
+            if not name or name in self._products:
+                continue
+            if is_expired((prod.get("awips_id") or "")[:3], prod["timestamp"], now):
+                continue
+            self._products[name] = prod
+            new.append(prod)
+            if fresh:
+                self._note_lag(name, wall, wall)
+            else:
+                self._note_created(name)
+        self._unsaved.extend(new)
+        return new
+
+    def _expire_old(self, now: datetime | None = None) -> None:
         """Remove products past their retention (warnings keep longer)."""
-        now = datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         before = len(self._products)
         self._products = {
             k: v for k, v in self._products.items()
@@ -233,49 +486,114 @@ class InternetSource(EMWINSource):
         if removed:
             logger.debug("Expired %d old products", removed)
 
-    def _load_cache(self) -> None:
-        """Load products from disk cache on startup."""
-        if not CACHE_FILE.exists():
+    # -- the cache file -----------------------------------------------------------
+
+    async def _persist(self) -> None:
+        """What came since the last write onto the cache file, off the event
+        loop: appended, or the file rewritten as the live products once it
+        has more than CACHE_COMPACT_FACTOR lines per live product (expired
+        and torn lines only go then)."""
+        compact = self._cache_loaded and (
+            self._cache_dirty
+            or self._cache_lines + len(self._unsaved)
+            > CACHE_COMPACT_FACTOR * len(self._products) + CACHE_COMPACT_SLACK)
+        if not compact and not self._unsaved:
             return
-        now = datetime.now(timezone.utc)
-        count = 0
+        new, self._unsaved = self._unsaved, []
+        live = list(self._products.values()) if compact else None
+        lines = await asyncio.get_running_loop().run_in_executor(None, self._write_cache, new, live)
+        if lines is None:
+            # Kept for the next write, as long as they are held: a file that
+            # cannot be written for days must not hold every product ever taken.
+            self._unsaved = [p for p in new + self._unsaved if p.get("filename") in self._products]
+            self._cache_dirty = self._cache_loaded
+        elif live is not None:
+            self._cache_lines, self._cache_dirty = lines, False
+        else:
+            self._cache_lines += lines
+
+    def _write_cache(self, new: list[dict], live: list[dict] | None) -> int | None:
+        """In the executor: append `new`, or with `live` rewrite the file as
+        exactly those (temp file, fsync, os.replace: a crash leaves the old
+        file or the new one, never half of one). Returns the lines written,
+        None when it could not."""
+        path = self.cache_file
+        tmp = path.with_name(path.name + ".tmp")
+        with self._cache_lock:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if live is not None:
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        f.writelines(_cache_line(p) for p in live)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp, path)
+                    self._cache_torn = False
+                    logger.info("EMWIN cache: rewrote %s with the %d live products", path, len(live))
+                    return len(live)
+                with open(path, "a", encoding="utf-8") as f:
+                    if self._cache_torn:
+                        f.write("\n")          # the torn line stays one bad line, not two
+                        self._cache_torn = False
+                    f.writelines(_cache_line(p) for p in new)
+                return len(new)
+            except OSError as e:
+                logger.warning("EMWIN cache: could not write %s: %s", path, e)
+            except Exception:
+                logger.exception("EMWIN cache: could not write %s", path)
+            if live is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    logger.debug("EMWIN cache: could not remove %s", tmp)
+            return None
+
+    def _load_cache(self) -> None:
+        """Products from the cache file, at start (in the executor). The old
+        whole-file saves and the journal are the same format, one product
+        per line; an expired line, a file name already loaded and a torn or
+        garbled line are skipped, and the rest still load."""
+        path = self.cache_file
+        now = datetime.now(UTC)
+        count = lines = bad = 0
+        last = ""
         try:
-            with open(CACHE_FILE, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for raw in f:
+                    lines += 1
+                    last = raw
+                    if not raw.strip():
                         continue
-                    rec = json.loads(line)
-                    rec["timestamp"] = datetime.fromisoformat(rec["timestamp"])
+                    try:
+                        rec = json.loads(raw)
+                        ts = datetime.fromisoformat(rec["timestamp"])
+                        fname = rec.get("filename") or ""
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        bad += 1
+                        continue
+                    rec["timestamp"] = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
                     # This cache is only ever this source's own products, so a
                     # line written before revision 7 is still an internet one.
                     rec.setdefault("source", "internet")
-                    if is_expired((rec.get("awips_id") or "")[:3], rec["timestamp"], now):
+                    if not fname or fname in self._products \
+                            or is_expired((rec.get("awips_id") or "")[:3], rec["timestamp"], now):
                         continue
-                    fname = rec.get("filename", "")
-                    if fname and fname not in self._products:
-                        self._products[fname] = rec
-                        count += 1
-        except Exception:
-            logger.exception("Error loading cache")
+                    self._products[fname] = rec
+                    self._note_created(fname)
+                    count += 1
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            # Not loaded, so never rewritten: what is in it may still be read next time.
+            logger.warning("EMWIN cache: could not read %s: %s", path, e)
+            return
+        self._cache_lines = lines
+        self._cache_torn = bool(last) and not last.endswith("\n")
+        self._cache_loaded = True
+        if bad:
+            logger.warning("EMWIN cache: skipped %d unreadable line(s) in %s", bad, path)
         if count:
             logger.info("Restored %d products from cache", count)
-
-    def _save_cache(self) -> None:
-        """Persist current products to disk."""
-        try:
-            CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(CACHE_FILE, "w") as f:
-                for prod in self._products.values():
-                    rec = dict(prod)
-                    rec["timestamp"] = rec["timestamp"].isoformat()
-                    f.write(json.dumps(rec) + "\n")
-            logger.info("Saved %d products to cache", len(self._products))
-        except Exception:
-            logger.exception("Error saving cache")
-
-    def _extract_zip(self, data: bytes) -> list[dict]:
-        return read_bundle(data, source="internet")
 
     def _parse_emwin_file(self, filename: str, raw_text: str) -> dict | None:
         return parse_emwin_file(filename, raw_text, source="internet")
@@ -289,7 +607,7 @@ _NOTABLE = {"TOR", "SVR", "SVS", "FFW", "FFS", "FLW", "FLS", "NPW", "WSW", "MWW"
             "SPS", "CFW", "RFW", "EWW", "HLS", "TCV", "WOU", "WCN", "SEL", "ALT", "WAR", "WAT"}
 
 
-class SDRSource(EMWINSource):
+class SDRSource(_NoaaBundles, EMWINSource):
     """EMWIN products from the goestools output directory on disk.
 
     goesproc's `emwin` handler writes every product as its own file under
@@ -328,6 +646,8 @@ class SDRSource(EMWINSource):
     those written in the last hour.
     """
 
+    _net_label = "EMWIN internet backup"
+
     def __init__(self, root: Path | None = None, fallback_root: Path | None = None):
         self.root = Path(root or settings.sdr_emwin_dir).expanduser()
         # The production source keeps its internet products next to the bot's
@@ -354,6 +674,7 @@ class SDRSource(EMWINSource):
         self._hour_fetched: float | None = None       # monotonic time the hour bundle last came in whole
         self._refetch_hour = False                    # a fetch failed: take the hour bundle next
         self._get_error: str | None = None            # what the last _get ran into, for the record
+        self._get_status: int | None = None           # ... and the HTTP status NOAA answered with
         self._client: "httpx.AsyncClient | None" = None
 
     async def start(self) -> None:
@@ -413,18 +734,8 @@ class SDRSource(EMWINSource):
         since = (now or time.time()) - window_s
         return sum(1 for m in self._dish_mtimes if m >= since)
 
-    @property
-    def feed_lag_min(self) -> int | None:
-        """How far behind the uplink is running, in minutes: the median over
-        the dish's last 50 files, once there are five to go by. Only files
-        written in the last hour count: a dish that has gone quiet says
-        nothing about how late the uplink runs now, and the lag of a replay
-        that has ended must not be reported as current."""
-        since = time.time() - 3600
-        recent = [lag for mtime, lag in self._lag_samples if mtime >= since]
-        if len(recent) < 5:
-            return None
-        return int(statistics.median(recent))
+    # `feed_lag_min` (the median over the dish's last 50 files written in the
+    # last hour) and the fetching itself are _NoaaBundles'.
 
     async def check_fallback(self, now: datetime | None = None, wall: float | None = None) -> int:
         """Turn the internet backup on or off by how long the dish has been
@@ -444,8 +755,7 @@ class SDRSource(EMWINSource):
                 return 0
             if mono - self._fallback_fetched < settings.emwin_poll_interval:
                 return 0
-            hour_due = self._hour_fetched is None or mono - self._hour_fetched >= HOUR_BUNDLE_EVERY_S
-            url = settings.emwin_base_url if self._refetch_hour or hour_due else settings.emwin_poll_url
+            url = self._bundle_url(mono)
         elif quiet >= limit:
             self.fallback_since = now
             self.fallback_added = 0
@@ -459,55 +769,25 @@ class SDRSource(EMWINSource):
             return 0
         added = await self._fetch_internet(url, now)
         self._fallback_fetched = mono
+        self._bundle_done(url, added is not None, mono)   # a failure: the hour bundle next time
         if added is None:
-            self._refetch_hour = True              # make it good with the hour bundle next time
             return 0
-        if url == settings.emwin_base_url:
-            self._hour_fetched = mono
-            self._refetch_hour = False
         self.fallback_added += added
         if added:
             logger.info("EMWIN (internet backup): +%d new products (%d total)", added, len(self._products))
         return added
 
-    def _make_client(self) -> httpx.AsyncClient:
-        # The fetch runs inside the scan loop: a WAN that hangs used to hold
-        # the dish watcher for up to 60 s a cycle.
-        return httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
-
-    async def _get(self, url: str) -> "bytes | None":
-        if self._client is None:
-            self._client = self._make_client()
-        try:
-            resp = await self._client.get(url)
-            resp.raise_for_status()
-            return resp.content
-        except httpx.TimeoutException:
-            self._get_error = "timeout"
-        except httpx.HTTPStatusError as e:
-            self._get_error = f"{e.response.status_code} {e.response.reason_phrase}".strip()
-        except httpx.HTTPError as e:
-            self._get_error = type(e).__name__
-        logger.warning("EMWIN internet backup: %s (%s)", self._get_error, url)
-        return None
+    # The fetch runs inside the scan loop: _NoaaBundles' client gives up
+    # after 10 s, where a WAN that hung used to hold the dish watcher for up
+    # to 60 s a cycle.
 
     async def _fetch_internet(self, url: str, now: datetime) -> int | None:
         """The bundle at `url` into the store: how many products were new, or
         None when the fetch failed (no answer, not a ZIP, nothing in it)."""
-        self._get_error = None
-        data = await self._get(url)
-        if not data:
-            self._fetch_failed(self._get_error or "no response", now)
+        products = await self._read_internet(url, now)
+        if products is None:
             return None
-        if not zipfile.is_zipfile(io.BytesIO(data)):
-            self._fetch_failed("invalid zip", now)
-            return None
-        loop = asyncio.get_running_loop()
-        products = await loop.run_in_executor(None, read_bundle, data, "internet")
-        if not products:
-            self._fetch_failed("empty bundle", now)
-            return None
-        added = await loop.run_in_executor(None, self._take_internet, products, now)
+        added = await asyncio.get_running_loop().run_in_executor(None, self._take_internet, products, now)
         self.fallback_last_error = self.fallback_last_error_at = None
         if added:
             self.fallback_last_ok = now
@@ -637,21 +917,8 @@ class SDRSource(EMWINSource):
             logger.debug("SDR source: expired %d products", before - len(self._products))
         return added
 
-    def _note_lag(self, name: str, mtime: float, wall: float) -> None:
-        """One of the dish's files: how long after its creation it arrived."""
-        m = KWIN_TS_RE.search(name)
-        if not m:
-            return
-        try:
-            created = datetime.strptime(m.group(1) + "+0000", "%Y%m%d%H%M%S%z")    # the name's time is UTC
-        except ValueError:
-            return
-        if self.newest_product_ts is None or created > self.newest_product_ts:
-            self.newest_product_ts = created
-        # The backlog at start is days of files in no particular order; only
-        # what the dish wrote in the last hour says anything about now.
-        if mtime >= wall - 3600:
-            self._lag_samples.append((mtime, max(0.0, (mtime - created.timestamp()) / 60)))
+    # `_note_lag` (one of the dish's files: how long after its creation it
+    # was written) is _NoaaBundles'.
 
     async def fetch_products(self) -> list[dict]:
         return list(self._products.values())

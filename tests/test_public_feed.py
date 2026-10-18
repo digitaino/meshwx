@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from meshcore_weather.config import settings
 from meshcore_weather.core.render_text import MAX_DM
-from meshcore_weather.emwin.fetcher import SDRSource
+from meshcore_weather.emwin.fetcher import InternetSource, SDRSource
 from meshcore_weather.main import WeatherBot
 from meshcore_weather.parser.weather import WeatherStore
 from meshcore_weather.portal.routes import admin as admin_mod
@@ -81,6 +81,7 @@ def test_the_public_bundle_says_where_the_products_come_from_and_how_late(client
             "last_ok": int((SINCE + timedelta(minutes=20)).timestamp()),
             "last_error": "403 Forbidden at 14:30Z",
         },
+        "internet": None,
     }
     assert p["dashboard_url"] == "https://goes.example.org"
     assert p["channels"] == {"text": settings.meshcore_channel, "data": settings.meshwx_channel,
@@ -91,7 +92,8 @@ def test_the_public_bundle_says_where_the_products_come_from_and_how_late(client
     p = c.get("/api/public/bot").json()
     assert p["feed"] == {"source": "sdr", "lag_min": None, "newest_product_at": None,
                          "internet_backup": {"after_min": 10, "on": False, "since": None, "added": 0,
-                                             "last_ok": None, "last_error": None}}
+                                             "last_ok": None, "last_error": None},
+                         "internet": None}
     monkeypatch.setattr(settings, "emwin_source", "internet")
     assert c.get("/api/public/bot").json()["feed"]["internet_backup"] is None
 
@@ -120,6 +122,47 @@ def test_the_admin_satellite_page_links_the_public_dashboard_and_shows_the_recor
     assert ib["on"] is True and ib["since"] == SINCE.isoformat()          # the admin side keeps its ISO time
     assert ib["last_ok"] == int((SINCE + timedelta(minutes=20)).timestamp())
     assert ib["last_error"] == "403 Forbidden at 14:30Z"
+
+
+def _internet_source(tmp_path) -> InternetSource:
+    """An internet-only bot's feed after a refusal, with products running late."""
+    src = InternetSource(cache_file=tmp_path / "products.jsonl")
+    src.last_ok = SINCE + timedelta(minutes=20)
+    src.last_error = "403 Forbidden at 14:30Z"
+    src.last_error_at = SINCE + timedelta(minutes=30)
+    src._lag_samples.extend((time.time() - 60, lag) for lag in (290, 300, 310, 305, 295))
+    src.newest_product_ts = SINCE - timedelta(hours=5)
+    return src
+
+
+def test_an_internet_only_bot_says_how_its_fetches_are_doing_and_how_late(client, monkeypatch, tmp_path):
+    """The source every city without a dish runs on: the lag and the newest
+    product as the dish's, and its own fetches where the dish has its backup."""
+    c, bot = client
+    monkeypatch.setattr(settings, "emwin_source", "internet")
+    bot.emwin = _internet_source(tmp_path)
+    newest = int((SINCE - timedelta(hours=5)).timestamp())
+    assert c.get("/api/public/bot").json()["feed"] == {
+        "source": "internet",
+        "lag_min": 300,
+        "newest_product_at": newest,
+        "internet_backup": None,
+        "internet": {"last_ok": int((SINCE + timedelta(minutes=20)).timestamp()),
+                     "last_error": "403 Forbidden at 14:30Z"},
+    }
+    feed = c.get("/api/sdr").json()["feed"]
+    assert feed["source"] == "internet" and feed["internet_backup"] is None
+    assert feed["lag_min"] == 300 and feed["newest_product_at"] == newest
+    assert feed["internet"] == {"last_ok": int((SINCE + timedelta(minutes=20)).timestamp()),
+                                "last_error": "403 Forbidden at 14:30Z"}
+    # Nothing fetched yet: the same keys, empty.
+    bot.emwin = InternetSource(cache_file=tmp_path / "products.jsonl")
+    assert c.get("/api/public/bot").json()["feed"] == {
+        "source": "internet", "lag_min": None, "newest_product_at": None, "internet_backup": None,
+        "internet": {"last_ok": None, "last_error": None}}
+    # The dish's bundle has no `internet` object.
+    monkeypatch.setattr(settings, "emwin_source", "sdr")
+    assert c.get("/api/sdr").json()["feed"]["internet"] is None
 
 
 def test_the_public_dashboard_address_can_be_set_from_the_portal(client, monkeypatch):
