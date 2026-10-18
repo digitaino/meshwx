@@ -74,11 +74,14 @@ def _throttled(value) -> bool:
 class StatusReporter:
     """Decides the lines (`check`, no I/O, a clock passed in) and posts them
     (`tick`). `send` takes the finished line and says whether it went out;
-    `name` is the bot's name on the node, read when a line is built."""
+    `ready` says whether the node has the status channel's slot yet. Until
+    it does nothing is looked at, so no change is spent on a line that could
+    not go out. The firmware puts the node's name before every channel
+    message, so a line starts "status:", not the name again."""
 
-    def __init__(self, send: Callable[[str], Awaitable[bool]], name: Callable[[], str | None]):
+    def __init__(self, send: Callable[[str], Awaitable[bool]], ready: Callable[[], bool] = lambda: True):
         self._send = send
-        self._name = name
+        self._ready = ready
         self._unlocked_since: float | None = None
         self._lock_said = False
         self._down_since: float | None = None
@@ -104,8 +107,10 @@ class StatusReporter:
 
     async def tick(self, now: float | None, state: dict | None, reachable: bool, feed=None) -> list[str]:
         """The poll's hook: decide, then post. Returns what went out."""
+        if not self._ready():
+            return []
         now = now or time.time()
-        prefix = f"{self._name() or 'WX'} status: "
+        prefix = "status: "
         lines: list[str] = []
         for text in self.check(now, state, reachable, feed):
             if lines and len(lines[-1]) + 2 + len(text) <= MAX_LEN:

@@ -32,7 +32,7 @@ def _feed(on=False, added=0, lag=None, quiet=3.0):
 def _reporter() -> StatusReporter:
     async def never(text):
         raise AssertionError("check() does no I/O")
-    return StatusReporter(send=never, name=lambda: "WX-AUS")
+    return StatusReporter(send=never)
 
 
 def _check(r, now, state=None, reachable=True, feed=None):
@@ -95,7 +95,7 @@ def test_the_internet_backup_on_and_off_are_transitions_not_a_state():
     _check(r2, T, feed=_feed(on=False))
     assert _check(r2, T + 10, feed=_feed(on=True, quiet=float("inf"))) == \
         ["internet backup on (no file from the dish yet)"]
-    assert _check(StatusReporter(send=None, name=lambda: None), T, feed=None) == []
+    assert _check(StatusReporter(send=None), T, feed=None) == []
 
 
 def test_products_behind_the_uplink_cross_an_hour_up_and_half_an_hour_down():
@@ -107,7 +107,7 @@ def test_products_behind_the_uplink_cross_an_hour_up_and_half_an_hour_down():
     assert _check(r, T + 40, feed=_feed(lag=59)) == []                     # not yet clear
     assert _check(r, T + 50, feed=_feed(lag=20)) == ["products current again (~20m behind)"]
     assert _check(r, T + 60, feed=_feed(lag=20)) == []
-    assert _check(StatusReporter(send=None, name=lambda: "x"), T, feed=_feed(lag=180)) == \
+    assert _check(StatusReporter(send=None), T, feed=_feed(lag=180)) == \
         ["products ~3h behind the uplink"]
 
 
@@ -185,7 +185,7 @@ def test_at_most_six_lines_an_hour_and_an_alert_waits_its_turn():
 # -- posting --------------------------------------------------------------------------
 
 
-def test_tick_prefixes_the_bot_name_keeps_lines_short_and_respects_transmit(monkeypatch):
+def test_tick_keeps_lines_short_and_respects_transmit(monkeypatch):
     sent = []
 
     async def send(text):
@@ -193,22 +193,25 @@ def test_tick_prefixes_the_bot_name_keeps_lines_short_and_respects_transmit(monk
         return True
 
     monkeypatch.setattr(settings, "tx_enabled", True)
-    r = StatusReporter(send=send, name=lambda: "WX-AUS")
+    r = StatusReporter(send=send)
     assert asyncio.run(r.tick(T, _state(locked=False), True, _feed())) == []
     # Two changes in one poll are one line, when they fit.
     out = asyncio.run(r.tick(T + 600, _state(locked=False), True, _feed(on=True, quiet=11)))
-    assert out == sent == ["WX-AUS status: GOES lock lost 10m; internet backup on (dish quiet 11m)"]
+    assert out == sent == ["status: GOES lock lost 10m; internet backup on (dish quiet 11m)"]
     out = asyncio.run(r.tick(T + 620, _state(locked=False), True, _feed(on=False, added=2)))
-    assert out == ["WX-AUS status: internet backup off, dish is back (2 products came by internet)"]
+    assert out == ["status: internet backup off, dish is back (2 products came by internet)"]
     assert all(len(line) <= MAX_LEN for line in sent) and [line for _, line in r.recent] == sent
 
-    # ... and when they do not (here 121 characters in one), two lines, in a fixed order.
-    two = StatusReporter(send=send, name=lambda: "WX-SAN-ANTONIO")
+    # ... and when they do not, two lines, in a fixed order (the limit lowered
+    # here: with the short "status:" prefix these three fit in one).
+    import meshcore_weather.status_channel as status_channel
+    monkeypatch.setattr(status_channel, "MAX_LEN", 80)
+    two = StatusReporter(send=send)
     _check(two, T, _state(locked=False), feed=_feed(lag=None))
     out = asyncio.run(two.tick(T + 600, _state(locked=False, disk=90, temp=75.0, throttled="0x50005"), True,
                                _feed(lag=600)))
-    assert out == ["WX-SAN-ANTONIO status: GOES lock lost 10m; products ~10h behind the uplink",
-                   "WX-SAN-ANTONIO status: Pi: disk 90% full, CPU 75C, throttled 0x50005"]
+    assert out == ["status: GOES lock lost 10m; products ~10h behind the uplink",
+                   "status: Pi: disk 90% full, CPU 75C, throttled 0x50005"]
     sent.clear()
 
     monkeypatch.setattr(settings, "tx_enabled", False)
@@ -219,14 +222,16 @@ def test_tick_prefixes_the_bot_name_keeps_lines_short_and_respects_transmit(monk
 
     async def refused(text):
         return False
-    r = StatusReporter(send=refused, name=lambda: None)
+    r = StatusReporter(send=refused)
     _check(r, T, feed=_feed(on=False))
     assert asyncio.run(r.tick(T + 10, _state(), True, _feed(on=True))) == [] and list(r.recent) == []
 
-    long_name = StatusReporter(send=send, name=lambda: "W" * 100)
-    _check(long_name, T, feed=_feed(on=False))
-    (line,) = asyncio.run(long_name.tick(T + 10, _state(), True, _feed(on=True, quiet=12)))
-    assert len(line) == MAX_LEN and line.startswith("W" * 100 + " status: ")
+    # No name of its own in the line: the firmware already puts the node's
+    # name before every channel message ("WX-AUS: status: ...").
+    plain = StatusReporter(send=send)
+    _check(plain, T, feed=_feed(on=False))
+    (line,) = asyncio.run(plain.tick(T + 10, _state(), True, _feed(on=True, quiet=12)))
+    assert line == "status: internet backup on (dish quiet 12m)"
 
 
 def test_the_bot_never_posts_status_on_the_request_channel():
@@ -248,7 +253,6 @@ def test_the_bot_never_posts_status_on_the_request_channel():
     bot.radio.status_channel_idx = 3
     assert asyncio.run(bot._post_status("WX status: x")) is True
     assert sent == [(3, "WX status: x")]
-    assert bot._node_name() is None
 
 
 def test_the_radio_sends_on_its_status_slot_and_on_no_other(monkeypatch):
@@ -271,9 +275,26 @@ def test_the_radio_sends_on_its_status_slot_and_on_no_other(monkeypatch):
     r._channel_secrets = {}
     monkeypatch.setattr(radio_mod.delivery_tracker, "track", lambda outbound: None)
     assert r.status_channel_idx == 3 and r._role_for(3) == "status"
-    assert asyncio.run(r.send_channel_message(3, "WX-AUS status: GOES locked again")) is True
+    assert asyncio.run(r.send_channel_message(3, "status: GOES locked again")) is True
     assert asyncio.run(r.send_channel_message(2, "nope")) is False
     assert asyncio.run(r.send_channel_message(0, "nope")) is False
     assert calls == [3]
     with pytest.raises(ValueError):
         asyncio.run(r.assign_role("status", settings.meshcore_channel))
+
+
+def test_nothing_is_looked_at_until_the_node_has_the_status_slot():
+    """Seen on WX-AUS at a restart (17 Oct): the first poll came before the
+    radio had its status slot, the line failed, and the reporter counted it
+    as said, so it would never be posted for real."""
+    sent: list[str] = []
+
+    async def send(line: str) -> bool:
+        sent.append(line)
+        return True
+
+    ready = {"slot": False}
+    r = StatusReporter(send=send, ready=lambda: ready["slot"])
+    assert asyncio.run(r.tick(T, _state(), True, _feed(lag=180))) == []
+    ready["slot"] = True
+    assert asyncio.run(r.tick(T + 10, _state(), True, _feed(lag=180))) == ["status: products ~3h behind the uplink"]

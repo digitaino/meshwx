@@ -271,10 +271,14 @@ class _NoaaBundles:
         says nothing about how late the uplink runs now, and the lag of a
         replay that has ended must not be reported as current."""
         since = time.time() - 3600
-        recent = [lag for mtime, lag in self._lag_samples if mtime >= since]
+        # The newest 50 by arrival, not the last 50 appended: the startup
+        # scan reads day folders in no particular order, and the replayed
+        # files of an older folder read last would pass for the current lag
+        # ("~5h behind" at a restart on 17 Oct while the feed ran 22 min late).
+        recent = sorted((s for s in self._lag_samples if s[0] >= since), reverse=True)[:50]
         if len(recent) < 5:
             return None
-        return int(statistics.median(recent))
+        return int(statistics.median(lag for _, lag in recent))
 
     def _note_created(self, name: str) -> datetime | None:
         """The creation time in a product's name, kept when it is the newest."""
@@ -346,7 +350,7 @@ class InternetSource(_NoaaBundles, EMWINSource):
         self.last_error: str | None = None            # "403 Forbidden at 14:03Z", until a bundle comes in whole
         self.last_error_at: datetime | None = None
         self.newest_product_ts: datetime | None = None  # the newest creation time NOAA gave us
-        self._lag_samples: deque[tuple[float, float]] = deque(maxlen=50)   # (arrival, minutes behind)
+        self._lag_samples: deque[tuple[float, float]] = deque(maxlen=1000)   # (arrival, minutes behind)
         # The cache file
         self._cache_lock = threading.Lock()
         self._unsaved: list[dict] = []    # taken, not yet on the file
@@ -663,7 +667,7 @@ class SDRSource(_NoaaBundles, EMWINSource):
         self._seen_initial = False
         self.newest_mtime: float | None = None    # newest file the DISH wrote, for `sat`
         self._dish_mtimes: deque[float] = deque(maxlen=5000)   # its writes in the last ten minutes
-        self._lag_samples: deque[tuple[float, float]] = deque(maxlen=50)   # (mtime, minutes behind), per file
+        self._lag_samples: deque[tuple[float, float]] = deque(maxlen=1000)   # (mtime, minutes behind), per file
         self.newest_product_ts: datetime | None = None         # the newest creation time the dish gave us
         self.fallback_since: datetime | None = None   # the internet backup is on (since when)
         self.fallback_added = 0                       # products it brought in this time

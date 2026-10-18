@@ -197,7 +197,8 @@ class WeatherBot:
             status = None
             if settings.status_channel:
                 from meshcore_weather.status_channel import StatusReporter
-                status = StatusReporter(send=self._post_status, name=self._node_name)
+                status = StatusReporter(send=self._post_status,
+                                        ready=lambda: getattr(self.radio, "status_channel_idx", None) is not None)
                 logger.info("  Status channel: %s", settings.status_channel)
             self._sdr_monitor = SdrMonitor(status=status, feed=self.emwin)
             self._sdr_monitor.start()
@@ -287,11 +288,6 @@ class WeatherBot:
             self._broadcaster = AppResponder(self.store, self.radio, ready=self._store_ready,
                                              render_text=self._process_command)
             await self._broadcaster.start()
-
-    def _node_name(self) -> str | None:
-        """The bot's name on the node, as its messages carry it."""
-        mc = getattr(self.radio, "_mc", None)
-        return ((getattr(mc, "self_info", None) or {}).get("name") or None) if mc else None
 
     async def _post_status(self, text: str) -> bool:
         """One status line on the status channel (status_channel.py). Never

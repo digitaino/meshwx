@@ -317,3 +317,19 @@ def test_the_lag_of_a_replay_that_has_ended_is_not_reported_as_current(tmp_path)
     src._lag_samples = type(src._lag_samples)(((m - 3600, lag) for m, lag in src._lag_samples),
                                               maxlen=src._lag_samples.maxlen)
     assert src.feed_lag_min is None
+
+
+def test_the_lag_is_the_newest_arrivals_not_the_last_read(tmp_path):
+    """A restart's scan reads day folders in no set order: late replays read
+    last must not stand for the current lag (WX-AUS, 17 Oct: "~5h behind" at
+    a restart while the feed ran 22 min late)."""
+    import time as _time
+    from meshcore_weather.emwin.fetcher import SDRSource
+
+    src = SDRSource(root=tmp_path)
+    now = _time.time()
+    for i in range(60):                       # fresh, arrived in the last 10 min
+        src._lag_samples.append((now - 600 + i * 10, 20.0))
+    for i in range(40):                       # replays that arrived 40-50 min ago, read last
+        src._lag_samples.append((now - 3000 + i * 15, 300.0))
+    assert src.feed_lag_min == 20
