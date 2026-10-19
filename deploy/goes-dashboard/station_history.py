@@ -526,7 +526,10 @@ class Recorder:
         mode = self.mode()
         st = self.status() or {}
         feed = self.bot_feed() or {}
-        lag_30 = self._lag_30(t, arr)
+        # The bot's delay (median of its last 50 arrivals) when it has one, so the events say what
+        # the page's cards say; the history's own 30-minute figure otherwise.
+        bot_lag = feed.get("lag_min") if isinstance(feed, dict) else None
+        lag_30 = bot_lag if bot_lag is not None else self._lag_30(t, arr)
         with self.store.tx() as db:
             if sig is not None and mode == "receive":
                 db.execute("INSERT OR REPLACE INTO signal VALUES (?,?,?,?,?,?,?,?,?,?,?)",
