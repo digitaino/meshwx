@@ -337,22 +337,25 @@ def hrit_charts(nws_root: str, prefix: str = "nws", keep_s: int = KEEP_S, now: f
     return out
 
 
-def radar_and_charts(index: ProductIndex, nws_root: str) -> dict:
+def radar_and_charts(index: ProductIndex, nws_root: str, radar_hours: int = 12) -> dict:
     """Every radar region and chart that has a frame, each frame [id, made, received], oldest
-    made first. A frame made twice (NOAA sends some again) is listed once."""
+    made first. A frame made twice (NOAA sends some again) is listed once. Radar keeps the
+    `radar_hours` before each region's newest frame (the longest loop is 8 h); charts keep
+    the two days, to step back through."""
     emwin = index.images([a for a, _ in RADAR_REGIONS] + [c[5] for c in CHARTS if c[4] == "emwin"])
     hrit = hrit_charts(nws_root)
 
-    def frames(rows):
+    def frames(rows, hours=None):
+        newest = max((r[1] or 0 for r in rows), default=0)
         out, seen = [], set()
         for pid, made, received in rows:
-            if made is None or made // 60 in seen:
+            if made is None or made // 60 in seen or (hours and made < newest - hours * 3600):
                 continue
             seen.add(made // 60)
             out.append([pid, made, received])
         return out
     return {
-        "radar": [{"id": a, "name": n, "frames": frames(emwin[a])} for a, n in RADAR_REGIONS if emwin.get(a)],
+        "radar": [{"id": a, "name": n, "frames": frames(emwin[a], radar_hours)} for a, n in RADAR_REGIONS if emwin.get(a)],
         "charts": [{"id": cid, "name": n, "by": by, "group": g, "source": src, "frames": frames(fr)}
                    for cid, n, by, g, src, key in CHARTS if (fr := (hrit if src == "hrit" else emwin).get(key))],
     }

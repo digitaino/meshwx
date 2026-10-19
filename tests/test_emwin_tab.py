@@ -121,3 +121,16 @@ def test_radar_frames_are_timed_by_the_emwin_stamp_and_listed_once(tmp_path):
     assert set(charts) == {"usa", "severe", "atlsea"} and charts["usa"]["source"] == "hrit"
     assert charts["usa"]["frames"][0][0] == "nws/2026-10-18/20261018T220045Z_USA_latest.gif"
     assert [c["id"] for c in d["charts"]] == ["usa", "severe", "atlsea"]     # the catalogue's order
+
+
+def test_radar_keeps_the_last_twelve_hours_and_charts_keep_two_days(tmp_path):
+    now = time.time()
+    day = tmp_path / "emwin" / "2026-10-18"
+    for h in (0, 6, 13):                                     # 13 h before the newest frame: dropped
+        stamp = time.strftime("%Y%m%d%H%M%S", time.gmtime(1792368000 - h * 3600))
+        _file(day, f"Z_QATA00KWBC181200_C_KWIN_{stamp}_{h}-3-RADSTHPL.GIF", "GIF89a", now - 60)
+        _file(day, f"Z_QETI00KWNS181200_C_KWIN_{stamp}_{h}-4-MODDY1US.PNG", "GIF89a", now - 60)
+    idx = et.ProductIndex({"sdr": (str(tmp_path / "emwin"), "emwin")})
+    idx.scan(now)
+    d = et.radar_and_charts(idx, str(tmp_path / "nws"))
+    assert len(d["radar"][0]["frames"]) == 2 and len(d["charts"][0]["frames"]) == 3
