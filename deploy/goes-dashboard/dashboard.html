@@ -482,7 +482,9 @@ function renderHrit(){if(!H)return;
  $('prList').innerHTML=items.map(([t,w,d])=>`<li><time>${esc(t)}</time><div><b>${esc(w)}</b><div class="det">${esc(d)}</div></div></li>`).join('');
  const last=[...H.signal].reverse().find(r=>r[1]!=null);$('mVit').textContent=last?`Viterbi ${Math.round(last[1])} (${last[1]<200?'good':last[1]<600?'fair':'poor'})`:'Recording…'}
 const KIND={SA:'Airport reports (METAR)',SP:'Special airport reports',FT:'Airport forecasts (TAF)',FP:'Public forecasts',FX:'Forecast discussions',FZ:'Marine forecasts',FO:'Model and aviation guidance',SR:'River and rain data',CD:'Climate reports',QA:'Radar images',AS:'Regional summaries and analyses',WW:'Watches and warnings',WU:'Severe weather warnings',WF:'Tornado and flood warnings',WH:'Marine warnings',SX:'Other text',NO:'Notices',SM:'Synoptic and marine reports'};
-function renderFeedHealth(){if(!E)return;const fd=(bot&&bot.feed)||{},ib=fd.internet_backup,nm=fd.nws_metar,lag=E.lag_now;
+// The delay shown is the bot's (the median of its last 50 arrivals, the figure that switches the
+// NWS feed), so every card on the page says the same; the history's own is the fallback.
+function renderFeedHealth(){if(!E)return;const fd=(bot&&bot.feed)||{},ib=fd.internet_backup,nm=fd.nws_metar,lag=fd.lag_min!=null?fd.lag_min:E.lag_now;
  $('eLag').textContent=lag==null?'–':lag<1?'on time':late(Math.round(lag));tile('eLagT',lag==null?'':lag<30?'good':lag<120?'warn':'bad');
  $('eHour').textContent=n(E.last_hour.files+E.last_hour.inet);$('eBackup').textContent=ib?(ib.on?'on':'off'):'–';$('eNws').textContent=nm?(nm.on?'on':'off'):'–';
  const k=E.kinds_24h||[],kmax=Math.max(1,...k.map(r=>r[1]));$('kinds').innerHTML=k.map(([c,v])=>`<tr><td class="w">${esc(KIND[c]||'Other')} <span class="hint">${esc(c)}</span></td><td style="width:40%"><div class="bar"><i style="width:${v/kmax*100}%"></i></div></td><td class="n">${n(v)}</td></tr>`).join('');
