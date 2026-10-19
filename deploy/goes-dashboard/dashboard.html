@@ -80,13 +80,52 @@ code{background:var(--inset);border:1px solid var(--line);border-radius:5px;padd
 .meter .pk{position:absolute;top:0;width:2px;height:100%;background:var(--fg)}
 .bigsnr{font-size:60px;font-weight:700;line-height:1}
 footer{color:var(--dim);font-size:12px;padding:0 0 24px}
+[hidden]{display:none!important}
+nav.tabs{display:flex;gap:4px}
+nav.tabs a{padding:7px 14px;border-radius:8px;text-decoration:none;color:var(--dim);font-weight:600;font-size:14px}
+nav.tabs a[aria-selected="true"]{background:var(--inset);color:var(--fg)}
+.tab{display:flex;flex-direction:column;gap:16px}
+.subnav{display:flex;flex-wrap:wrap;gap:6px}
+.subnav button{border-radius:999px;font-size:12.5px;padding:4px 12px}
+.block{scroll-margin-top:12px}
+.bh{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.bh h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:0;font-weight:600}
+.bh .right{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+button.on,button[aria-pressed="true"]{background:var(--acc);border-color:var(--acc);color:#fff}
+.why{font-size:13px;color:var(--dim);margin:-4px 0 12px;max-width:80ch}
+.key{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--dim);margin-top:8px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:5px}
+.grid2{display:grid;gap:16px;grid-template-columns:1fr}
+@media(min-width:900px){.grid2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.grid2.wide{grid-template-columns:minmax(0,3fr) minmax(0,2fr)}}
+.tbl{overflow-x:auto}
+th{text-align:left;font-size:12px;color:var(--dim);font-weight:600;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}
+td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;max-width:none;width:1%}
+td.w{white-space:normal;max-width:none}
+td.k{white-space:nowrap;max-width:none;width:1%;color:var(--dim)}
+.bar{height:6px;border-radius:3px;background:var(--inset);overflow:hidden;min-width:60px}.bar i{display:block;height:100%;background:var(--series)}
+.pill{display:inline-block;font-size:11.5px;font-weight:600;border-radius:999px;padding:1px 8px;background:var(--inset);color:var(--dim);white-space:nowrap}
+.pill.ok{background:var(--ok-bg);color:var(--ok)}.pill.warn{background:var(--warn-bg);color:var(--warn)}.pill.bad{background:var(--bad-bg);color:var(--bad)}.pill.info{background:var(--info-bg);color:var(--info)}
+.events{list-style:none;margin:0;padding:0}
+.events li{display:grid;grid-template-columns:130px 1fr;gap:4px 12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px}
+.events li:last-child{border-bottom:0}.events time{color:var(--dim);font-size:13px;font-variant-numeric:tabular-nums}
+.events .det{color:var(--dim);font-size:13px}
+@media(max-width:520px){.events li{grid-template-columns:1fr}}
+h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
+.mini{display:grid;gap:12px;grid-template-columns:1fr}
+@media(min-width:760px){.mini{grid-template-columns:1fr 1fr}}
+.mini a{display:block;text-decoration:none;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.mini a:hover,.mini a:focus-visible{border-color:var(--acc)}
+.mini .k{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)}
+.mini .v{font-size:17px;font-weight:650;margin:2px 0 8px}
 </style></head><body>
 <header class="top"><div class="wrap">
  <div><h1>mesh-wx</h1><p class="sub">The GOES-19 satellite receiver and the <span id="hName">WX-AUS</span> weather bot on the Austin MeshCore mesh</p></div>
+ <nav class="tabs" aria-label="Dashboard"><a href="#overview" id="t-overview" aria-selected="true">Overview</a><a href="#hrit" id="t-hrit" aria-selected="false">HRIT</a><a href="#emwin" id="t-emwin" aria-selected="false">EMWIN</a></nav>
  <div class="ops hidden" id="ops"><button id="btnPoint">Pointing mode</button><button id="btnRecv" class="primary hidden">Back to receiving</button><span id="msg"></span></div>
 </div></header>
 
 <main class="wrap">
+<div class="tab" id="overview">
  <section class="summary" aria-label="Status at a glance">
   <div class="stat" id="stBot"><span class="dot" aria-hidden="true"></span><div><div class="k">Weather bot</div><div class="v">Checking…</div><div class="d"></div></div></div>
   <div class="stat" id="stSat"><span class="dot" aria-hidden="true"></span><div><div class="k">Satellite</div><div class="v">Checking…</div><div class="d"></div></div></div>
@@ -94,6 +133,10 @@ footer{color:var(--dim);font-size:12px;padding:0 0 24px}
   <div class="stat" id="stObs"><span class="dot" aria-hidden="true"></span><div><div class="k">Current conditions</div><div class="v">Checking…</div><div class="d"></div></div></div>
  </section>
  <div class="notice hidden" id="notice" role="status"></div>
+ <div class="mini">
+  <a href="#emwin" data-jump="emHealth"><div class="k">EMWIN delay · last 3 days</div><div class="v" id="mLag">–</div><canvas id="sparkLag" height="60" aria-label="EMWIN delay over the last three days"></canvas><div class="hint">Open feed health →</div></a>
+  <a href="#hrit" data-jump="hrHist"><div class="k">Signal · last 3 days</div><div class="v" id="mVit">–</div><canvas id="sparkVit" height="60" aria-label="Viterbi errors over the last three days"></canvas><div class="hint">Open signal history →</div></a>
+ </div>
 
  <section class="block" aria-labelledby="hAct">
   <h2 id="hAct">Mesh activity · last 24 hours</h2>
@@ -129,8 +172,16 @@ footer{color:var(--dim);font-size:12px;padding:0 0 24px}
   <p class="hint">The MeshWX iOS app reads the bot's binary weather messages on <code id="uData">#meshwx</code>.</p>
  </details>
 
- <section class="block" aria-labelledby="hRx">
-  <h2 id="hRx">Receiver · GOES-19 HRIT</h2>
+ <section class="block" aria-labelledby="hImg">
+  <h2 id="hImg">Latest satellite images</h2>
+  <div class="grid" id="imgs"><span class="hint">Nothing decoded yet.</span></div>
+ </section>
+
+</div>
+<div class="tab" id="hrit" hidden>
+ <div class="subnav" aria-label="HRIT sections"><button data-go="hrLive">Live signal</button><button data-go="hrHist">Signal history</button><button data-go="hrVc">Channels</button><button data-go="hrEv">Events and sun</button></div>
+ <section class="block" id="hrLive" aria-labelledby="hRx">
+  <div class="bh"><h2 id="hRx">Live signal</h2><div class="right"><span class="pill" id="rxPill">–</span><span class="pill">updates every second</span></div></div>
   <div id="rxView">
    <div class="tiles">
     <div class="tile" id="tVit"><div class="v" id="rVit">–</div><div class="l">Viterbi errors per frame (under 200 is good)</div></div>
@@ -157,18 +208,57 @@ footer{color:var(--dim);font-size:12px;padding:0 0 24px}
    <canvas id="snrh" height="110" style="margin-top:12px"></canvas>
    <div class="cap">5 dB or more decodes, 8 dB or more is clean. From Austin the satellite is at 138° compass, 47° up.</div>
   </div>
-  <div class="sys"><span>goesrecv <b id="sRecv">–</b></span><span>goesproc <b id="sProc">–</b></span><span>CPU <b id="sTemp">–</b></span><span>disk <b id="sDisk">–</b></span><span>receiver feed <b id="sFeed">–</b></span></div>
+  <div class="grid2" style="margin-top:14px">
+   <div><h3 class="sm">Receiver chain</h3><div class="tbl"><table><tbody id="chain"></tbody></table></div></div>
+   <div><h3 class="sm">Station</h3><div class="sys" style="margin-top:0"><span>goesrecv <b id="sRecv">–</b></span><span>goesproc <b id="sProc">–</b></span><span>CPU <b id="sTemp">–</b></span><span>disk <b id="sDisk">–</b></span><span>receiver feed <b id="sFeed">–</b></span><span>goesrecv up <b id="sUp">–</b></span><span>watchdog restarts <b id="sDog">–</b></span><span>power <b id="sThr">–</b></span></div></div>
+  </div>
  </section>
 
- <section class="block" aria-labelledby="hImg">
-  <h2 id="hImg">Latest satellite images</h2>
-  <div class="grid" id="imgs"><span class="hint">Nothing decoded yet.</span></div>
+ <section class="block" id="hrHist" aria-labelledby="hHist">
+  <div class="bh"><h2 id="hHist">Signal history</h2><div class="right" role="group" aria-label="Range"><button data-vr="6">6 h</button><button data-vr="24">24 h</button><button data-vr="168" class="on">7 days</button></div></div>
+  <p class="why">One-minute summaries kept for 7 days on the Pi. Times without a lock are shaded red, the hours around midday when the sun sits near the satellite are shaded yellow, and restarts are marked ▲.</p>
+  <canvas id="vitChart" height="260" aria-label="Viterbi errors over time"></canvas>
+  <div class="key"><span><i class="sw" style="background:var(--alert)"></i>Viterbi errors, median</span><span><i class="sw" style="background:var(--series);opacity:.35"></i>spread within the period</span><span><i class="sw" style="background:var(--warn);opacity:.35"></i>sun near the satellite</span><span><i class="sw" style="background:var(--bad);opacity:.35"></i>no lock</span><span><i class="sw" style="background:var(--dim);opacity:.25"></i>not recorded</span></div>
  </section>
-
+ <section class="block" id="hrVc" aria-labelledby="hVc">
+  <div class="bh"><h2 id="hVc">Per-channel traffic · last hour</h2></div>
+  <p class="why">What each virtual channel of the downlink carries, and how many of its frames the dish lost. A lost frame can cost a whole image or product. Imagery comes in bursts, so an hour shows every channel.</p>
+  <div class="tbl"><table><thead><tr><th>VC</th><th>Carries</th><th class="n">frames / min</th><th>share</th><th class="n">lost</th><th class="n">last frame</th></tr></thead><tbody id="vcRows"><tr><td class="hint" colspan="6">Counting starts when the dashboard starts; the first numbers come within a minute.</td></tr></tbody></table></div>
+ </section>
+ <section class="block" id="hrEv" aria-labelledby="hEv">
+  <div class="bh"><h2 id="hEv">Events and predictions</h2></div>
+  <div class="grid2 wide">
+   <div><h3 class="sm">What happened · last 7 days</h3><ul class="events" id="evHrit"></ul></div>
+   <div><h3 class="sm">Coming up</h3><ul class="events" id="prList"></ul></div>
+  </div>
+ </section>
+</div>
+<div class="tab" id="emwin" hidden>
+ <section class="block" id="emHealth" aria-labelledby="hFh">
+  <div class="bh"><h2 id="hFh">Feed health</h2></div>
+  <div class="tiles">
+   <div class="tile" id="eLagT"><div class="v" id="eLag">–</div><div class="l">behind NOAA right now</div></div>
+   <div class="tile"><div class="v" id="eHour">–</div><div class="l">products in the last hour</div></div>
+   <div class="tile"><div class="v" id="eBackup">–</div><div class="l">dish's internet backup</div></div>
+   <div class="tile"><div class="v" id="eNws">–</div><div class="l">current conditions from NWS</div></div>
+  </div>
+  <div class="grid2" style="margin-top:14px">
+   <div><h3 class="sm">Delay behind NOAA, hourly · 7 days</h3><canvas id="lagChart" height="220" aria-label="EMWIN delay per hour"></canvas>
+    <div class="key"><span><i class="sw" style="background:var(--alert)"></i>median delay of what arrived that hour</span><span><i class="sw" style="background:var(--dim);opacity:.25"></i>not recorded</span></div></div>
+   <div><h3 class="sm">Products received, hourly · 7 days</h3><canvas id="volChart" height="220" aria-label="EMWIN products per hour"></canvas>
+    <div class="key"><span><i class="sw" style="background:var(--series2)"></i>from the dish</span><span><i class="sw" style="background:var(--warn)"></i>over the internet (backup)</span></div></div>
+  </div>
+  <div class="grid2" style="margin-top:14px">
+   <div><h3 class="sm">Received in the last 24 hours, by kind</h3><div class="tbl"><table><tbody id="kinds"></tbody></table></div></div>
+   <div><h3 class="sm">Late spells, outages and notes · last 7 days</h3><ul class="events" id="evEmwin"></ul></div>
+  </div>
+  <p class="hint" id="emSince"></p>
+ </section>
  <details class="block">
   <summary>Latest EMWIN products <span class="count" id="emCount"></span></summary>
-  <table id="emwin"></table>
+  <table id="emList"></table>
  </details>
+</div>
 </main>
 <footer class="wrap">Weather data: NOAA / National Weather Service, received from GOES-19. This page updates live.</footer>
 
@@ -201,14 +291,16 @@ function renderRx(d){rx=Object.assign(rx,d);
  $('ptNote').textContent=ctl?(d.mode_msg||'Pointing mode: goesrecv is stopped and the dongle feeds this meter.'):'The dish is being aimed right now, so the receiver is paused. This is the live signal meter.';
  if(d.msg)$('msg').textContent=d.msg;else if(!$('msg').textContent.startsWith('switching')||d.mode_msg)$('msg').textContent='';
  if(d.status){const st=d.status,sv=st.services||{};$('sRecv').textContent=sv.goesrecv||'–';$('sProc').textContent=sv.goesproc||'–';
+  $('sUp').textContent=st.goesrecv_up_s!=null?age(st.goesrecv_up_s):'–';$('sDog').textContent=(st.watchdog||{}).restarts??'–';$('sThr').textContent=st.throttled==null?'–':st.throttled==='0x0'?'no throttling':'throttled ('+st.throttled+')';
   $('sTemp').textContent=st.temp!=null?st.temp.toFixed(0)+' °C':'–';$('sDisk').textContent=st.disk_free_gb!=null?st.disk_free_gb+' GB free':'–';
   renderImages(st.latest_images);renderEmwin(st.latest_emwin,st.counts)}
- if(point){stat('stSat','info','Being aimed','The dish is being adjusted; reception is paused.');renderMeter(d.meter);return}
+ if(point){stat('stSat','info','Being aimed','The dish is being adjusted; reception is paused.');$('rxPill').textContent='Being aimed';$('rxPill').className='pill info';renderMeter(d.meter);return}
  $('sFeed').textContent=s.feed_alive?'live':'no data';
  const v=s.vit_avg,q=v==null?null:v<200?'good':v<600?'fair':'poor';
  if(!s.feed_alive)stat('stSat','bad','No data','The receiver is not reporting.');
  else if(!s.locked)stat('stSat','bad','No lock','GOES-19 is not being received.');
  else stat('stSat',q==='good'?'ok':'warn','Locked · '+q+' signal',`GOES-19 · locked for ${age(d.t-s.lock_since)}`);
+ $('rxPill').textContent=!s.feed_alive?'No data':s.locked?'Locked · '+age(d.t-s.lock_since):'No lock';$('rxPill').className='pill '+(!s.feed_alive||!s.locked?'bad':q==='good'?'ok':'warn');
  $('rVit').textContent=v??'–';tile('tVit',v==null?'':v<200?'good':v<600?'warn':'bad');
  $('rPk').textContent=s.packets??'–';$('rDr').textContent=s.drops??'–';tile('tDr',s.drops>0?'warn':'');
  $('rLock').textContent=s.lock_since?age(d.t-s.lock_since):'–';
@@ -222,9 +314,9 @@ let imgKey='';
 function renderImages(list){if(!list||!list.length)return;const g=$('imgs'),key=list.map(i=>i.path).join('|'),label=i=>`${i.name.replace(/^GOES1[89]_/,'').replace(/\.jpg$/,'').replace(/_/g,' ')} · ${age(Date.now()/1000-i.mtime)} ago`;
  if(key===imgKey){g.querySelectorAll('span').forEach((s,k)=>{if(list[k])s.textContent=label(list[k])});return}
  imgKey=key;g.innerHTML=list.map(i=>`<a href="/img/${esc(i.path)}" target="_blank" rel="noopener"><img loading="lazy" alt="${esc(i.name)}" src="/thumb/${esc(i.path)}"><span title="${esc(i.name)}">${esc(label(i))}</span></a>`).join('')}
-function renderEmwin(list,counts){const t=$('emwin');
+function renderEmwin(list,counts){const t=$('emList');
  t.innerHTML=(list&&list.length)?list.map(f=>`<tr><td><a href="/img/${esc(f.path)}" target="_blank" rel="noopener">${esc(f.name)}</a></td><td class="r">${f.src==='net'?'<span class="net" title="fetched over the internet while the dish was silent">internet</span> ':''}${clockS(f.mtime)}</td></tr>`).join(''):'<tr><td class="hint">No EMWIN files yet.</td></tr>';
- if(counts)$('emCount').textContent=`· ${n(counts.emwin_today)} since 00:00 UTC`+(counts.internet_backup_on?`, ${n(counts.emwin_inet_today||0)} of them over the internet`:'')}
+ $('emCount').textContent=list&&list.length?`· the newest ${list.length}`+(counts&&counts.internet_backup_on?', with what the internet backup fetched':''):''}
 
 // Canvases: drawn in the page's own colours, redrawn when the device switches light/dark.
 function canvas(id,h){const c=$(id),W=c.width=c.clientWidth*dpr,H=c.height=h*dpr,x=c.getContext('2d');x.clearRect(0,0,W,H);x.font=(11*dpr)+'px system-ui';return [x,W,H]}
@@ -259,7 +351,7 @@ function drawSnrHist(h){const [x,W,H]=canvas('snrh',110);if(!h.length)return;
  const t1=h[h.length-1][0],t0=Math.min(h[0][0],t1-60),mx=Math.max(15,...h.map(p=>p[1])),px=t=>(t-t0)/(t1-t0||1)*W,py=v=>H-Math.max(0,v)/mx*H;
  x.strokeStyle=css('--line');x.fillStyle=css('--dim');for(let v=0;v<=mx;v+=5){x.beginPath();x.moveTo(0,py(v));x.lineTo(W,py(v));x.stroke();x.fillText(v+' dB',4*dpr,py(v)-3)}
  x.strokeStyle=css('--series2');x.lineWidth=2*dpr;x.beginPath();h.forEach((p,i)=>{i?x.lineTo(px(p[0]),py(p[1])):x.moveTo(px(p[0]),py(p[1]))});x.stroke()}
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if(rx.mode==='point')renderMeter(rx.meter);else{drawConst((rx.stats||{}).const||[]);if(rx.history)drawHist(rx.history)}});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if(rx.mode==='point')renderMeter(rx.meter);else{drawConst((rx.stats||{}).const||[]);if(rx.history)drawHist(rx.history)}drawHistory()});
 function connect(){const es=new EventSource('/events');es.onmessage=e=>{try{renderRx(JSON.parse(e.data))}catch(err){console.error(err)}};
  es.onerror=()=>{stat('stSat','warn','Reconnecting…','Lost the live connection to this page.');es.close();setTimeout(connect,2000)}}
 fetch('/api/state').then(r=>r.json()).then(renderRx).catch(()=>{}).finally(connect);
@@ -308,7 +400,7 @@ function renderBot(d){bot=d;
  stat('stBot',b.connected&&b.tx_enabled?'ok':'warn',b.connected?(b.tx_enabled?'On air':'Listening only'):'No radio',
   [b.name,b.uptime_s!=null?'up '+age(b.uptime_s):'',st.last_request_at?'last request '+age(t-st.last_request_at)+' ago':''].filter(Boolean).join(' · '));
  if(b.name){$('hName').textContent=b.name;$('uName').textContent=b.name}
- renderData(d);
+ renderData(d);if(E)renderFeedHealth();
  $('aReq').textContent=n(w.requests);$('aNodes').textContent=n(w.senders);$('aRep').textContent=n(w.replies);$('aBc').textContent=n(((d.broadcasts||{})['24h']||{}).messages);
  const parts=[[w.app_replies,'to the app'],[w.dm_replies,'by DM'],[w.channel_replies,'on the channel']].filter(p=>p[0]).map(p=>`${n(p[0])} ${p[1]}`);
  $('aSplit').textContent=(parts.length?'Replies: '+parts.join(', ')+'. ':'')+(w.dropped?`${n(w.dropped)} not answered.`:'');
@@ -327,4 +419,77 @@ function renderBot(d){bot=d;
  $('feedHint').textContent=st.last_request_at?`· last request ${age(t-st.last_request_at)} ago`:''}
 function pollBot(){fetch('/api/bot').then(r=>r.json()).then(renderBot).catch(()=>renderBot({online:false,error:'This page cannot reach the bot.'})).finally(()=>setTimeout(pollBot,5000))}
 pollBot();
+
+// ---------------------------------------------------------------- tabs (bare #token links)
+const TABS=['overview','hrit','emwin'];
+function showTab(tab,jump){if(!TABS.includes(tab))tab='overview';TABS.forEach(t=>{$(t).hidden=t!==tab;$('t-'+t).setAttribute('aria-selected',t===tab)});
+ requestAnimationFrame(()=>{drawHistory();if(rx.history&&tab==='hrit'){drawConst((rx.stats||{}).const||[]);drawHist(rx.history)}if(jump)$(jump).scrollIntoView({behavior:'smooth',block:'start'})})}
+addEventListener('hashchange',()=>showTab(location.hash.slice(1)));
+document.querySelectorAll('[data-jump]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();history.replaceState(null,'',a.getAttribute('href'));showTab(a.getAttribute('href').slice(1),a.dataset.jump)}));
+document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>$(b.dataset.go).scrollIntoView({behavior:'smooth',block:'start'})));
+
+// ---------------------------------------------------------------- 7-day history (/api/hrit, /api/emwin)
+let H=null,E=null,vRange=168;const HOUR=3600;
+const when=t=>new Date(t*1000).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+const dayLabel=t=>new Date(t*1000).toLocaleDateString([],{weekday:'short',day:'numeric'});
+const visible=id=>{const c=$(id);return c&&c.offsetParent!==null};
+function frame(id,h,padL){const [x,W,Hh]=canvas(id,h);return [x,W,Hh,padL*dpr]}
+function timeAxis(x,W,Hh,px,t0,t1,step){x.strokeStyle=css('--line');x.fillStyle=css('--dim');
+ const start=new Date(t0*1000);start.setMinutes(0,0,0);if(step>=86400)start.setHours(0);let t=start.getTime()/1000;
+ while(t<t0)t+=step;for(;t<=t1;t+=step){const X=px(t);x.beginPath();x.moveTo(X,0);x.lineTo(X,Hh-14*dpr);x.stroke();x.fillText(step>=86400?dayLabel(t):clock(t),X+3*dpr,Hh-3*dpr)}}
+function shadeUnrecorded(x,px,t0,since,Hh){if(since==null||since<=t0)return;x.fillStyle=css('--dim');x.globalAlpha=.15;x.fillRect(px(t0),0,px(since)-px(t0),Hh);x.globalAlpha=1;x.fillStyle=css('--dim');x.fillText('not recorded',px(t0)+6*dpr,16*dpr)}
+
+function drawVitHist(){if(!H||!visible('vitChart'))return;const rows=H.signal,t1=H.now,t0=t1-H.hours*HOUR,[x,W,Hh,pad]=frame('vitChart',260,4),VM=800;
+ const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-14*dpr-Math.min(v,VM)/VM*(Hh-26*dpr);
+ // the sun near the satellite: today's closest approach +-75 min, each day, when it is within 12 degrees
+ const sun=H.sun&&H.sun.today;if(sun&&sun.closest_deg<12){const tod=sun.at%86400;x.fillStyle=css('--warn');x.globalAlpha=.16;for(let d=Math.floor(t0/86400)-1;d<=Math.floor(t1/86400)+1;d++){const c=d*86400+tod;x.fillRect(px(c-4500),0,px(c+4500)-px(c-4500),Hh)}x.globalAlpha=1}
+ shadeUnrecorded(x,px,t0,H.recorded_since,Hh);
+ x.fillStyle=css('--bad');x.globalAlpha=.25;rows.forEach(r=>{if(r[6]===0)x.fillRect(px(r[0]),0,Math.max(1,px(r[0]+H.bucket_s)-px(r[0])),Hh)});x.globalAlpha=1;
+ x.strokeStyle=css('--line');x.fillStyle=css('--dim');x.setLineDash([4,4]);[[200,'200 good'],[600,'600 fair']].forEach(([v,l])=>{x.beginPath();x.moveTo(pad,py(v));x.lineTo(W,py(v));x.stroke();x.fillText(l,W-x.measureText(l).width-6*dpr,py(v)-4*dpr)});x.setLineDash([]);
+ timeAxis(x,W,Hh,px,t0,t1,H.hours<=6?HOUR:H.hours<=24?4*HOUR:86400);
+ const gap=H.bucket_s*2.5,seg=[];let cur=[];rows.forEach(r=>{if(r[1]==null||(cur.length&&r[0]-cur[cur.length-1][0]>gap)){if(cur.length)seg.push(cur);cur=[]}if(r[1]!=null)cur.push(r)});if(cur.length)seg.push(cur);
+ x.fillStyle=css('--series');x.globalAlpha=.22;seg.forEach(g=>{x.beginPath();g.forEach((r,i)=>i?x.lineTo(px(r[0]),py(r[3]??r[1])):x.moveTo(px(r[0]),py(r[3]??r[1])));[...g].reverse().forEach(r=>x.lineTo(px(r[0]),py(r[2]??r[1])));x.fill()});x.globalAlpha=1;
+ x.strokeStyle=css('--alert');x.lineWidth=1.5*dpr;seg.forEach(g=>{x.beginPath();g.forEach((r,i)=>i?x.lineTo(px(r[0]),py(r[1])):x.moveTo(px(r[0]),py(r[1])));x.stroke()});
+ x.fillStyle=css('--fg');(H.events||[]).filter(e=>e.kind==='restart'&&e.t>=t0).forEach(e=>{const X=px(e.t);x.beginPath();x.moveTo(X,10*dpr);x.lineTo(X-5*dpr,2*dpr);x.lineTo(X+5*dpr,2*dpr);x.fill()});
+ if(!rows.length){x.fillStyle=css('--dim');x.fillText('The first minutes of history appear here within a minute of the dashboard starting.',pad+8*dpr,Hh/2)}}
+
+function drawLagChart(id,h,compact){if(!E||!visible(id))return;const rows=E.hourly,t1=E.now,t0=t1-(compact?72:168)*HOUR,[x,W,Hh,pad]=frame(id,h,compact?2:32),VM=compact?Math.max(60,...rows.map(r=>r[3]||0)):480;
+ const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-(compact?4:14)*dpr-Math.min(v,VM)/VM*(Hh-(compact?8:26)*dpr);
+ if(!compact){shadeUnrecorded(x,px,t0,E.recorded_since,Hh);x.strokeStyle=css('--line');x.setLineDash([4,4]);[[60,'1 h'],[180,'3 h'],[360,'6 h']].forEach(([v,l])=>{x.beginPath();x.moveTo(pad,py(v));x.lineTo(W,py(v));x.stroke();x.fillStyle=css('--dim');x.fillText(l,4*dpr,py(v)+4*dpr)});x.setLineDash([]);timeAxis(x,W,Hh,px,t0,t1,86400)}
+ x.strokeStyle=css('--alert');x.lineWidth=2*dpr;x.beginPath();let pen=false,last=null;rows.forEach(r=>{if(r[0]<t0||r[3]==null){pen=false;return}const X=px(r[0]+HOUR/2),Y=py(r[3]);pen?x.lineTo(X,Y):x.moveTo(X,Y);pen=true;last=[X,Y]});x.stroke();
+ if(last){x.fillStyle=css('--alert');x.beginPath();x.arc(last[0],last[1],3.5*dpr,0,7);x.fill()}}
+function drawVolChart(){if(!E||!visible('volChart'))return;const rows=E.hourly,t1=E.now,t0=t1-168*HOUR,[x,W,Hh,pad]=frame('volChart',220,36),VM=Math.max(1500,...rows.map(r=>r[1]+r[2]));
+ const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-14*dpr-v/VM*(Hh-26*dpr),bw=Math.max(1,px(HOUR)-px(0)-1*dpr);
+ shadeUnrecorded(x,px,t0,E.recorded_since,Hh);x.strokeStyle=css('--line');x.fillStyle=css('--dim');x.setLineDash([4,4]);[1000,2000,4000].filter(v=>v<VM).forEach(v=>{x.beginPath();x.moveTo(pad,py(v));x.lineTo(W,py(v));x.stroke();x.fillText(v.toLocaleString(),2*dpr,py(v)+4*dpr)});x.setLineDash([]);timeAxis(x,W,Hh,px,t0,t1,86400);
+ rows.forEach(r=>{if(r[0]<t0)return;x.fillStyle=css('--series2');x.globalAlpha=.85;x.fillRect(px(r[0]),py(r[1]),bw,Hh-14*dpr-py(r[1]));if(r[2]){x.fillStyle=css('--warn');x.fillRect(px(r[0]),py(r[1]+r[2]),bw,py(r[1])-py(r[1]+r[2]))}});x.globalAlpha=1}
+function drawSparkVit(){if(!H||!visible('sparkVit'))return;const rows=H.signal,t1=H.now,t0=t1-72*HOUR,[x,W,Hh]=frame('sparkVit',60,0),px=t=>(t-t0)/(t1-t0)*W,py=v=>Hh-4*dpr-Math.min(v,700)/700*(Hh-8*dpr);
+ if(H.recorded_since&&H.recorded_since>t0){x.fillStyle=css('--dim');x.globalAlpha=.15;x.fillRect(0,0,px(H.recorded_since),Hh);x.globalAlpha=1}
+ x.strokeStyle=css('--alert');x.lineWidth=1.5*dpr;x.beginPath();let pen=false;rows.forEach(r=>{if(r[0]<t0||r[1]==null){pen=false;return}pen?x.lineTo(px(r[0]),py(r[1])):x.moveTo(px(r[0]),py(r[1]));pen=true});x.stroke()}
+function drawHistory(){drawVitHist();drawLagChart('lagChart',220,false);drawLagChart('sparkLag',60,true);drawVolChart();drawSparkVit()}
+addEventListener('resize',drawHistory);
+
+const LEVEL={bad:['bad','outage'],warn:['warn','late'],info:['info','note']};
+function evItem(e){const [cls,word]=LEVEL[e.level]||['','event'];const open=e.t_end==null&&['lock','pointing','emwin_late','inet_backup','nws_metar'].includes(e.kind);
+ return `<li><time>${esc(when(e.t))}</time><div><span class="pill ${cls}" style="margin-right:6px">${open?'now':word}</span><b>${esc(e.title)}</b>${e.detail?`<div class="det">${esc(e.detail)}</div>`:''}</div></li>`}
+const HRIT_KINDS=['lock','restart','pointing','note'],EMWIN_KINDS=['emwin_late','inet_backup','nws_metar','note','lock'];
+function renderHrit(){if(!H)return;
+ const ch=H.station||{},sun=(H.sun||{}).satellite||{};$('chain').innerHTML=[['Satellite',`${ch.satellite||'GOES-19'}, ${Math.abs(ch.sat_lon||75.2)}° W · HRIT/EMWIN downlink`],['Frequency',ch.freq_mhz?`${ch.freq_mhz.toFixed(1)} MHz · BPSK, 927 kbps`:'–'],['Aim from the dish',`${sun.compass??'–'}° compass (${sun.az??'–'}° true), ${sun.el??'–'}° up`],['Front end',`${ch.lna||'LNA'}${ch.bias_tee?', powered by the bias tee':''}`],['Radio',`${ch.radio||'SDR'}${ch.sample_msps?` at ${ch.sample_msps} MS/s`:''}${ch.gain_db!=null?`, tuner gain ${ch.gain_db} dB`:''}`],['Software','goesrecv (demodulator) → goesproc (images, EMWIN)']].map(([k,v])=>`<tr><td class="k">${k}</td><td class="w">${esc(v)}</td></tr>`).join('');
+ const vcs=H.vc||[],tot=vcs.reduce((a,v)=>a+v.frames_per_min,0)||1;
+ if(vcs.length)$('vcRows').innerHTML=[...vcs.filter(v=>v.vc!==63),...vcs.filter(v=>v.vc===63)].map(v=>`<tr${v.vc===63?' style="opacity:.6"':''}><td class="n">${v.vc}</td><td class="w">${v.name?esc(v.name):`Not identified yet${v.apids&&v.apids.length?` <span class="hint">(packet IDs ${v.apids.join(', ')})</span>`:''}`}</td><td class="n">${n(Math.round(v.frames_per_min))}</td><td><div class="bar"><i style="width:${(v.frames_per_min/tot*100).toFixed(1)}%"></i></div></td><td class="n">${v.lost_pct==null?'–':`<span class="pill ${v.lost_pct>=1?'warn':'ok'}">${v.lost_pct.toFixed(2)}%</span>`}</td><td class="n hint">${v.last_seen?age(H.now-v.last_seen)+' ago':'–'}</td></tr>`).join('')+(H.vc_minutes<60?`<tr><td colspan="6" class="hint">Counted over ${H.vc_minutes} min so far; a full hour shows every channel.</td></tr>`:'');
+ const ev=(H.events||[]).filter(e=>HRIT_KINDS.includes(e.kind));$('evHrit').innerHTML=ev.length?ev.map(evItem).join(''):'<li class="hint">Nothing in the last 7 days.</li>';
+ const p=H.sun||{},items=[];if(p.today){const s=p.today;items.push([clock(s.at)+' today',`Sun ${s.closest_deg}° from the satellite`,s.closest_deg<2?'Close: expect a few minutes of lost signal around then.':s.closest_deg<12?'Close enough to add some noise around midday.':'Too far to matter.'])}
+ (p.windows||[]).forEach(w=>{const a=new Date(w.start+'T12:00'),b=new Date(w.end+'T12:00'),f=d=>d.toLocaleDateString([],{month:'short',day:'numeric',year:a.getFullYear()!==new Date().getFullYear()?'numeric':undefined});items.push([`${f(a)} – ${f(b)}`,'Sun passes behind the satellite',`Within 5° each day around ${clock(w.best_at)}, closest ${w.best}° on ${new Date(w.best_at*1000).toLocaleDateString([],{month:'short',day:'numeric'})}. Expect a few minutes of lost signal each day near the centre.`])});
+ $('prList').innerHTML=items.map(([t,w,d])=>`<li><time>${esc(t)}</time><div><b>${esc(w)}</b><div class="det">${esc(d)}</div></div></li>`).join('');
+ const last=[...H.signal].reverse().find(r=>r[1]!=null);$('mVit').textContent=last?`Viterbi ${Math.round(last[1])} (${last[1]<200?'good':last[1]<600?'fair':'poor'})`:'Recording…'}
+const KIND={SA:'Airport reports (METAR)',SP:'Special airport reports',FT:'Airport forecasts (TAF)',FP:'Public forecasts',FX:'Forecast discussions',FZ:'Marine forecasts',FO:'Model and aviation guidance',SR:'River and rain data',CD:'Climate reports',QA:'Radar images',AS:'Regional summaries and analyses',WW:'Watches and warnings',WU:'Severe weather warnings',WF:'Tornado and flood warnings',WH:'Marine warnings',SX:'Other text',NO:'Notices',SM:'Synoptic and marine reports'};
+function renderFeedHealth(){if(!E)return;const fd=(bot&&bot.feed)||{},ib=fd.internet_backup,nm=fd.nws_metar,lag=E.lag_now;
+ $('eLag').textContent=lag==null?'–':lag<1?'on time':late(Math.round(lag));tile('eLagT',lag==null?'':lag<30?'good':lag<120?'warn':'bad');
+ $('eHour').textContent=n(E.last_hour.files+E.last_hour.inet);$('eBackup').textContent=ib?(ib.on?'on':'off'):'–';$('eNws').textContent=nm?(nm.on?'on':'off'):'–';
+ const k=E.kinds_24h||[],kmax=Math.max(1,...k.map(r=>r[1]));$('kinds').innerHTML=k.map(([c,v])=>`<tr><td class="w">${esc(KIND[c]||'Other')} <span class="hint">${esc(c)}</span></td><td style="width:40%"><div class="bar"><i style="width:${v/kmax*100}%"></i></div></td><td class="n">${n(v)}</td></tr>`).join('');
+ const ev=(E.events||[]).filter(e=>EMWIN_KINDS.includes(e.kind));$('evEmwin').innerHTML=ev.length?ev.map(evItem).join(''):'<li class="hint">Nothing in the last 7 days.</li>';
+ $('emSince').textContent=E.recorded_since?`History from ${when(E.recorded_since)}, rebuilt at install from the products on disk, then recorded minute by minute.`:'';
+ $('mLag').textContent=lag==null?'–':lag<1?'On time now':late(Math.round(lag))+' late now'}
+function fetchHistory(){Promise.all([fetch('/api/hrit?hours='+vRange).then(r=>r.json()),fetch('/api/emwin?hours=168').then(r=>r.json())]).then(([h,e])=>{H=h;E=e;renderHrit();renderFeedHealth();drawHistory()}).catch(()=>{}).finally(()=>setTimeout(fetchHistory,60000))}
+document.querySelectorAll('[data-vr]').forEach(b=>b.addEventListener('click',()=>{vRange=+b.dataset.vr;document.querySelectorAll('[data-vr]').forEach(o=>o.classList.toggle('on',o===b));fetch('/api/hrit?hours='+vRange).then(r=>r.json()).then(h=>{H=h;renderHrit();drawHistory()}).catch(()=>{})}));
+showTab(location.hash.slice(1)||'overview');fetchHistory();
 </script></body></html>

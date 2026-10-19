@@ -1,0 +1,213 @@
+"""The dashboard's 7-day station history (deploy/goes-dashboard/station_history.py).
+
+It runs beside goesrecv on the Pi; nothing here needs goesrecv or pynng: frames, files and
+providers are faked.
+"""
+
+import datetime as dt
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "goes-dashboard"))
+import station_history as sh  # noqa: E402
+
+UTC = dt.timezone.utc
+
+
+def vcdu(vc: int, count: int, apid: int | None = None) -> bytes:
+    """A 892-byte VCDU: header (VCID in byte 1, 24-bit count in bytes 2-4), then an M_PDU whose
+    first packet starts at offset 0 when `apid` is given."""
+    head = bytes([0x40, vc & 0x3F]) + count.to_bytes(3, "big") + b"\x00"
+    if apid is None:
+        mpdu = bytes([0x07, 0xFF])               # no packet starts in this frame
+        body = b""
+    else:
+        mpdu = bytes([0x00, 0x00])
+        body = bytes([0x08 | (apid >> 8), apid & 0xFF])
+    return (head + mpdu + body).ljust(892, b"\x00")
+
+
+def test_frames_and_lost_frames_are_counted_per_channel():
+    c = sh.VcCounter()
+    for n in (10, 11, 12, 15, 16):          # 13 and 14 never arrived
+        c.feed(vcdu(25, n, apid=807))
+    for n in (100, 101):
+        c.feed(vcdu(63, n))
+    c.feed(vcdu(21, 5))
+    c.feed(vcdu(21, 5 + 200_000))           # a counter reset, not 199,999 lost frames
+    got = c.take()
+    assert got[25] == (5, 2) and got[63] == (2, 0) and got[21] == (2, 0)
+    assert c.info()[25]["apids"] == [807]
+    assert c.take() == {}                   # each minute starts at zero
+
+
+def test_counts_wrap_at_24_bits():
+    c = sh.VcCounter()
+    c.feed(vcdu(2, (1 << 24) - 1))
+    c.feed(vcdu(2, 1))                      # 0 was lost across the wrap
+    assert c.take()[2] == (2, 1)
+
+
+def test_channel_names_say_only_what_is_known():
+    assert sh.vc_name(13) == "ABI 13 · clean IR" and sh.vc_name(21) == "EMWIN"
+    assert sh.vc_name(32).startswith("DCS") and sh.vc_name(25) is None
+
+
+def _product(day_dir: Path, made: dt.datetime, arrived: float, seq: int, awips="SAHOURLY") -> None:
+    name = f"A_SAUS70KWBC{made:%d%H%M}_C_KWIN_{made:%Y%m%d%H%M%S}_{seq}-2-{awips}.TXT"
+    p = day_dir / name
+    p.write_text("x")
+    os.utime(p, (arrived, arrived))
+
+
+def test_arrivals_count_only_what_is_new_and_how_late_it_came(tmp_path):
+    sdr, inet = tmp_path / "emwin", tmp_path / "inet"
+    day = sdr / "2026-10-18"
+    day.mkdir(parents=True)
+    now = time.time()
+    made = dt.datetime.fromtimestamp(now - 3 * 3600, UTC)
+    _product(day, made, now - 600, 1)                       # on disk before the first look
+    a = sh.Arrivals({"sdr": str(sdr), "inet": str(inet)})
+    assert a.poll()["sdr"] == 0
+    _product(day, made, now, 2)                             # three hours after NOAA made it
+    (inet / "2026-10-18").mkdir(parents=True)
+    (inet / "2026-10-18" / "x.TXT").write_text("x")
+    got = a.poll()
+    assert got["sdr"] == 1 and got["inet"] == 1 and round(got["lags"][0]) == 180
+    nxt = sdr / "2026-10-19"                                # a new UTC day: all of it is new
+    nxt.mkdir()
+    _product(nxt, made, now, 3)
+    assert a.poll()["sdr"] == 1
+
+
+def test_backfill_rebuilds_minutes_from_the_files_on_disk(tmp_path):
+    day = tmp_path / "2026-10-18"
+    day.mkdir()
+    now = time.time()
+    minute = (now - 3600) // 60 * 60
+    made = dt.datetime.fromtimestamp(minute - 5 * 3600, UTC)
+    for i in range(3):
+        _product(day, made, minute + 10 + i, i)
+    _product(day, made, now - 30, 9)                        # the last two minutes are the recorder's
+    rows = sh.backfill(str(tmp_path), now)
+    assert rows == [(int(minute), 3, 0, rows[0][3], 3)] and round(rows[0][3]) == 300
+
+
+def test_a_minute_of_seconds_becomes_one_signal_row():
+    secs = [[t, 150 + t % 3, 56, 0, 2] for t in range(55)] + [[t, None, 0, 1, 0] for t in range(55, 60)]
+    row = sh.summarize_signal(secs, locked_now=True)
+    assert row["vit_med"] == 151 and row["vit_lo"] == 150 and row["vit_hi"] == 152
+    assert row["packets"] == 55 * 56 and row["drops"] == 5 and row["rs"] == 110
+    assert round(row["locked"], 3) == round(55 / 60, 3)
+    assert sh.summarize_signal([], locked_now=False) is None
+
+
+def _events(store):
+    return store.rows("SELECT kind, level, title, t, t_end FROM events WHERE source='live' ORDER BY id")
+
+
+def _observe(ev, store, now, **kw):
+    args = dict(locked=1.0, mode="receive", up_s=10_000, watchdog=0, backup_on=False, nws={"on": False}, lag_30=None)
+    args.update(kw)
+    with store.tx() as db:
+        ev.observe(db, now, **args)
+
+
+def test_lock_loss_opens_an_event_and_regaining_closes_it(tmp_path):
+    store = sh.Store(str(tmp_path / "h.db"))
+    ev, t = sh.Events(store), 1_800_000_000
+    _observe(ev, store, t)
+    _observe(ev, store, t + 60, locked=0.0)
+    _observe(ev, store, t + 120, locked=0.0)
+    _observe(ev, store, t + 15 * 60, locked=0.5)
+    assert _events(store) == [("lock", "bad", "No lock for 14 min", t + 60, t + 15 * 60)]
+
+
+def test_pointing_and_restarts_are_events(tmp_path):
+    store = sh.Store(str(tmp_path / "h.db"))
+    ev, t = sh.Events(store), 1_800_000_000
+    _observe(ev, store, t, up_s=5000)
+    _observe(ev, store, t + 60, mode="point", locked=None, up_s=5060)
+    _observe(ev, store, t + 600, mode="receive", up_s=20)       # goesrecv came back after aiming
+    _observe(ev, store, t + 660, up_s=80, watchdog=0)
+    _observe(ev, store, t + 720, up_s=5, watchdog=1)            # the watchdog's doing
+    got = [(k, title) for k, _, title, _, _ in _events(store)]
+    assert got == [("pointing", "Pointing mode for 9 min"), ("restart", "goesrecv restarted"),
+                   ("restart", "Watchdog restarted goesrecv")]
+
+
+def test_emwin_late_holds_through_dips_and_ends_after_an_hour_on_time(tmp_path):
+    store = sh.Store(str(tmp_path / "h.db"))
+    store.db.execute("DELETE FROM events")                      # no seeded open event
+    ev, t = sh.Events(store), 1_800_000_000
+    _observe(ev, store, t, lag_30=45)
+    _observe(ev, store, t + 600, lag_30=286)
+    _observe(ev, store, t + 1200, lag_30=8)                     # a dip, as on Oct 17 evening
+    _observe(ev, store, t + 1800, lag_30=60)
+    _observe(ev, store, t + 2400, lag_30=5)
+    _observe(ev, store, t + 2400 + 3000, lag_30=5)
+    assert _events(store)[0][4] is None                         # 50 min on time: still open
+    _observe(ev, store, t + 2400 + 3600, lag_30=5)
+    kind, level, title, t0, t_end = _events(store)[0]
+    assert (kind, level, title, t0, t_end) == ("emwin_late", "bad", "EMWIN up to 4 h 46 min late", t, t + 6000)
+
+
+def test_a_condition_open_at_install_is_continued_not_duplicated(tmp_path):
+    # The seed opens "EMWIN fell behind" (Oct 17) and the NWS feed (Oct 19 01:17Z) with no end:
+    # both were still going when the history was installed.
+    store = sh.Store(str(tmp_path / "h.db"))
+    ev, t = sh.Events(store), 1_800_000_000
+    _observe(ev, store, t, lag_30=300, nws={"on": True, "reason": "EMWIN 5 h late"})
+    assert _events(store) == []
+    late = store.rows("SELECT title, t_end FROM events WHERE kind='emwin_late' AND t_end IS NULL")
+    assert late == [("EMWIN up to 5 h 00 min late", None)]
+    _observe(ev, store, t + 60, nws={"on": False})
+    closed = store.rows("SELECT title, t_end FROM events WHERE kind='nws_metar' ORDER BY t DESC LIMIT 1")
+    assert closed[0][1] == t + 60 and closed[0][0].startswith("Current conditions from NWS for")
+
+
+def test_the_sun_passes_behind_goes19_from_austin_in_early_october_and_march():
+    sun = sh.SunPredictor(30.27, -97.74, -75.2, "America/Chicago", mag_decl=2.6)
+    assert (round(sun.az, 1), round(sun.el, 1)) == (140.5, 47.0)
+    sep, at = sun.closest(dt.date(2026, 10, 5))
+    local = dt.datetime.fromtimestamp(at, sun.tz)
+    assert sep < 0.5 and (local.hour, local.minute // 10) == (11, 3)
+    assert 4.5 < sun.closest(dt.date(2026, 10, 18))[0] < 5.1
+    p = sun.predictions(dt.datetime(2026, 10, 25, 12, tzinfo=UTC).timestamp())
+    assert p["satellite"] == {"az": 140.5, "el": 47.0, "compass": 138}
+    spring = p["windows"][0]
+    assert spring["start"] == "2027-02-23" and spring["end"] == "2027-03-20" and spring["best"] < 0.5
+
+
+def test_a_recorder_minute_writes_one_row_per_table_and_feeds_the_pages(tmp_path):
+    emwin = tmp_path / "emwin"
+    (emwin / time.strftime("%Y-%m-%d", time.gmtime())).mkdir(parents=True)
+    store = sh.Store(str(tmp_path / "h.db"))
+    vc = sh.VcCounter()
+    arrivals = sh.Arrivals({"sdr": str(emwin)})
+    arrivals.poll()
+    now = time.time()
+    t = int(now // 60 * 60) - 60
+    secs = [[t + i, 160, 56, 0, 3] for i in range(60)]
+    rec = sh.Recorder(store, vc, arrivals, sh.SunPredictor(30.27, -97.74, -75.2, "America/Chicago"),
+                      seconds=lambda: secs, locked_now=lambda: True, demod=lambda: {"frequency": 22200.0, "gain": 10.6},
+                      mode=lambda: "receive", status=lambda: {"goesrecv_up_s": 100, "watchdog": {"restarts": 0}},
+                      bot_feed=lambda: {"internet_backup": {"on": False}, "nws_metar": {"on": True, "reason": "x"}},
+                      emwin_root=str(emwin))
+    for n in range(30):
+        vc.feed(vcdu(21, n))
+    day = emwin / time.strftime("%Y-%m-%d", time.gmtime())
+    for i in range(25):
+        _product(day, dt.datetime.fromtimestamp(now - 3600, UTC), now - 10, i)
+    rec.minute(now)
+    assert store.rows("SELECT vit_med, packets, locked FROM signal") == [(160, 3360, 1.0)]
+    assert store.rows("SELECT vc, frames, lost FROM vc") == [(21, 30, 0)]
+    assert store.rows("SELECT files, lag_n FROM emwin") == [(25, 25)]
+    h = rec.hrit(6)
+    assert h["signal"][0][1] == 160 and h["vc"][0]["name"] == "EMWIN" and h["vc"][0]["frames_per_min"] == 30
+    assert any(e["kind"] == "note" for e in h["events"]) and h["sun"]["satellite"]["compass"] == 141
+    e = rec.emwin(24)
+    assert e["hourly"][-1][1] == 25 and round(e["hourly"][-1][3]) == 60 and e["lag_now"] is not None
+    assert e["kinds_24h"] == [["SA", 25]]

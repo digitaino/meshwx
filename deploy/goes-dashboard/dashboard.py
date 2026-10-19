@@ -23,9 +23,12 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
+HERE = os.path.dirname(os.path.abspath(__file__))   # dashboard.html and station_history.py live beside it
 sys.path.insert(0, "/home/digitaino/goes")
+sys.path.insert(0, HERE)
 import pynng  # noqa: E402
 import signal_monitor  # noqa: E402  (pointing-mode Monitor class)
+import station_history  # noqa: E402  (7-day history, events, sun predictions)
 
 HOME = "/home/digitaino"
 IMG_ROOT = f"{HOME}/goes-images"
@@ -405,6 +408,63 @@ class Bot:
 BOT = Bot()
 
 
+# ----------------------------------------------------------------------------- 7-day history
+# Where the station is, for the sun predictions and the aim shown on the page; the defaults are
+# this dish in Austin. MAG_DECL turns the true azimuth into a compass reading.
+STATION_LAT = float(os.environ.get("STATION_LAT", "30.27"))
+STATION_LON = float(os.environ.get("STATION_LON", "-97.74"))
+SAT_LON = float(os.environ.get("SAT_LON", "-75.2"))
+STATION_TZ = os.environ.get("STATION_TZ", "America/Chicago")
+MAG_DECL = float(os.environ.get("MAG_DECL", "2.6"))
+
+
+def station_chain():
+    """The receiver chain for the page, read from goesrecv's own config (frequency, rate, gain,
+    bias tee) plus the hardware names, which the config only has in a comment."""
+    out = {"satellite": os.environ.get("STATION_SATELLITE", "GOES-19 (GOES-East)"), "sat_lon": SAT_LON,
+           "lna": os.environ.get("STATION_LNA", "SAWbird+ GOES LNA"), "radio": os.environ.get("STATION_RADIO", "RTL-SDR (R820T)")}
+    try:
+        import tomllib
+        with open(f"{HOME}/goes/goesrecv.conf", "rb") as f:
+            rtl = tomllib.load(f).get("rtlsdr", {})
+        out.update(freq_mhz=rtl.get("frequency", 0) / 1e6, sample_msps=rtl.get("sample_rate", 0) / 1e6,
+                   gain_db=rtl.get("gain"), bias_tee=bool(rtl.get("bias_tee")))
+    except (OSError, ValueError, ImportError):
+        pass
+    return out
+
+
+HIST_VC = station_history.VcCounter()
+
+
+def run_vcdus():
+    """Every frame goesrecv decodes (its packet publisher), counted per virtual channel. While
+    the dish is being aimed goesrecv is stopped and this simply waits for it to come back."""
+    s = pynng.Sub0(recv_timeout=2000)
+    s.subscribe(b"")
+    s.dial("tcp://127.0.0.1:5004", block=False)
+    while True:
+        try:
+            HIST_VC.feed(s.recv())
+        except pynng.Timeout:
+            pass
+        except Exception:  # noqa: BLE001
+            time.sleep(1)
+
+
+HISTORY = station_history.Recorder(
+    station_history.Store(os.environ.get("HISTORY_DB", f"{HOME}/goes/history.db")),
+    HIST_VC,
+    station_history.Arrivals({"sdr": f"{IMG_ROOT}/emwin", "inet": INET_DIR}),
+    station_history.SunPredictor(STATION_LAT, STATION_LON, SAT_LON, STATION_TZ, MAG_DECL),
+    seconds=STATS.history_list, locked_now=lambda: STATS.current.get("locked"), demod=lambda: dict(STATS.demod),
+    mode=lambda: MODE.mode, status=STATUS.get, bot_feed=lambda: (BOT.get() or {}).get("feed"),
+    emwin_root=f"{IMG_ROOT}/emwin")
+CHAIN = station_chain()
+threading.Thread(target=run_vcdus, daemon=True).start()
+HISTORY.start()
+
+
 def prune_thumbs():
     """Keep the thumbnail cache bounded: past THUMB_MAX files, drop the oldest down to
     THUMB_KEEP. Only called right after a new thumbnail was written, so normally it is
@@ -446,7 +506,8 @@ def thumb_for(rel):
     return out
 
 
-HTML = open("/home/digitaino/goes/dashboard.html", "rb").read() if os.path.exists("/home/digitaino/goes/dashboard.html") else b"dashboard.html missing"
+HTML_PATH = os.path.join(HERE, "dashboard.html")
+HTML = open(HTML_PATH, "rb").read() if os.path.exists(HTML_PATH) else b"dashboard.html missing"
 
 
 def is_lan_address(ip: str) -> bool:
@@ -504,6 +565,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(STATS.history_list()).encode(), "application/json")
         if p == "/api/bot":
             return self._send(200, json.dumps(clean(BOT.get())).encode(), "application/json")
+        if p in ("/api/hrit", "/api/emwin"):
+            try:
+                hours = int((dict(x.split("=", 1) for x in u.query.split("&") if "=" in x)).get("hours", "168"))
+            except ValueError:
+                hours = 168
+            d = HISTORY.hrit(hours) if p == "/api/hrit" else HISTORY.emwin(hours)
+            if p == "/api/hrit":
+                d = dict(d, station=CHAIN)
+            return self._send(200, json.dumps(clean(d)).encode(), "application/json")
         if p == "/events":
             return self.sse()
         if p.startswith("/img/") or p.startswith("/thumb/"):
