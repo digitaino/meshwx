@@ -7,10 +7,12 @@
    canvases read the same tokens when they draw. */
 :root{--bg:#f5f6f8;--panel:#fff;--inset:#f0f2f5;--fg:#1b1f24;--dim:#5c6672;--line:#d9dee4;--acc:#0969da;
  --ok:#1a7f37;--ok-bg:#dcf5e3;--warn:#8a5a00;--warn-bg:#fff4c7;--bad:#c4202b;--bad-bg:#ffe7e6;--info:#0759b8;--info-bg:#dff0ff;
- --series:#0969da;--series2:#1a7f37;--alert:#c4202b}
+ --series:#0969da;--series2:#1a7f37;--alert:#c4202b;
+ --water:#d9e6f0;--land:#fbfbf9;--land2:#eceee9;--border:#98a2ad;--home:#0969da}
 @media (prefers-color-scheme:dark){:root{--bg:#0d1117;--panel:#161b22;--inset:#0b0f15;--fg:#e6edf3;--dim:#8b949e;--line:#30363d;--acc:#58a6ff;
  --ok:#3fb950;--ok-bg:#12321f;--warn:#e3b341;--warn-bg:#382b10;--bad:#ff7b72;--bad-bg:#3d1618;--info:#79c0ff;--info-bg:#10263d;
- --series:#58a6ff;--series2:#3fb950;--alert:#f85149}}
+ --series:#58a6ff;--series2:#3fb950;--alert:#f85149;
+ --water:#0a1824;--land:#1e252e;--land2:#161b21;--border:#56616d;--home:#58a6ff}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
 a{color:var(--acc)}
@@ -117,6 +119,34 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
 .mini a:hover,.mini a:focus-visible{border-color:var(--acc)}
 .mini .k{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)}
 .mini .v{font-size:17px;font-weight:650;margin:2px 0 8px}
+/* Warnings map and product browser */
+.map{position:relative;user-select:none;-webkit-user-select:none}
+.map canvas{touch-action:none;cursor:grab}.map canvas.drag{cursor:grabbing}
+.maptools{position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:4px}
+.maptools button{width:32px;height:32px;padding:0;font-size:18px;line-height:1;background:var(--panel)}
+.maptip{position:absolute;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12.5px;max-width:260px;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:2}
+.maphint{position:absolute;left:8px;bottom:8px;font-size:12px;color:var(--dim);background:var(--panel);border-radius:6px;padding:2px 7px;opacity:.9}
+.wlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:420px;overflow:auto}
+.wlist li{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;background:var(--inset);cursor:pointer}
+.wlist li:hover,.wlist li.hl,.wlist li:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.wlist .sw{flex:none;margin-top:3px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
+.wlist .t1{font-weight:600;font-size:14px}.wlist .t2{font-size:12.5px;color:var(--dim)}
+.wdet{margin-top:10px;font-size:13.5px;background:var(--inset);border-radius:10px;padding:10px 12px}
+.wdet .t2{color:var(--dim);font-size:12.5px;margin-top:2px}.wdet p{margin:6px 0 0}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.filters input{flex:1 1 220px;font:inherit;font-size:14px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--inset);color:var(--fg);min-width:0}
+.filters select{max-width:100%;min-width:0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.chips button{border-radius:999px;font-size:12.5px;padding:4px 12px}.chips .c{opacity:.75;font-size:11.5px;margin-left:5px}
+.results{list-style:none;margin:0;padding:0;max-height:560px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+.results li{padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px}
+.results li:last-child{border-bottom:0}.results li[aria-selected="true"]{background:var(--inset)}
+.results li:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.results .t1{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.results .t2{font-size:12.5px;color:var(--dim)}
+.reader{background:var(--inset);border-radius:10px;padding:12px;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow:auto;max-height:560px;min-height:200px;overflow-wrap:anywhere}
+.reader img{max-width:100%;display:block;margin:auto;background:#fff}
+.reader mark{background:var(--warn-bg);color:inherit;outline:1px solid var(--warn);border-radius:2px}
+.rhead{font-size:13px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center}
 </style></head><body>
 <header class="top"><div class="wrap">
  <div><h1>mesh-wx</h1><p class="sub">The GOES-19 satellite receiver and the <span id="hName">WX-AUS</span> weather bot on the Austin MeshCore mesh</p></div>
@@ -234,6 +264,7 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
  </section>
 </div>
 <div class="tab" id="emwin" hidden>
+ <div class="subnav" aria-label="EMWIN sections"><button data-go="emHealth">Feed health</button><button data-go="emWarn">Warnings</button><button data-go="emProd">Products</button></div>
  <section class="block" id="emHealth" aria-labelledby="hFh">
   <div class="bh"><h2 id="hFh">Feed health</h2></div>
   <div class="tiles">
@@ -254,10 +285,29 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
   </div>
   <p class="hint" id="emSince"></p>
  </section>
- <details class="block">
-  <summary>Latest EMWIN products <span class="count" id="emCount"></span></summary>
-  <table id="emList"></table>
- </details>
+ <section class="block" id="emWarn" aria-labelledby="hWarn">
+  <div class="bh"><h2 id="hWarn">Warnings and watches in effect</h2><span class="hint" id="wCount"></span>
+   <div class="right" role="group" aria-label="Map view"><button data-mv="tx" class="on">Texas</button><button data-mv="us">All US</button><button data-mv="ak">Alaska</button><button data-mv="hi">Hawaii</button><button data-mv="pr">Puerto Rico</button><button data-mv="gu">Guam</button></div></div>
+  <div class="grid2 wide">
+   <div><div class="map" id="mapBox"><canvas id="mapC" aria-label="Map of the warnings and watches in effect. The list beside it has the same events."></canvas>
+    <div class="maptools"><button id="mapIn" aria-label="Zoom in" title="Zoom in">+</button><button id="mapOut" aria-label="Zoom out" title="Zoom out">−</button></div>
+    <div class="maptip" id="mapTip" hidden></div><div class="maphint" id="mapHint">Drag to move · pinch or ⌘/Ctrl + scroll to zoom</div></div>
+    <div class="wdet" id="wDet" hidden></div></div>
+   <div><h3 class="sm" id="wListHead">In view</h3><ul class="wlist" id="wList"><li class="hint">Loading…</li></ul></div>
+  </div>
+  <p class="cap" id="wNote">What the bot holds right now: the same warnings it answers with on the mesh. An outline is the storm's own polygon where NWS drew one, else the zones and counties the product names. Colours follow the NWS hazard map; the dashed line is the area the bot covers. Base map: Natural Earth.</p>
+ </section>
+ <section class="block" id="emProd" aria-labelledby="hProd">
+  <div class="bh"><h2 id="hProd">Product browser</h2><span class="hint" id="pCount"></span></div>
+  <div class="filters"><input type="search" id="pq" placeholder="Search names, AWIPS ids, offices or text" aria-label="Search products" autocomplete="off" spellcheck="false">
+   <select id="pOffice" aria-label="Office"><option value="">All offices</option></select></div>
+  <div class="chips" id="pKinds" role="group" aria-label="Kind"></div>
+  <div class="grid2">
+   <ul class="results" id="pList" role="listbox" aria-label="Products"><li class="t2">Loading…</li></ul>
+   <div style="min-width:0"><div class="rhead" id="pHead"></div><div class="reader" id="pText" tabindex="0">Pick a product to read it.</div></div>
+  </div>
+  <p class="cap" id="pNote"></p>
+ </section>
 </div>
 </main>
 <footer class="wrap">Weather data: NOAA / National Weather Service, received from GOES-19. This page updates live.</footer>
@@ -293,7 +343,7 @@ function renderRx(d){rx=Object.assign(rx,d);
  if(d.status){const st=d.status,sv=st.services||{};$('sRecv').textContent=sv.goesrecv||'–';$('sProc').textContent=sv.goesproc||'–';
   $('sUp').textContent=st.goesrecv_up_s!=null?age(st.goesrecv_up_s):'–';$('sDog').textContent=(st.watchdog||{}).restarts??'–';$('sThr').textContent=st.throttled==null?'–':st.throttled==='0x0'?'no throttling':'throttled ('+st.throttled+')';
   $('sTemp').textContent=st.temp!=null?st.temp.toFixed(0)+' °C':'–';$('sDisk').textContent=st.disk_free_gb!=null?st.disk_free_gb+' GB free':'–';
-  renderImages(st.latest_images);renderEmwin(st.latest_emwin,st.counts)}
+  renderImages(st.latest_images)}
  if(point){stat('stSat','info','Being aimed','The dish is being adjusted; reception is paused.');$('rxPill').textContent='Being aimed';$('rxPill').className='pill info';renderMeter(d.meter);return}
  $('sFeed').textContent=s.feed_alive?'live':'no data';
  const v=s.vit_avg,q=v==null?null:v<200?'good':v<600?'fair':'poor';
@@ -314,9 +364,6 @@ let imgKey='';
 function renderImages(list){if(!list||!list.length)return;const g=$('imgs'),key=list.map(i=>i.path).join('|'),label=i=>`${i.name.replace(/^GOES1[89]_/,'').replace(/\.jpg$/,'').replace(/_/g,' ')} · ${age(Date.now()/1000-i.mtime)} ago`;
  if(key===imgKey){g.querySelectorAll('span').forEach((s,k)=>{if(list[k])s.textContent=label(list[k])});return}
  imgKey=key;g.innerHTML=list.map(i=>`<a href="/img/${esc(i.path)}" target="_blank" rel="noopener"><img loading="lazy" alt="${esc(i.name)}" src="/thumb/${esc(i.path)}"><span title="${esc(i.name)}">${esc(label(i))}</span></a>`).join('')}
-function renderEmwin(list,counts){const t=$('emList');
- t.innerHTML=(list&&list.length)?list.map(f=>`<tr><td><a href="/img/${esc(f.path)}" target="_blank" rel="noopener">${esc(f.name)}</a></td><td class="r">${f.src==='net'?'<span class="net" title="fetched over the internet while the dish was silent">internet</span> ':''}${clockS(f.mtime)}</td></tr>`).join(''):'<tr><td class="hint">No EMWIN files yet.</td></tr>';
- $('emCount').textContent=list&&list.length?`· the newest ${list.length}`+(counts&&counts.internet_backup_on?', with what the internet backup fetched':''):''}
 
 // Canvases: drawn in the page's own colours, redrawn when the device switches light/dark.
 function canvas(id,h){const c=$(id),W=c.width=c.clientWidth*dpr,H=c.height=h*dpr,x=c.getContext('2d');x.clearRect(0,0,W,H);x.font=(11*dpr)+'px system-ui';return [x,W,H]}
@@ -423,7 +470,7 @@ pollBot();
 // ---------------------------------------------------------------- tabs (bare #token links)
 const TABS=['overview','hrit','emwin'];
 function showTab(tab,jump){if(!TABS.includes(tab))tab='overview';TABS.forEach(t=>{$(t).hidden=t!==tab;$('t-'+t).setAttribute('aria-selected',t===tab)});
- requestAnimationFrame(()=>{drawHistory();if(rx.history&&tab==='hrit'){drawConst((rx.stats||{}).const||[]);drawHist(rx.history)}if(jump)$(jump).scrollIntoView({behavior:'smooth',block:'start'})})}
+ requestAnimationFrame(()=>{drawHistory();if(rx.history&&tab==='hrit'){drawConst((rx.stats||{}).const||[]);drawHist(rx.history)}if(tab==='emwin')emwinShown();if(jump)$(jump).scrollIntoView({behavior:'smooth',block:'start'})})}
 addEventListener('hashchange',()=>showTab(location.hash.slice(1)));
 document.querySelectorAll('[data-jump]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();history.replaceState(null,'',a.getAttribute('href'));showTab(a.getAttribute('href').slice(1),a.dataset.jump)}));
 document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>$(b.dataset.go).scrollIntoView({behavior:'smooth',block:'start'})));
@@ -493,5 +540,130 @@ function renderFeedHealth(){if(!E)return;const fd=(bot&&bot.feed)||{},ib=fd.inte
  $('mLag').textContent=lag==null?'–':lag<1?'On time now':late(Math.round(lag))+' late now'}
 function fetchHistory(){Promise.all([fetch('/api/hrit?hours='+vRange).then(r=>r.json()),fetch('/api/emwin?hours=168').then(r=>r.json())]).then(([h,e])=>{H=h;E=e;renderHrit();renderFeedHealth();drawHistory()}).catch(()=>{}).finally(()=>setTimeout(fetchHistory,60000))}
 document.querySelectorAll('[data-vr]').forEach(b=>b.addEventListener('click',()=>{vRange=+b.dataset.vr;document.querySelectorAll('[data-vr]').forEach(o=>o.classList.toggle('on',o===b));fetch('/api/hrit?hours='+vRange).then(r=>r.json()).then(h=>{H=h;renderHrit();drawHistory()}).catch(()=>{})}));
+// ---------------------------------------------------------------- warnings map (/api/warnings, /api/basemap)
+// Each view has its own Albers equal-area projection, so Alaska, Hawaii, Puerto Rico and Guam
+// are not drawn bent; Texas shares the lower 48's. Coordinates arrive as [lon, lat].
+const VIEWS={tx:{p:[29.5,45.5,-96,37.5],box:[-106.7,25.8,-93.5,36.6]},us:{p:[29.5,45.5,-96,37.5],box:[-124.8,24.4,-66.9,49.4]},
+ ak:{p:[55,65,-154,50],box:[-179,51.2,-129.9,71.5]},hi:{p:[19,22,-157,20],box:[-160.3,18.9,-154.7,22.3]},
+ pr:{p:[17.5,18.5,-66,18],box:[-67.4,17.8,-64.5,18.6]},gu:{p:[13,16,145,14],box:[144.55,13.2,145.9,15.35]}};
+function albers([la1,la2,lo0,la0]){const d=Math.PI/180,p1=la1*d,p2=la2*d,n=(Math.sin(p1)+Math.sin(p2))/2,C=Math.cos(p1)**2+2*n*Math.sin(p1),r0=Math.sqrt(C-2*n*Math.sin(la0*d))/n;
+ return (lo,la)=>{const dl=((lo-lo0+540)%360)-180,r=Math.sqrt(C-2*n*Math.sin(la*d))/n,th=n*dl*d;return [r*Math.sin(th),r0-r*Math.cos(th)]}}
+let BM=null,WD=null,mview='tx',projKey='',PB=null,PW=[],PA=null,PH=null,vs=1,vx=0,vy=0,fitS=1,whl=-1,wsel=-1,mapW=0,mapH=0,mapActive=false,moved=false,emwinStarted=false;
+// One ring as a flat [X0,Y0,X1,Y1,...] array in projected units, with its bounds.
+function projRings(rings,P){const out=[],b=[1e9,1e9,-1e9,-1e9];for(const r of rings){const a=new Float64Array(r.length*2);r.forEach(([lo,la],i)=>{const [X,Y]=P(lo,la);a[2*i]=X;a[2*i+1]=Y;if(X<b[0])b[0]=X;if(X>b[2])b[2]=X;if(Y<b[1])b[1]=Y;if(Y>b[3])b[3]=Y});out.push(a)}return {rings:out,b}}
+function reproject(){const v=VIEWS[mview],key=v.p.join();if(key===projKey&&PB)return;projKey=key;const P=albers(v.p);
+ PB=BM?{land:projRings(BM.land||[],P),states:(BM.states||[]).map(s=>({id:s.id,...projRings(s.rings,P)}))}:null;
+ PW=WD?(WD.warnings||[]).map(w=>({w,...projRings(w.rings||[],P)})):[];
+ const a=WD&&WD.area;PA=a&&a.rings&&a.rings.length?projRings(a.rings,P):null;PH=a&&a.center?P(a.center[0],a.center[1]):null}
+function fitView(){const v=VIEWS[mview],P=albers(v.p),[w,s,e,nn]=v.box,b=[1e9,1e9,-1e9,-1e9];
+ for(let i=0;i<=20;i++){const lo=w+(e-w)*i/20,la=s+(nn-s)*i/20;for(const [X,Y] of [P(lo,s),P(lo,nn),P(w,la),P(e,la)]){b[0]=Math.min(b[0],X);b[1]=Math.min(b[1],Y);b[2]=Math.max(b[2],X);b[3]=Math.max(b[3],Y)}}
+ fitS=vs=Math.min(mapW/(b[2]-b[0]),mapH/(b[3]-b[1]))*.94;vx=mapW/2-(b[0]+b[2])/2*vs;vy=mapH/2+(b[1]+b[3])/2*vs}
+function setView(k){mview=k;moved=false;document.querySelectorAll('[data-mv]').forEach(b=>b.classList.toggle('on',b.dataset.mv===k));reproject();sizeMap();fitView();pickWarning(-1);drawMap();renderWarnList()}
+// A new width or height refits the view until the viewer has moved it; after that it keeps its centre.
+function sizeMap(){const c=$('mapC'),w=mapW,h=mapH;mapW=c.clientWidth||600;mapH=innerWidth<600?360:460;
+ if(w&&(w!==mapW||h!==mapH)){if(moved){vx+=(mapW-w)/2;vy+=(mapH-h)/2}else fitView()}}
+const onScreen=b=>!(vx+b[2]*vs<0||vx+b[0]*vs>mapW||vy-b[1]*vs<0||vy-b[3]*vs>mapH);
+let mapQueued=false;function queueMap(){if(!mapQueued){mapQueued=true;requestAnimationFrame(()=>{mapQueued=false;drawMap()})}}
+function drawMap(){const c=$('mapC');if(!c||!visible('mapC'))return;sizeMap();c.style.height=mapH+'px';c.width=mapW*dpr;c.height=mapH*dpr;const x=c.getContext('2d');x.setTransform(dpr,0,0,dpr,0,0);
+ x.fillStyle=css('--water');x.fillRect(0,0,mapW,mapH);if(!PB){x.fillStyle=css('--dim');x.font='13px system-ui';x.fillText(BM&&BM.error?BM.error:'Loading the map…',12,22);return}
+ const path=g=>{x.beginPath();for(const a of g.rings){for(let i=0;i<a.length;i+=2){const X=vx+a[i]*vs,Y=vy-a[i+1]*vs;i?x.lineTo(X,Y):x.moveTo(X,Y)}x.closePath()}};
+ if(onScreen(PB.land.b)){path(PB.land);x.fillStyle=css('--land2');x.fill('evenodd')}
+ const land=css('--land'),border=css('--border');x.fillStyle=land;PB.states.forEach(s=>{if(onScreen(s.b)){path(s);x.fill('evenodd')}});
+ x.globalAlpha=.6;for(let i=PW.length-1;i>=0;i--){const g=PW[i];if(!g.rings.length||!onScreen(g.b))continue;path(g);x.fillStyle=g.w.color;x.fill('evenodd')}x.globalAlpha=1;
+ x.strokeStyle=border;x.lineWidth=.8;PB.states.forEach(s=>{if(onScreen(s.b)){path(s);x.stroke()}});
+ x.lineWidth=1;for(let i=PW.length-1;i>=0;i--){const g=PW[i];if(!g.rings.length||!onScreen(g.b))continue;path(g);x.strokeStyle=g.w.color;x.stroke()}
+ if(PA){path(PA);x.strokeStyle=css('--home');x.setLineDash([6,4]);x.lineWidth=1.6;x.stroke();x.setLineDash([])}
+ for(const k of [whl,wsel]){const g=PW[k];if(!g||!g.rings.length)continue;path(g);x.strokeStyle=css('--fg');x.lineWidth=2.5;x.stroke()}
+ if(PH){const X=vx+PH[0]*vs,Y=vy-PH[1]*vs;x.fillStyle=css('--home');x.beginPath();x.arc(X,Y,4,0,7);x.fill();x.font='12px system-ui';x.fillText((WD.area.name||'').split(',')[0],X+7,Y+4)}}
+// The topmost event under a point of the canvas: warnings before watches before advisories.
+function inRings(X,Y,rings){let inside=false;for(const a of rings){for(let i=0,j=a.length-2;i<a.length;j=i,i+=2){const xi=a[i],yi=a[i+1],xj=a[j],yj=a[j+1];if((yi>Y)!==(yj>Y)&&X<(xj-xi)*(Y-yi)/(yj-yi)+xi)inside=!inside}}return inside}
+function hitAt(sx,sy){const X=(sx-vx)/vs,Y=(vy-sy)/vs;for(let i=0;i<PW.length;i++){const g=PW[i];if(g.rings.length&&X>=g.b[0]&&X<=g.b[2]&&Y>=g.b[1]&&Y<=g.b[3]&&inRings(X,Y,g.rings))return i}return -1}
+function zoomAt(f,sx,sy){moved=true;const ns=Math.max(fitS*.5,Math.min(fitS*96,vs*f));f=ns/vs;vx=sx-(sx-vx)*f;vy=sy-(sy-vy)*f;vs=ns;queueMap();listSoon()}
+const until=w=>w.expires==null?'until further notice':'until '+(w.expires-Date.now()/1000<20*3600?clock(w.expires):when(w.expires));
+function tip(i,sx,sy){const t=$('mapTip');if(i<0){t.hidden=true;return}const w=PW[i].w;t.innerHTML=`<b>${esc(w.name)}</b><div class="hint">${esc(w.where)} · ${esc(until(w))}</div>`;t.hidden=false;
+ t.style.left=Math.min(sx+14,mapW-t.offsetWidth-4)+'px';t.style.top=Math.max(4,sy-t.offsetHeight-10)+'px'}
+(()=>{const c=$('mapC'),pts=new Map();let down=null,travel=0,pinch=null;
+ c.addEventListener('pointerdown',e=>{c.setPointerCapture(e.pointerId);pts.set(e.pointerId,[e.offsetX,e.offsetY]);mapActive=true;$('mapHint').hidden=true;
+  if(pts.size===2){const [a,b]=[...pts.values()];pinch={d:Math.hypot(a[0]-b[0],a[1]-b[1]),s:vs}}else{down=[e.offsetX,e.offsetY];travel=0}});
+ c.addEventListener('pointermove',e=>{if(!pts.has(e.pointerId)){if(e.pointerType==='mouse'){const i=hitAt(e.offsetX,e.offsetY);if(i!==whl){whl=i;queueMap();markList()}tip(i,e.offsetX,e.offsetY)}return}
+  const prev=pts.get(e.pointerId);pts.set(e.pointerId,[e.offsetX,e.offsetY]);
+  if(pts.size===2&&pinch){const [a,b]=[...pts.values()],d=Math.hypot(a[0]-b[0],a[1]-b[1]);zoomAt(pinch.s*d/pinch.d/vs,(a[0]+b[0])/2,(a[1]+b[1])/2);return}
+  const dx=e.offsetX-prev[0],dy=e.offsetY-prev[1];travel+=Math.abs(dx)+Math.abs(dy);if(travel>4){c.classList.add('drag');moved=true;vx+=dx;vy+=dy;queueMap();listSoon();tip(-1)}});
+ const up=e=>{if(!pts.has(e.pointerId))return;pts.delete(e.pointerId);c.classList.remove('drag');if(pts.size<2)pinch=null;
+  if(pts.size===0&&down&&travel<=4){pickWarning(hitAt(e.offsetX,e.offsetY),false)}if(pts.size===0)down=null};
+ c.addEventListener('pointerup',up);c.addEventListener('pointercancel',up);
+ c.addEventListener('pointerleave',()=>{mapActive=false;if(whl>=0){whl=-1;queueMap();markList()}tip(-1)});
+ c.addEventListener('wheel',e=>{if(!(mapActive||e.ctrlKey||e.metaKey)){$('mapHint').hidden=false;return}e.preventDefault();zoomAt(Math.exp(-e.deltaY*(e.ctrlKey?.01:.0015)),e.offsetX,e.offsetY)},{passive:false});
+ c.addEventListener('dblclick',e=>{e.preventDefault();zoomAt(2,e.offsetX,e.offsetY)});
+ $('mapIn').onclick=()=>zoomAt(1.6,mapW/2,mapH/2);$('mapOut').onclick=()=>zoomAt(1/1.6,mapW/2,mapH/2);
+ document.querySelectorAll('[data-mv]').forEach(b=>b.onclick=()=>setView(b.dataset.mv))})();
+// The list beside the map: what is in view, the bot's own area first, most serious first.
+let listT=null;const listSoon=()=>{clearTimeout(listT);listT=setTimeout(renderWarnList,150)};
+function renderWarnList(){if(!WD)return;const inView=PW.map((g,i)=>({g,i})).filter(({g})=>g.rings.length&&onScreen(g.b));
+ inView.sort((a,b)=>(b.g.w.in_area-a.g.w.in_area)||(a.g.w.rank-b.g.w.rank));const shown=inView.slice(0,60);
+ $('wListHead').textContent=inView.length?`In view · ${n(inView.length)}`:'In view';
+ $('wList').innerHTML=shown.length?shown.map(({g,i})=>{const w=g.w;return `<li data-wi="${i}" tabindex="0"><i class="sw" style="background:${esc(w.color)}"></i><div><div class="t1">${esc(w.name)}${w.in_area?' <span class="pill info">'+esc(areaName())+' area</span>':''}</div><div class="t2">${esc(w.where)} · ${esc(until(w))}</div></div></li>`}).join('')+(inView.length>shown.length?`<li class="hint" style="cursor:default">and ${n(inView.length-shown.length)} more; zoom in to list them.</li>`:'')
+  :`<li class="hint" style="cursor:default">${WD.count?'Nothing in effect in this view.':'No warnings or watches in effect anywhere.'}</li>`;
+ $('wList').querySelectorAll('[data-wi]').forEach(li=>{const i=+li.dataset.wi;li.onmouseenter=()=>{whl=i;queueMap()};li.onmouseleave=()=>{whl=-1;queueMap()};li.onclick=()=>pickWarning(i,true);li.onkeydown=e=>{if(e.key==='Enter')pickWarning(i,true)}});markList()}
+function markList(){$('wList').querySelectorAll('[data-wi]').forEach(li=>li.classList.toggle('hl',+li.dataset.wi===wsel||+li.dataset.wi===whl))}
+const areaName=()=>(bot&&bot.bot&&bot.bot.name)||'Bot';
+function pickWarning(i,center){wsel=i;const d=$('wDet');if(i<0){d.hidden=true;queueMap();markList();return}const g=PW[i],w=g.w;
+ if(center&&g.rings.length&&!onScreen(g.b)){moved=true;const cx=(g.b[0]+g.b[2])/2,cy=(g.b[1]+g.b[3])/2;vx=mapW/2-cx*vs;vy=mapH/2+cy*vs;listSoon()}
+ const area=w.storm_based?'Drawn from the polygon the forecaster drew.':`Drawn from the ${n(w.areas)} zones and counties it names${w.missing?`, ${n(w.missing)} of them without an outline here`:''}.`;
+ d.innerHTML=`<div><span class="sw" style="background:${esc(w.color)}"></span><b>${esc(w.name)}</b>${w.in_area?' <span class="pill info">'+esc(areaName())+' area</span>':''}</div>
+  <div class="t2">${esc(w.where)} · NWS ${esc(w.office_name||w.office)} · ${w.issued?'issued '+esc(when(w.issued))+' · ':''}${esc(until(w))}</div>
+  ${w.headline?`<p>${esc(w.headline)}</p>`:''}<p class="t2">${esc(area)}${w.source==='internet'?' Received over the internet.':''}</p>
+  ${w.product?`<p><button id="wRead">Read the product</button></p>`:''}`;d.hidden=false;
+ if(w.product)$('wRead').onclick=()=>{openProduct({name:w.product});$('emProd').scrollIntoView({behavior:'smooth',block:'start'})};
+ queueMap();markList();const li=$('wList').querySelector(`[data-wi="${i}"]`);if(li)li.scrollIntoView({block:'nearest'})}
+function fetchWarnings(){fetch('/api/warnings').then(r=>r.json()).then(d=>{if(d.error&&!d.warnings){$('wCount').textContent='The bot is not reachable.';return}
+  const selId=wsel>=0&&PW[wsel]?PW[wsel].w.id:null;WD=d;projKey='';reproject();if(!mapW){sizeMap();fitView()}
+  wsel=selId?PW.findIndex(g=>g.w.id===selId):-1;if(wsel<0)$('wDet').hidden=true;
+  const mine=(d.warnings||[]).filter(w=>w.in_area).length,lag=bot&&bot.feed?bot.feed.lag_min:null;
+  $('wCount').textContent=`· ${n(d.count)} in effect${mine?`, ${n(mine)} in the ${areaName()} area`:''}`;
+  $('wNote').dataset.base=$('wNote').dataset.base||$('wNote').textContent;$('wNote').textContent=(lag!=null&&lag>=30?`EMWIN is running ${late(lag)} late, so this is what had arrived by then. `:'')+$('wNote').dataset.base;
+  drawMap();renderWarnList()}).catch(()=>{$('wCount').textContent='Could not load the warnings.'})}
+function fetchBasemap(){return fetch('/api/basemap').then(r=>r.json()).then(d=>{BM=d;projKey='';reproject();drawMap();renderWarnList()}).catch(()=>{BM={error:'The base map did not load.'};drawMap()})}
+function emwinShown(){if(!emwinStarted){emwinStarted=true;sizeMap();fitView();fetchBasemap().then(fetchWarnings);fetchProducts();
+  setInterval(()=>{if(!$('emwin').hidden)fetchWarnings()},120000);setInterval(()=>{if(!$('emwin').hidden&&!PQ.q)fetchProducts(true)},60000)}
+ else{drawMap()}}
+addEventListener('resize',()=>{if(!$('emwin').hidden){drawMap();listSoon()}});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',drawMap);
+
+// ---------------------------------------------------------------- product browser (/api/products, /api/product)
+let PQ={q:'',kind:'',office:'EWX'},PL=null,pSel=null,pSeq=0,pTimer=null,officeKey='';
+const ago2=t=>{const d=new Date(t*1000),now=new Date();return d.toDateString()===now.toDateString()?clock(t):when(t)};
+const lateBy=p=>p.filed?Math.round((p.received-p.filed)/60):null;
+function latePill(p){const m=lateBy(p);return m!=null&&m>=30?`<span class="pill ${m>=120?'bad':'warn'}">${late(m)} late</span>`:''}
+function fetchProducts(keep){const seq=++pSeq,u=new URLSearchParams({q:PQ.q,kind:PQ.kind,office:PQ.office,limit:100});if(!keep)$('pCount').textContent='· searching…';
+ fetch('/api/products?'+u).then(r=>r.json()).then(d=>{if(seq!==pSeq)return;PL=d;renderProducts(keep)}).catch(()=>{if(seq===pSeq)$('pCount').textContent='· could not load the products'})}
+function renderProducts(keep){const d=PL;if(!d)return;
+ const key=d.offices.map(o=>o[0]).join();if(key!==officeKey){officeKey=key;const sel=$('pOffice');sel.innerHTML='<option value="">All offices</option>'+d.offices.map(([c,nm,k])=>`<option value="${esc(c)}">${esc(nm?nm+' ('+c+')':c)} · ${n(k)}</option>`).join('');sel.value=PQ.office;if(sel.value!==PQ.office){PQ.office='';sel.value=''}}
+ $('pKinds').innerHTML=[['',d.total],...d.kinds].map(([k,c])=>`<button data-pk="${esc(k)}" aria-pressed="${k===PQ.kind}">${esc(k||'All')}<span class="c">${n(c)}</span></button>`).join('');
+ $('pKinds').querySelectorAll('[data-pk]').forEach(b=>b.onclick=()=>{PQ.kind=b.dataset.pk;fetchProducts()});
+ $('pCount').textContent=`· ${n(d.matched)}${d.matched>=100?'+':''} shown`;
+ const L=$('pList');L.innerHTML=d.products.length?d.products.map((p,i)=>`<li role="option" tabindex="0" data-pi="${i}" aria-selected="${pSel===p.id}"><span class="t1">${esc(p.name)}</span><span class="pill">${esc(p.awips)}</span><span class="t2">${esc(p.office_name||p.office)} · ${p.src==='inet'?'over the internet ':'filed '}${esc(ago2(p.filed||p.received))}</span><span class="t2">${p.hit==='text'?'<span class="pill info">text match</span> ':''}${latePill(p)||esc(p.kind)}</span></li>`).join('')
+  :`<li class="t2" style="cursor:default">Nothing matches${PQ.office?' at this office; try All offices':''}${PQ.kind?' or another kind':''}.</li>`;
+ L.querySelectorAll('[data-pi]').forEach(li=>{const p=d.products[+li.dataset.pi];li.onclick=()=>openProduct(p);li.onkeydown=e=>{if(e.key==='Enter')openProduct(p);else if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();const nx=e.key==='ArrowDown'?li.nextElementSibling:li.previousElementSibling;if(nx&&nx.dataset.pi!=null){nx.focus();openProduct(d.products[+nx.dataset.pi])}}}});
+ const notes=[`${n(d.total)} products from the last two days${d.oldest?' (since '+when(d.oldest)+')':''}, newest first.`];
+ if(d.text_partial)notes.push(`Text searched in the newest ${n(d.text_scanned)}; pick an office or a kind to search further back.`);
+ notes.push('Filed is when NOAA put the product on the EMWIN uplink; reached the dish is when it came down here.');$('pNote').textContent=notes.join(' ');
+ if(!keep&&!pSel&&d.products.length)openProduct(d.products[0])}
+function openProduct(p){const q=p.id?'id='+encodeURIComponent(p.id):'name='+encodeURIComponent(p.name);pSel=p.id||null;
+ $('pList').querySelectorAll('[data-pi]').forEach(li=>li.setAttribute('aria-selected',PL&&PL.products[+li.dataset.pi]&&PL.products[+li.dataset.pi].id===pSel));
+ $('pText').textContent='Loading…';
+ fetch('/api/product?'+q).then(r=>r.json()).then(d=>{if(d.error){$('pHead').innerHTML='';$('pText').textContent=d.error==='no such product in the last two days'?'That product is no longer on the dish (only the last two days are kept).':d.error;return}
+  const m=d.product;pSel=m.id;$('pList').querySelectorAll('[data-pi]').forEach(li=>li.setAttribute('aria-selected',PL&&PL.products[+li.dataset.pi]&&PL.products[+li.dataset.pi].id===pSel));
+  $('pHead').innerHTML=`<b>${esc(m.name)}</b><span class="pill">${esc(m.awips)}</span><span class="hint">${esc(m.wmo)} · ${esc(m.office_name||m.office)}</span><span class="hint">${m.filed?'filed '+esc(ago2(m.filed))+' · ':''}${m.src==='inet'?'fetched over the internet ':'reached the dish '}${esc(ago2(m.received))}</span>${latePill(m)}<a class="hint" href="/img/${esc(m.id)}" target="_blank" rel="noopener">file</a>`;
+  const box=$('pText');box.scrollTop=0;
+  if(d.text==null){box.innerHTML=`<img alt="${esc(m.name)}" src="/img/${esc(m.id)}">`;return}
+  // A text search's phrase, marked where it is (line breaks in the product count as spaces).
+  const words=PQ.q.split(/\s+/).filter(Boolean).map(w=>w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
+  if(!words.length){box.textContent=d.text;return}
+  const re=new RegExp(words.map(w=>esc(w)).join('\\s+'),'gi');box.innerHTML=esc(d.text).replace(re,x=>`<mark>${x}</mark>`);
+  const hit=box.querySelector('mark');if(hit)box.scrollTop=hit.offsetTop-box.offsetTop-40})
+ .catch(()=>{$('pText').textContent='Could not load the product.'})}
+$('pq').addEventListener('input',()=>{clearTimeout(pTimer);pTimer=setTimeout(()=>{PQ.q=$('pq').value.trim();pSel=null;fetchProducts()},350)});
+$('pOffice').onchange=()=>{PQ.office=$('pOffice').value;pSel=null;fetchProducts()};
 showTab(location.hash.slice(1)||'overview');fetchHistory();
 </script></body></html>

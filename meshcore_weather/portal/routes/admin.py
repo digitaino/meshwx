@@ -631,6 +631,18 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
     })
 
 
+@router.get("/public/warnings")
+async def public_warnings(request: Request) -> JSONResponse:
+    """Every active warning and watch the bot holds, as outlines for the public
+    dashboard's map, and the area this bot answers for (portal/public_map.py).
+    Built off the event loop, at most once a minute."""
+    from meshcore_weather.portal import public_map
+    bot = _bot(request)
+    coverage = bot._coverage() if hasattr(bot, "_coverage") else None
+    data = await asyncio.get_running_loop().run_in_executor(None, public_map.snapshot, bot.store, coverage)
+    return JSONResponse(data)
+
+
 # -- Limits and cooldowns -------------------------------------------------------------
 
 

@@ -21,7 +21,7 @@ import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))   # dashboard.html and station_history.py live beside it
 sys.path.insert(0, "/home/digitaino/goes")
@@ -29,6 +29,7 @@ sys.path.insert(0, HERE)
 import pynng  # noqa: E402
 import signal_monitor  # noqa: E402  (pointing-mode Monitor class)
 import station_history  # noqa: E402  (7-day history, events, sun predictions)
+import emwin_tab  # noqa: E402  (product browser index, warnings base map)
 
 HOME = "/home/digitaino"
 IMG_ROOT = f"{HOME}/goes-images"
@@ -465,6 +466,55 @@ threading.Thread(target=run_vcdus, daemon=True).start()
 HISTORY.start()
 
 
+# ----------------------------------------------------------------------------- EMWIN tab
+# Office names for the product browser (pyIEM's NWS office table plus the national centres).
+try:
+    with open(os.path.join(HERE, "offices.json")) as f:
+        OFFICES = json.load(f)
+except (OSError, ValueError):
+    OFFICES = {}
+PRODUCTS = emwin_tab.ProductIndex({"sdr": (f"{IMG_ROOT}/emwin", "emwin"), "inet": (INET_DIR, "inet")}, offices=OFFICES)
+PRODUCTS.start()
+NE_DIR = os.environ.get("NE_DIR", f"{HOME}/goes/goestools/share/goestools/ne")
+
+
+class Cached:
+    """A JSON body fetched or built at most every `ttl` s however many viewers ask, with an
+    ETag so a browser that has it gets a 304. Single-flight like Bot."""
+
+    def __init__(self, make, ttl):
+        self.make, self.ttl = make, ttl
+        self.lock = threading.Lock()
+        self.body, self.etag, self.at = None, None, 0.0
+
+    def get(self):
+        with self.lock:
+            if self.body is None or time.time() - self.at >= self.ttl:
+                try:
+                    body = json.dumps(clean(self.make()), separators=(",", ":")).encode()
+                except Exception as e:  # noqa: BLE001  (bot restarting, outlines missing)
+                    if self.body is not None:     # keep serving the last good one, and retry after ttl
+                        self.at = time.time()
+                        return self.body, self.etag
+                    body = json.dumps({"error": f"{e.__class__.__name__}: {e}"[:200]}).encode()
+                self.body, self.etag, self.at = body, '"' + hashlib.md5(body).hexdigest()[:16] + '"', time.time()
+            return self.body, self.etag
+
+
+def fetch_warnings():
+    # The bot's first build after a restart parses every warning product and loads the
+    # outlines: up to a minute on the Pi. Later ones come out of its own one-minute cache.
+    with urllib.request.urlopen(f"{BOT_URL}/api/public/warnings", timeout=90) as r:
+        d = json.loads(r.read())
+    for w in d.get("warnings", []):
+        w["office_name"] = OFFICES.get(w.get("office"), "")
+    return d
+
+
+WARNINGS = Cached(fetch_warnings, 60)
+BASEMAP = Cached(lambda: emwin_tab.basemap(NE_DIR), 365 * 86400)
+
+
 def prune_thumbs():
     """Keep the thumbnail cache bounded: past THUMB_MAX files, drop the oldest down to
     THUMB_KEEP. Only called right after a new thumbnail was written, so normally it is
@@ -540,8 +590,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for k, v in (extra or {}).items():
+        for k, v in {"Cache-Control": "no-store", **(extra or {})}.items():
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
@@ -565,15 +614,41 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(STATS.history_list()).encode(), "application/json")
         if p == "/api/bot":
             return self._send(200, json.dumps(clean(BOT.get())).encode(), "application/json")
+        qs = {k: v[0] for k, v in parse_qs(u.query).items()}
         if p in ("/api/hrit", "/api/emwin"):
             try:
-                hours = int((dict(x.split("=", 1) for x in u.query.split("&") if "=" in x)).get("hours", "168"))
+                hours = int(qs.get("hours", "168"))
             except ValueError:
                 hours = 168
             d = HISTORY.hrit(hours) if p == "/api/hrit" else HISTORY.emwin(hours)
             if p == "/api/hrit":
                 d = dict(d, station=CHAIN)
             return self._send(200, json.dumps(clean(d)).encode(), "application/json")
+        if p == "/api/products":
+            try:
+                limit = max(1, min(200, int(qs.get("limit", "100"))))
+            except ValueError:
+                limit = 100
+            d = PRODUCTS.search(qs.get("q", "")[:100], qs.get("kind", ""), qs.get("office", "")[:4], limit,
+                                text=qs.get("text", "1") != "0")
+            return self._send(200, json.dumps(d).encode(), "application/json")
+        if p == "/api/product":
+            ent = PRODUCTS.get(pid=qs.get("id", ""), name=qs.get("name", ""))
+            if ent is None:
+                return self._send(404, b'{"error":"no such product in the last two days"}', "application/json")
+            d = {"product": PRODUCTS.describe(ent)}
+            if d["product"]["ext"] == "TXT":
+                try:
+                    d["text"] = PRODUCTS.read(ent)
+                except OSError:
+                    return self._send(404, b'{"error":"the file is gone"}', "application/json")
+            return self._send(200, json.dumps(d).encode(), "application/json")
+        if p in ("/api/warnings", "/api/basemap"):
+            body, etag = (WARNINGS if p == "/api/warnings" else BASEMAP).get()
+            cache = "no-cache" if p == "/api/warnings" else "max-age=86400"
+            if self.headers.get("If-None-Match") == etag:
+                return self._send(304, b"", "application/json", {"ETag": etag, "Cache-Control": cache})
+            return self._send(200, body, "application/json", {"ETag": etag, "Cache-Control": cache})
         if p == "/events":
             return self.sse()
         if p.startswith("/img/") or p.startswith("/thumb/"):
