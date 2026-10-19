@@ -639,7 +639,7 @@ class WeatherBot:
         if not forced and await self.radio.advert_if_stale():
             logger.info("Adverted so %s can DM us next time", sender)
 
-    # -- Request datagrams (spec 7B) -----------------------------------------
+    # -- Request datagrams (spec 11) -----------------------------------------
     #
     # Since revision 6 an app's `>` request normally arrives as a GRP_DATA
     # datagram flooded on #meshwx, not as a DM: a flood needs no route, and a
@@ -675,7 +675,7 @@ class WeatherBot:
 
     async def _handle_channel_request(self, request, hops: int | None = None,
                                       snr: float | None = None) -> None:
-        """An app's Request datagram on our own channel (spec 7B). `request`
+        """An app's Request datagram on our own channel (spec 11). `request`
         is a decoded `v5.Request`; the radio has already checked its shape."""
         from meshcore_weather.protocol import v5
 
@@ -691,7 +691,7 @@ class WeatherBot:
         prefix = self._normalize_key(request.sender_prefix)
         sender_name = self._name_for_key(prefix) or f"app:{prefix}"
         now = self._clock()
-        # An app sends the same bytes again when no answer arrives (spec 13).
+        # An app sends the same bytes again when no answer arrives (spec 19).
         # Copies are recognised on the same record a DM copy is, so a phone
         # that falls back to a DM does not get the answer twice.
         async with self._dm_requests.lock(prefix):
@@ -801,7 +801,7 @@ class WeatherBot:
                               sender_ts: int | None, now: float, transport: str = "dm",
                               answer=None) -> None:
         """A copy of a request already on record. `transport` and `answer` are
-        for the Request datagram (spec 7B), which shares every rule here and
+        for the Request datagram (spec 11), which shares every rule here and
         only differs in how the answer is built: `answer(dreq)` builds it, and
         a datagram answer is never a queued reply that could be redelivered."""
         gap = now - dreq.first_at
@@ -861,7 +861,7 @@ class WeatherBot:
                 self._user_locations[prefix] = (lat, lon)
                 logger.info("Cached location for %s: %.4f, %.4f", sender_name, lat, lon)
 
-        # Every DM meets the people's limiter, `>` app requests included (spec 8.2).
+        # Every DM meets the people's limiter, `>` app requests included (spec 14).
         command, location = await self._parse(text)
         traffic_log.update(req, command=command, location=location)
 
@@ -923,7 +923,7 @@ class WeatherBot:
     async def _not_ready_reply(self, dreq, prefix: str, sender_name: str, text: str,
                                req: dict | None, arrived: float) -> None:
         """The answer while the backlog is still loading: for an app, Not
-        available reason 0 ("no data yet", spec 8.3); for a person, one line
+        available reason 0 ("no data yet", spec 9); for a person, one line
         saying so. Neither spends the sender's hourly budget, and the request
         is left unanswered, so a copy of it gets the real reply once the
         products are in."""
@@ -968,7 +968,7 @@ class WeatherBot:
 
     async def _handle_app_request(self, text: str, sender_name: str, sender_key: str, transport: str,
                                   hops: int | None, req: dict | None = None, dreq=None) -> None:
-        """A `>` request from an app (docs/MeshWX_v5_Spec.md 8.2). `dreq`: the
+        """A `>` request from an app (docs/MeshWX_v5_Spec.md §14). `dreq`: the
         DM request it arrived as, so its copies know when the answer went out."""
         if req is None:
             req = traffic_log.record("data_request", sender=sender_name, key=sender_key if transport == "dm" else None,
@@ -990,7 +990,7 @@ class WeatherBot:
         outcome = await self._broadcaster.handle_request(text, sender_key, ev=rev, not_before=not_before)
         logger.info("App request from %s: %s -> %s", sender_name, text[:40], outcome)
         # "already resent": a `>part` whose every packet went out again in the
-        # last 30 seconds (spec 7C.2). Nothing was sent, so the row is the
+        # last 30 seconds (spec 14.5). Nothing was sent, so the row is the
         # dropped it is, and a copy of the request is answered afresh: by then
         # the floor may have opened.
         if outcome in ("rate limited", "hourly budget spent", "already resent"):
@@ -1447,7 +1447,7 @@ class WeatherBot:
         return render_text.summary(loc, ob, ws, fc)
 
     def _radar_reply(self, location: str) -> str:
-        """radar [place]: the newest radar picture in words (spec 7D). The
+        """radar [place]: the newest radar picture in words (spec 13). The
         bot's home when no place is given."""
         from datetime import datetime, timezone
         from meshcore_weather.core import render_text
@@ -1540,7 +1540,7 @@ class WeatherBot:
         return f"{text} {site}" if site else text
 
     def _coverage_reply(self) -> str:
-        """The `cov` reply: the facts the Coverage message carries (spec 7A),
+        """The `cov` reply: the facts the Coverage message carries (spec 10),
         in words."""
         from meshcore_weather.core import render_text
         from meshcore_weather.protocol import v5_builders as b

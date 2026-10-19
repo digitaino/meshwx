@@ -1,4 +1,4 @@
-"""`>o ICAO` answers with the nearest station that reports (spec 8.2, rev 8).
+"""`>o ICAO` answers with the nearest station that reports (spec 14, rev 8).
 
 Field report 2026-09-18: Dayton's nearest station in the app's bundled list
 is Wright-Patterson AFB (KFFO), which sends nothing on the feed, so every

@@ -876,7 +876,7 @@ def _limit_rows(bot) -> list[dict]:
                 "resettable": bool(status["waiting"]),
             })
 
-        # `>radar` (spec 7D): one packet a picture and five for a loop (7D.4),
+        # `>radar` (spec 13): one packet a picture and five for a loop (7D.4),
         # so the budget above is its limit, plus a window per tile of one picture. The row also says
         # whether there are pictures to cut tiles from at all, which is the
         # first thing to look at when every radar request is refused.

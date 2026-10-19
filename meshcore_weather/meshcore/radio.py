@@ -238,7 +238,7 @@ class MeshcoreRadio:
 
     def on_channel_request(self, handler: Callable) -> None:
         """Register handler: async def handler(request, hops, snr), where
-        `request` is a decoded `v5.Request` (spec 7B) that arrived as a
+        `request` is a decoded `v5.Request` (spec 11) that arrived as a
         datagram on our own channel."""
         self._channel_request_handler = handler
 
@@ -591,7 +591,7 @@ class MeshcoreRadio:
         # Subscribe to channel messages, DMs, and new adverts
         self._mc.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_msg)
         # GRP_DATA on a channel (RESP_CODE_CHANNEL_DATA_RECV, 0x1B): an app's
-        # Request datagram arrives here (spec 7B).
+        # Request datagram arrives here (spec 11).
         self._mc.subscribe(EventType.CHANNEL_DATA_RECV, self._on_channel_data)
         self._mc.subscribe(EventType.CONTACT_MSG_RECV, self._on_dm)
         self._mc.subscribe(EventType.ADVERTISEMENT, self._on_advert)       # a node we know adverted again
@@ -1026,7 +1026,7 @@ class MeshcoreRadio:
                 logger.exception("Error in channel message handler")
 
     async def _on_channel_data(self, event) -> None:
-        """A GRP_DATA datagram on a channel (spec 2.1, 7B).
+        """A GRP_DATA datagram on a channel (spec 2.1, 11).
 
         Only one kind of datagram is addressed to the bot: an app's Request
         (type 9) on our own channel. Everything else — the link-test type

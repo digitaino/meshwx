@@ -472,7 +472,7 @@ def test_limits_are_visible_and_resettable(client, monkeypatch):
 
 
 def test_the_radar_row_shows_the_tiles_inside_their_window(client, monkeypatch):
-    """`>radar` (spec 7D): the row appears with a responder that knows radar,
+    """`>radar` (spec 13): the row appears with a responder that knows radar,
     says whether there are pictures at all, and its reset opens the window."""
     from pathlib import Path
 

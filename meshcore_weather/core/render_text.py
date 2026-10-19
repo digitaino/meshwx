@@ -372,7 +372,7 @@ def coverage(facts: dict, digest_minutes: int = 180) -> str:
     often the active-warning list goes out.
 
     `facts` is v5_builders.coverage_facts(), the same numbers the Coverage
-    message puts on the wire (spec 7A). The bot states this itself because an
+    message puts on the wire (spec 10). The bot states this itself because an
     app that infers it from the stations and warnings it happens to have heard
     gets it wrong: one phone was told WX-AUS might not carry alerts for Travis
     County, the bot's own home, because the only warning active at that moment

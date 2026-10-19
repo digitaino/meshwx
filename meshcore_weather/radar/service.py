@@ -59,7 +59,7 @@ class RadarService:
 
     def loop_for(self, lat: float, lon: float, zoom: int = 0, now: "datetime | None" = None
                  ) -> "list[tuple[RadarTile, RadarPicture, Frame]]":
-        """The last hour of one tile (spec 7D.4), oldest first, the newest last.
+        """The last hour of one tile (spec 13.5), oldest first, the newest last.
 
         The newest is what `tile_for` answers; the others are older pictures of
         **the same product**, each at least 10 minutes before the one after it,

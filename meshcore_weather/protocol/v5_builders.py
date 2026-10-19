@@ -35,7 +35,7 @@ OBS_MAX_AGE_MIN = 120
 # than "No current conditions" (services.OBS_STALE_MAX_AGE_MIN, owner 2026-10-16).
 OBS_STALE_MAX_AGE_MIN = 720
 # `>o ICAO` for a station with nothing fresh answers with the nearest station
-# within this distance of it that has a report (spec 8.2, revision 8). The same
+# within this distance of it that has a report (spec 14, revision 8). The same
 # 40 km the app will still show a reading from, attributed to its station.
 OBS_SUBSTITUTE_KM = 40.0
 MAX_OBS_STATIONS = v5.MAX_STATIONS
@@ -218,7 +218,7 @@ _LATLON = re.compile(
 
 def parse_sweep_request(arg: str) -> tuple[bool, list[str]] | None:
     """`>wmap [all] [states]` -> (advisories, state codes), None when it
-    cannot be read (spec 7C, revision 10: Not available reason 1).
+    cannot be read (spec 12, revision 10: Not available reason 1).
 
     State codes come run together, spaced or comma separated, in any case:
     `TX`, `tx, ok`, `all TXOKLA`. An empty list is the whole country. `ALL` on
@@ -291,7 +291,7 @@ def parse_radar_request(arg: str) -> "tuple[str, int, list[int] | None] | None":
 
     None when the zoom is not 0..3.  `held` is None for a single picture and
     otherwise the pictures the app already holds, as UTC minutes of the day
-    (spec 7D.4): `loop 2338 2353` is [1418, 1433].  Read from the end: the
+    (spec 13.5): `loop 2338 2353` is [1418, 1433].  Read from the end: the
     loop, then the zoom, each its own token; anything else is part of the
     place, so `>radar zion il` and `>radar loop tx` are towns."""
     arg = (arg or "").strip()
@@ -431,7 +431,7 @@ def _runs_first(areas: list, keep) -> list:
 def warning_message(seq: int, bot: int, w: dict, update: bool = False,
                     source: int | None = None, keep=None) -> bytes | None:
     """One Warning packet. `source` defaults to the source of the product this
-    warning was extracted from, which the entry carries (spec 2.2.1).
+    warning was extracted from, which the entry carries (spec 2.3).
 
     `keep`: UGC codes (the bot's coverage, or the county asked about) whose
     runs survive first when the area list is longer than a packet carries;
@@ -490,7 +490,7 @@ def digest_message(seq: int, bot: int, active: list[dict], feed_health: int,
                    source: int = v5.SOURCE_UNSTATED) -> bytes:
     """The active-warning digest. It is aggregated from many products, so
     `source` is the store-wide answer its caller got from
-    `WeatherStore.products_source()` (spec 2.2.1)."""
+    `WeatherStore.products_source()` (spec 2.3)."""
     entries = []
     for w in sorted(active, key=expires_min):
         ident = warning_identity(w)
@@ -546,7 +546,7 @@ def station_obs_message(seq: int, bot: int, store: WeatherStore, icao: str,
                         source: int | None = None,
                         max_km: float = OBS_SUBSTITUTE_KM) -> bytes | None:
     """`>o ICAO`: that station's own report, or, when it has nothing fresh,
-    the nearest station within `max_km` of it that has one (spec 8.2,
+    the nearest station within `max_km` of it that has one (spec 14,
     revision 8). Always a batch of one, under the index of the station that
     actually reported, so the phone files it under the right airport.
 
@@ -726,7 +726,7 @@ def forecast_message(seq: int, bot: int, store: WeatherStore, lat: float, lon: f
     point carries its own index, or 0xFFFF.
 
     `source` defaults to the source of the PFM product this was rendered from
-    (spec 2.2.1)."""
+    (spec 2.3)."""
     from meshcore_weather.core import services
     from meshcore_weather.parser.pfm import downsample_to_daily
     found = services.nearest_pfm_point(store, lat, lon)
@@ -780,7 +780,7 @@ def coverage_facts(coverage, home: tuple[float, float] | None = None, radius_km:
 
     A set too big for one packet is cut to the runs that account for the most
     zones and the cut is flagged, so a zone missing from the wire means "not
-    stated", never "not covered" (spec 7A).
+    stated", never "not covered" (spec 10).
     """
     tables.load()
     resolver.load()
@@ -853,7 +853,7 @@ def coverage_message(seq: int, bot: int, coverage, home: tuple[float, float] | N
 
 # -- Area sweep -------------------------------------------------------------------------
 #
-# The national picture of what is active, as runs of UGC numbers (spec 7C).
+# The national picture of what is active, as runs of UGC numbers (spec 12).
 # The phone already ships every zone and county outline, so the mesh carries
 # numbers and the phone draws the map. It is never scheduled and never cheap:
 # see AppResponder for the limits that keep it off the air.
@@ -963,13 +963,13 @@ def area_sweep_messages(seq: SeqCounter, bot: int, store: WeatherStore,
     own area — so it reads the store with `coverage=None`. Empty when nothing
     the tables know is active, which the caller answers as Not available.
 
-    `states` scopes the sweep to those state codes (spec 7C, revision 10).
+    `states` scopes the sweep to those state codes (spec 12, revision 10).
     A scoped sweep names them in its scope entries and carries the alerts of
     those states only, so it is never empty: a state with nothing active is
     answered by its scope entry alone.
 
     A sweep is aggregated from every product the bot holds, so `source`
-    defaults to the store-wide answer (spec 2.2.1).
+    defaults to the store-wide answer (spec 2.3).
     """
     from meshcore_weather.protocol.warnings import extract_active_warnings
     tables.load()
@@ -1030,7 +1030,7 @@ def fit_text(text: str) -> tuple[str, bool]:
     cut after a full stop it reads as an excerpt, which is what it is. So:
     the last sentence boundary (a `.`, `!` or `?` followed by a space) that
     fits, else the last word boundary, and the cut flag carries the rest of
-    the meaning (spec 8.1). No ellipsis: the flag is the signal and every
+    the meaning (spec 8). No ellipsis: the flag is the signal and every
     byte is airtime.
     """
     if _fits(text):
@@ -1079,7 +1079,7 @@ def text_messages(seq: SeqCounter, bot: int, subject: int, text: str,
 
 
 def request_letter(request: str) -> str:
-    """The letter a Not available carries for a request word (spec 8.3): its
+    """The letter a Not available carries for a request word (spec 9): its
     first, except `radar`, whose `r` was already `rain`'s."""
     word = request.lstrip(">").strip().lower()
     return v5.RADAR_REQUEST_LETTER if word == "radar" else (word[:1] or "?")

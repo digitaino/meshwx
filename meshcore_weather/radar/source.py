@@ -3,7 +3,7 @@
 goesproc writes radar GIFs next to the text products, under
 `<dir>/YYYY-MM-DD/`, named `Z_<wmo>_C_KWIN_<received>_<seq>-3-<PRODUCT>.GIF`.
 Nothing is decoded until a request needs it. Decoded pictures are kept, the
-most recently used first, so a loop (spec 7D.4) asked for twice does not decode
+most recently used first, so a loop (spec 13.5) asked for twice does not decode
 its hour twice.
 """
 

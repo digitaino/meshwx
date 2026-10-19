@@ -132,7 +132,7 @@ def parse_emwin_file(filename: str, raw_text: str, source: str = "") -> dict | N
 
     `source` is how the bot got the file — "sdr" off its own GOES dish,
     "internet" from NOAA — and rides through the store onto the wire
-    (spec 2.2.1, revision 7). Each source stamps its own products; a caller
+    (spec 2.3, revision 7). Each source stamps its own products; a caller
     that does not say leaves it unstated.
     """
     product_id = "UNKNOWN"

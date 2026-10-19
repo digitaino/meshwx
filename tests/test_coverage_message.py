@@ -1,5 +1,5 @@
 """Coverage (type 8): the bot states its own area instead of letting an app
-guess it (docs/MeshWX_v5_Spec.md 7A).
+guess it (docs/MeshWX_v5_Spec.md §10).
 
 The guess this replaces put a false line on a real phone: "WX-AUS may not
 carry alerts for Travis County (NWS Austin/San Antonio)" — the bot's own home
@@ -44,7 +44,7 @@ def _tx() -> int:
     return b.tables.states.index("TX")
 
 
-# -- The wire (spec 7A) ------------------------------------------------------
+# -- The wire (spec 10) ------------------------------------------------------
 
 
 def test_coverage_round_trips_centre_radius_offices_and_runs():
@@ -200,7 +200,7 @@ def test_a_bot_with_no_centre_and_no_zones_sends_nothing():
 
 
 def test_no_area_filter_is_an_answer_not_an_empty_message():
-    """Zero offices and zero runs mean the bot filters nothing (spec 7A)."""
+    """Zero offices and zero runs mean the bot filters nothing (spec 10)."""
     d = v5.decode(b.coverage_message(1, BOT, Coverage.empty(), AUSTIN, 120))
     assert d["offices"] == [] and d["areas"] == []
     assert d["radius_km"] == 0 and not d["zones_cut"] and not d["offices_cut"]

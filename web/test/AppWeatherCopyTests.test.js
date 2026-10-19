@@ -270,7 +270,7 @@ describe('Weather copy', () => {
   })
 
   // Out of range, one request per sender every five seconds, and 60 answers an hour all end in
-  // silence (spec §8.3): the copy allows for all three.
+  // silence (spec §9): the copy allows for all three.
   it('timeouts allow for range and a busy radio, and name the time', () => {
     const at = F.now + 6 * 60 * 1000
     assert.equal(
@@ -815,7 +815,7 @@ describe('Weather copy', () => {
     assert.equal(WeatherReferenceNames.stateList(['ZZ']), 'ZZ')
     assert.equal(WeatherStateList.maxNamed, 3)
   })
-  // MARK: - Radar (revision 11 §3)
+  // MARK: - Radar (docs/MESHWX_UI.md §18)
 
   const summary = (here, { nearest = null, heavy = null } = {}) => ({
     here,
@@ -880,7 +880,7 @@ describe('Weather copy', () => {
   /**
    * Radar is the one request whose refusal carries most of the information: "no recent picture
    * for this area" and "this radio has no dish at all" ask the reader to do entirely different
-   * things (design §3).
+   * things (docs/MESHWX_UI.md §18.3).
    */
   it('a refused radar tile says which of the four refusals it is', () => {
     const asked = WeatherRequest.radar({ latitude: 30.2672, longitude: -97.7431, zoom: 0 })
@@ -937,7 +937,7 @@ describe('Weather copy', () => {
     )
   })
 
-  // MARK: - The last hour (revision 13 §3)
+  // MARK: - The last hour (docs/MESHWX_UI.md §18.5)
 
   /**
    * "One row per tile, its newest time, and '5 pictures' when it holds more than one." The widths

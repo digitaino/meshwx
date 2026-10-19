@@ -156,7 +156,7 @@ def _build_digest(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     active = extract_active_warnings(ctx.store, coverage=ctx.coverage)
     health = b.feed_health(ctx.store, ctx.home_offices)
     # Aggregated from many products, so it states the store-wide source
-    # (spec 2.2.1). Warnings, observations and forecasts take theirs from the
+    # (spec 2.3). Warnings, observations and forecasts take theirs from the
     # products they were built from, inside the builders.
     return [b.digest_message(ctx.seq.next(), ctx.bot, active, health,
                              source=ctx.store.products_source())]
@@ -208,7 +208,7 @@ def _build_coverage(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     """One packet stating what this bot carries. Broadcast so an app never has
     to guess the bot's area from the stations and warnings it happens to have
     heard: that guess told a real phone WX-AUS might not carry alerts for its
-    own home county (spec 7A). Not while the coverage is blocked: it would
+    own home county (spec 10). Not while the coverage is blocked: it would
     state an area the bot is not serving."""
     if area_blocked(job, ctx):
         return []

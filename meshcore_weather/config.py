@@ -197,7 +197,7 @@ class Settings(BaseSettings):
     fill_radar_url: str = "https://radar.weather.gov/ridge/standard"
     nws_metar_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/DF.an/DC.sflnd/DS.metar/"
     nws_taf_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/DF.an/DC.sflnd/DS.tafst/"
-    # Radar pictures (spec 7D): a directory of EMWIN `*-RAD*.GIF` under YYYY-MM-DD/.
+    # Radar pictures (spec 13): a directory of EMWIN `*-RAD*.GIF` under YYYY-MM-DD/.
     # Empty means the dish's own EMWIN directory when the source is "sdr", and
     # no radar at all otherwise: the internet bundle carries no images.
     radar_dir: str = ""

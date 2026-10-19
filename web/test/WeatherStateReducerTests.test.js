@@ -1,7 +1,7 @@
 // Port of MC1ServicesTests/Weather/WeatherStateReducerTests.swift (docs/PORTING.md).
 //
-// Every rule in spec §2.3 (duplicates, gaps), §3–§5 (warnings, cancel, digest), §6–§7
-// (newest wins) and §8.1 (text reassembly), one test each.
+// Every rule in spec §2.4 (duplicates, gaps), §3–§5 (warnings, cancel, digest), §6–§7
+// (newest wins) and §8 (text reassembly), one test each.
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
@@ -99,7 +99,7 @@ describe('WeatherStateReducer', () => {
     assert.equal(stored.receivedAt, F.t0 + 60_000)
   })
 
-  // Spec §3 and §10.5: a warning says when NWS issued it, and that is not when the packet
+  // Spec §3 and §18.1: a warning says when NWS issued it, and that is not when the packet
   // arrived. A replacement carries its own; one that carries none — an older bot — leaves the
   // known time alone, since an identity's issuance never moves.
   it("a warning's issue time is stored, replaced, and never erased by a message without one", () => {
@@ -636,7 +636,7 @@ describe('WeatherStateReducer', () => {
   })
 })
 
-// Spec §7A: the bot's own statement of what it carries, which has no time of its own.
+// Spec §10: the bot's own statement of what it carries, which has no time of its own.
 describe('WeatherStateReducer coverage', () => {
   it('a statement is stored with when it arrived', () => {
     const bot = new Bot()
@@ -1036,7 +1036,7 @@ describe('WeatherStateReducer ordering', () => {
     strip('observations', 'batchSize')
     strip('forecasts', 'requestedHere')
     strip('texts', 'request')
-    // Revision 7 (spec §2.2, §8.1): a blob written before the app could read either of these
+    // Revision 7 (spec §2.2, §8): a blob written before the app could read either of these
     // decodes as "the radio didn't say", not as a failure to load.
     for (const collection of ['warnings', 'observations', 'forecasts', 'texts']) {
       strip(collection, 'source')
@@ -1165,7 +1165,7 @@ describe('Weather retention', () => {
   })
 })
 
-// Spec §7C: the national area sweep — packets assembled by `group` the way Text chunks are, but
+// Spec §12: the national area sweep — packets assembled by `group` the way Text chunks are, but
 // only ever one sweep held, because two sweeps are two pictures of the same country.
 describe('WeatherStateReducer area sweep', () => {
   /** The newest sweep held: revision 9's `state.areaSweep`, which is now the head of a list. */
@@ -1359,7 +1359,7 @@ describe('WeatherStateReducer area sweep', () => {
   })
 })
 
-// MARK: - Scoped sweeps (spec §7C, revision 10)
+// MARK: - Scoped sweeps (spec §12, revision 10)
 
 describe('WeatherStateReducer scoped area sweeps', () => {
   const held = (bot) => bot.state.areaSweeps[0] ?? null
@@ -1577,7 +1577,7 @@ describe('WeatherStateReducer scoped area sweeps', () => {
   })
 })
 
-// MARK: - Radar tiles (spec §7D, revision 11)
+// MARK: - Radar tiles (spec §13, revision 11)
 
 describe('WeatherStateReducer radar tiles', () => {
   const dallas = { south: 32, west: -98, zoom: 0 }
@@ -1763,8 +1763,8 @@ describe('WeatherStateReducer radar tiles', () => {
 
   /**
    * "A state saved by that build on the owner's phone may hold zoom −1 tiles with half-degree
-   * edges, and it must still load. Such tiles are dropped when the state is read" (revision 13
-   * §2). Every other frame reads exactly as it was written, in its order.
+   * edges, and it must still load. Such tiles are dropped when the state is read"
+   * (docs/MESHWX_UI.md §3.1 U-61). Every other frame reads exactly as it was written, in its order.
    */
   it('a state saved with detail tiles loads, and leaves them behind', () => {
     const saved = {
@@ -1869,7 +1869,7 @@ describe('WeatherStateReducer radar tiles', () => {
   })
 })
 
-// MARK: - Times ahead of the phone's clock (spec §10.7, 17 October 2026)
+// MARK: - Times ahead of the phone's clock (spec §17.5, 17 October 2026)
 //
 // Every bot is two self-asserted bytes on the wire (spec §2.2), so anyone on the channel can send
 // a message in a bot's name. A time ahead of the phone's clock is never one a bot sends honestly,
@@ -2107,7 +2107,7 @@ describe('WeatherStateReducer: times ahead of the clock', () => {
 
 // MARK: - What a digest speaks for (spec §5, 17 October 2026)
 //
-// A bot answers a place-named `>w` nationwide (spec §8.2), but its digest lists only what is
+// A bot answers a place-named `>w` nationwide (spec §14), but its digest lists only what is
 // active in its own coverage. WX-AUS's next digest used to end a Houston warning the phone had
 // fetched from it for a saved place.
 
@@ -2167,7 +2167,7 @@ describe('WeatherStateReducer: a digest ends only what the bot covers', () => {
     assert.deepStrictEqual(changes, [WeatherStateChange.digestApplied({ missing: [], removed: [inside] })])
   })
 
-  // A tornado watch names counties and has no polygon (spec §8.2): the bot covers every county
+  // A tornado watch names counties and has no polygon (spec §14): the bot covers every county
   // its circle reaches, and the phone judges one by the county's centre.
   it('a county watch ends when its county reaches the stated circle', () => {
     const bot = new CoveredBot()

@@ -44,7 +44,7 @@ The fill takes nothing the feed brought in time, so a bot whose dish works
 uses the internet for one listing a minute and for whatever the dish dropped.
 A product the feed delivers after the fill took it is a duplicate, and the
 source drops it (`filled`); its arrival still counts towards how late the
-uplink runs. Filled products say "internet" (spec 2.2.1, revision 7).
+uplink runs. Filled products say "internet" (spec 2.3, revision 7).
 """
 
 from __future__ import annotations

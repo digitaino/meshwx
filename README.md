@@ -38,19 +38,19 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 | EMWIN from the GOES-19 dish (goestools, `MCW_EMWIN_SOURCE=sdr`) | production |
 | EMWIN over the internet (`MCW_EMWIN_SOURCE=internet`) | works; the alternative for a bot without a dish |
 | pyIEM product parsing | shipped |
-| MeshWX v5 wire format, spec revision 13 | shipped |
+| MeshWX v5 wire format (`docs/MeshWX_v5_Spec.md`) | shipped |
 | Text replies for people, paged with `more` | shipped |
 | Echo tracking and one byte-identical resend | shipped |
 | DM replies: ACK tries, one reply at a time per person, resends of a request recognised | shipped |
 | Radio swap: node profile, adoption, health verdict | shipped |
 | Receiver status (`sat`, `>sat`), feed lag, status channel (`MCW_STATUS_CHANNEL`) | shipped |
 | Coverage statement (`cov`, `>cov`, broadcast every 3 h) | shipped |
-| Radar tiles from the dish's EMWIN radar pictures (`radar`, `>radar`, spec revision 11), the last hour as a loop (revision 13) | shipped, request only |
+| Radar tiles from the dish's EMWIN radar pictures (`radar`, `>radar`), the last hour as a loop | shipped, request only |
 | Admin portal and public dashboard | shipped |
 | Accuracy audit (`scripts/audit.py`) | shipped |
 | MQTT packet publishing for CoreScope | shipped, off by default |
-| iOS client | in beta, revision 11 |
-| Web client (`web/`), Chromium over Bluetooth or USB | shipped, revision 11 |
+| iOS client | in beta |
+| Web client (`web/`), Chromium over Bluetooth or USB | shipped |
 | A downloadable copy of the web client (`web/tools/package.mjs`) | shipped |
 | Standalone e-ink dashboard | idea parked in `docs/Future_EInk_Dashboard.md` |
 
@@ -126,85 +126,66 @@ it out over plain http.
 
 ## Wire format at a glance
 
-Every message is one MeshCore `GRP_DATA` packet (`data_type 0xFF10`) on
-`#meshwx`, with a 4-byte header: sequence number, the
-first two bytes of the bot's public key, and the message type (high nibble)
-with flags (low nibble). Little-endian throughout. The sequence number is
-assigned when a packet is transmitted, from one counter shared by broadcasts
-and answers and saved across restarts; a resend repeats the same bytes and
-the same number.
+The whole protocol, byte by byte, with the requests, the bundle and the
+rules a client follows, is **[`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md)**.
+This is the summary.
 
-The bot sends at most 157 bytes of data in a packet, though the transport
-and the apps take 165: the companion firmware reports a repeater's copy of
-a packet only up to 169 raw bytes, and a 157-byte datagram comes back as
-167, a 158-byte one as 183. A full Digest (25 entries, 160 B) is the one
-exception, because 25 entries is how an app knows the list may have been
-cut. Bots before 1 October 2026 filled packets to 165.
+Every message is one MeshCore `GRP_DATA` packet (`data_type 0xFF10`) on
+`#meshwx`, with a 4-byte header: a sequence number, the first two bytes of
+the bot's public key, and the message type (high nibble) with flags (low
+nibble). Little-endian throughout; times are Unix minutes. A decoder reads up
+to 165 bytes, the transport's limit; a bot sends at most 157, so that it can
+hear a repeater pass each packet on, and sends a packet once more, byte for
+byte, when it hears no echo.
 
 | Type | Message | Size | When |
 |---|---|---|---|
-| 1 | Warning: VTEC event, office, ETN, absolute expiry, storm tags, polygon and/or county or zone runs | 15 B + polygon + runs (a typical storm warning is 51 B) | on change; tornado, severe thunderstorm, flash flood and extreme wind warnings once more after 90 s |
+| 1 | Warning: VTEC event, office, ETN, absolute expiry, storm tags, polygon and/or county or zone runs, issue time, and the start when it takes effect later | 15 B + polygon + runs + 2 or 4 (a typical storm warning is 53 B) | on change; a new tornado, severe thunderstorm, flash flood or extreme wind warning once more about two minutes later |
 | 2 | Cancel | 8 B | when a warning ends before its expiry |
 | 3 | Digest: up to 25 active identities with their expiry, plus feed health | 10 B + 6 per warning | every 3 h, a minute after a cancel, on request |
-| 4 | Observations: up to 12 stations in one packet, each with its own age (13 without) | 9 B + 11 per station | hourly, on request |
+| 4 | Observations: up to 12 stations in one packet, each with its own age | 9 B + 11 per station + the ages | hourly, on request |
 | 5 | Forecast: up to 7 whole days for a PFM point | 12 B + 5 per day | every 6 h for the home point, on request |
 | 6 | Text: warning narrative, forecast discussion, space weather, storm reports, rainfall, METAR/TAF, outlook, receiver status | up to 8 chunks of 149 B of text | on request only |
 | 7 | Not available | 6 B | answer to a request the bot cannot serve |
 | 8 | Coverage: centre, radius, NWS offices and the zone runs this bot carries | 14 B + 1 per office + 4 per run | every 3 h, on request |
 | 9 | Request: an app's `>` request, the one message that travels app -> bot | 14 B + the text (a `>d` is 16 B) | sent by the app, flooded on `#meshwx` |
+| 10 | Area sweep: what is active, for the country or the states asked about, as runs of UGC numbers | up to 8 packets of 36 runs | on request only |
+| 11 | Radar: one tile of a radar picture, 32 x 32 cells in four precipitation levels | always one packet, 13 to 157 B | on request only |
 
-Requests start with `>` and reach the bot three ways: as a **Request
-datagram** (type 9, the normal path since spec revision 6), as a DM, or as
-text on `#meshwx`. Whichever road a request took, the answer is the same:
-v5 messages flooded on `#meshwx`, to everyone, never as a DM.
-
-A Request datagram carries six bytes of the sender's public key, the
-sender's own Unix seconds and the `>` text (at most 40 bytes). It names the
-bot it is asking in the header's `bot` field — `0xFFFF` asks every bot on
-the channel — and a bot ignores one that names another bot. It replaced the
-DM because a flood needs no route: a DM rides one stored route and is lost
-silently once that route goes stale, which is what happened to seven
-requests in six minutes on 16 September while the bot was answering
-everyone else. The DM form still works, for an app whose firmware cannot
-send channel datagrams (`CMD_SEND_CHANNEL_DATA`, 0x3E).
+Requests start with `>` and are normally flooded on `#meshwx` as a Request
+datagram, which names the bot it asks; a DM and channel text work too. The
+answer is the same either way: v5 messages flooded on `#meshwx`, to
+everyone, so one request serves every app listening.
 
 | Request | Answer |
 |---|---|
 | `>d` | Digest |
-| `>w` | Warnings in coverage (at most 6, newest first), then a Digest |
-| `>w SV.W.EWX.42`, `>w TXC453`, `>w TXZ192` | One warning by identity, or the warnings touching a county or zone |
+| `>w`, `>w SV.W.EWX.42`, `>w TXC453`, `>w TXZ192` | Warnings in coverage then a Digest; one warning by identity; or the warnings touching a county or zone |
 | `>wt SV.W.EWX.42` | That warning's narrative as Text |
-| `>o`, `>o KAUS` | Observations for the coverage stations, or for one station: that one or the nearest within 40 km with a report under 2 h old, and with none, the newest up to 12 h old, which the app shows with its age |
-| `>f`, `>f 102`, `>f round rock tx`, `>f 78701` | Forecast for the home point, a PFM point index (1-4 digits), a place, or a ZIP (5 digits or ZIP+4) |
-| `>afd EWX` | Forecast discussion |
-| `>metar KAUS`, `>taf KAUS` | That station's own report (a METAR from the last 2 h), or Not available; a place or ZIP gets the nearest reporting station, and a METAR for one, with none under 2 h old, is the newest up to 12 h old, labelled with its age |
-| `>space`, `>storm TX`, `>rain TX`, `>hwo` | Space weather, storm reports, rainfall, hazardous weather outlook |
-| `>radar`, `>radar 30.270,-97.740`, `>radar austin tx z1` | One tile of the newest radar picture, 32 x 32 cells in four precipitation levels, always one packet. `z0` to `z3` widens it from 2 to 16 degrees. Needs the dish: the pictures are EMWIN GIFs |
-| `>radar 30.270,-97.740 loop`, `... z1 loop 2353 2338` | The last hour of a tile: up to five pictures of one product, oldest first, one packet each, leaving out the ones the app lists (UTC `HHMM`) |
-| `>sat` | The bot's GOES receiver, one line of Text |
-| `>cov` | What this bot covers: centre, radius, NWS offices, zone runs. One packet, also broadcast every 3 h |
+| `>wmap`, `>wmap all`, `>wmap TXOK` | Area sweep: warnings and watches, with advisories, or only for some states |
+| `>part 212 1,4,6` | Those packets of a multi-packet answer again |
+| `>o`, `>o KAUS` | Observations for the coverage stations, or for one station (or the nearest that reports) |
+| `>f`, `>f 102`, `>f round rock tx`, `>f 78701`, `>f 35.687,-105.938` | Forecast for the home point, a point index, a place, a ZIP or a coordinate |
+| `>afd EWX`, `>metar KAUS`, `>taf KAUS`, `>space`, `>storm TX`, `>rain TX`, `>hwo` | Text products |
+| `>radar`, `>radar 30.270,-97.740 z1`, `>radar austin tx loop` | A radar tile, wider with `z1` to `z3`, or the last hour of it as a loop |
+| `>sat`, `>cov` | The bot's receiver as one line of Text; what the bot covers |
 
-Limits: one request per sender every 2 s and 240 answer packets per hour
-across all senders, then "busy" (Not available, reason 4); the operator sets
-both on the portal's Text bot page. A `>` sent as a DM also counts against the text-command
-limits; a Request datagram and a `>` line on the channel do not. One phone
-is one sender however it asks: the six key bytes in a datagram are the same
-prefix its DMs carry. A resend (the same sender, text and timestamp) is
-answered again only once the previous answer finished going out at least
-12 s earlier. A throttled request gets no reply.
-
-The full byte layouts, the preload bundle, rendering guidance and these
-rules in detail: **[`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md)**
-(revision 7) and [`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json).
-Reference codec: [`meshcore_weather/protocol/v5.py`](meshcore_weather/protocol/v5.py).
+Limits, by default: one request per sender every 2 s and 240 answer packets
+an hour across all senders, then "busy" (Not available, reason 4). The
+operator sets them on the portal's Text bot page. A throttled request gets
+no reply.
 
 ## For client developers (iOS, web, embedded)
 
-Start and finish with **`docs/MeshWX_v5_Spec.md`**, revision 12. Decode the
-test vectors, ship the `client_data/` bundle, follow the request rules. If you
-built against an earlier revision, its sections 16 to 16G are what changed and
-in which order; no field has ever moved, and an unknown type is ignored, so an
-old client keeps working and simply learns less.
+Start and finish with **[`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md)**:
+Part 1 is the wire format, the requests and the bundle; Part 2 the rules
+the reference clients follow for storing, showing and asking; section 23 is
+a checklist. Decode the test vectors
+([`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json)), ship the
+`client_data/` bundle, and send requests as Request datagrams. The
+reference codec is
+[`meshcore_weather/protocol/v5.py`](meshcore_weather/protocol/v5.py),
+standard library only.
 
 Two implementations to read against it, both complete and both carrying the
 vectors as tests: the iOS app in
@@ -212,28 +193,19 @@ vectors as tests: the iOS app in
 in [`web/`](web/README.md), which is the smaller of the two to read and needs
 nothing but a browser to run.
 
-Revision 6 adds one message, and it is the only one an app sends: the
-Request datagram of section 7B. Send `>` requests that way — same channel,
-same `data_type`, type nibble 9 — and keep the DM form only for a radio
-whose firmware has no `CMD_SEND_CHANNEL_DATA` (0x3E). Ask once, and if
-nothing has come back after 10 s send the same bytes once more, same
-timestamp; never a third time. The `request_digest` vector is those sixteen
-bytes.
-
-| Bundle file | Contents (spec section 9) |
+| Bundle file | Contents (spec section 16) |
 |---|---|
-| `protocol.json` | Version, message types, event codes and names, sky codes, text subjects, Not available reasons |
-| `index.json` | The tables the wire indexes into: `offices` (the 125 WFOs in alphabetical order, then `NHC` at 125 and `WNS` at 126), `stations`, `states`. Append-only; `version` 2 |
+| `protocol.json` | Version, the `v5` block (message types, flags, limits, sentinels, radar products), event codes and names, sky codes |
+| `index.json` | The tables the wire indexes into: `offices` (the 125 WFOs in alphabetical order, then `NHC` at 125 and `WNS` at 126), `stations`, `states`. Append-only |
 | `stations.json`, `pfm_points.json`, `places.json` | Station, forecast point and place lookup |
 | `zips.json` | US ZIP (Census 2020 ZCTA) to its point and nearest place; the bot resolves ZIPs from the same table |
 | `zones.json`, `counties.json` | Names and centroids for zone and county codes |
 | `zones.geojson`, `counties.geojson` | Polygons; optional downloads |
 | `wfos.json` | Office states and positions, in `index.json` `offices` order |
-| `regions.json`, `state_index.json`, `weather_dict.json` | v3/v4 leftovers, not used by v5 |
+| `regions.json`, `state_index.json`, `weather_dict.json` | Not used by MeshWX v5 |
 
 `index.json` and the test vectors are generated by `scripts/v5_vectors.py`;
-never edit them by hand. The v3/v4 documents are gone; nothing from them
-decodes as v5.
+never edit them by hand. `protocol.json` is kept by hand next to the codec.
 
 ### The debug bridge: an app client with no radio
 
@@ -1010,7 +982,7 @@ meshcore_weather/
 │   ├── templates/app.html
 │   └── static/            # portal.js + portal.css, nothing vendored
 │
-├── client_data/           # Preload bundle for apps (package data; spec section 9)
+├── client_data/           # Preload bundle for apps (package data; spec section 16)
 │   ├── protocol.json, index.json, wfos.json
 │   ├── stations.json, pfm_points.json, places.json, zips.json
 │   ├── zones.json, zones.geojson, counties.json, counties.geojson
@@ -1030,7 +1002,7 @@ docs/        below
 
 ## Docs
 
-- [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md) — the protocol and the app developer's guide (wire, requests, bundle, rendering), revision 12. The current contract.
+- [`docs/MeshWX_v5_Spec.md`](docs/MeshWX_v5_Spec.md) — the protocol and the client developer's guide: wire format, requests, bundle, and the rules for storing, showing and asking. The current contract.
 - [`docs/meshwx_v5_vectors.json`](docs/meshwx_v5_vectors.json) — test vectors every client must pass, generated by `scripts/v5_vectors.py`
 - [`docs/Radio_Swap.md`](docs/Radio_Swap.md) — replacing the radio (same or different board): the node profile, adoption, the udev rule, the Health card
 - [`docs/Delivery_Confirmation_Design.md`](docs/Delivery_Confirmation_Design.md) — echo tracking and the single resend: the design and the firmware facts it rests on
@@ -1075,15 +1047,7 @@ Shipped:
 - [x] EMWIN from the GOES-19 dish via goestools (`MCW_EMWIN_SOURCE=sdr`)
 - [x] pyIEM canonical NWS product parsing (VTEC, UGC, polygons) and a VTEC event lifecycle tracker
 - [x] PFM forecast source, sent as whole days
-- [x] MeshWX v5 revision 5: GRP_DATA on `#meshwx`, warning/cancel/digest/observations/forecast/text/not available/coverage, `>` request grammar, per-station observation ages and warning issue times
-- [x] MeshWX v5 revision 6: the Request datagram (type 9) — an app's `>` flooded on `#meshwx` instead of DMed down a route that may have gone stale
-- [x] MeshWX v5 revision 7: the data source in the flags nibble (GOES dish / internet / both), and a cut flag on Text replies trimmed at a sentence instead of mid-word
-- [x] MeshWX v5 revision 8: `>o` answers with the nearest station within 40 km that has a fresh report, not silence from a station that sends nothing
-- [x] MeshWX v5 revision 9: Area sweep (type 10), the national picture of what is active as runs of UGC numbers
-- [x] MeshWX v5 revision 10: `>part` for a missing part, `>wmap` by state, `>f lat,lon`, and forecast points rebuilt so a place without a PFM gets the nearest one that has it
-- [x] MeshWX v5 revision 11: Radar (type 11), one tile of an EMWIN mosaic in one packet, request only
-- [x] MeshWX v5 revision 13: the last hour of a radar tile as a loop, request only
-- [x] MeshWX v5 revision 12: a warning issued before it takes effect says when it starts, so a watch for Wednesday is not shown as in force on Tuesday
+- [x] MeshWX v5: warnings, cancels, digest, observations with per-station ages, forecasts, text, coverage, alert maps and radar tiles with loops, each one `GRP_DATA` packet on `#meshwx`, and the `>` request grammar with the Request datagram
 - [x] App requests answered on the channel so one request serves every listener
 - [x] Discovery by advert (`WX-<city>` chat node)
 - [x] Echo tracking and one byte-identical resend; DM ACKs; optional CoreScope check
@@ -1103,12 +1067,15 @@ Shipped:
 - [x] MQTT packet publishing for CoreScope
 - [x] Pi deployment: systemd unit, git-based updates with `scripts/pi_update.sh`
 - [x] Docker container (radio over a TCP bridge)
-- [x] iOS client against v5 (in beta, revision 11)
+- [x] iOS client against v5 (in beta)
 - [x] Web client for Chromium browsers over Web Bluetooth or Web Serial, and a downloadable copy of it
 
 Planned:
 
 - [ ] A permanent `GRP_DATA` data type requested upstream (spec section 2.1)
+- [ ] Storm motion from the warnings' `TIME...MOT...LOC` line
+- [ ] GOES infrared as a fallback where there is no radar
+- [ ] Calibrate the Guam radar picture
 - [ ] H-VTEC hydrologic metadata (flood severity, river ID, stage forecast)
 - [ ] 3-hourly hour-by-hour PFM forecast format
 - [ ] Standalone e-ink weather display hardware product (see `docs/Future_EInk_Dashboard.md`)

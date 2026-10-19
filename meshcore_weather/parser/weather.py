@@ -24,7 +24,7 @@ from meshcore_weather.protocol import v5
 
 logger = logging.getLogger(__name__)
 
-#: EMWIN source name -> v5 source constant (spec 2.2.1, revision 7).
+#: EMWIN source name -> v5 source constant (spec 2.3, revision 7).
 _V5_SOURCE = {"sdr": v5.SOURCE_GOES, "internet": v5.SOURCE_INTERNET}
 
 # One token of a UGC line, between the dashes: "TXZ171", "TXZ171>173", or a
@@ -150,7 +150,7 @@ class EMWINProduct:
     timestamp: datetime
     raw_text: str
     # How the bot got this product: "sdr" off its own GOES dish, "internet"
-    # from NOAA, "" when the source did not say (spec 2.2.1, revision 7).
+    # from NOAA, "" when the source did not say (spec 2.3, revision 7).
     source: str = ""
 
 
@@ -234,7 +234,7 @@ class WeatherStore:
             source=str(raw.get("source") or ""),
         )
 
-    # -- Where the products came from (spec 2.2.1, revision 7) --
+    # -- Where the products came from (spec 2.3, revision 7) --
 
     @staticmethod
     def product_source(prod) -> int:

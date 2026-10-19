@@ -73,7 +73,7 @@ def test_parse_emwin_file_is_shared_with_zip_path():
 
 
 def test_each_source_stamps_its_own_products(tmp_path):
-    """The wire's source field is only as honest as this stamp (spec 2.2.1)."""
+    """The wire's source field is only as honest as this stamp (spec 2.3)."""
     now = datetime.now(timezone.utc)
     body = (FIX / "WATA20US_20260914_1551Z.txt").read_bytes()
     _write(tmp_path, now - timedelta(minutes=5), "WATA20US", body)

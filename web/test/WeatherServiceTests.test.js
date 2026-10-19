@@ -1,6 +1,6 @@
 // Port of MC1ServicesTests/Weather/WeatherServiceTests.swift (docs/PORTING.md).
 //
-// The service's contract with the radio and with the spec's etiquette (§8.2, §13): what it
+// The service's contract with the radio and with the spec's etiquette (§14, §19): what it
 // accepts, what it sends, what settles a request, and what it never sends twice.
 //
 // Where the Swift shortens a timeout to 40 ms and waits for real, this drives the injected
@@ -35,7 +35,7 @@ const other = {
 }
 
 /**
- * @param channelRequests whether the fake radio can flood a Request datagram (spec §7B).
+ * @param channelRequests whether the fake radio can flood a Request datagram (spec §11).
  *   **False by default**, so every test below that is about the DM ladder drives the ladder;
  *   the channel path is a section of its own and asks for it.
  */
@@ -162,7 +162,7 @@ describe('WeatherService', () => {
     assert.deepStrictEqual(Object.keys(loaded.warnings), [identityKey(F.svw43)])
   })
 
-  // Spec §10.7: a digest stamped ahead of the clock is refused, and one saved before the phone
+  // Spec §17.5: a digest stamped ahead of the clock is refused, and one saved before the phone
   // refused them is dropped when the state is read back, or it would turn every real one away.
   it('a digest from the future is neither applied nor saved, and a saved one is dropped on load', async () => {
     const h = await makeHarness()
@@ -532,7 +532,7 @@ describe('WeatherService', () => {
     assert.notEqual(await h.service.send(WeatherRequest.observations, { to: F.bot }), null)
   })
 
-  // Spec §8.1: a reply with a part missing may be asked for again after 20 s.
+  // Spec §8: a reply with a part missing may be asked for again after 20 s.
   it('a text request whose reply is incomplete is sent again inside the five minutes', async () => {
     const h = await makeHarness()
     await h.service.send(WeatherRequest.hazardousOutlook, { to: F.bot })
@@ -681,7 +681,7 @@ describe('WeatherService', () => {
     assert.equal(h.transport.sent.length, 1)
   })
 
-  // MARK: - Requests on the channel (spec §7B)
+  // MARK: - Requests on the channel (spec §11)
 
   it('a request goes out as a datagram flooded on the channel, not as a DM', async () => {
     const h = await makeHarness({ channelRequests: true })
@@ -700,7 +700,7 @@ describe('WeatherService', () => {
     assert.equal(pending.botRadioReceived, false)
   })
 
-  // Spec §7B: one more per **new** request, wrapping; the five-second spacing still applies.
+  // Spec §11: one more per **new** request, wrapping; the five-second spacing still applies.
   it('each new request takes the next seq', async () => {
     const h = await makeHarness({ channelRequests: true })
     await h.service.send(WeatherRequest.digest, { to: F.bot })
@@ -768,7 +768,7 @@ describe('WeatherService', () => {
     assert.deepStrictEqual(h.transport.resets, [])
   })
 
-  // Spec §7B: "An app whose radio cannot send channel datagrams keeps using the DM."
+  // Spec §11: "An app whose radio cannot send channel datagrams keeps using the DM."
   it('a radio that cannot flood a datagram falls back to the DM ladder', async () => {
     const h = await makeHarness({ channelRequests: false })
     const pending = await h.service.send(WeatherRequest.spaceWeather, { to: F.bot })
@@ -893,7 +893,7 @@ describe('WeatherService', () => {
     for (let offset = 0; offset < 70; offset += 1) {
       await h.service.ingest(F.observations({
         seq: (2 + offset) & 0xff,
-        // Each an hour or so old, so none of them is ahead of the phone's clock (spec §10.7).
+        // Each an hour or so old, so none of them is ahead of the phone's clock (spec §17.5).
         timestampMinutes: F.t0Minutes - 70 + offset,
         stations: [[1000 + offset, 70]]
       }))

@@ -497,7 +497,7 @@ class Scheduler:
             return sent, nbytes
 
     # Where a multi-packet type keeps `group`, `idx` and `total`: Text
-    # (spec 8.1) and the Area sweep (spec 7C), which numbers itself the same
+    # (spec 8) and the Area sweep (spec 12), which numbers itself the same
     # way from a different offset. The last number is the smallest packet the
     # three fields fit in.
     _GROUP_FIELDS = {v5.TYPE_TEXT: (5, 6, 7, 8), v5.TYPE_AREA_SWEEP: (8, 9, 10, 11)}
@@ -505,7 +505,7 @@ class Scheduler:
     def _stamp(self, msg: bytes, groups: dict[tuple[int, int], int],
                keep_groups: bool = False) -> bytes:
         """Byte 0 = the next seq. A multi-packet reply's group is the seq its
-        first packet goes out with (spec 8.1, 7C), so it follows the restamp.
+        first packet goes out with (spec 8, 12), so it follows the restamp.
 
         `keep_groups` leaves `group` alone: a packet resent for `>part` is the
         same packet of the same answer, and a phone reassembles by

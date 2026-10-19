@@ -303,7 +303,7 @@ describe('Weather alert notifier', () => {
   })
 
   // Revision 12: a warning that has not started says so, from its start until its end, and a
-  // notification never counts down (docs/MESHWX_REV12.md §2).
+  // notification never counts down (docs/MESHWX_UI.md §3.1 U-49).
   it('a warning that has not started is posted from its start until its end', async () => {
     const h = makeHarness({ watch: watchOf([here()]) })
     await deliver(

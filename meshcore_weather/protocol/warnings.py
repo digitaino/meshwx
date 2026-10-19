@@ -301,7 +301,7 @@ def _extract_warning_description(text: str) -> str:
     Watch's text stopped at "WHEN: From" on the phone. The one reader is the
     `>wt` reply, and `text_messages` fits that to the eight packets a reply
     may take, at a sentence, and flags the cut when it has to make one
-    (spec 8.1). Two limits, the tighter one silent, is how a phone came to
+    (spec 8). Two limits, the tighter one silent, is how a phone came to
     show a truncated warning as if it were whole.
     """
     lines: list[str] = []
@@ -624,7 +624,7 @@ def _segment_to_entry(
         "product_type": prod.product_type,
         "filename": prod.filename,
         # How the bot got the product this warning was read out of, for the
-        # wire's source field (spec 2.2.1, revision 7).
+        # wire's source field (spec 2.3, revision 7).
         "source": getattr(prod, "source", ""),
         "_dedup_key": dedup_key,
         **vtec_meta,
