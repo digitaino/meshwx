@@ -64,6 +64,11 @@ def client(tmp_path, monkeypatch):
     return TestClient(create_app(bot), headers={"X-Requested-With": "meshcore-portal"}), bot
 
 
+# Nothing has polled NWS's METAR feed yet (emwin/nws_metar.py): on "auto", off.
+NWS_IDLE = {"mode": "auto", "on": False, "reason": "not started", "since": None, "newest_file": None,
+            "last_error": None, "auto_on_min": 30, "auto_off_min": 10, "auto_hold_min": 60}
+
+
 def test_the_public_bundle_says_where_the_products_come_from_and_how_late(client, monkeypatch):
     c, bot = client
     monkeypatch.setattr(settings, "sdr_dashboard_url", "http://127.0.0.1:8080")
@@ -81,6 +86,7 @@ def test_the_public_bundle_says_where_the_products_come_from_and_how_late(client
             "last_ok": int((SINCE + timedelta(minutes=20)).timestamp()),
             "last_error": "403 Forbidden at 14:30Z",
         },
+        "nws_metar": NWS_IDLE,
         "internet": None,
     }
     assert p["dashboard_url"] == "https://goes.example.org"
@@ -93,7 +99,7 @@ def test_the_public_bundle_says_where_the_products_come_from_and_how_late(client
     assert p["feed"] == {"source": "sdr", "lag_min": None, "newest_product_at": None,
                          "internet_backup": {"after_min": 10, "on": False, "since": None, "added": 0,
                                              "last_ok": None, "last_error": None},
-                         "internet": None}
+                         "nws_metar": NWS_IDLE, "internet": None}
     monkeypatch.setattr(settings, "emwin_source", "internet")
     assert c.get("/api/public/bot").json()["feed"]["internet_backup"] is None
 
@@ -147,6 +153,7 @@ def test_an_internet_only_bot_says_how_its_fetches_are_doing_and_how_late(client
         "lag_min": 300,
         "newest_product_at": newest,
         "internet_backup": None,
+        "nws_metar": NWS_IDLE,
         "internet": {"last_ok": int((SINCE + timedelta(minutes=20)).timestamp()),
                      "last_error": "403 Forbidden at 14:30Z"},
     }
@@ -159,7 +166,7 @@ def test_an_internet_only_bot_says_how_its_fetches_are_doing_and_how_late(client
     bot.emwin = InternetSource(cache_file=tmp_path / "products.jsonl")
     assert c.get("/api/public/bot").json()["feed"] == {
         "source": "internet", "lag_min": None, "newest_product_at": None, "internet_backup": None,
-        "internet": {"last_ok": None, "last_error": None}}
+        "nws_metar": NWS_IDLE, "internet": {"last_ok": None, "last_error": None}}
     # The dish's bundle has no `internet` object.
     monkeypatch.setattr(settings, "emwin_source", "sdr")
     assert c.get("/api/sdr").json()["feed"]["internet"] is None

@@ -21,7 +21,8 @@ reads (`WeatherStore._find_metar_raw`): one report per line ending in "=",
 under a `SAHOURLY` name. The store takes a station's report from the newest
 product it is in, so a fresher NWS report wins over the dish's and the dish's
 wins again once EMWIN catches up. The products say "internet", which is where
-they came from. Off unless `nws_metar_enabled`.
+they came from. The sources switch it (`nws_metar_mode`, fetcher.py): by
+itself while EMWIN runs late, or by hand.
 """
 
 import logging

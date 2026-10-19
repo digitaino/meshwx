@@ -297,26 +297,81 @@ class _NoaaBundles:
     # -- NWS's own METAR feed (emwin/nws_metar.py) ----------------------------
 
     _nws: "NwsMetarFeed | None" = None
+    _nws_since: datetime | None = None       # when it last went on
+    _nws_reason = "not started"              # why it is on or off, for the log and the pages
+    _nws_ok_since: datetime | None = None    # auto, while on: when EMWIN last came back on time
+
+    def _nws_metar_wanted(self, now: datetime) -> tuple[bool, str]:
+        """Whether NWS's METAR feed should run, and why.
+
+        "auto" goes by `feed_lag_min`: on at `nws_metar_auto_on_min` late,
+        off once EMWIN has stayed under `nws_metar_auto_off_min` for
+        `nws_metar_auto_hold_min` (a lag that dips for a few minutes, as it
+        did all of 2026-10-17 evening, must not switch it off and on). With
+        no lag to go by (fewer than five arrivals in the hour: the dish
+        quiet, the bot just started) it stays as it is."""
+        mode = (settings.nws_metar_mode or "auto").strip().lower()
+        if mode == "on":
+            return True, "switched on"
+        if mode != "auto":
+            return False, "switched off"
+        on = self._nws is not None
+        lag = self.feed_lag_min
+        if lag is None:
+            return on, self._nws_reason if on else "EMWIN delay not known yet"
+        late = f"EMWIN {_span(timedelta(minutes=lag))} late"
+        if lag >= settings.nws_metar_auto_on_min:
+            self._nws_ok_since = None
+            return True, late
+        if not on:
+            return False, "EMWIN on time" if lag <= settings.nws_metar_auto_off_min else late
+        if lag > settings.nws_metar_auto_off_min:
+            self._nws_ok_since = None
+            return True, late
+        self._nws_ok_since = self._nws_ok_since or now
+        if now - self._nws_ok_since >= timedelta(minutes=settings.nws_metar_auto_hold_min):
+            return False, f"EMWIN on time again for {_span(now - self._nws_ok_since)}"
+        return True, f"EMWIN on time again, holding for {settings.nws_metar_auto_hold_min} min"
 
     async def _poll_nws_metar(self, now: datetime) -> list[dict]:
         """New files from NWS's METAR feed as products, when it is on and due.
 
-        Off (`nws_metar_enabled`) drops the feed's state, so switching it on
-        again starts over with the last 75 minutes. It shares the bundles'
-        client, its timeouts and its User-Agent."""
-        if not settings.nws_metar_enabled:
+        Going off drops the feed's state, so the next time it comes on it
+        starts over with the last 75 minutes. It shares the bundles' client,
+        its timeouts and its User-Agent."""
+        wanted, reason = self._nws_metar_wanted(now)
+        self._nws_reason = reason
+        if not wanted:
             if self._nws is not None:
-                logger.info("NWS METAR feed off")
+                logger.info("NWS METAR feed off: %s", reason)
             self._nws = None
+            self._nws_since = self._nws_ok_since = None
             return []
         if self._nws is None:
             self._nws = NwsMetarFeed()
-            logger.info("NWS METAR feed on: current airport reports from %s", self._nws.url)
+            self._nws_since = now
+            logger.info("NWS METAR feed on (%s): current airport reports from %s", reason, self._nws.url)
         if not self._nws.due(now):
             return []
         if self._client is None:
             self._client = self._make_client()
         return await self._nws.poll(self._client, now)
+
+    def nws_metar_status(self) -> dict:
+        """The feed for the portal and the public page (times unix seconds)."""
+        feed = self._nws
+        unix = lambda t: int(t.timestamp()) if t else None   # noqa: E731
+        return {
+            "mode": (settings.nws_metar_mode or "auto").strip().lower(),
+            "on": feed is not None,
+            "reason": self._nws_reason,
+            "since": unix(self._nws_since),
+            "newest_file": unix(feed.newest_file) if feed else None,
+            "last_error": feed.last_error if feed else None,
+            "auto_on_min": settings.nws_metar_auto_on_min,
+            "auto_off_min": settings.nws_metar_auto_off_min,
+            "auto_hold_min": settings.nws_metar_auto_hold_min,
+        }
 
     def _note_lag(self, name: str, mtime: float, wall: float) -> None:
         """A product that arrived at `mtime`: how long after its creation."""

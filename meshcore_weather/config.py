@@ -198,9 +198,16 @@ class Settings(BaseSettings):
     # whatever EMWIN source is in use (emwin/nws_metar.py). For when EMWIN runs
     # late: on 2026-10-17/18 the dish and NOAA's EMWIN bundles were both ~3 h
     # behind while this feed had each METAR within minutes. The freshest report
-    # wins, so it is safe to leave on; it is off by default because it is the
-    # internet, and turned on and off by hand (MCW_NWS_METAR_ENABLED).
-    nws_metar_enabled: bool = False
+    # wins, so it is safe to leave on.
+    # "auto" (the default) switches it by how late EMWIN runs (`feed_lag_min`):
+    # on once EMWIN is nws_metar_auto_on_min late, off again once it has stayed
+    # under nws_metar_auto_off_min for nws_metar_auto_hold_min, so nobody has to
+    # remember to turn it off. "on" and "off" set it by hand. Like the dish's
+    # internet backup, it is the internet, used only while EMWIN cannot do the job.
+    nws_metar_mode: str = "auto"
+    nws_metar_auto_on_min: int = 30
+    nws_metar_auto_off_min: int = 10
+    nws_metar_auto_hold_min: int = 60
     nws_metar_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/DF.an/DC.sflnd/DS.metar/"
     nws_metar_poll_interval: int = 300   # seconds; the feed writes a file every ~5 min
     # Radar pictures (spec 7D): a directory of EMWIN `*-RAD*.GIF` under YYYY-MM-DD/.

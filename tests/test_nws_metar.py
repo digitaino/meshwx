@@ -8,6 +8,7 @@ report.
 """
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -153,23 +154,23 @@ def test_a_failed_listing_costs_that_poll_only():
     assert feed.last_error.startswith("HTTPStatusError")
 
 
-def test_the_dish_source_takes_the_feed_only_while_it_is_switched_on(tmp_path, monkeypatch):
+def test_the_dish_source_takes_the_feed_only_while_it_is_switched_on_by_hand(tmp_path, monkeypatch):
     now = datetime.now(UTC).replace(second=0, microsecond=0)
     handler, calls = _server({"sn.0190.txt": (now - timedelta(minutes=5), FEED_FILE)})
     src = SDRSource(root=tmp_path)
     src._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
-    monkeypatch.setattr(settings, "nws_metar_enabled", False)
+    monkeypatch.setattr(settings, "nws_metar_mode", "off")
     assert asyncio.run(src.check_nws_metar(now)) == 0
     assert calls == []
 
-    monkeypatch.setattr(settings, "nws_metar_enabled", True)
+    monkeypatch.setattr(settings, "nws_metar_mode", "on")
     assert asyncio.run(src.check_nws_metar(now)) == 1
     [prod] = asyncio.run(src.fetch_products())
     assert prod["awips_id"] == "SAHOURLY" and "KATT 181651Z" in prod["raw_text"]
 
     # Off again: the feed's state goes, and nothing more is fetched.
-    monkeypatch.setattr(settings, "nws_metar_enabled", False)
+    monkeypatch.setattr(settings, "nws_metar_mode", "off")
     before = len(calls)
     assert asyncio.run(src.check_nws_metar(now + timedelta(minutes=10))) == 0
     assert src._nws is None and len(calls) == before
@@ -180,6 +181,62 @@ def test_the_internet_source_holds_the_feeds_files_too(tmp_path, monkeypatch):
     handler, _ = _server({"sn.0190.txt": (now - timedelta(minutes=5), FEED_FILE)})
     src = InternetSource(cache_file=tmp_path / "products.jsonl")
     src._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "nws_metar_enabled", True)
+    monkeypatch.setattr(settings, "nws_metar_mode", "on")
     new = src._take(asyncio.run(src._poll_nws_metar(now)), now, fresh=False)
     assert len(new) == 1 and new[0]["filename"] in src._products
+
+
+def _lagging(src: SDRSource, minutes: float) -> None:
+    """The dish's last arrivals, all `minutes` behind the uplink."""
+    t = time.time()
+    src._lag_samples.clear()
+    src._lag_samples.extend((t - i, float(minutes)) for i in range(10))
+
+
+def test_auto_comes_on_when_emwin_runs_late_and_goes_off_only_after_an_hour_on_time(tmp_path, monkeypatch):
+    # 2026-10-17 evening: the lag dipped under ten minutes for a few minutes
+    # at a time between hours late. Each dip must not switch the feed off.
+    monkeypatch.setattr(settings, "nws_metar_mode", "auto")
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    handler, calls = _server({"sn.0190.txt": (now - timedelta(minutes=5), FEED_FILE)})
+    src = SDRSource(root=tmp_path)
+    src._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    _lagging(src, 3)
+    assert asyncio.run(src.check_nws_metar(now)) == 0 and calls == []
+    assert not src.nws_metar_status()["on"] and src.nws_metar_status()["reason"] == "EMWIN on time"
+
+    _lagging(src, 286)                                   # 18 Oct, 19:30 CDT
+    assert asyncio.run(src.check_nws_metar(now)) == 1
+    status = src.nws_metar_status()
+    assert status["on"] and status["reason"] == "EMWIN 4 h 46 min late" and status["since"] == int(now.timestamp())
+
+    _lagging(src, 5)                                     # on time for a while: still on
+    asyncio.run(src.check_nws_metar(now + timedelta(minutes=10)))
+    assert src.nws_metar_status()["on"]
+    _lagging(src, 59)                                    # late again: the hour starts over
+    asyncio.run(src.check_nws_metar(now + timedelta(minutes=20)))
+    _lagging(src, 5)
+    asyncio.run(src.check_nws_metar(now + timedelta(minutes=30)))
+    asyncio.run(src.check_nws_metar(now + timedelta(minutes=85)))
+    assert src.nws_metar_status()["on"]
+    asyncio.run(src.check_nws_metar(now + timedelta(minutes=91)))
+    status = src.nws_metar_status()
+    assert not status["on"] and status["reason"].startswith("EMWIN on time again for")
+
+
+def test_auto_with_no_lag_to_go_by_stays_as_it_is(tmp_path, monkeypatch):
+    # The dish quiet (its own internet backup on) or the bot just started:
+    # fewer than five arrivals in the hour say nothing about EMWIN.
+    monkeypatch.setattr(settings, "nws_metar_mode", "auto")
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    handler, _ = _server({"sn.0190.txt": (now - timedelta(minutes=5), FEED_FILE)})
+    src = SDRSource(root=tmp_path)
+    src._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert asyncio.run(src.check_nws_metar(now)) == 0
+    assert src.nws_metar_status()["reason"] == "EMWIN delay not known yet"
+    _lagging(src, 120)
+    asyncio.run(src.check_nws_metar(now))
+    src._lag_samples.clear()
+    asyncio.run(src.check_nws_metar(now + timedelta(minutes=10)))
+    assert src.nws_metar_status()["on"]

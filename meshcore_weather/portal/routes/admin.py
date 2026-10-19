@@ -410,6 +410,9 @@ async def _feed_stats(bot) -> dict:
             "last_error": getattr(bot.emwin, "fallback_last_error", None),
             "from_internet_last_hour": sum(1 for p in last_hour if p.get("source") == "internet"),
         } if settings.emwin_source == "sdr" else None,
+        # NWS's own METAR feed beside EMWIN (emwin/nws_metar.py): by itself
+        # while EMWIN runs late ("auto"), or switched on or off by hand.
+        "nws_metar": bot.emwin.nws_metar_status() if hasattr(bot.emwin, "nws_metar_status") else None,
         # An internet-only bot's own fetches (InternetSource): the last one
         # that brought a product, and what the last failed one ran into
         # ("403 Forbidden at 14:03Z") until a bundle comes in whole.
@@ -611,6 +614,9 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
                 "last_ok": _unix(getattr(bot.emwin, "fallback_last_ok", None)),
                 "last_error": getattr(bot.emwin, "fallback_last_error", None),
             } if settings.emwin_source == "sdr" else None,
+            # Airport reports from NWS's own feed while EMWIN runs late: on or
+            # off, why ("EMWIN 4 h 46 min late"), since when, its newest file.
+            "nws_metar": bot.emwin.nws_metar_status() if hasattr(bot.emwin, "nws_metar_status") else None,
             # With the internet as the source: its last fetch that brought a
             # product, and what the last failed one ran into.
             "internet": {
