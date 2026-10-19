@@ -418,3 +418,21 @@ def test_a_bot_without_a_dish_gets_the_same_fill_over_noaas_bundles(tmp_path):
     late = {"filename": _kwin("FPUS54", "KEWX", t, "ZFPEWXTX"), "awips_id": "ZFPEWXTX", "timestamp": t,
             "raw_text": "FPUS54 KEWX", "source": "internet"}
     assert src._take([late], NOW, fresh=True) == []                             # the bundle's late copy
+
+
+def test_turning_the_fill_off_in_a_spell_ends_the_spell(tmp_path, monkeypatch):
+    """19 Oct: the fill was turned off in Settings while filling in, and the
+    public page kept saying the bot was getting products from NWS."""
+    nws = FakeNws()
+    src = _source(tmp_path, nws)
+    issued = NOW - timedelta(minutes=40)
+    for i in range(6):
+        nws.items.append(_item(f"z{i}", "FPUS54", "KEWX", issued + timedelta(minutes=i), "ZFP"))
+        nws.texts[f"z{i}"] = _text("FPUS54", "KEWX", issued + timedelta(minutes=i), "ZFPEWX")
+    assert _poll(src, NOW, "text") == 6 and src.fill.status(NOW)["active"] is True
+    monkeypatch.setattr(settings, "fill_enabled", False)
+    st = src.fill.status(NOW)
+    assert st["enabled"] is False and st["active"] is False and st["since"] is None   # before the next poll, too
+    asked = len(nws.calls)
+    assert _poll(src, NOW + timedelta(minutes=1)) == 0
+    assert src.fill.active_since is None and len(nws.calls) == asked              # ended, and nothing asked

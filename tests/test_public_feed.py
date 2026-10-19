@@ -51,6 +51,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "tx_enabled", False)
     monkeypatch.setattr(settings, "emwin_source", "sdr")
     monkeypatch.setattr(settings, "status_channel", "#meshwx-status")
+    # On, so the spell _dish_source sets up reads as one (an off fill never
+    # fills in). Nothing here polls it, so it asks NWS for nothing.
+    monkeypatch.setattr(settings, "fill_enabled", True)
 
     async def no_dashboard(path, method="GET"):
         return {"_error": "not in this test"}

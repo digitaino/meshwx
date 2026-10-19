@@ -97,6 +97,16 @@ def test_the_internet_fill_filling_in_and_done_are_transitions_not_a_state():
     assert _check(StatusReporter(send=None), T, feed=None) == []
 
 
+def test_a_fill_turned_off_in_a_spell_is_said_as_turned_off_not_done():
+    r = _reporter()
+    assert _check(r, T, feed=_feed(on=True)) == []
+    assert _check(r, T + 10, feed=_feed(on=True)) == []
+    off = _feed(on=False, added=40)
+    off.fill.enabled = False
+    assert _check(r, T + 20, feed=off) == ["internet fill turned off"]
+    assert _check(r, T + 30, feed=off) == []
+
+
 def test_products_behind_the_uplink_need_two_hours_held_and_clear_after_an_hour_under_45m():
     """17 Oct: NOAA's feed swung between about 20 and 90 minutes late all
     day, and a one-hour line with no hold posted "behind" and "current

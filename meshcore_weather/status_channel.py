@@ -247,7 +247,9 @@ class StatusReporter:
                 self._say("fill_on", f"internet filling in ({fill.reason()})", now, lines)
             self._fill_on = True
         elif not on and self._fill_on:
-            if seen:
+            if not getattr(fill, "enabled", True):  # the operator turned it off: the feed is not "in time again"
+                self._say("fill_off", "internet fill turned off", now, lines)
+            elif seen:
                 self._say("fill_off", "internet fill done, the feed is in time again "
                           f"({fill.spell_filled} products filled)", now, lines)
             elif now - self._fill_first >= FILL_WINDOW_S:

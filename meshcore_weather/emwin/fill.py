@@ -256,9 +256,15 @@ class InternetFill:
 
     async def poll(self, now: datetime | None = None) -> int:
         """Whatever part is due. Returns the products taken."""
-        if not self.enabled:
-            return 0
         now = now or datetime.now(UTC)
+        if not self.enabled:
+            # Turned off in a spell: the spell ends here. Returning before
+            # _activity left it open for good, and the public page said
+            # "filling in from NWS" for a fill that had stopped (19 Oct).
+            if self.active_since is not None:
+                logger.info("Internet fill: turned off while filling in (for %s)", _span(now - self.active_since))
+                self.active_since = None
+            return 0
         mono = time.monotonic()
         taken = 0
         for part, due, every, fn in (("text", self._text_next, settings.fill_poll_interval, self._text),
@@ -533,8 +539,9 @@ class InternetFill:
         unix = lambda t: int(t.timestamp()) if t else None 
         return {
             "enabled": self.enabled,
-            "active": self.active_since is not None,
-            "since": unix(self.active_since),
+            # Off is never filling in, even before the next poll ends the spell.
+            "active": self.enabled and self.active_since is not None,
+            "since": unix(self.active_since) if self.enabled else None,
             "reason": self.reason(now),
             "grace_min": {"warnings": settings.fill_grace_warning_min, "other": settings.fill_grace_min,
                           "radar": settings.fill_radar_grace_min},
