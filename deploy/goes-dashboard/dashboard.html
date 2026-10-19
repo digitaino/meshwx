@@ -216,7 +216,12 @@ function renderRx(d){rx=Object.assign(rx,d);
  if(s.totals)$('rTot').textContent=`since goesrecv started: ${n(s.totals.packets)} packets, ${n(s.totals.drops)} dropped`;
  drawConst(s.const||[]);if(d.history)drawHist(d.history)}
 
-function renderImages(list){if(!list||!list.length)return;$('imgs').innerHTML=list.map(i=>`<a href="/img/${esc(i.path)}" target="_blank" rel="noopener"><img loading="lazy" alt="${esc(i.name)}" src="/thumb/${esc(i.path)}"><span title="${esc(i.name)}">${esc(i.name.replace(/^GOES1[89]_/,'').replace(/\.jpg$/,'').replace(/_/g,' '))} · ${age(Date.now()/1000-i.mtime)} ago</span></a>`).join('')}
+// Rebuilt only when the set of images changes: every status refresh (5 s) used to
+// replace the grid and make each viewer fetch all twelve thumbnails again.
+let imgKey='';
+function renderImages(list){if(!list||!list.length)return;const g=$('imgs'),key=list.map(i=>i.path).join('|'),label=i=>`${i.name.replace(/^GOES1[89]_/,'').replace(/\.jpg$/,'').replace(/_/g,' ')} · ${age(Date.now()/1000-i.mtime)} ago`;
+ if(key===imgKey){g.querySelectorAll('span').forEach((s,k)=>{if(list[k])s.textContent=label(list[k])});return}
+ imgKey=key;g.innerHTML=list.map(i=>`<a href="/img/${esc(i.path)}" target="_blank" rel="noopener"><img loading="lazy" alt="${esc(i.name)}" src="/thumb/${esc(i.path)}"><span title="${esc(i.name)}">${esc(label(i))}</span></a>`).join('')}
 function renderEmwin(list,counts){const t=$('emwin');
  t.innerHTML=(list&&list.length)?list.map(f=>`<tr><td><a href="/img/${esc(f.path)}" target="_blank" rel="noopener">${esc(f.name)}</a></td><td class="r">${f.src==='net'?'<span class="net" title="fetched over the internet while the dish was silent">internet</span> ':''}${clockS(f.mtime)}</td></tr>`).join(''):'<tr><td class="hint">No EMWIN files yet.</td></tr>';
  if(counts)$('emCount').textContent=`· ${n(counts.emwin_today)} since 00:00 UTC`+(counts.internet_backup_on?`, ${n(counts.emwin_inet_today||0)} of them over the internet`:'')}
