@@ -160,7 +160,7 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
 </style></head><body>
 <header class="top"><div class="wrap">
  <div><h1>mesh-wx</h1><p class="sub">The GOES-19 satellite receiver and the <span id="hName">WX-AUS</span> weather bot on the Austin MeshCore mesh</p></div>
- <nav class="tabs" aria-label="Dashboard"><a href="#overview" id="t-overview" aria-selected="true">Overview</a><a href="#hrit" id="t-hrit" aria-selected="false">HRIT</a><a href="#emwin" id="t-emwin" aria-selected="false">EMWIN</a></nav>
+ <nav class="tabs" aria-label="Dashboard"><a href="#overview" id="t-overview" aria-selected="true">Overview</a><a href="#weather" id="t-weather" aria-selected="false">Weather</a><a href="#station" id="t-station" aria-selected="false">Station</a></nav>
  <div class="ops hidden" id="ops"><button id="btnPoint">Pointing mode</button><button id="btnRecv" class="primary hidden">Back to receiving</button><span id="msg"></span></div>
 </div></header>
 
@@ -174,8 +174,8 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
  </section>
  <div class="notice hidden" id="notice" role="status"></div>
  <div class="mini">
-  <a href="#emwin" data-jump="emHealth"><div class="k">EMWIN delay · last 3 days</div><div class="v" id="mLag">–</div><canvas id="sparkLag" height="60" aria-label="EMWIN delay over the last three days"></canvas><div class="hint">Open feed health →</div></a>
-  <a href="#hrit" data-jump="hrHist"><div class="k">Signal · last 3 days</div><div class="v" id="mVit">–</div><canvas id="sparkVit" height="60" aria-label="Viterbi errors over the last three days"></canvas><div class="hint">Open signal history →</div></a>
+  <a href="#station" data-jump="emHealth"><div class="k">EMWIN delay · last 3 days</div><div class="v" id="mLag">–</div><canvas id="sparkLag" height="60" aria-label="EMWIN delay over the last three days"></canvas><div class="hint">Open the EMWIN feed →</div></a>
+  <a href="#station" data-jump="hrHist"><div class="k">Signal · last 3 days</div><div class="v" id="mVit">–</div><canvas id="sparkVit" height="60" aria-label="Viterbi errors over the last three days"></canvas><div class="hint">Open signal history →</div></a>
  </div>
 
  <section class="block" aria-labelledby="hAct">
@@ -213,13 +213,87 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
  </details>
 
  <section class="block" aria-labelledby="hImg">
-  <h2 id="hImg">Latest satellite images</h2>
+  <div class="bh"><h2 id="hImg">Latest satellite images</h2><div class="right"><a class="hint" href="#weather" data-jump="hrImg">Loops of every channel →</a></div></div>
   <div class="grid" id="imgs"><span class="hint">Nothing decoded yet.</span></div>
  </section>
 
 </div>
-<div class="tab" id="hrit" hidden>
- <div class="subnav" aria-label="HRIT sections"><button data-go="hrLive">Live signal</button><button data-go="hrHist">Signal history</button><button data-go="hrVc">Channels</button><button data-go="hrEv">Events and sun</button><button data-go="hrImg">Imagery</button></div>
+<div class="tab" id="weather" hidden>
+ <div class="subnav" aria-label="Weather sections"><button data-go="emWarn">Warnings</button><button data-go="emRadar">Radar and charts</button><button data-go="hrImg">Satellite imagery</button><button data-go="emProd">Products</button></div>
+ <section class="block" id="emWarn" aria-labelledby="hWarn">
+  <div class="bh"><h2 id="hWarn">Warnings and watches in effect</h2><span class="hint" id="wCount"></span>
+   <div class="right" role="group" aria-label="Map view"><button data-mv="tx" class="on">Texas</button><button data-mv="us">All US</button><button data-mv="ak">Alaska</button><button data-mv="hi">Hawaii</button><button data-mv="pr">Puerto Rico</button><button data-mv="gu">Guam</button></div></div>
+  <div class="grid2 wide">
+   <div><div class="map" id="mapBox"><canvas id="mapC" aria-label="Map of the warnings and watches in effect. The list beside it has the same events."></canvas>
+    <div class="maptools"><button id="mapIn" aria-label="Zoom in" title="Zoom in">+</button><button id="mapOut" aria-label="Zoom out" title="Zoom out">−</button></div>
+    <div class="maptip" id="mapTip" hidden></div><div class="maphint" id="mapHint">Drag to move · pinch or ⌘/Ctrl + scroll to zoom</div></div>
+    <div class="wdet" id="wDet" hidden></div></div>
+   <div><h3 class="sm" id="wListHead">In view</h3><ul class="wlist" id="wList"><li class="hint">Loading…</li></ul></div>
+  </div>
+  <p class="cap" id="wNote">What the bot holds right now: the same warnings it answers with on the mesh. An outline is the storm's own polygon where NWS drew one, else the zones and counties the product names. Colours follow the NWS hazard map; the dashed line is the area the bot covers. Base map: Natural Earth.</p>
+ </section>
+ <section class="block" id="emRadar" aria-labelledby="hRad">
+  <div class="bh"><h2 id="hRad">Radar and charts</h2></div>
+  <div class="grid2">
+   <div style="min-width:0">
+    <div class="filters"><select id="radRegion" aria-label="Radar region"></select>
+     <select id="radSpan" aria-label="Loop length"><option value="2">Last 2 hours</option><option value="4" selected>Last 4 hours</option><option value="8">Last 8 hours</option></select></div>
+    <div class="radar"><img id="radImg" alt="Radar mosaic"></div>
+    <div class="play"><button id="radPlay">Play</button><input type="range" id="radScrub" min="0" max="0" value="0" aria-label="Radar frame"><span class="hint" id="radPos"></span></div>
+    <p class="hint" id="radCap"></p>
+   </div>
+   <div style="min-width:0">
+    <div class="chips" id="chChips" role="group" aria-label="Chart"></div>
+    <div class="radar chart"><img id="chImg" alt=""></div>
+    <div class="play"><button id="chPrev">‹ Older</button><button id="chNext">Newer ›</button><span class="hint" id="chPos"></span></div>
+    <p class="hint" id="chCap"></p>
+   </div>
+  </div>
+  <p class="cap">Radar mosaics and most charts come down with EMWIN, so they run as late as the feed does; the surface analysis and the tropical Atlantic charts come with HRIT's NWS channel. A loop plays its frames in the order they were made, whatever order they reached the dish.</p>
+ </section>
+ <section class="block" id="hrImg" aria-labelledby="hIm">
+  <div class="bh"><h2 id="hIm">Satellite imagery</h2><span class="hint" id="imCount"></span>
+   <div class="right" role="group" aria-label="Loop length"><button data-ls="3">3 h</button><button data-ls="6" class="on">6 h</button><button data-ls="24">24 h</button></div></div>
+  <div class="viewer">
+   <div style="min-width:0">
+    <div class="frame"><img id="imMain" alt=""><span class="fcap" id="imCap">Loading…</span></div>
+    <div class="play"><button id="imPlay">Play</button><input type="range" id="imScrub" min="0" max="0" value="0" aria-label="Frame"><span class="hint" id="imPos"></span></div>
+   </div>
+   <div style="min-width:0">
+    <h3 class="sm">Satellite and sector</h3><div class="chips" id="imSect" role="group" aria-label="Sector"></div>
+    <h3 class="sm" style="margin-top:12px">Channel</h3><div class="chips" id="imChan" role="group" aria-label="Channel"></div>
+    <p class="hint" id="imHelp"></p>
+    <p class="hint"><a id="imFull" href="#" target="_blank" rel="noopener">This frame at full resolution</a></p>
+   </div>
+  </div>
+  <p class="cap">Pictures decoded here from the HRIT downlink, as goesproc writes them; loops play the frames already on disk. Times are when the scan started. The meso sectors move to wherever NOAA is watching the weather.</p>
+ </section>
+ <section class="block" id="emProd" aria-labelledby="hProd">
+  <div class="bh"><h2 id="hProd">Product browser</h2><span class="hint" id="pCount"></span></div>
+  <div class="filters"><input type="search" id="pq" placeholder="Search names, AWIPS ids, offices or text" aria-label="Search products" autocomplete="off" spellcheck="false">
+   <select id="pOffice" aria-label="Office"><option value="">All offices</option></select></div>
+  <div class="chips" id="pKinds" role="group" aria-label="Kind"></div>
+  <div class="grid2">
+   <ul class="results" id="pList" role="listbox" aria-label="Products"><li class="t2">Loading…</li></ul>
+   <div style="min-width:0"><div class="rhead" id="pHead"></div><div class="reader" id="pText" tabindex="0">Pick a product to read it.</div></div>
+  </div>
+  <p class="cap" id="pNote"></p>
+ </section>
+</div>
+<div class="tab" id="station" hidden>
+ <div class="subnav" aria-label="Station sections"><button data-go="stHealth">Health</button><button data-go="hrLive">Live signal</button><button data-go="hrHist">Signal history</button><button data-go="emHealth">EMWIN feed</button><button data-go="hrVc">Channels</button><button data-go="hrEv">Events</button></div>
+ <section class="block" id="stHealth" aria-labelledby="hHe">
+  <div class="bh"><h2 id="hHe">Health right now</h2></div>
+  <div class="tiles">
+   <div class="tile" id="hSigT"><div class="v" id="hSig">–</div><div class="l" id="hSigL">satellite signal</div></div>
+   <div class="tile" id="hLostT"><div class="v" id="hLost">–</div><div class="l">frames lost · last hour</div></div>
+   <div class="tile" id="eLagT"><div class="v" id="eLag">–</div><div class="l">EMWIN behind NOAA</div></div>
+   <div class="tile" id="eBackupT"><div class="v" id="eBackup">–</div><div class="l">internet backup for the dish</div></div>
+   <div class="tile" id="eNwsT"><div class="v" id="eNws">–</div><div class="l">current conditions from NWS</div></div>
+   <div class="tile" id="hOutT"><div class="v" id="hOut">–</div><div class="l" id="hOutL">last time without a signal</div></div>
+  </div>
+  <p class="why hidden" id="hNote" style="margin:12px 0 0"></p>
+ </section>
  <section class="block" id="hrLive" aria-labelledby="hRx">
   <div class="bh"><h2 id="hRx">Live signal</h2><div class="right"><span class="pill" id="rxPill">–</span><span class="pill">updates every second</span></div></div>
   <div id="rxView">
@@ -250,7 +324,7 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
   </div>
   <div class="grid2" style="margin-top:14px">
    <div><h3 class="sm">Receiver chain</h3><div class="tbl"><table><tbody id="chain"></tbody></table></div></div>
-   <div><h3 class="sm">Station</h3><div class="sys" style="margin-top:0"><span>goesrecv <b id="sRecv">–</b></span><span>goesproc <b id="sProc">–</b></span><span>CPU <b id="sTemp">–</b></span><span>disk <b id="sDisk">–</b></span><span>receiver feed <b id="sFeed">–</b></span><span>goesrecv up <b id="sUp">–</b></span><span>watchdog restarts <b id="sDog">–</b></span><span>power <b id="sThr">–</b></span></div></div>
+   <div><h3 class="sm">This Pi</h3><div class="sys" style="margin-top:0"><span>goesrecv <b id="sRecv">–</b></span><span>goesproc <b id="sProc">–</b></span><span>CPU <b id="sTemp">–</b></span><span>disk <b id="sDisk">–</b></span><span>receiver feed <b id="sFeed">–</b></span><span>goesrecv up <b id="sUp">–</b></span><span>watchdog restarts <b id="sDog">–</b></span><span>power <b id="sThr">–</b></span></div></div>
   </div>
  </section>
 
@@ -260,6 +334,19 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
   <canvas id="vitChart" height="260" aria-label="Viterbi errors over time"></canvas>
   <div class="key"><span><i class="sw" style="background:var(--alert)"></i>Viterbi errors, median</span><span><i class="sw" style="background:var(--series);opacity:.35"></i>spread within the period</span><span><i class="sw" style="background:var(--warn);opacity:.35"></i>sun near the satellite</span><span><i class="sw" style="background:var(--bad);opacity:.35"></i>no lock</span><span><i class="sw" style="background:var(--dim);opacity:.25"></i>not recorded</span></div>
  </section>
+ <section class="block" id="emHealth" aria-labelledby="hFh">
+  <div class="bh"><h2 id="hFh">EMWIN feed</h2></div>
+  <p class="why">EMWIN is the weather-text part of the downlink (channels 20 to 22): every National Weather Service product, sent up by NOAA. When NOAA's uplink falls behind, everything here runs late, however clean the signal.</p>
+  <div class="grid2">
+   <div><h3 class="sm">Delay behind NOAA, hourly · 7 days</h3><canvas id="lagChart" height="220" aria-label="EMWIN delay per hour"></canvas>
+    <div class="key"><span><i class="sw" style="background:var(--alert)"></i>median delay of what arrived that hour</span><span><i class="sw" style="background:var(--dim);opacity:.25"></i>not recorded</span></div></div>
+   <div><h3 class="sm">Products received, hourly · 7 days <span class="count" id="eHour"></span></h3><canvas id="volChart" height="220" aria-label="EMWIN products per hour"></canvas>
+    <div class="key"><span><i class="sw" style="background:var(--series2)"></i>from the dish</span><span><i class="sw" style="background:var(--warn)"></i>over the internet (backup)</span></div></div>
+  </div>
+  <h3 class="sm" style="margin-top:14px">Received in the last 24 hours, by kind</h3>
+  <div class="grid2"><div class="tbl"><table><tbody id="kindsA"></tbody></table></div><div class="tbl"><table><tbody id="kindsB"></tbody></table></div></div>
+  <p class="hint" id="emSince"></p>
+ </section>
  <section class="block" id="hrVc" aria-labelledby="hVc">
   <div class="bh"><h2 id="hVc">Per-channel traffic · last hour</h2></div>
   <p class="why">What each virtual channel of the downlink carries, and how many of its frames the dish lost. A lost frame can cost a whole image or product. Imagery comes in bursts, so an hour shows every channel.</p>
@@ -267,92 +354,11 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
  </section>
  <section class="block" id="hrEv" aria-labelledby="hEv">
   <div class="bh"><h2 id="hEv">Events and predictions</h2></div>
+  <p class="why">Everything the station noticed in one list: time without a signal, restarts, aiming, EMWIN running late, the backups switching on and off, and notes.</p>
   <div class="grid2 wide">
-   <div><h3 class="sm">What happened · last 7 days</h3><ul class="events" id="evHrit"></ul></div>
+   <div><h3 class="sm">What happened · last 7 days</h3><ul class="events" id="evAll"></ul></div>
    <div><h3 class="sm">Coming up</h3><ul class="events" id="prList"></ul></div>
   </div>
- </section>
- <section class="block" id="hrImg" aria-labelledby="hIm">
-  <div class="bh"><h2 id="hIm">Imagery</h2><span class="hint" id="imCount"></span>
-   <div class="right" role="group" aria-label="Loop length"><button data-ls="3">3 h</button><button data-ls="6" class="on">6 h</button><button data-ls="24">24 h</button></div></div>
-  <div class="viewer">
-   <div style="min-width:0">
-    <div class="frame"><img id="imMain" alt=""><span class="fcap" id="imCap">Loading…</span></div>
-    <div class="play"><button id="imPlay">Play</button><input type="range" id="imScrub" min="0" max="0" value="0" aria-label="Frame"><span class="hint" id="imPos"></span></div>
-   </div>
-   <div style="min-width:0">
-    <h3 class="sm">Satellite and sector</h3><div class="chips" id="imSect" role="group" aria-label="Sector"></div>
-    <h3 class="sm" style="margin-top:12px">Channel</h3><div class="chips" id="imChan" role="group" aria-label="Channel"></div>
-    <p class="hint" id="imHelp"></p>
-    <p class="hint"><a id="imFull" href="#" target="_blank" rel="noopener">This frame at full resolution</a></p>
-   </div>
-  </div>
-  <p class="cap">Pictures decoded here from the HRIT downlink, as goesproc writes them; loops play the frames already on disk. Times are when the scan started. The meso sectors move to wherever NOAA is watching the weather.</p>
- </section>
-</div>
-<div class="tab" id="emwin" hidden>
- <div class="subnav" aria-label="EMWIN sections"><button data-go="emHealth">Feed health</button><button data-go="emWarn">Warnings</button><button data-go="emProd">Products</button><button data-go="emRadar">Radar and charts</button></div>
- <section class="block" id="emHealth" aria-labelledby="hFh">
-  <div class="bh"><h2 id="hFh">Feed health</h2></div>
-  <div class="tiles">
-   <div class="tile" id="eLagT"><div class="v" id="eLag">–</div><div class="l">behind NOAA right now</div></div>
-   <div class="tile"><div class="v" id="eHour">–</div><div class="l">products in the last hour</div></div>
-   <div class="tile"><div class="v" id="eBackup">–</div><div class="l">dish's internet backup</div></div>
-   <div class="tile"><div class="v" id="eNws">–</div><div class="l">current conditions from NWS</div></div>
-  </div>
-  <div class="grid2" style="margin-top:14px">
-   <div><h3 class="sm">Delay behind NOAA, hourly · 7 days</h3><canvas id="lagChart" height="220" aria-label="EMWIN delay per hour"></canvas>
-    <div class="key"><span><i class="sw" style="background:var(--alert)"></i>median delay of what arrived that hour</span><span><i class="sw" style="background:var(--dim);opacity:.25"></i>not recorded</span></div></div>
-   <div><h3 class="sm">Products received, hourly · 7 days</h3><canvas id="volChart" height="220" aria-label="EMWIN products per hour"></canvas>
-    <div class="key"><span><i class="sw" style="background:var(--series2)"></i>from the dish</span><span><i class="sw" style="background:var(--warn)"></i>over the internet (backup)</span></div></div>
-  </div>
-  <div class="grid2" style="margin-top:14px">
-   <div><h3 class="sm">Received in the last 24 hours, by kind</h3><div class="tbl"><table><tbody id="kinds"></tbody></table></div></div>
-   <div><h3 class="sm">Late spells, outages and notes · last 7 days</h3><ul class="events" id="evEmwin"></ul></div>
-  </div>
-  <p class="hint" id="emSince"></p>
- </section>
- <section class="block" id="emWarn" aria-labelledby="hWarn">
-  <div class="bh"><h2 id="hWarn">Warnings and watches in effect</h2><span class="hint" id="wCount"></span>
-   <div class="right" role="group" aria-label="Map view"><button data-mv="tx" class="on">Texas</button><button data-mv="us">All US</button><button data-mv="ak">Alaska</button><button data-mv="hi">Hawaii</button><button data-mv="pr">Puerto Rico</button><button data-mv="gu">Guam</button></div></div>
-  <div class="grid2 wide">
-   <div><div class="map" id="mapBox"><canvas id="mapC" aria-label="Map of the warnings and watches in effect. The list beside it has the same events."></canvas>
-    <div class="maptools"><button id="mapIn" aria-label="Zoom in" title="Zoom in">+</button><button id="mapOut" aria-label="Zoom out" title="Zoom out">−</button></div>
-    <div class="maptip" id="mapTip" hidden></div><div class="maphint" id="mapHint">Drag to move · pinch or ⌘/Ctrl + scroll to zoom</div></div>
-    <div class="wdet" id="wDet" hidden></div></div>
-   <div><h3 class="sm" id="wListHead">In view</h3><ul class="wlist" id="wList"><li class="hint">Loading…</li></ul></div>
-  </div>
-  <p class="cap" id="wNote">What the bot holds right now: the same warnings it answers with on the mesh. An outline is the storm's own polygon where NWS drew one, else the zones and counties the product names. Colours follow the NWS hazard map; the dashed line is the area the bot covers. Base map: Natural Earth.</p>
- </section>
- <section class="block" id="emProd" aria-labelledby="hProd">
-  <div class="bh"><h2 id="hProd">Product browser</h2><span class="hint" id="pCount"></span></div>
-  <div class="filters"><input type="search" id="pq" placeholder="Search names, AWIPS ids, offices or text" aria-label="Search products" autocomplete="off" spellcheck="false">
-   <select id="pOffice" aria-label="Office"><option value="">All offices</option></select></div>
-  <div class="chips" id="pKinds" role="group" aria-label="Kind"></div>
-  <div class="grid2">
-   <ul class="results" id="pList" role="listbox" aria-label="Products"><li class="t2">Loading…</li></ul>
-   <div style="min-width:0"><div class="rhead" id="pHead"></div><div class="reader" id="pText" tabindex="0">Pick a product to read it.</div></div>
-  </div>
-  <p class="cap" id="pNote"></p>
- </section>
- <section class="block" id="emRadar" aria-labelledby="hRad">
-  <div class="bh"><h2 id="hRad">Radar and charts</h2></div>
-  <div class="grid2">
-   <div style="min-width:0">
-    <div class="filters"><select id="radRegion" aria-label="Radar region"></select>
-     <select id="radSpan" aria-label="Loop length"><option value="2">Last 2 hours</option><option value="4" selected>Last 4 hours</option><option value="8">Last 8 hours</option></select></div>
-    <div class="radar"><img id="radImg" alt="Radar mosaic"></div>
-    <div class="play"><button id="radPlay">Play</button><input type="range" id="radScrub" min="0" max="0" value="0" aria-label="Radar frame"><span class="hint" id="radPos"></span></div>
-    <p class="hint" id="radCap"></p>
-   </div>
-   <div style="min-width:0">
-    <div class="chips" id="chChips" role="group" aria-label="Chart"></div>
-    <div class="radar chart"><img id="chImg" alt=""></div>
-    <div class="play"><button id="chPrev">‹ Older</button><button id="chNext">Newer ›</button><span class="hint" id="chPos"></span></div>
-    <p class="hint" id="chCap"></p>
-   </div>
-  </div>
-  <p class="cap">Radar mosaics and most charts come down with EMWIN, so they run as late as the feed does; the surface analysis and the tropical Atlantic charts come with HRIT's NWS channel. A loop plays its frames in the order they were made, whatever order they reached the dish.</p>
  </section>
 </div>
 </main>
@@ -369,6 +375,7 @@ const clockS=t=>new Date(t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2
 const n=v=>v==null?'–':Number(v).toLocaleString();
 function stat(id,level,value,detail){const el=$(id);el.className='stat'+(level?' '+level:'');el.querySelector('.v').textContent=value;el.querySelector('.d').textContent=detail||''}
 function tile(id,level){$(id).className='tile'+(level?' '+level:'')}
+function sigTile(level,value,label){tile('hSigT',level);$('hSig').textContent=value;$('hSigL').textContent=label}
 
 // ---------------------------------------------------------------- receiver (this Pi's dashboard)
 let rx={},bot=null,audio=null,osc=null,curGain=null,yMin=-60,yMax=0;
@@ -390,12 +397,12 @@ function renderRx(d){rx=Object.assign(rx,d);
   $('sUp').textContent=st.goesrecv_up_s!=null?age(st.goesrecv_up_s):'–';$('sDog').textContent=(st.watchdog||{}).restarts??'–';$('sThr').textContent=st.throttled==null?'–':st.throttled==='0x0'?'no throttling':'throttled ('+st.throttled+')';
   $('sTemp').textContent=st.temp!=null?st.temp.toFixed(0)+' °C':'–';$('sDisk').textContent=st.disk_free_gb!=null?st.disk_free_gb+' GB free':'–';
   renderImages(st.latest_images)}
- if(point){stat('stSat','info','Being aimed','The dish is being adjusted; reception is paused.');$('rxPill').textContent='Being aimed';$('rxPill').className='pill info';renderMeter(d.meter);return}
+ if(point){stat('stSat','info','Being aimed','The dish is being adjusted; reception is paused.');sigTile('','Being aimed','reception paused while the dish is adjusted');$('rxPill').textContent='Being aimed';$('rxPill').className='pill info';renderMeter(d.meter);return}
  $('sFeed').textContent=s.feed_alive?'live':'no data';
  const v=s.vit_avg,q=v==null?null:v<200?'good':v<600?'fair':'poor';
- if(!s.feed_alive)stat('stSat','bad','No data','The receiver is not reporting.');
- else if(!s.locked)stat('stSat','bad','No lock','GOES-19 is not being received.');
- else stat('stSat',q==='good'?'ok':'warn','Locked · '+q+' signal',`GOES-19 · locked for ${age(d.t-s.lock_since)}`);
+ if(!s.feed_alive){stat('stSat','bad','No data','The receiver is not reporting.');sigTile('bad','No data','the receiver is not reporting')}
+ else if(!s.locked){stat('stSat','bad','No lock','GOES-19 is not being received.');sigTile('bad','No lock','GOES-19 is not being received')}
+ else{stat('stSat',q==='good'?'ok':'warn','Locked · '+q+' signal',`GOES-19 · locked for ${age(d.t-s.lock_since)}`);sigTile(q==='good'?'good':'warn',q[0].toUpperCase()+q.slice(1),`signal · Viterbi ${v} · locked for ${age(d.t-s.lock_since)}`)}
  $('rxPill').textContent=!s.feed_alive?'No data':s.locked?'Locked · '+age(d.t-s.lock_since):'No lock';$('rxPill').className='pill '+(!s.feed_alive||!s.locked?'bad':q==='good'?'ok':'warn');
  $('rVit').textContent=v??'–';tile('tVit',v==null?'':v<200?'good':v<600?'warn':'bad');
  $('rPk').textContent=s.packets??'–';$('rDr').textContent=s.drops??'–';tile('tDr',s.drops>0?'warn':'');
@@ -465,7 +472,7 @@ function renderData(d){const fd=d.feed||{},ib=fd.internet_backup,nm=fd.nws_metar
  else if(nm.on){stat('stObs','info','From NWS, over the internet',[nm.since?'since '+clock(nm.since):'',nm.mode==='auto'?'until EMWIN is on time again':'switched on by hand',nm.last_error?'last fetch: '+nm.last_error:''].filter(Boolean).join(' · '));
   notes.push('Current conditions come from the National Weather Service over the internet in the meantime, so readings stay current.')}
  else stat('stObs','ok','From the dish',nm.mode==='auto'?`NWS over the internet takes over if EMWIN runs ${nm.auto_on_min}+ min late`:'NWS internet backup is switched off');
- const box=$('notice');box.classList.toggle('hidden',!notes.length);box.className='notice'+(notes.length?(lag>=120?' bad':' warn'):' hidden');box.textContent=notes.join(' ')}
+ const box=$('notice');box.classList.toggle('hidden',!notes.length);box.className='notice'+(notes.length?(lag>=120?' bad':' warn'):' hidden');box.textContent=notes.join(' ');$('hNote').textContent=notes.join(' ');$('hNote').classList.toggle('hidden',!notes.length)}
 
 let lastId=0,feedInit=false,started=null;
 function dvKey(ev){const d=ev.delivery;return d?`${d.result||''}${d.resent||0}${d.observed_by||0}${d.observed_repeats||0}`:''}
@@ -514,9 +521,11 @@ function pollBot(){fetch('/api/bot').then(r=>r.json()).then(renderBot).catch(()=
 pollBot();
 
 // ---------------------------------------------------------------- tabs (bare #token links)
-const TABS=['overview','hrit','emwin'];
-function showTab(tab,jump){if(!TABS.includes(tab))tab='overview';TABS.forEach(t=>{$(t).hidden=t!==tab;$('t-'+t).setAttribute('aria-selected',t===tab)});
- requestAnimationFrame(()=>{drawHistory();if(rx.history&&tab==='hrit'){drawConst((rx.stats||{}).const||[]);drawHist(rx.history)}if(tab==='emwin')emwinShown();if(tab==='hrit')imageryShown();LOOPS.forEach(l=>{if($(tab)&&!$(tab).contains(l.img))l.stop()});if(jump)$(jump).scrollIntoView({behavior:'smooth',block:'start'})})}
+// Weather is everything to look at, Station everything about whether the dish and feed work.
+// The tabs used to be the two parts of the downlink; their old addresses still land.
+const TABS=['overview','weather','station'],MOVED={hrit:'station',emwin:'weather'};
+function showTab(tab,jump){if(MOVED[tab]){tab=MOVED[tab];history.replaceState(null,'','#'+tab)}if(!TABS.includes(tab))tab='overview';TABS.forEach(t=>{$(t).hidden=t!==tab;$('t-'+t).setAttribute('aria-selected',t===tab)});
+ requestAnimationFrame(()=>{drawHistory();if(rx.history&&tab==='station'){drawConst((rx.stats||{}).const||[]);drawHist(rx.history)}if(tab==='weather'){emwinShown();imageryShown()}LOOPS.forEach(l=>{if($(tab)&&!$(tab).contains(l.img))l.stop()});if(jump)$(jump).scrollIntoView({behavior:'smooth',block:'start'})})}
 addEventListener('hashchange',()=>showTab(location.hash.slice(1)));
 document.querySelectorAll('[data-jump]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();history.replaceState(null,'',a.getAttribute('href'));showTab(a.getAttribute('href').slice(1),a.dataset.jump)}));
 document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>$(b.dataset.go).scrollIntoView({behavior:'smooth',block:'start'})));
@@ -564,12 +573,18 @@ addEventListener('resize',drawHistory);
 const LEVEL={bad:['bad','outage'],warn:['warn','late'],info:['info','note']};
 function evItem(e){const [cls,word]=LEVEL[e.level]||['','event'];const open=e.t_end==null&&['lock','pointing','emwin_late','inet_backup','nws_metar'].includes(e.kind);
  return `<li><time>${esc(when(e.t))}</time><div><span class="pill ${cls}" style="margin-right:6px">${open?'now':word}</span><b>${esc(e.title)}</b>${e.detail?`<div class="det">${esc(e.detail)}</div>`:''}</div></li>`}
-const HRIT_KINDS=['lock','restart','pointing','note'],EMWIN_KINDS=['emwin_late','inet_backup','nws_metar','note','lock'];
 function renderHrit(){if(!H)return;
  const ch=H.station||{},sun=(H.sun||{}).satellite||{};$('chain').innerHTML=[['Satellite',`${ch.satellite||'GOES-19'}, ${Math.abs(ch.sat_lon||75.2)}° W · HRIT/EMWIN downlink`],['Frequency',ch.freq_mhz?`${ch.freq_mhz.toFixed(1)} MHz · BPSK, 927 kbps`:'–'],['Aim from the dish',`${sun.compass??'–'}° compass (${sun.az??'–'}° true), ${sun.el??'–'}° up`],['Front end',`${ch.lna||'LNA'}${ch.bias_tee?', powered by the bias tee':''}`],['Radio',`${ch.radio||'SDR'}${ch.sample_msps?` at ${ch.sample_msps} MS/s`:''}${ch.gain_db!=null?`, tuner gain ${ch.gain_db} dB`:''}`],['Software','goesrecv (demodulator) → goesproc (images, EMWIN)']].map(([k,v])=>`<tr><td class="k">${k}</td><td class="w">${esc(v)}</td></tr>`).join('');
  const vcs=H.vc||[],tot=vcs.reduce((a,v)=>a+v.frames_per_min,0)||1;
  if(vcs.length)$('vcRows').innerHTML=[...vcs.filter(v=>v.vc!==63),...vcs.filter(v=>v.vc===63)].map(v=>`<tr${v.vc===63?' style="opacity:.6"':''}><td class="n">${v.vc}</td><td class="w">${v.name?esc(v.name):`Not identified yet${v.apids&&v.apids.length?` <span class="hint">(packet IDs ${v.apids.join(', ')})</span>`:''}`}</td><td class="n">${n(Math.round(v.frames_per_min))}</td><td><div class="bar"><i style="width:${(v.frames_per_min/tot*100).toFixed(1)}%"></i></div></td><td class="n">${v.lost_pct==null?'–':`<span class="pill ${v.lost_pct>=1?'warn':'ok'}">${v.lost_pct.toFixed(2)}%</span>`}</td><td class="n hint">${v.last_seen?age(H.now-v.last_seen)+' ago':'–'}</td></tr>`).join('')+(H.vc_minutes<60?`<tr><td colspan="6" class="hint">Counted over ${H.vc_minutes} min so far; a full hour shows every channel.</td></tr>`:'');
- const ev=(H.events||[]).filter(e=>HRIT_KINDS.includes(e.kind));$('evHrit').innerHTML=ev.length?ev.map(evItem).join(''):'<li class="hint">Nothing in the last 7 days.</li>';
+ const ev=H.events||[];$('evAll').innerHTML=ev.length?ev.map(evItem).join(''):'<li class="hint">Nothing in the last 7 days.</li>';
+ // health row: frames lost on the channels that carry something (63 is fill), and the last time without a lock
+ const real=vcs.filter(v=>v.vc!==63&&v.lost_pct!=null),fpm=real.reduce((a,v)=>a+v.frames_per_min,0),lost=fpm?real.reduce((a,v)=>a+v.lost_pct*v.frames_per_min,0)/fpm:null;
+ $('hLost').textContent=lost==null?'–':lost.toFixed(lost<1?2:1)+'%';tile('hLostT',lost==null?'':lost<1?'good':lost<5?'warn':'bad');
+ const out=ev.find(e=>e.kind==='lock'&&e.level==='bad');
+ if(!out){$('hOut').textContent='None';$('hOutL').textContent='no time without a signal in 7 days';tile('hOutT','good')}
+ else if(out.t_end==null){$('hOut').textContent='Now';$('hOutL').textContent='no signal since '+when(out.t);tile('hOutT','bad')}
+ else{$('hOut').textContent=new Date(out.t*1000).toLocaleDateString([],{month:'short',day:'numeric'});$('hOutL').textContent=`last time without a signal, for ${age(out.t_end-out.t)}`;tile('hOutT',H.now-out.t_end<86400?'warn':'')}
  const p=H.sun||{},items=[];if(p.today){const s=p.today;items.push([clock(s.at)+' today',`Sun ${s.closest_deg}° from the satellite`,s.closest_deg<2?'Close: expect a few minutes of lost signal around then.':s.closest_deg<12?'Close enough to add some noise around midday.':'Too far to matter.'])}
  (p.windows||[]).forEach(w=>{const a=new Date(w.start+'T12:00'),b=new Date(w.end+'T12:00'),f=d=>d.toLocaleDateString([],{month:'short',day:'numeric',year:a.getFullYear()!==new Date().getFullYear()?'numeric':undefined});items.push([`${f(a)} – ${f(b)}`,'Sun passes behind the satellite',`Within 5° each day around ${clock(w.best_at)}, closest ${w.best}° on ${new Date(w.best_at*1000).toLocaleDateString([],{month:'short',day:'numeric'})}. Expect a few minutes of lost signal each day near the centre.`])});
  $('prList').innerHTML=items.map(([t,w,d])=>`<li><time>${esc(t)}</time><div><b>${esc(w)}</b><div class="det">${esc(d)}</div></div></li>`).join('');
@@ -579,9 +594,10 @@ const KIND={SA:'Airport reports (METAR)',SP:'Special airport reports',FT:'Airpor
 // NWS feed), so every card on the page says the same; the history's own is the fallback.
 function renderFeedHealth(){if(!E)return;const fd=(bot&&bot.feed)||{},ib=fd.internet_backup,nm=fd.nws_metar,lag=fd.lag_min!=null?fd.lag_min:E.lag_now;
  $('eLag').textContent=lag==null?'–':lag<1?'on time':late(Math.round(lag));tile('eLagT',lag==null?'':lag<30?'good':lag<120?'warn':'bad');
- $('eHour').textContent=n(E.last_hour.files+E.last_hour.inet);$('eBackup').textContent=ib?(ib.on?'on':'off'):'–';$('eNws').textContent=nm?(nm.on?'on':'off'):'–';
- const k=E.kinds_24h||[],kmax=Math.max(1,...k.map(r=>r[1]));$('kinds').innerHTML=k.map(([c,v])=>`<tr><td class="w">${esc(KIND[c]||'Other')} <span class="hint">${esc(c)}</span></td><td style="width:40%"><div class="bar"><i style="width:${v/kmax*100}%"></i></div></td><td class="n">${n(v)}</td></tr>`).join('');
- const ev=(E.events||[]).filter(e=>EMWIN_KINDS.includes(e.kind));$('evEmwin').innerHTML=ev.length?ev.map(evItem).join(''):'<li class="hint">Nothing in the last 7 days.</li>';
+ $('eHour').textContent=`· ${n(E.last_hour.files+E.last_hour.inet)} in the last hour`;
+ $('eBackup').textContent=ib?(ib.on?'On':'Off'):'–';tile('eBackupT',ib?(ib.on?'warn':'good'):'');$('eNws').textContent=nm?(nm.on?'On':'Off'):'–';tile('eNwsT',nm&&nm.on?'warn':'');
+ const k=E.kinds_24h||[],kmax=Math.max(1,...k.map(r=>r[1])),half=Math.ceil(k.length/2),row=([c,v])=>`<tr><td class="w">${esc(KIND[c]||'Other')} <span class="hint">${esc(c)}</span></td><td style="width:40%"><div class="bar"><i style="width:${v/kmax*100}%"></i></div></td><td class="n">${n(v)}</td></tr>`;
+ $('kindsA').innerHTML=k.slice(0,half).map(row).join('');$('kindsB').innerHTML=k.slice(half).map(row).join('');
  $('emSince').textContent=E.recorded_since?`History from ${when(E.recorded_since)}, rebuilt at install from the products on disk, then recorded minute by minute.`:'';
  $('mLag').textContent=lag==null?'–':lag<1?'On time now':late(Math.round(lag))+' late now'}
 function fetchHistory(){Promise.all([fetch('/api/hrit?hours='+vRange).then(r=>r.json()),fetch('/api/emwin?hours=168').then(r=>r.json())]).then(([h,e])=>{H=h;E=e;renderHrit();renderFeedHealth();drawHistory()}).catch(()=>{}).finally(()=>setTimeout(fetchHistory,60000))}
@@ -670,10 +686,10 @@ function fetchWarnings(){fetch('/api/warnings').then(r=>r.json()).then(d=>{if(d.
   $('wNote').dataset.base=$('wNote').dataset.base||$('wNote').textContent;$('wNote').textContent=(lag!=null&&lag>=30?`EMWIN is running ${late(lag)} late, so this is what had arrived by then. `:'')+$('wNote').dataset.base;
   drawMap();renderWarnList()}).catch(()=>{$('wCount').textContent='Could not load the warnings.'})}
 function fetchBasemap(){return fetch('/api/basemap').then(r=>r.json()).then(d=>{BM=d;projKey='';reproject();drawMap();renderWarnList()}).catch(()=>{BM={error:'The base map did not load.'};drawMap()})}
-function emwinShown(){if(!emwinStarted){emwinStarted=true;sizeMap();fitView();fetchBasemap().then(fetchWarnings);fetchProducts();fetchRadar();setInterval(()=>{if(!$('emwin').hidden)fetchRadar(true)},60000);
-  setInterval(()=>{if(!$('emwin').hidden)fetchWarnings()},120000);setInterval(()=>{if(!$('emwin').hidden&&!PQ.q)fetchProducts(true)},60000)}
+function emwinShown(){if(!emwinStarted){emwinStarted=true;sizeMap();fitView();fetchBasemap().then(fetchWarnings);fetchProducts();fetchRadar();setInterval(()=>{if(!$('weather').hidden)fetchRadar(true)},60000);
+  setInterval(()=>{if(!$('weather').hidden)fetchWarnings()},120000);setInterval(()=>{if(!$('weather').hidden&&!PQ.q)fetchProducts(true)},60000)}
  else{drawMap()}}
-addEventListener('resize',()=>{if(!$('emwin').hidden){drawMap();listSoon()}});
+addEventListener('resize',()=>{if(!$('weather').hidden){drawMap();listSoon()}});
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',drawMap);
 
 // ---------------------------------------------------------------- product browser (/api/products, /api/product)
@@ -744,7 +760,7 @@ function renderImagery(refresh){const secs=(IM&&IM.sectors)||[];if(!secs.length)
  const key=imSect+imChan+imSpan+pick.map(f=>f[1]).join();if(refresh&&key===imKey)return;imKey=key;
  imLoop.set(pick.map(f=>({src:'/thumb/'+encodeURI(f[1])+'?s=1080',full:'/img/'+encodeURI(f[1]),t:f[0],sat:s.satellite.split(',')[0],sector:s.name,ch:c.name})),refresh)}
 document.querySelectorAll('[data-ls]').forEach(b=>b.addEventListener('click',()=>{imSpan=+b.dataset.ls;document.querySelectorAll('[data-ls]').forEach(o=>o.classList.toggle('on',o===b));renderImagery()}));
-function imageryShown(){if(imStarted)return;imStarted=true;fetchImagery();setInterval(()=>{if(!$('hrit').hidden)fetchImagery(true)},60000)}
+function imageryShown(){if(imStarted)return;imStarted=true;fetchImagery();setInterval(()=>{if(!$('weather').hidden)fetchImagery(true)},60000)}
 
 // ---------------------------------------------------------------- radar and charts (/api/radar, EMWIN tab)
 let RD=null,radRegion=null,radKey='',chSel='usa',chIdx=-1,chLen=0;

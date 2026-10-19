@@ -168,6 +168,41 @@ def test_a_condition_open_at_install_is_continued_not_duplicated(tmp_path):
     assert closed[0][1] == t + 60 and closed[0][0].startswith("Current conditions from NWS for")
 
 
+def test_a_condition_back_within_ten_minutes_continues_its_event(tmp_path):
+    # The bot restarting reports its NWS feed off for a minute: one spell, not two.
+    store = sh.Store(str(tmp_path / "h.db"))
+    store.db.execute("DELETE FROM events")
+    ev, t = sh.Events(store), 1_800_000_000
+    _observe(ev, store, t, nws={"on": True, "reason": "EMWIN 5 h late"})
+    _observe(ev, store, t + 3600, nws={"on": False})
+    _observe(ev, store, t + 3660, nws={"on": True, "reason": "EMWIN 5 h late"})
+    assert _events(store) == [("nws_metar", "info", "Current conditions from NWS over the internet", t, None)]
+    _observe(ev, store, t + 7200, nws={"on": False})
+    _observe(ev, store, t + 7200 + 900, nws={"on": True})          # 15 min later: a new spell
+    rows = _events(store)
+    assert len(rows) == 2 and rows[0][2:] == ("Current conditions from NWS for 2 h 00 min", t, t + 7200)
+
+
+def test_mend_joins_events_split_before_rejoining_existed(tmp_path):
+    # Oct 18 as recorded: on by hand, then automatic (both written in at install), then the
+    # bot's restart at 23:10 split the automatic spell, the second half recorded live.
+    store = sh.Store(str(tmp_path / "h.db"))
+    store.db.execute("DELETE FROM events")
+    t = 1_800_000_000
+    for t0, t1, title, src in ((t - 27300, t - 60, "Switched on by hand", "seed"),
+                               (t, t + 10380, "Current conditions from NWS for 2 h 53 min", "seed"),
+                               (t + 10440, None, "Current conditions from NWS over the internet", "live"),
+                               (t - 90000, t - 86400, "Current conditions from NWS for 1 h 00 min", "live")):
+        store.db.execute("INSERT INTO events (t, t_end, kind, level, title, detail, source) VALUES (?,?,?,?,?,?,?)",
+                         (t0, t1, "nws_metar", "info", title, "", src))
+    with store.tx() as db:
+        assert sh.Events(store).mend(db) == 1
+    rows = store.rows("SELECT t, t_end, title FROM events ORDER BY t")
+    assert rows == [(t - 90000, t - 86400, "Current conditions from NWS for 1 h 00 min"),
+                    (t - 27300, t - 60, "Switched on by hand"),
+                    (t, None, "Current conditions from NWS over the internet")]
+
+
 def test_the_sun_passes_behind_goes19_from_austin_in_early_october_and_march():
     sun = sh.SunPredictor(30.27, -97.74, -75.2, "America/Chicago", mag_decl=2.6)
     assert (round(sun.az, 1), round(sun.el, 1)) == (140.5, 47.0)

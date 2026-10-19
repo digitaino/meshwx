@@ -407,6 +407,12 @@ class Events:
     late at install); one whose condition is gone by then is closed at the first look."""
 
     LATE_ON, LATE_OFF, LATE_HOLD = 30, 10, 3600     # minutes late, minutes late, seconds on time
+    # A condition back within this many seconds continues its event: a restart of the bot
+    # reports its backups off for a minute, which split one NWS spell in two on Oct 18.
+    REJOIN_S = 600
+    # The title a condition's event gets when it ends, by kind.
+    CLOSED = {"pointing": "Pointing mode for {}", "lock": "No lock for {}",
+              "inet_backup": "Internet backup for {}", "nws_metar": "Current conditions from NWS for {}"}
 
     def __init__(self, store: Store):
         self.store = store
@@ -421,13 +427,40 @@ class Events:
         db.execute("INSERT INTO events (t, kind, level, title, detail, source) VALUES (?,?,?,?,?,?)",
                    (int(now), kind, level, title, detail, "live"))
 
-    def _condition(self, db, now, kind, active, level, title, detail="", closed_title=None):
+    def _condition(self, db, now, kind, active, level, title, detail=""):
         row = self._open(kind)
         if active and row is None:
-            self._start(db, now, kind, level, title, detail)
+            back = self.store.rows("SELECT id FROM events WHERE kind=? AND t_end >= ? ORDER BY t_end DESC LIMIT 1",
+                                   (kind, int(now - self.REJOIN_S)))
+            if back:
+                db.execute("UPDATE events SET t_end=NULL, title=? WHERE id=?", (title, back[0][0]))
+            else:
+                self._start(db, now, kind, level, title, detail)
         elif not active and row is not None:
+            closed = self.CLOSED.get(kind)
             db.execute("UPDATE events SET t_end=?, title=COALESCE(?, title) WHERE id=?",
-                       (int(now), closed_title(now - row[1]) if closed_title else None, row[0]))
+                       (int(now), closed.format(fmt_span(now - row[1])) if closed else None, row[0]))
+
+    def mend(self, db) -> int:
+        """Join events of one kind that a gap under REJOIN_S split (recorded before rejoining
+        existed); returns how many were folded in. Only an event recorded live is folded into
+        the one before it: two written by hand (the NWS feed on by hand, then automatic, on
+        Oct 18) stay two."""
+        folded = 0
+        for kind, closed in self.CLOSED.items():
+            rows = self.store.rows("SELECT id, t, t_end, title, source FROM events WHERE kind=? ORDER BY t", (kind,))
+            keep = None
+            for r in rows:
+                if keep and keep[2] is not None and r[4] == "live" and r[1] - keep[2] <= self.REJOIN_S:
+                    t_end = r[2]
+                    title = r[3] if t_end is None else closed.format(fmt_span(t_end - keep[1]))
+                    db.execute("UPDATE events SET t_end=?, title=? WHERE id=?", (t_end, title, keep[0]))
+                    db.execute("DELETE FROM events WHERE id=?", (r[0],))
+                    keep = (keep[0], keep[1], t_end, title)
+                    folded += 1
+                else:
+                    keep = r
+        return folded
 
     def _late(self, db, now, lag_30):
         """EMWIN running late: on at LATE_ON minutes, off after LATE_HOLD at LATE_OFF or less.
@@ -457,10 +490,9 @@ class Events:
         if mode == "point":
             self._condition(db, now, "pointing", True, "info", "Pointing mode", "The dish was being aimed; reception paused.")
         else:
-            self._condition(db, now, "pointing", False, "info", "", closed_title=lambda s: f"Pointing mode for {fmt_span(s)}")
+            self._condition(db, now, "pointing", False, "info", "")
             if locked is not None:
-                self._condition(db, now, "lock", locked == 0, "bad", "No lock", "The receiver is decoding nothing.",
-                                closed_title=lambda s: f"No lock for {fmt_span(s)}")
+                self._condition(db, now, "lock", locked == 0, "bad", "No lock", "The receiver is decoding nothing.")
         prev_up = self.prev.get("up_s")
         if up_s is not None and prev_up is not None and up_s < prev_up - 30:
             by_watchdog = watchdog > self.prev.get("watchdog", watchdog)
@@ -469,11 +501,10 @@ class Events:
                         "No packets for 10 minutes." if by_watchdog else "")
         if backup_on is not None:
             self._condition(db, now, "inet_backup", backup_on, "warn", "Dish silent: products over the internet",
-                            "The bot's internet backup is on.", closed_title=lambda s: f"Internet backup for {fmt_span(s)}")
+                            "The bot's internet backup is on.")
         if nws is not None:
             self._condition(db, now, "nws_metar", bool(nws.get("on")), "info",
-                            "Current conditions from NWS over the internet", nws.get("reason") or "",
-                            closed_title=lambda s: f"Current conditions from NWS for {fmt_span(s)}")
+                            "Current conditions from NWS over the internet", nws.get("reason") or "")
         if lag_30 is not None:
             self._late(db, now, lag_30)
         self.prev.update(up_s=up_s, watchdog=watchdog)
@@ -503,6 +534,8 @@ class Recorder:
                 db.executemany("INSERT OR IGNORE INTO emwin (t, files, inet, lag_med, lag_n) VALUES (?,?,?,?,?)", rows)
                 db.executemany("INSERT OR IGNORE INTO emwin_kind (t, kind, n) VALUES (?,?,?)",
                                [(t, k, n) for (t, k), n in kinds.items()])
+        with self.store.tx() as db:
+            self.events.mend(db)
         self.arrivals.poll()          # learn what is on disk now; the next poll counts what is new
         self.vc.take()
         last_prune = 0.0

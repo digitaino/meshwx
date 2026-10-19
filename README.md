@@ -605,17 +605,19 @@ the uplink they run (`lag_min`, the median over the dish's last 50 files of
 the last hour; times in the bundle are Unix seconds), and the card shows
 both.
 
-The page has three tabs. Overview is the above. HRIT and EMWIN carry 7 days of
-station history (`station_history.py`, kept in `~/goes/history.db`): signal,
-traffic per virtual channel, EMWIN delay and volume, events and sun-outage
-predictions. The HRIT tab also has an imagery viewer that loops the last 3, 6 or
-24 hours of every sector and channel goesproc writes (`imagery.py`; the 1080 px
-loop frames of the last six hours are made ahead in the thumbnail cache). The
-EMWIN tab has radar loops and charts from the EMWIN and HRIT images, and a
-warnings map drawn from the portal's `/api/public/warnings` (every active event the bot holds, as outlines, and the
+The page has three tabs. Overview is the above. Weather is everything to look
+at: a warnings map drawn from the portal's `/api/public/warnings` (every active event the bot holds, as outlines, and the
 area it covers; proxied at `/api/warnings`) over a Natural Earth base map from
-goestools' own files, and a browser over the last two days of products on disk
-(`emwin_tab.py`, office names from `offices.json`). To update the page:
+goestools' own files, radar loops and charts from the EMWIN and HRIT images, an
+imagery viewer that loops the last 3, 6 or 24 hours of every sector and channel
+goesproc writes (`imagery.py`; the 1080 px loop frames of the last six hours are
+made ahead in the thumbnail cache), and a browser over the last two days of
+products on disk (`emwin_tab.py`, office names from `offices.json`). Station is
+everything about whether the dish and the feed work, from 7 days of history
+(`station_history.py`, kept in `~/goes/history.db`): a health row, the live
+signal, signal history, the EMWIN feed's delay and volume, traffic per virtual
+channel, and one list of events with the sun-outage predictions. The old
+`#hrit` and `#emwin` addresses land on Station and Weather. To update the page:
 
 ```bash
 scp deploy/goes-dashboard/{dashboard.py,dashboard.html,station_history.py,emwin_tab.py,imagery.py,offices.json} digitaino@mesh-wx.digitaino.com:goes/

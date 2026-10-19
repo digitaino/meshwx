@@ -83,11 +83,14 @@ def test_a_feed_file_is_an_hourly_collective_the_store_reads():
     prod = nws_metar.collective(nws_metar.reports_in(FEED_FILE), written, 19012345)
     assert prod["filename"] == "A_SAUS99NWSF181655_C_NWSF_20261018165500_19012345-2-SAHOURLY.TXT"
     assert prod["source"] == "internet" and prod["timestamp"] == written
+    # The store keeps hours, not days, so the copy it reads is written now: one stamped
+    # Oct 18 started expiring at ingest once the clock passed it (found 2026-10-19).
+    now = datetime.now(UTC).replace(microsecond=0)
     store = WeatherStore()
-    store.ingest([prod], log=False)
+    store.ingest([nws_metar.collective(nws_metar.reports_in(FEED_FILE), now, 19012346)], log=False)
     report, ts = store._find_metar_raw("KATT")
     assert report.startswith("KATT 181651Z AUTO VRB03KT") and report.endswith("T01940050 $")
-    assert ts == written
+    assert ts == now
     assert store._find_metar_raw("KDFW")[0].startswith("KDFW 181702Z")
 
 
