@@ -191,6 +191,15 @@ canvas { width: 100%; display: block; background: var(--inset); border-radius: 1
 .meter { height: 28px; background: var(--inset); border-radius: 8px; overflow: hidden; position: relative; margin: 8px 0 4px; }
 .meter .fill { height: 100%; background: linear-gradient(90deg, var(--bad), var(--warn) 40%, var(--ok) 70%); width: 0; transition: width .3s; }
 .meter .pk { position: absolute; top: 0; width: 2px; height: 100%; background: var(--fg); }
+/* A chart's hover cursor and card (chartHover in portal.js). */
+.charthost { position: relative; }
+canvas.hoverable { cursor: crosshair; }
+.chartline { position: absolute; width: 1px; background: var(--fg); opacity: .4; pointer-events: none; }
+.charttip { position: absolute; z-index: 5; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .15); padding: 6px 10px; font-size: 12px; line-height: 1.45; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.charttip table { width: auto; font-size: inherit; border-collapse: collapse; margin-top: 2px; }
+.charttip td { padding: 0 0 0 12px; border: 0; } .charttip td:first-child { padding-left: 0; color: var(--dim); }
+.charttip .sub { color: var(--dim); margin-top: 6px; border-top: 1px solid var(--line); padding-top: 4px; }
 .bigsnr { font-size: 60px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
 .key { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--dim); margin-top: 8px; }
 .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 5px; }

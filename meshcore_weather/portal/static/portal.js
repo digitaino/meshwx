@@ -99,6 +99,43 @@ function canvas(id, h) {
   return [x, c.width, c.height, dpr];
 }
 
+// Hover (or a finger held) on a chart: a cursor at the sample under the
+// pointer and a card of its figures. `pick(f)`, f the pointer's fraction of
+// the way across, gives {x: the sample's fraction across, html} or null. The
+// returned function shows it again for the pointer where it is; the chart's
+// redraw calls it, so the card follows new data.
+function chartHover(id, pick) {
+  var c = $(id), host = c.parentNode, at = null;
+  var line = document.createElement("div"), tip = document.createElement("div");
+  host.classList.add("charthost");
+  c.classList.add("hoverable");
+  line.className = "chartline"; tip.className = "charttip";
+  line.hidden = tip.hidden = true;
+  host.appendChild(line); host.appendChild(tip);
+  function show() {
+    var w = c.clientWidth, p = at == null || !w ? null : pick(Math.max(0, Math.min(1, at / w)));
+    line.hidden = tip.hidden = !p;
+    if (!p) return;
+    var left = c.offsetLeft + p.x * w;
+    line.style.left = left + "px"; line.style.top = c.offsetTop + "px"; line.style.height = c.clientHeight + "px";
+    tip.innerHTML = p.html;
+    var tw = tip.offsetWidth;            // right of the cursor, or left of it near the right edge
+    tip.style.left = Math.max(c.offsetLeft, p.x * w + 12 + tw > w ? left - 12 - tw : left + 12) + "px";
+    tip.style.top = c.offsetTop + 6 + "px";
+  }
+  function move(e) { at = e.offsetX; show(); }
+  function out() { at = null; show(); }
+  c.addEventListener("pointermove", move);
+  c.addEventListener("pointerdown", move);
+  c.addEventListener("pointerleave", out);
+  c.addEventListener("pointercancel", out);
+  return show;
+}
+
+function tipRows(rows) {
+  return "<table>" + rows.map(function (r) { return "<tr><td>" + esc(r[0]) + "</td><td>" + esc(r[1]) + "</td></tr>"; }).join("") + "</table>";
+}
+
 // A live stream: hello frame → green dot, error → red dot, items → onEvent.
 function liveStream(url, onEvent, dotId) {
   var es = new EventSource(url);
@@ -1060,8 +1097,10 @@ var Portal = {
 
   station: {
     _timer: null, _mtimer: null, _sse: null, _mode: null, _gains: null, _yMin: null, _yMax: null,
+    _hovers: null, _hist: null, _snr: null, _spec: null,
     onEnter: function () {
       var s = this;
+      this._hoverSetup();
       this.load();
       // The receiver as the dashboard streams it, twice a second, as on
       // goes.digitaino.com; the feed and the fill move by the minute.
@@ -1122,11 +1161,59 @@ var Portal = {
       this._mode = mode;
     },
 
+    // Hover on the three graphs: the second (or the frequency) under the pointer, in figures.
+    _hoverSetup: function () {
+      if (this._hovers) return;
+      var s = this;
+      this._hovers = {
+        hist: chartHover("sat-chart", function (f) { return s._histAt(f); }),
+        snr: chartHover("m-snrh", function (f) { return s._snrAt(f); }),
+        spec: chartHover("m-spec", function (f) { return s._specAt(f); }),
+      };
+    },
+    _histAt: function (f) {
+      var h = this._hist;
+      if (!h || !h.length) return null;
+      var i = Math.min(h.length - 1, Math.floor(f * h.length)), r = h[i];
+      // The minute up to it as well: one second's figures jump about.
+      var vits = [], pk = 0, dr = 0;
+      h.forEach(function (q) {
+        if (q[0] > r[0] - 60 && q[0] <= r[0]) { if (q[1] != null) vits.push(q[1]); pk += q[2] || 0; dr += q[3] || 0; }
+      });
+      var avg = vits.length ? Math.round(vits.reduce(function (a, b) { return a + b; }, 0) / vits.length) : null;
+      var word = function (v) { return v == null ? "–" : v + (v < 200 ? " (good)" : v < 600 ? " (fair)" : " (poor)"); };
+      return { x: (i + 0.5) / h.length, html: "<b>" + hhmmss(r[0]) + "</b> · " + agoAt(r[0]) + " ago" +
+        tipRows([["Viterbi errors", word(r[1])], ["packets", r[2] != null ? r[2] : "–"], ["dropped", r[3] != null ? r[3] : "–"],
+                 ["Reed-Solomon fixes", r[4] != null ? r[4] + " bytes" : "–"]]) +
+        '<div class="sub">the minute up to then</div>' +
+        tipRows([["Viterbi errors", avg == null ? "–" : "avg " + word(avg)], ["packets", pk.toLocaleString()],
+                 ["dropped", dr + (pk ? " (" + (dr * 100 / pk).toFixed(1) + "%)" : "")]]) };
+    },
+    _snrAt: function (f) {
+      var d = this._snr;
+      if (!d || !d.h.length) return null;
+      var t = d.t0 + f * (d.t1 - d.t0), r = d.h.reduce(function (a, b) { return Math.abs(b[0] - t) < Math.abs(a[0] - t) ? b : a; });
+      var s = r[1];
+      return { x: (r[0] - d.t0) / ((d.t1 - d.t0) || 1), html: "<b>" + hhmmss(r[0]) + "</b> · " + agoAt(r[0]) + " ago" +
+        tipRows([["signal", s == null ? "–" : s.toFixed(1) + " dB"],
+                 ["", s == null ? "" : s < 2 ? "no signal" : s < 5 ? "signal found, fine-tune" : s < 9 ? "good, will decode" : "excellent"]]) };
+    },
+    _specAt: function (f) {
+      var d = this._spec;
+      if (!d) return null;
+      var fq = d.f0 + f * (d.f1 - d.f0), i = 0;
+      d.freqs.forEach(function (v, j) { if (Math.abs(v - fq) < Math.abs(d.freqs[i] - fq)) i = j; });
+      var at = d.freqs[i], inside = function (r) { return r && at >= r[0] && at <= r[1]; };
+      return { x: (at - d.f0) / ((d.f1 - d.f0) || 1), html: "<b>" + (at / 1e6).toFixed(3) + " MHz</b>" +
+        tipRows([["level", d.db[i] != null ? d.db[i].toFixed(1) + " dB" : "–"],
+                 ["", inside(d.inband) ? "the downlink" : (d.oob || []).some(inside) ? "noise reference" : ""]]) };
+    },
+
     // Viterbi errors (line) and dropped packets (bars) over the last 15 minutes,
-    // from the receiver's own history: [t, vit, packets, drops].
+    // from the receiver's own history: [t, vit, packets, drops, rs].
     drawHistory: function (h) {
       if (!Array.isArray(h) || !h.length) return;
-      h = h.slice(-900);
+      h = this._hist = h.slice(-900);
       var c = canvas("sat-chart", 160), x = c[0], W = c[1], H = c[2], dpr = c[3];
       var vit = h.map(function (r) { return r[1]; }), drops = h.map(function (r) { return r[3]; });
       var vmax = Math.max(400, Math.max.apply(null, vit)), dmax = Math.max(5, Math.max.apply(null, drops));
@@ -1139,6 +1226,7 @@ var Portal = {
       x.globalAlpha = 1; x.strokeStyle = css("--alert"); x.lineWidth = 1.5 * dpr; x.beginPath();
       vit.forEach(function (v, i) { var y = H - 6 * dpr - (v / vmax) * (H - 18 * dpr); if (i === 0) x.moveTo(0, y); else x.lineTo(i * dx, y); });
       x.stroke();
+      if (this._hovers) this._hovers.hist();
     },
 
     renderFeed: function (feed) {
@@ -1237,6 +1325,8 @@ var Portal = {
       d.freqs.forEach(function (fq, i) { if (i) x.lineTo(px(fq), py(d.db[i])); else x.moveTo(px(fq), py(d.db[i])); });
       x.stroke();
       if (d.oob_lvl != null) { x.strokeStyle = css("--dim"); x.setLineDash([6 * dpr, 4 * dpr]); x.beginPath(); x.moveTo(0, py(d.oob_lvl)); x.lineTo(W, py(d.oob_lvl)); x.stroke(); x.setLineDash([]); }
+      this._spec = { freqs: d.freqs, db: d.db, f0: f0, f1: f1, inband: d.inband, oob: d.oob };
+      if (this._hovers) this._hovers.spec();
     },
     drawSnr: function (h) {
       if (!h.length) return;
@@ -1248,6 +1338,8 @@ var Portal = {
       x.strokeStyle = css("--series2"); x.lineWidth = 2 * dpr; x.beginPath();
       h.forEach(function (p, i) { if (i) x.lineTo(px(p[0]), py(p[1])); else x.moveTo(px(p[0]), py(p[1])); });
       x.stroke();
+      this._snr = { h: h, t0: t0, t1: t1 };
+      if (this._hovers) this._hovers.snr();
     },
 
     setMode: function (mode) {
