@@ -238,6 +238,18 @@
     <p class="cap">Seven days of signal, the per-channel traffic and the events list are on the public page's <a id="pub-station" href="#" target="_blank" rel="noopener">Station tab</a>.</p>
   </section>
 
+  <section class="block" id="station-trend" aria-labelledby="hTrend">
+    <div class="bh"><h2 id="hTrend">Signal and EMWIN delay</h2>
+      <div class="right chips" id="trend-range" role="group" aria-label="Range"><button data-h="24" onclick="Portal.station.trendRange(24)">1 day</button><button data-h="72" class="on" onclick="Portal.station.trendRange(72)">3 days</button><button data-h="168" onclick="Portal.station.trendRange(168)">7 days</button></div></div>
+    <h3 class="sm">EMWIN delay behind NOAA, and products received, per hour</h3>
+    <canvas id="trend-lag" height="180" aria-label="EMWIN delay and products received per hour"></canvas>
+    <div class="key"><span><i class="sw" style="background:var(--alert)"></i>delay (the hour's median)</span><span><i class="sw" style="background:var(--series2)"></i>products from the dish</span><span><i class="sw" style="background:var(--warn)"></i>from the internet</span></div>
+    <h3 class="sm mt">Signal</h3>
+    <canvas id="trend-vit" height="180" aria-label="Viterbi errors over time"></canvas>
+    <div class="key"><span><i class="sw" style="background:var(--alert)"></i>Viterbi errors per frame (median; the band from the 10th to the 90th percentile)</span><span><i class="sw" style="background:var(--bad);opacity:.35"></i>no lock</span></div>
+    <p class="hint" id="trend-msg" hidden></p>
+  </section>
+
   <section class="block" id="station-feed" aria-labelledby="hFeed">
     <div class="bh"><h2 id="hFeed">EMWIN feed and internet fill</h2><span class="pill" id="fill-pill">–</span><div class="right"><a class="hint" href="#settings/feed">Fill settings →</a></div></div>
     <p class="why" id="fill-why">The feed comes first. Anything it has not delivered within its grace is taken from NWS over the internet.</p>

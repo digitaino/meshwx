@@ -701,6 +701,31 @@ def test_the_receiver_stream_relays_the_dashboards_frames_and_says_when_it_fails
     assert got[3] == {"_error": "503 Service Unavailable"} and calls == ["/events", "/events"]
 
 
+def test_the_station_trend_is_the_dashboards_history_of_delay_and_signal(client, monkeypatch):
+    from meshcore_weather.portal.routes import admin
+    c, _ = client
+    asked = []
+
+    async def dashboard(path, method="GET", body=None):
+        asked.append(path)
+        if path.startswith("/api/emwin"):
+            return {"now": 100, "hourly": [[0, 400, 12, 95.5]], "recorded_since": 0}
+        return {"now": 100, "bucket_s": 360, "signal": [[0, 240, 180, 320, 3000, 40, 1.0]], "recorded_since": 0,
+                "events": [], "vc": []}
+
+    monkeypatch.setattr(admin, "_dashboard", dashboard)
+    d = c.get("/api/sdr/trend?hours=168").json()
+    assert sorted(asked) == ["/api/emwin?hours=168", "/api/hrit?hours=168"]
+    assert d["hourly"] == [[0, 400, 12, 95.5]] and d["signal"][0][1] == 240 and d["bucket_s"] == 360 and d["hours"] == 168
+    assert c.get("/api/sdr/trend?hours=500").status_code == 422          # 7 days is what the dashboard keeps
+
+    async def down(path, method="GET", body=None):
+        return {"_error": "connection refused"}
+
+    monkeypatch.setattr(admin, "_dashboard", down)
+    assert c.get("/api/sdr/trend").status_code == 502
+
+
 def test_public_notes_are_written_on_the_dashboard_over_localhost(client, monkeypatch):
     from meshcore_weather.portal.routes import admin
     c, _ = client

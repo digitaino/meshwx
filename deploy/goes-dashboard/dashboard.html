@@ -116,12 +116,6 @@ td.k{white-space:nowrap;max-width:none;width:1%;color:var(--dim)}
 .events .det{color:var(--dim);font-size:13px}
 @media(max-width:520px){.events li{grid-template-columns:1fr}}
 h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
-.mini{display:grid;gap:12px;grid-template-columns:1fr}
-@media(min-width:760px){.mini{grid-template-columns:1fr 1fr}}
-.mini a{display:block;text-decoration:none;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-.mini a:hover,.mini a:focus-visible{border-color:var(--acc)}
-.mini .k{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)}
-.mini .v{font-size:17px;font-weight:650;margin:2px 0 8px}
 /* Warnings map and product browser */
 .map{position:relative;user-select:none;-webkit-user-select:none}
 .map canvas{touch-action:none;cursor:grab}.map canvas.drag{cursor:grabbing}
@@ -176,10 +170,6 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
   <div class="stat" id="stData"><span class="dot" aria-hidden="true"></span><div><div class="k">Weather data</div><div class="v">Checking…</div><div class="d"></div></div></div>
  </section>
  <div class="notice hidden" id="notice" role="status"></div>
- <div class="mini">
-  <a href="#station" data-jump="emHealth"><div class="k">EMWIN delay · last 3 days</div><div class="v" id="mLag">–</div><canvas id="sparkLag" height="60" aria-label="EMWIN delay over the last three days"></canvas><div class="hint">Open the EMWIN feed →</div></a>
-  <a href="#station" data-jump="hrHist"><div class="k">Signal · last 3 days</div><div class="v" id="mVit">–</div><canvas id="sparkVit" height="60" aria-label="Viterbi errors over the last three days"></canvas><div class="hint">Open signal history →</div></a>
- </div>
 
  <section class="block" aria-labelledby="hAct">
   <h2 id="hAct">Mesh activity · last 24 hours</h2>
@@ -556,19 +546,18 @@ function drawVitHist(){if(!H||!visible('vitChart'))return;const rows=H.signal,t1
  x.fillStyle=css('--fg');(H.events||[]).filter(e=>e.kind==='restart'&&e.t>=t0).forEach(e=>{const X=px(e.t);x.beginPath();x.moveTo(X,10*dpr);x.lineTo(X-5*dpr,2*dpr);x.lineTo(X+5*dpr,2*dpr);x.fill()});
  if(!rows.length){x.fillStyle=css('--dim');x.fillText('The first minutes of history appear here within a minute of the dashboard starting.',pad+8*dpr,Hh/2)}}
 
-function drawLagChart(id,h,compact){if(!E||!visible(id))return;const rows=E.hourly,t1=E.now,t0=t1-(compact?72:168)*HOUR,[x,W,Hh,pad]=frame(id,h,compact?2:32),VM=compact?Math.max(60,...rows.map(r=>r[3]||0)):480;
- const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-(compact?4:14)*dpr-Math.min(v,VM)/VM*(Hh-(compact?8:26)*dpr);
- if(!compact){shadeUnrecorded(x,px,t0,E.recorded_since,Hh);x.strokeStyle=css('--line');x.setLineDash([4,4]);[[60,'1 h'],[180,'3 h'],[360,'6 h']].forEach(([v,l])=>{x.beginPath();x.moveTo(pad,py(v));x.lineTo(W,py(v));x.stroke();x.fillStyle=css('--dim');x.fillText(l,4*dpr,py(v)+4*dpr)});x.setLineDash([]);timeAxis(x,W,Hh,px,t0,t1,86400)}
+// The EMWIN delay and signal sparklines left the Overview at the owner's word (2026-10-19): the
+// operator's view of them is on wx-admin's Station tab; the public keeps these charts here.
+function drawLagChart(id,h){if(!E||!visible(id))return;const rows=E.hourly,t1=E.now,t0=t1-168*HOUR,[x,W,Hh,pad]=frame(id,h,32),VM=480;
+ const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-14*dpr-Math.min(v,VM)/VM*(Hh-26*dpr);
+ shadeUnrecorded(x,px,t0,E.recorded_since,Hh);x.strokeStyle=css('--line');x.setLineDash([4,4]);[[60,'1 h'],[180,'3 h'],[360,'6 h']].forEach(([v,l])=>{x.beginPath();x.moveTo(pad,py(v));x.lineTo(W,py(v));x.stroke();x.fillStyle=css('--dim');x.fillText(l,4*dpr,py(v)+4*dpr)});x.setLineDash([]);timeAxis(x,W,Hh,px,t0,t1,86400);
  x.strokeStyle=css('--alert');x.lineWidth=2*dpr;x.beginPath();let pen=false,last=null;rows.forEach(r=>{if(r[0]<t0||r[3]==null){pen=false;return}const X=px(r[0]+HOUR/2),Y=py(r[3]);pen?x.lineTo(X,Y):x.moveTo(X,Y);pen=true;last=[X,Y]});x.stroke();
  if(last){x.fillStyle=css('--alert');x.beginPath();x.arc(last[0],last[1],3.5*dpr,0,7);x.fill()}}
 function drawVolChart(){if(!E||!visible('volChart'))return;const rows=E.hourly,t1=E.now,t0=t1-168*HOUR,[x,W,Hh,pad]=frame('volChart',220,36),VM=Math.max(1500,...rows.map(r=>r[1]+r[2]));
  const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-14*dpr-v/VM*(Hh-26*dpr),bw=Math.max(1,px(HOUR)-px(0)-1*dpr);
  shadeUnrecorded(x,px,t0,E.recorded_since,Hh);x.strokeStyle=css('--line');x.fillStyle=css('--dim');x.setLineDash([4,4]);[1000,2000,4000].filter(v=>v<VM).forEach(v=>{x.beginPath();x.moveTo(pad,py(v));x.lineTo(W,py(v));x.stroke();x.fillText(v.toLocaleString(),2*dpr,py(v)+4*dpr)});x.setLineDash([]);timeAxis(x,W,Hh,px,t0,t1,86400);
  rows.forEach(r=>{if(r[0]<t0)return;x.fillStyle=css('--series2');x.globalAlpha=.85;x.fillRect(px(r[0]),py(r[1]),bw,Hh-14*dpr-py(r[1]));if(r[2]){x.fillStyle=css('--warn');x.fillRect(px(r[0]),py(r[1]+r[2]),bw,py(r[1])-py(r[1]+r[2]))}});x.globalAlpha=1}
-function drawSparkVit(){if(!H||!visible('sparkVit'))return;const rows=H.signal,t1=H.now,t0=t1-72*HOUR,[x,W,Hh]=frame('sparkVit',60,0),px=t=>(t-t0)/(t1-t0)*W,py=v=>Hh-4*dpr-Math.min(v,700)/700*(Hh-8*dpr);
- if(H.recorded_since&&H.recorded_since>t0){x.fillStyle=css('--dim');x.globalAlpha=.15;x.fillRect(0,0,px(H.recorded_since),Hh);x.globalAlpha=1}
- x.strokeStyle=css('--alert');x.lineWidth=1.5*dpr;x.beginPath();let pen=false;rows.forEach(r=>{if(r[0]<t0||r[1]==null){pen=false;return}pen?x.lineTo(px(r[0]),py(r[1])):x.moveTo(px(r[0]),py(r[1]));pen=true});x.stroke()}
-function drawHistory(){drawVitHist();drawLagChart('lagChart',220,false);drawLagChart('sparkLag',60,true);drawVolChart();drawSparkVit()}
+function drawHistory(){drawVitHist();drawLagChart('lagChart',220);drawVolChart()}
 addEventListener('resize',drawHistory);
 
 const LEVEL={bad:['bad','outage'],warn:['warn','late'],info:['info','note']};
@@ -589,7 +578,7 @@ function renderHrit(){if(!H)return;
  const p=H.sun||{},items=[];if(p.today){const s=p.today;items.push([clock(s.at)+' today',`Sun ${s.closest_deg}° from the satellite`,s.closest_deg<2?'Close: expect a few minutes of lost signal around then.':s.closest_deg<12?'Close enough to add some noise around midday.':'Too far to matter.'])}
  (p.windows||[]).forEach(w=>{const a=new Date(w.start+'T12:00'),b=new Date(w.end+'T12:00'),f=d=>d.toLocaleDateString([],{month:'short',day:'numeric',year:a.getFullYear()!==new Date().getFullYear()?'numeric':undefined});items.push([`${f(a)} – ${f(b)}`,'Sun passes behind the satellite',`Within 5° each day around ${clock(w.best_at)}, closest ${w.best}° on ${new Date(w.best_at*1000).toLocaleDateString([],{month:'short',day:'numeric'})}. Expect a few minutes of lost signal each day near the centre.`])});
  $('prList').innerHTML=items.map(([t,w,d])=>`<li><time>${esc(t)}</time><div><b>${esc(w)}</b><div class="det">${esc(d)}</div></div></li>`).join('');
- const last=[...H.signal].reverse().find(r=>r[1]!=null);$('mVit').textContent=last?`Viterbi ${Math.round(last[1])} (${last[1]<200?'good':last[1]<600?'fair':'poor'})`:'Recording…'}
+}
 const KIND={SA:'Airport reports (METAR)',SP:'Special airport reports',FT:'Airport forecasts (TAF)',FP:'Public forecasts',FX:'Forecast discussions',FZ:'Marine forecasts',FO:'Model and aviation guidance',SR:'River and rain data',CD:'Climate reports',QA:'Radar images',AS:'Regional summaries and analyses',WW:'Watches and warnings',WU:'Severe weather warnings',WF:'Tornado and flood warnings',WH:'Marine warnings',SX:'Other text',NO:'Notices',SM:'Synoptic and marine reports'};
 // The delay shown is the bot's (the median of its last 50 arrivals, the figure that switches the
 // NWS feed), so every card on the page says the same; the history's own is the fallback.
@@ -605,8 +594,7 @@ function renderFeedHealth(){if(!E)return;const fd=(bot&&bot.feed)||{},f=fd.fill,
  $('hFill').textContent=fv;$('hFillL').textContent=fl;tile('hFillT',flv);
  const k=E.kinds_24h||[],kmax=Math.max(1,...k.map(r=>r[1])),half=Math.ceil(k.length/2),row=([c,v])=>`<tr><td class="w">${esc(KIND[c]||'Other')} <span class="hint">${esc(c)}</span></td><td style="width:40%"><div class="bar"><i style="width:${v/kmax*100}%"></i></div></td><td class="n">${n(v)}</td></tr>`;
  $('kindsA').innerHTML=k.slice(0,half).map(row).join('');$('kindsB').innerHTML=k.slice(half).map(row).join('');
- $('emSince').textContent=E.recorded_since?`History from ${when(E.recorded_since)}, rebuilt at install from the products on disk, then recorded minute by minute.`:'';
- $('mLag').textContent=lag==null?'–':lag<1?'On time now':late(Math.round(lag))+' late now'}
+ $('emSince').textContent=E.recorded_since?`History from ${when(E.recorded_since)}, rebuilt at install from the products on disk, then recorded minute by minute.`:'';}
 function fetchHistory(){Promise.all([fetch('/api/hrit?hours='+vRange).then(r=>r.json()),fetch('/api/emwin?hours=168').then(r=>r.json())]).then(([h,e])=>{H=h;E=e;renderHrit();renderFeedHealth();drawHistory()}).catch(()=>{}).finally(()=>setTimeout(fetchHistory,60000))}
 document.querySelectorAll('[data-vr]').forEach(b=>b.addEventListener('click',()=>{vRange=+b.dataset.vr;document.querySelectorAll('[data-vr]').forEach(o=>o.classList.toggle('on',o===b));fetch('/api/hrit?hours='+vRange).then(r=>r.json()).then(h=>{H=h;renderHrit();drawHistory()}).catch(()=>{})}));
 // ---------------------------------------------------------------- warnings map (/api/warnings, /api/basemap)

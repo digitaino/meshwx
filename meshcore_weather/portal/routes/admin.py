@@ -482,6 +482,23 @@ async def sdr_events():
     return sse_response(_dashboard_frames())
 
 
+@router.get("/sdr/trend")
+async def sdr_trend(hours: int = Query(72, ge=1, le=168)) -> JSONResponse:
+    """The Station tab's history: EMWIN's delay behind NOAA and the products
+    per hour (from the dish, from the internet), and the signal, over the
+    last `hours`, from the dashboard's 7-day store. The public page had the
+    last three days of both on its Overview until 2026-10-19; the owner
+    wanted them here."""
+    emwin, hrit = await asyncio.gather(_dashboard(f"/api/emwin?hours={hours}"), _dashboard(f"/api/hrit?hours={hours}"))
+    for d in (emwin, hrit):
+        if not d or d.get("_error"):
+            raise HTTPException(502, "The dashboard does not answer: " + ((d or {}).get("_error") or "nothing"))
+    return JSONResponse({"now": hrit.get("now"), "hours": hours,
+                         "hourly": emwin.get("hourly") or [], "emwin_since": emwin.get("recorded_since"),
+                         "signal": hrit.get("signal") or [], "bucket_s": hrit.get("bucket_s"),
+                         "signal_since": hrit.get("recorded_since")})
+
+
 @router.get("/sdr/history")
 async def sdr_history() -> JSONResponse:
     return JSONResponse({"history": await _dashboard("/api/history")})

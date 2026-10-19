@@ -132,6 +132,20 @@ function chartHover(id, pick) {
   return show;
 }
 
+// Time across a history chart W wide from t0 to t1: a line and a label at
+// each midnight, or every four hours on a chart of a day or less (local time).
+function timeTicks(x, W, H, dpr, t0, t1) {
+  var day = t1 - t0 > 36 * 3600, d = new Date(t0 * 1000);
+  d.setMinutes(0, 0, 0);
+  if (day) d.setHours(24); else d.setHours(Math.ceil(d.getHours() / 4) * 4);
+  x.strokeStyle = css("--line"); x.fillStyle = css("--dim"); x.lineWidth = dpr;
+  for (; d.getTime() / 1000 <= t1; day ? d.setDate(d.getDate() + 1) : d.setHours(d.getHours() + 4)) {
+    var t = d.getTime() / 1000, X = (t - t0) / (t1 - t0) * W;
+    x.beginPath(); x.moveTo(X, 0); x.lineTo(X, H - 14 * dpr); x.stroke();
+    x.fillText(day ? d.toLocaleDateString([], { weekday: "short", day: "numeric" }) : d.toTimeString().slice(0, 5), X + 3 * dpr, H - 3 * dpr);
+  }
+}
+
 function tipRows(rows) {
   return "<table>" + rows.map(function (r) { return "<tr><td>" + esc(r[0]) + "</td><td>" + esc(r[1]) + "</td></tr>"; }).join("") + "</table>";
 }
@@ -1097,18 +1111,19 @@ var Portal = {
 
   station: {
     _timer: null, _mtimer: null, _sse: null, _mode: null, _gains: null, _yMin: null, _yMax: null,
-    _hovers: null, _hist: null, _snr: null, _spec: null,
+    _hovers: null, _hist: null, _snr: null, _spec: null, _trend: null, _trendH: 72,
     onEnter: function () {
       var s = this;
       this._hoverSetup();
       this.loadNotes();
+      this.loadTrend();
       this.load();
       // The receiver as the dashboard streams it, twice a second, as on
       // goes.digitaino.com; the feed and the fill move by the minute.
       if (this._sse) this._sse.close();
       this._sse = liveStream("/api/sdr/events", function (r) { s.renderRx(r); }, "rx-dot");
       if (this._timer) clearInterval(this._timer);
-      this._timer = setInterval(function () { s.load(); }, 30000);
+      this._timer = setInterval(function () { s.load(); s.loadTrend(); }, 30000);
     },
     onLeave: function () {
       if (this._timer) clearInterval(this._timer); this._timer = null;
@@ -1160,6 +1175,138 @@ var Portal = {
       if (point && !this._mtimer) this._startMeter();
       if (!point) this._stopMeter();
       this._mode = mode;
+    },
+
+    // -- signal and EMWIN delay, from the dashboard's 7-day history (/api/sdr/trend) --
+    loadTrend: function () {
+      var self = this;
+      api("/api/sdr/trend?hours=" + this._trendH).then(function (d) {
+        $("trend-msg").hidden = true;
+        self._trend = d;
+        self.drawTrend();
+      }).catch(function (e) { $("trend-msg").textContent = e.message; $("trend-msg").hidden = false; });
+    },
+    trendRange: function (h) {
+      this._trendH = h;
+      pressChip("trend-range", "h", String(h));
+      this.loadTrend();
+    },
+    drawTrend: function () {
+      var d = this._trend;
+      if (!d) return;
+      var t1 = d.now, t0 = t1 - d.hours * 3600;
+      this._drawLag(d.hourly.filter(function (r) { return r[0] + 3600 > t0; }), t0, t1, d.emwin_since);
+      this._drawVit(d.signal.filter(function (r) { return r[0] >= t0; }), t0, t1, d.bucket_s || 60, d.signal_since);
+      if (this._hovers) { this._hovers.lag(); this._hovers.vit(); }
+    },
+    _unrecorded: function (x, W, H, t0, t1, since) {
+      if (since == null || since <= t0) return;
+      var w = (since - t0) / (t1 - t0) * W, dpr = window.devicePixelRatio || 1;
+      x.fillStyle = css("--dim"); x.globalAlpha = 0.12;
+      x.fillRect(0, 0, w, H);
+      x.globalAlpha = 1;
+      if (w > 90 * dpr) x.fillText("not recorded", 6 * dpr, H / 2);
+    },
+    // Products per hour as bars (dish, the internet on top), the delay as a line over them.
+    _drawLag: function (rows, t0, t1, since) {
+      var c = canvas("trend-lag", 180), x = c[0], W = c[1], H = c[2], dpr = c[3];
+      var px = function (t) { return (t - t0) / (t1 - t0) * W; }, base = H - 16 * dpr, top = 8 * dpr;
+      var pmax = Math.max(1, Math.max.apply(null, rows.map(function (r) { return r[1] + r[2]; })));
+      var lmax = Math.max(60, Math.max.apply(null, rows.map(function (r) { return r[3] || 0; }))) * 1.1;
+      var py = function (m) { return base - Math.min(m, lmax) / lmax * (base - top); };
+      this._unrecorded(x, W, H, t0, t1, since);
+      timeTicks(x, W, H, dpr, t0, t1);
+      var bw = Math.max(dpr, px(3600) - px(0) - dpr);
+      rows.forEach(function (r) {
+        var h1 = r[1] / pmax * (base - top) * 0.6, h2 = r[2] / pmax * (base - top) * 0.6;
+        x.globalAlpha = 0.45;
+        x.fillStyle = css("--series2"); x.fillRect(px(r[0]), base - h1, bw, h1);
+        if (r[2]) { x.fillStyle = css("--warn"); x.fillRect(px(r[0]), base - h1 - h2, bw, h2); }
+      });
+      x.globalAlpha = 1;
+      x.strokeStyle = css("--line"); x.fillStyle = css("--dim"); x.setLineDash([4 * dpr, 4 * dpr]);
+      var lastY = null;
+      [[720, "12 h"], [360, "6 h"], [180, "3 h"], [60, "1 h"], [30, "30 min"]].forEach(function (g) {
+        if (g[0] > lmax || (lastY != null && py(g[0]) - lastY < 14 * dpr)) return;     // no labels on top of each other
+        lastY = py(g[0]);
+        x.beginPath(); x.moveTo(0, lastY); x.lineTo(W, lastY); x.stroke(); x.fillText(g[1], 4 * dpr, lastY - 3 * dpr);
+      });
+      x.setLineDash([]);
+      x.strokeStyle = css("--alert"); x.lineWidth = 2 * dpr; x.beginPath();
+      var pen = false;
+      rows.forEach(function (r) {
+        if (r[3] == null) { pen = false; return; }
+        var X = px(r[0] + 1800), Y = py(r[3]);
+        if (pen) x.lineTo(X, Y); else x.moveTo(X, Y);
+        pen = true;
+      });
+      x.stroke();
+      this._lagRows = rows;
+    },
+    // Viterbi errors per frame: the median line, the 10th-90th percentile band, no lock shaded.
+    _drawVit: function (rows, t0, t1, bucket, since) {
+      var c = canvas("trend-vit", 180), x = c[0], W = c[1], H = c[2], dpr = c[3];
+      var px = function (t) { return (t - t0) / (t1 - t0) * W; }, base = H - 16 * dpr, top = 8 * dpr;
+      var vmax = Math.min(1000, Math.max(400, Math.max.apply(null, rows.map(function (r) { return r[1] || 0; })) * 1.2));
+      var py = function (v) { return base - Math.min(v, vmax) / vmax * (base - top); };
+      this._unrecorded(x, W, H, t0, t1, since);
+      x.fillStyle = css("--bad"); x.globalAlpha = 0.25;
+      rows.forEach(function (r) { if (r[6] === 0) x.fillRect(px(r[0]), 0, Math.max(dpr, px(r[0] + bucket) - px(r[0])), base); });
+      x.globalAlpha = 1;
+      timeTicks(x, W, H, dpr, t0, t1);
+      x.strokeStyle = css("--line"); x.fillStyle = css("--dim"); x.setLineDash([4 * dpr, 4 * dpr]);
+      [[200, "200 good"], [600, "600 fair"]].forEach(function (g) {
+        if (g[0] > vmax) return;
+        x.beginPath(); x.moveTo(0, py(g[0])); x.lineTo(W, py(g[0])); x.stroke(); x.fillText(g[1], 4 * dpr, py(g[0]) - 3 * dpr);
+      });
+      x.setLineDash([]);
+      var segs = [], cur = [];          // a gap of over 2.5 buckets breaks the line
+      rows.forEach(function (r) {
+        if (r[1] == null || (cur.length && r[0] - cur[cur.length - 1][0] > bucket * 2.5)) { if (cur.length) segs.push(cur); cur = []; }
+        if (r[1] != null) cur.push(r);
+      });
+      if (cur.length) segs.push(cur);
+      x.fillStyle = css("--series"); x.globalAlpha = 0.2;
+      segs.forEach(function (g) {
+        x.beginPath();
+        g.forEach(function (r, i) { var Y = py(r[3] != null ? r[3] : r[1]); if (i) x.lineTo(px(r[0]), Y); else x.moveTo(px(r[0]), Y); });
+        g.slice().reverse().forEach(function (r) { x.lineTo(px(r[0]), py(r[2] != null ? r[2] : r[1])); });
+        x.fill();
+      });
+      x.globalAlpha = 1; x.strokeStyle = css("--alert"); x.lineWidth = 1.5 * dpr;
+      segs.forEach(function (g) {
+        x.beginPath();
+        g.forEach(function (r, i) { if (i) x.lineTo(px(r[0]), py(r[1])); else x.moveTo(px(r[0]), py(r[1])); });
+        x.stroke();
+      });
+      this._vitRows = rows; this._bucket = bucket;
+    },
+    _lagAt: function (f) {
+      var d = this._trend, rows = this._lagRows;
+      if (!d || !rows || !rows.length) return null;
+      var t1 = d.now, t0 = t1 - d.hours * 3600, t = t0 + f * (t1 - t0), r = null;
+      rows.forEach(function (q) { if (q[0] <= t && t < q[0] + 3600) r = q; });
+      if (!r) return null;
+      var span = function (m) { m = Math.round(m); return m < 1 ? "on time" : m < 120 ? m + " min" : Math.floor(m / 60) + " h " + (m % 60) + " min"; };
+      var at = function (t) { return new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }); };
+      return { x: (r[0] + 1800 - t0) / (t1 - t0), html: "<b>" + at(r[0]) + " – " + new Date((r[0] + 3600) * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + "</b>" +
+        tipRows([["delay behind NOAA", r[3] == null ? "–" : span(r[3])], ["from the dish", r[1].toLocaleString()],
+                 ["from the internet", r[2].toLocaleString()], ["in all", (r[1] + r[2]).toLocaleString()]]) };
+    },
+    _vitAt: function (f) {
+      var d = this._trend, rows = this._vitRows, b = this._bucket || 60;
+      if (!d || !rows || !rows.length) return null;
+      var t1 = d.now, t0 = t1 - d.hours * 3600, t = t0 + f * (t1 - t0);
+      var r = rows.reduce(function (a, q) { return Math.abs(q[0] + b / 2 - t) < Math.abs(a[0] + b / 2 - t) ? q : a; });
+      if (Math.abs(r[0] + b / 2 - t) > b * 2) return null;          // a gap in the history
+      var word = function (v) { return v < 200 ? "good" : v < 600 ? "fair" : "poor"; };
+      var at = function (t) { return new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }); };
+      var drops = r[4] ? " (" + (r[5] * 100 / (r[4] + r[5])).toFixed(1) + "%)" : "";
+      return { x: (r[0] + b / 2 - t0) / (t1 - t0), html: "<b>" + at(r[0]) + "</b> · " + Math.round(b / 60) + " min" +
+        tipRows([["Viterbi errors", r[1] == null ? "–" : Math.round(r[1]) + " (" + word(r[1]) + ")"],
+                 ["10th–90th percentile", r[2] == null ? "–" : Math.round(r[2]) + "–" + Math.round(r[3])],
+                 ["packets", (r[4] || 0).toLocaleString()], ["dropped", (r[5] || 0).toLocaleString() + drops],
+                 ["locked", r[6] == null ? "–" : Math.round(r[6] * 100) + "% of the time"]]) };
     },
 
     // -- notes on the public page (kept by the dashboard; see /api/public-notes) --
@@ -1217,6 +1364,8 @@ var Portal = {
         hist: chartHover("sat-chart", function (f) { return s._histAt(f); }),
         snr: chartHover("m-snrh", function (f) { return s._snrAt(f); }),
         spec: chartHover("m-spec", function (f) { return s._specAt(f); }),
+        lag: chartHover("trend-lag", function (f) { return s._lagAt(f); }),
+        vit: chartHover("trend-vit", function (f) { return s._vitAt(f); }),
       };
     },
     _histAt: function (f) {
