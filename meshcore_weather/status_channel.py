@@ -52,6 +52,9 @@ DASHBOARD_DOWN_AFTER_S = 300
 # one-hour line with no hold posted "behind" and "current again" every hour.
 LAG_ON_MIN, LAG_ON_HOLD_S = 120, 1200
 LAG_OFF_MIN, LAG_OFF_HOLD_S = 45, 3600
+# The internet fill's own look-back (fill.py `_activity`): it stops filling in
+# after this long with nothing filled.
+FILL_WINDOW_S = 1800
 DISK_PCT, DISK_OK_PCT = 85, 80
 TEMP_C, TEMP_OK_C = 70.0, 65.0
 REPEAT_S = 1800
@@ -96,7 +99,9 @@ class StatusReporter:
         self._lock_said = False
         self._down_since: float | None = None
         self._down_said = False
-        self._fill_on: bool | None = None          # None until the first look: a start is not a change
+        self._fill_on: bool | None = None          # what the channel last heard of the fill; None until a first look
+        self._fill_seen: bool | None = None        # this run's last look at the fill (not kept: the fill starts afresh)
+        self._fill_first: float | None = None      # this run's first look
         self._lag_said = False
         self._lag_high_since: float | None = None
         self._lag_low_since: float | None = None
@@ -222,15 +227,34 @@ class StatusReporter:
         fill = getattr(feed, "fill", None)
         if fill is None:
             return
+        # The fill keeps nothing across a restart: it starts off, with nothing
+        # filled, and comes on again a minute later if the spell goes on. So
+        # this run's first look only records, "filling in" is not said again
+        # for a spell the channel has heard of, and "done" is said for a spell
+        # this run saw, or once this run's fill has gone a whole window without
+        # coming on (the spell ended while the bot was down). Each deploy on
+        # 19 Oct, in a spell, posted "done (0 products filled)" and then
+        # "filling in" again.
         on = fill.active_since is not None
-        was, self._fill_on = self._fill_on, on
-        if was is None or on == was:
+        seen, self._fill_seen = self._fill_seen, on
+        if seen is None:                           # a start is not a change
+            self._fill_first = now
+            if self._fill_on is None:
+                self._fill_on = on
             return
-        if on:
-            self._say("fill_on", f"internet filling in ({fill.reason()})", now, lines)
-        else:
-            self._say("fill_off", f"internet fill done, the feed is in time again ({fill.spell_filled} products filled)",
-                      now, lines)
+        if on and not seen:
+            if not self._fill_on:
+                self._say("fill_on", f"internet filling in ({fill.reason()})", now, lines)
+            self._fill_on = True
+        elif not on and self._fill_on:
+            if seen:
+                self._say("fill_off", "internet fill done, the feed is in time again "
+                          f"({fill.spell_filled} products filled)", now, lines)
+            elif now - self._fill_first >= FILL_WINDOW_S:
+                self._say("fill_off", "internet fill done, the feed is in time again", now, lines)
+            else:
+                return
+            self._fill_on = False
 
     def _lag(self, now: float, feed, lines: list[str]) -> None:
         lag = getattr(feed, "feed_lag_min", None)

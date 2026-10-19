@@ -141,6 +141,53 @@ def test_what_was_said_survives_a_restart(tmp_path):
     assert three._lag_said is False                                        # no file yet: a fresh start
 
 
+def _sender(sent: list[str]):
+    async def send(line: str) -> bool:
+        sent.append(line)
+        return True
+    return send
+
+
+def test_a_restart_in_a_fill_spell_says_neither_done_nor_filling_in_again(tmp_path, monkeypatch):
+    """19 Oct: each deploy in a fill spell posted "done (0 products filled)"
+    at once and "filling in" a minute later. The fill keeps nothing across a
+    restart (it starts off, with nothing filled), so its first look is no news."""
+    monkeypatch.setattr(settings, "tx_enabled", True)
+    f, sent = tmp_path / "status_state.json", []
+    one = StatusReporter(send=_sender(sent), state_file=f)
+    asyncio.run(one.tick(T, _state(), True, _feed()))
+    asyncio.run(one.tick(T + 60, _state(), True, _feed(on=True, why="EMWIN is running 2 h 04 min late")))
+    assert sent == ["status: internet filling in (EMWIN is running 2 h 04 min late)"]
+    two = StatusReporter(send=_sender(sent), state_file=f)                 # deployed in the spell
+    asyncio.run(two.tick(T + 4800, _state(), True, _feed()))               # the fill afresh: off, 0 filled
+    asyncio.run(two.tick(T + 4860, _state(), True, _feed(on=True)))        # and on again a minute later
+    assert sent == ["status: internet filling in (EMWIN is running 2 h 04 min late)"]
+    asyncio.run(two.tick(T + 9000, _state(), True, _feed(added=40)))       # the spell this run saw ends
+    assert sent[1:] == ["status: internet fill done, the feed is in time again (40 products filled)"]
+    three = StatusReporter(send=_sender(sent), state_file=f)
+    asyncio.run(three.tick(T + 9600, _state(), True, _feed()))
+    assert len(sent) == 2                                                  # done is not said again
+
+
+def test_a_fill_spell_that_ended_while_the_bot_was_down_is_done_after_a_whole_window(tmp_path, monkeypatch):
+    """The channel heard "filling in" and the fill does not come on again
+    after the restart: "done" once this run's fill has gone its whole
+    look-back without filling in (it counts nothing from before the restart)."""
+    monkeypatch.setattr(settings, "tx_enabled", True)
+    f, sent = tmp_path / "status_state.json", []
+    one = StatusReporter(send=_sender(sent), state_file=f)
+    asyncio.run(one.tick(T, _state(), True, _feed()))
+    asyncio.run(one.tick(T + 60, _state(), True, _feed(on=True)))
+    two = StatusReporter(send=_sender(sent), state_file=f)
+    asyncio.run(two.tick(T + 4800, _state(), True, _feed()))
+    asyncio.run(two.tick(T + 4800 + 1790, _state(), True, _feed()))
+    assert len(sent) == 1                                                  # not a whole window yet
+    asyncio.run(two.tick(T + 4800 + 1800, _state(), True, _feed()))
+    assert sent[1:] == ["status: internet fill done, the feed is in time again"]
+    asyncio.run(two.tick(T + 9000, _state(), True, _feed(on=True, why="the dish is quiet")))
+    assert sent[2:] == ["status: internet filling in (the dish is quiet)"]  # the next spell is news again
+
+
 def test_the_dashboard_unreachable_five_minutes_and_back():
     r = _reporter()
     assert _check(r, T, None, reachable=False) == []
