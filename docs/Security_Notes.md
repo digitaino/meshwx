@@ -138,7 +138,21 @@ the same Pi calls `http://127.0.0.1:8081` for the public bundle. In Docker
 the app must listen on `0.0.0.0` inside the container (Docker forwards a
 published port to the container's address, not its loopback), so
 `docker-compose.yml` sets that and publishes the port on the host's
-`127.0.0.1:8080` only. What it guards against:
+`127.0.0.1:8080` only.
+
+Since 2026-10-19 the Pi's portal is also reachable as
+**`wx-admin.digitaino.com`**, through the same Cloudflare tunnel as the
+public dashboard (a rule in the Pi's `/etc/cloudflared/config.yml`, which
+is not in this repo). Cloudflare Access is the login: an Access application
+for that hostname (team `digitaino`) lets only the operator in. The tunnel
+rule sets `originRequest.access.required` with that application's AUD tag,
+so cloudflared itself refuses any request without a valid Access token for
+it: an Access application deleted or misconfigured leaves the portal shut,
+not open. Tested on the day: every path, and a request carrying a forged
+`Cf-Access-Jwt-Assertion`, is sent to the Access login. The rule presents
+requests to the portal as `Host: localhost:8081`, as an SSH tunnel does, so
+the portal's own checks below apply unchanged and `MCW_PORTAL_ALLOWED_HOSTS`
+stays empty. What the portal guards against itself:
 
 - **DNS rebinding.** A page on an attacker's domain can re-point that domain
   at 127.0.0.1 and then talk to the portal as same-origin, which the header
