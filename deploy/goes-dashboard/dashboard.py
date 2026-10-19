@@ -29,12 +29,14 @@ sys.path.insert(0, HERE)
 import pynng  # noqa: E402
 import signal_monitor  # noqa: E402  (pointing-mode Monitor class)
 import station_history  # noqa: E402  (7-day history, events, sun predictions)
-import emwin_tab  # noqa: E402  (product browser index, warnings base map)
+import emwin_tab  # noqa: E402  (product browser index, warnings base map, radar and charts)
+import imagery  # noqa: E402  (the HRIT imagery viewer's frames)
 
 HOME = "/home/digitaino"
 IMG_ROOT = f"{HOME}/goes-images"
 THUMB_DIR = f"{HOME}/goes/thumbs"
-THUMB_MAX, THUMB_KEEP = 600, 500   # thumbnail cache: once past MAX files, drop the oldest down to KEEP
+THUMB_MAX, THUMB_KEEP = 2000, 1600  # thumbnail cache: once past MAX files, drop the oldest down to KEEP
+THUMB_SIZES = (640, 1080)            # the image grid's tiles; the viewer's loop frames
 SSE_MAX = 24                       # concurrent /events viewers; each costs a thread and two JSON dumps per second
 SSE_CLIENTS, SSE_LOCK = 0, threading.Lock()
 PORT = int(os.environ.get("PORT", "8080"))
@@ -480,10 +482,11 @@ NE_DIR = os.environ.get("NE_DIR", f"{HOME}/goes/goestools/share/goestools/ne")
 
 class Cached:
     """A JSON body fetched or built at most every `ttl` s however many viewers ask, with an
-    ETag so a browser that has it gets a 304. Single-flight like Bot."""
+    ETag so a browser that has it gets a 304. Single-flight like Bot. Until `ready()` says
+    the data behind it is there (the product index's first scan), nothing is kept."""
 
-    def __init__(self, make, ttl):
-        self.make, self.ttl = make, ttl
+    def __init__(self, make, ttl, ready=None):
+        self.make, self.ttl, self.ready = make, ttl, ready
         self.lock = threading.Lock()
         self.body, self.etag, self.at = None, None, 0.0
 
@@ -497,7 +500,10 @@ class Cached:
                         self.at = time.time()
                         return self.body, self.etag
                     body = json.dumps({"error": f"{e.__class__.__name__}: {e}"[:200]}).encode()
-                self.body, self.etag, self.at = body, '"' + hashlib.md5(body).hexdigest()[:16] + '"', time.time()
+                etag = '"' + hashlib.md5(body).hexdigest()[:16] + '"'
+                if self.ready is not None and not self.ready():
+                    return body, etag
+                self.body, self.etag, self.at = body, etag, time.time()
             return self.body, self.etag
 
 
@@ -513,6 +519,30 @@ def fetch_warnings():
 
 WARNINGS = Cached(fetch_warnings, 60)
 BASEMAP = Cached(lambda: emwin_tab.basemap(NE_DIR), 365 * 86400)
+RADAR = Cached(lambda: emwin_tab.radar_and_charts(PRODUCTS, f"{IMG_ROOT}/nws"), 30, ready=lambda: PRODUCTS.scanned_at > 0)
+IMAGERY_LIST = {"t": 0.0, "d": None}
+
+
+def imagery_listing():
+    """The last day of imagery, listed at most every 30 s (the viewer's API and the frame warmer share it)."""
+    if IMAGERY_LIST["d"] is None or time.time() - IMAGERY_LIST["t"] >= 30:
+        IMAGERY_LIST.update(d=imagery.listing(IMG_ROOT, 24), t=time.time())
+    return IMAGERY_LIST["d"]
+
+
+IMAGERY = Cached(imagery_listing, 30)
+
+
+def warm_loop_frames():
+    """Make the viewer's 1080 px frames for the last six hours as the pictures arrive, so a loop
+    plays at once: a few seconds of work an hour, against ~5 s for a cold 12-frame full-disk loop."""
+    while True:
+        try:
+            for rel in imagery.recent(imagery_listing(), 6):
+                thumb_for(rel, 1080)
+        except Exception as e:  # noqa: BLE001
+            print("loop frames:", e, file=sys.stderr, flush=True)
+        time.sleep(60)
 
 
 def prune_thumbs():
@@ -531,19 +561,19 @@ def prune_thumbs():
         pass
 
 
-def thumb_for(rel):
+def thumb_for(rel, size=640):
     src = os.path.join(IMG_ROOT, rel)
     if not os.path.isfile(src):
         return None
-    key = hashlib.md5(f"{rel}:{os.path.getmtime(src)}".encode()).hexdigest()
+    key = hashlib.md5(f"{rel}:{os.path.getmtime(src)}:{size}".encode()).hexdigest()
     out = f"{THUMB_DIR}/{key}.jpg"
     if not os.path.exists(out):
         tmp = f"{out}.{threading.get_ident()}.tmp"  # written aside then renamed: a parallel request never serves a half file
         try:
             from PIL import Image
             with Image.open(src) as im:
-                im.draft("RGB", (640, 640))  # libjpeg decodes the 5424 px full disks at 1/8 scale instead of full size
-                im.thumbnail((640, 640))
+                im.draft("RGB", (size, size))  # libjpeg decodes a 5424 px full disk at 1/8 or 1/4 scale, not full size
+                im.thumbnail((size, size))
                 im.convert("RGB").save(tmp, "JPEG", quality=80)
             os.replace(tmp, out)
         except Exception:  # noqa: BLE001
@@ -555,6 +585,8 @@ def thumb_for(rel):
         prune_thumbs()
     return out
 
+
+threading.Thread(target=warm_loop_frames, daemon=True).start()
 
 HTML_PATH = os.path.join(HERE, "dashboard.html")
 HTML = open(HTML_PATH, "rb").read() if os.path.exists(HTML_PATH) else b"dashboard.html missing"
@@ -643,9 +675,10 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     return self._send(404, b'{"error":"the file is gone"}', "application/json")
             return self._send(200, json.dumps(d).encode(), "application/json")
-        if p in ("/api/warnings", "/api/basemap"):
-            body, etag = (WARNINGS if p == "/api/warnings" else BASEMAP).get()
-            cache = "no-cache" if p == "/api/warnings" else "max-age=86400"
+        if p in ("/api/warnings", "/api/basemap", "/api/radar", "/api/imagery"):
+            body, etag = {"/api/warnings": WARNINGS, "/api/basemap": BASEMAP, "/api/radar": RADAR,
+                          "/api/imagery": IMAGERY}[p].get()
+            cache = "max-age=86400" if p == "/api/basemap" else "no-cache"
             if self.headers.get("If-None-Match") == etag:
                 return self._send(304, b"", "application/json", {"ETag": etag, "Cache-Control": cache})
             return self._send(200, body, "application/json", {"ETag": etag, "Cache-Control": cache})
@@ -660,7 +693,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 full = os.path.join(IMG_ROOT, rel)
             if p.startswith("/thumb/"):
-                full = thumb_for(rel) or full
+                size = int(qs.get("s", "640")) if qs.get("s", "640").isdigit() else 640
+                full = thumb_for(rel, size if size in THUMB_SIZES else 640) or full
             ext = full.rsplit(".", 1)[-1].lower()
             ctype = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif",
                      "txt": "text/plain; charset=utf-8"}.get(ext, "application/octet-stream")

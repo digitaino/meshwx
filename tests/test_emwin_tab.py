@@ -94,3 +94,30 @@ def test_the_base_map_is_us_states_and_the_land_around_them(tmp_path):
     assert [s["id"] for s in b["states"]] == ["TX"] and len(b["land"]) == 2       # Mexico and Guam
     assert b["states"][0]["rings"][0] == [[-100, 30], [-99, 30], [-99, 31], [-100, 31], [-100, 30]]  # the straight edge thinned
     assert "error" in et.basemap(str(tmp_path / "missing"))
+
+
+def test_radar_frames_are_timed_by_the_emwin_stamp_and_listed_once(tmp_path):
+    # The 00:30Z frame is headed 1230 (12-hour clock); NOAA sent the 00:45Z one twice.
+    now = time.time()
+    day = tmp_path / "emwin" / "2026-10-18"
+    names = ["Z_QATA00KWBC181230_C_KWIN_20261018003041_675083-3-RADSTHPL.GIF",
+             "Z_QATA00KWBC181245_C_KWIN_20261018004551_675830-3-RADSTHPL.GIF",
+             "Z_QATA00KWBC181245_C_KWIN_20261018004552_675831-3-RADSTHPL.GIF",
+             "Z_QETI00KWNS181245_C_KWIN_20261018124537_709407-4-MODDY1US.PNG"]
+    for i, name in enumerate(names):
+        _file(day, name, "GIF89a", now - 600 + i)
+    nws = tmp_path / "nws" / "2026-10-18"
+    _file(nws, "20261018T220045Z_USA_latest.gif", "GIF89a", now - 60)
+    _file(nws, "20261018T200006Z_atlsea_latestBW.gif", "GIF89a", now - 60)
+    _file(nws, "20261018T200006Z_unknown_latestBW.gif", "GIF89a", now - 60)
+    idx = et.ProductIndex({"sdr": (str(tmp_path / "emwin"), "emwin")})
+    idx.scan(now)
+    d = et.radar_and_charts(idx, str(tmp_path / "nws"))
+    (radar,) = d["radar"]
+    assert radar["name"] == "Southern Plains" and len(radar["frames"]) == 2
+    assert [f[1] for f in radar["frames"]] == [1792283441, 1792284351]       # 00:30:41Z and 00:45:51Z
+    assert radar["frames"][0][0] == f"emwin/2026-10-18/{names[0]}"
+    charts = {c["id"]: c for c in d["charts"]}
+    assert set(charts) == {"usa", "severe", "atlsea"} and charts["usa"]["source"] == "hrit"
+    assert charts["usa"]["frames"][0][0] == "nws/2026-10-18/20261018T220045Z_USA_latest.gif"
+    assert [c["id"] for c in d["charts"]] == ["usa", "severe", "atlsea"]     # the catalogue's order

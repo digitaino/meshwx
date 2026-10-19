@@ -145,6 +145,16 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
 .results .t1{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.results .t2{font-size:12.5px;color:var(--dim)}
 .reader{background:var(--inset);border-radius:10px;padding:12px;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow:auto;max-height:560px;min-height:200px;overflow-wrap:anywhere}
 .reader img{max-width:100%;display:block;margin:auto;background:#fff}
+.viewer{display:grid;gap:16px;grid-template-columns:1fr}
+@media(min-width:900px){.viewer{grid-template-columns:minmax(0,3fr) minmax(0,2fr)}}
+.frame{position:relative;background:#000;border-radius:10px;overflow:hidden;aspect-ratio:1/1;max-height:720px}
+.frame img{width:100%;height:100%;object-fit:contain;display:block}
+.fcap{position:absolute;left:8px;bottom:8px;background:rgba(0,0,0,.6);color:#fff;font-size:12.5px;border-radius:6px;padding:3px 8px;max-width:calc(100% - 16px)}
+.play{display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap}
+.play input[type=range]{flex:1 1 140px;min-width:0;accent-color:var(--acc)}
+.radar{background:#000;border-radius:10px;overflow:hidden;min-height:120px}
+.radar img{width:100%;display:block}.radar.chart{background:#fff}.radar img:not([src]),.frame img:not([src]){visibility:hidden}
+.chips .g{width:100%;font-size:12px;color:var(--dim);margin-top:4px}
 .reader mark{background:var(--warn-bg);color:inherit;outline:1px solid var(--warn);border-radius:2px}
 .rhead{font-size:13px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center}
 </style></head><body>
@@ -209,7 +219,7 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
 
 </div>
 <div class="tab" id="hrit" hidden>
- <div class="subnav" aria-label="HRIT sections"><button data-go="hrLive">Live signal</button><button data-go="hrHist">Signal history</button><button data-go="hrVc">Channels</button><button data-go="hrEv">Events and sun</button></div>
+ <div class="subnav" aria-label="HRIT sections"><button data-go="hrLive">Live signal</button><button data-go="hrHist">Signal history</button><button data-go="hrVc">Channels</button><button data-go="hrEv">Events and sun</button><button data-go="hrImg">Imagery</button></div>
  <section class="block" id="hrLive" aria-labelledby="hRx">
   <div class="bh"><h2 id="hRx">Live signal</h2><div class="right"><span class="pill" id="rxPill">–</span><span class="pill">updates every second</span></div></div>
   <div id="rxView">
@@ -262,9 +272,26 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
    <div><h3 class="sm">Coming up</h3><ul class="events" id="prList"></ul></div>
   </div>
  </section>
+ <section class="block" id="hrImg" aria-labelledby="hIm">
+  <div class="bh"><h2 id="hIm">Imagery</h2><span class="hint" id="imCount"></span>
+   <div class="right" role="group" aria-label="Loop length"><button data-ls="3">3 h</button><button data-ls="6" class="on">6 h</button><button data-ls="24">24 h</button></div></div>
+  <div class="viewer">
+   <div style="min-width:0">
+    <div class="frame"><img id="imMain" alt=""><span class="fcap" id="imCap">Loading…</span></div>
+    <div class="play"><button id="imPlay">Play</button><input type="range" id="imScrub" min="0" max="0" value="0" aria-label="Frame"><span class="hint" id="imPos"></span></div>
+   </div>
+   <div style="min-width:0">
+    <h3 class="sm">Satellite and sector</h3><div class="chips" id="imSect" role="group" aria-label="Sector"></div>
+    <h3 class="sm" style="margin-top:12px">Channel</h3><div class="chips" id="imChan" role="group" aria-label="Channel"></div>
+    <p class="hint" id="imHelp"></p>
+    <p class="hint"><a id="imFull" href="#" target="_blank" rel="noopener">This frame at full resolution</a></p>
+   </div>
+  </div>
+  <p class="cap">Pictures decoded here from the HRIT downlink, as goesproc writes them; loops play the frames already on disk. Times are when the scan started. The meso sectors move to wherever NOAA is watching the weather.</p>
+ </section>
 </div>
 <div class="tab" id="emwin" hidden>
- <div class="subnav" aria-label="EMWIN sections"><button data-go="emHealth">Feed health</button><button data-go="emWarn">Warnings</button><button data-go="emProd">Products</button></div>
+ <div class="subnav" aria-label="EMWIN sections"><button data-go="emHealth">Feed health</button><button data-go="emWarn">Warnings</button><button data-go="emProd">Products</button><button data-go="emRadar">Radar and charts</button></div>
  <section class="block" id="emHealth" aria-labelledby="hFh">
   <div class="bh"><h2 id="hFh">Feed health</h2></div>
   <div class="tiles">
@@ -307,6 +334,25 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
    <div style="min-width:0"><div class="rhead" id="pHead"></div><div class="reader" id="pText" tabindex="0">Pick a product to read it.</div></div>
   </div>
   <p class="cap" id="pNote"></p>
+ </section>
+ <section class="block" id="emRadar" aria-labelledby="hRad">
+  <div class="bh"><h2 id="hRad">Radar and charts</h2></div>
+  <div class="grid2">
+   <div style="min-width:0">
+    <div class="filters"><select id="radRegion" aria-label="Radar region"></select>
+     <select id="radSpan" aria-label="Loop length"><option value="2">Last 2 hours</option><option value="4" selected>Last 4 hours</option><option value="8">Last 8 hours</option></select></div>
+    <div class="radar"><img id="radImg" alt="Radar mosaic"></div>
+    <div class="play"><button id="radPlay">Play</button><input type="range" id="radScrub" min="0" max="0" value="0" aria-label="Radar frame"><span class="hint" id="radPos"></span></div>
+    <p class="hint" id="radCap"></p>
+   </div>
+   <div style="min-width:0">
+    <div class="chips" id="chChips" role="group" aria-label="Chart"></div>
+    <div class="radar chart"><img id="chImg" alt=""></div>
+    <div class="play"><button id="chPrev">‹ Older</button><button id="chNext">Newer ›</button><span class="hint" id="chPos"></span></div>
+    <p class="hint" id="chCap"></p>
+   </div>
+  </div>
+  <p class="cap">Radar mosaics and most charts come down with EMWIN, so they run as late as the feed does; the surface analysis and the tropical Atlantic charts come with HRIT's NWS channel. A loop plays its frames in the order they were made, whatever order they reached the dish.</p>
  </section>
 </div>
 </main>
@@ -470,7 +516,7 @@ pollBot();
 // ---------------------------------------------------------------- tabs (bare #token links)
 const TABS=['overview','hrit','emwin'];
 function showTab(tab,jump){if(!TABS.includes(tab))tab='overview';TABS.forEach(t=>{$(t).hidden=t!==tab;$('t-'+t).setAttribute('aria-selected',t===tab)});
- requestAnimationFrame(()=>{drawHistory();if(rx.history&&tab==='hrit'){drawConst((rx.stats||{}).const||[]);drawHist(rx.history)}if(tab==='emwin')emwinShown();if(jump)$(jump).scrollIntoView({behavior:'smooth',block:'start'})})}
+ requestAnimationFrame(()=>{drawHistory();if(rx.history&&tab==='hrit'){drawConst((rx.stats||{}).const||[]);drawHist(rx.history)}if(tab==='emwin')emwinShown();if(tab==='hrit')imageryShown();LOOPS.forEach(l=>{if($(tab)&&!$(tab).contains(l.img))l.stop()});if(jump)$(jump).scrollIntoView({behavior:'smooth',block:'start'})})}
 addEventListener('hashchange',()=>showTab(location.hash.slice(1)));
 document.querySelectorAll('[data-jump]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();history.replaceState(null,'',a.getAttribute('href'));showTab(a.getAttribute('href').slice(1),a.dataset.jump)}));
 document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>$(b.dataset.go).scrollIntoView({behavior:'smooth',block:'start'})));
@@ -624,7 +670,7 @@ function fetchWarnings(){fetch('/api/warnings').then(r=>r.json()).then(d=>{if(d.
   $('wNote').dataset.base=$('wNote').dataset.base||$('wNote').textContent;$('wNote').textContent=(lag!=null&&lag>=30?`EMWIN is running ${late(lag)} late, so this is what had arrived by then. `:'')+$('wNote').dataset.base;
   drawMap();renderWarnList()}).catch(()=>{$('wCount').textContent='Could not load the warnings.'})}
 function fetchBasemap(){return fetch('/api/basemap').then(r=>r.json()).then(d=>{BM=d;projKey='';reproject();drawMap();renderWarnList()}).catch(()=>{BM={error:'The base map did not load.'};drawMap()})}
-function emwinShown(){if(!emwinStarted){emwinStarted=true;sizeMap();fitView();fetchBasemap().then(fetchWarnings);fetchProducts();
+function emwinShown(){if(!emwinStarted){emwinStarted=true;sizeMap();fitView();fetchBasemap().then(fetchWarnings);fetchProducts();fetchRadar();setInterval(()=>{if(!$('emwin').hidden)fetchRadar(true)},60000);
   setInterval(()=>{if(!$('emwin').hidden)fetchWarnings()},120000);setInterval(()=>{if(!$('emwin').hidden&&!PQ.q)fetchProducts(true)},60000)}
  else{drawMap()}}
 addEventListener('resize',()=>{if(!$('emwin').hidden){drawMap();listSoon()}});
@@ -665,5 +711,61 @@ function openProduct(p){const q=p.id?'id='+encodeURIComponent(p.id):'name='+enco
  .catch(()=>{$('pText').textContent='Could not load the product.'})}
 $('pq').addEventListener('input',()=>{clearTimeout(pTimer);pTimer=setTimeout(()=>{PQ.q=$('pq').value.trim();pSel=null;fetchProducts()},350)});
 $('pOffice').onchange=()=>{PQ.office=$('pOffice').value;pSel=null;fetchProducts()};
+// ---------------------------------------------------------------- loops (imagery viewer, radar)
+// Every frame is fetched ahead; playing steps only onto frames that have loaded, and rests a
+// moment on the newest before going round again.
+const LOOPS=[];
+function Loop(img,scrub,btn,pos,onShow,ms){Object.assign(this,{img,scrub,btn,pos,onShow,ms,f:[],pre:[],i:0,t:null});LOOPS.push(this);
+ scrub.addEventListener('input',()=>{this.stop();this.show(+scrub.value)});btn.addEventListener('click',()=>this.t?this.stop():this.play())}
+Loop.prototype.set=function(frames,keep){const was=!!this.t;this.stop();this.f=frames;
+ this.pre=frames.map(fr=>{const im=new Image();im.decoding='async';im.src=fr.src;return im});
+ this.scrub.max=Math.max(0,frames.length-1);this.scrub.disabled=this.btn.disabled=frames.length<2;this.show(frames.length-1);if(was&&keep)this.play()};
+Loop.prototype.show=function(i){if(!this.f.length){this.img.removeAttribute('src');this.pos.textContent='';this.onShow(null);return}
+ this.i=i;this.img.src=this.f[i].src;this.scrub.value=i;this.pos.textContent=`${i+1} of ${this.f.length}`;this.onShow(this.f[i])};
+Loop.prototype.play=function(){if(this.f.length<2)return;this.btn.textContent='Pause';let rest=0;if(this.i===this.f.length-1)this.show(0);
+ this.t=setInterval(()=>{if(this.i===this.f.length-1&&rest++<3)return;rest=0;const k=(this.i+1)%this.f.length;if(this.pre[k].complete)this.show(k)},this.ms)};
+Loop.prototype.stop=function(){if(this.t){clearInterval(this.t);this.t=null}this.btn.textContent='Play'};
+
+// ---------------------------------------------------------------- imagery viewer (/api/imagery, HRIT tab)
+let IM=null,imSect='goes19-fd',imChan='ch13_enhanced',imSpan=6,imKey='',imStarted=false;
+const imLoop=new Loop($('imMain'),$('imScrub'),$('imPlay'),$('imPos'),fr=>{if(!fr){$('imCap').textContent='No pictures.';return}
+ $('imCap').textContent=`${fr.sat} · ${fr.sector} · ${fr.ch} · ${ago2(fr.t)} (${age(Date.now()/1000-fr.t)} ago)`;$('imMain').alt=$('imCap').textContent;$('imFull').href=fr.full},500);
+function fetchImagery(refresh){fetch('/api/imagery').then(r=>r.json()).then(d=>{IM=d;renderImagery(refresh)}).catch(()=>{$('imCap').textContent='Could not load the imagery.'})}
+function renderImagery(refresh){const secs=(IM&&IM.sectors)||[];if(!secs.length){$('imCap').textContent='Nothing decoded in the last day.';imLoop.set([]);return}
+ const s=secs.find(x=>x.id===imSect)||secs[0];imSect=s.id;const c=s.channels.find(x=>x.id===imChan)||s.channels.find(x=>x.id==='ch13')||s.channels[0];imChan=c.id;
+ $('imCount').textContent=`· ${n(secs.reduce((a,x)=>a+x.channels.reduce((b,y)=>b+y.frames.length,0),0))} pictures in the last day`;
+ $('imSect').innerHTML=secs.map(x=>`<button data-is="${esc(x.id)}" aria-pressed="${x.id===imSect}">${esc(x.name)}</button>`).join('');
+ $('imChan').innerHTML=s.channels.map(x=>`<button data-ic="${esc(x.id)}" aria-pressed="${x.id===imChan}">${esc(x.name)}</button>`).join('');
+ $('imSect').querySelectorAll('[data-is]').forEach(b=>b.onclick=()=>{imSect=b.dataset.is;renderImagery()});
+ $('imChan').querySelectorAll('[data-ic]').forEach(b=>b.onclick=()=>{imChan=b.dataset.ic;renderImagery()});
+ $('imHelp').textContent=`${c.help} ${s.satellite}${c.every_min?`, a new picture about every ${c.every_min} min`:''}.`;
+ // at most 48 frames a loop: a long loop of a fast channel keeps every second or third
+ const t1=c.frames[c.frames.length-1][0],fr=c.frames.filter(f=>f[0]>=t1-imSpan*HOUR),step=Math.max(1,Math.ceil(fr.length/48)),pick=fr.filter((f,i)=>(fr.length-1-i)%step===0);
+ const key=imSect+imChan+imSpan+pick.map(f=>f[1]).join();if(refresh&&key===imKey)return;imKey=key;
+ imLoop.set(pick.map(f=>({src:'/thumb/'+encodeURI(f[1])+'?s=1080',full:'/img/'+encodeURI(f[1]),t:f[0],sat:s.satellite.split(',')[0],sector:s.name,ch:c.name})),refresh)}
+document.querySelectorAll('[data-ls]').forEach(b=>b.addEventListener('click',()=>{imSpan=+b.dataset.ls;document.querySelectorAll('[data-ls]').forEach(o=>o.classList.toggle('on',o===b));renderImagery()}));
+function imageryShown(){if(imStarted)return;imStarted=true;fetchImagery();setInterval(()=>{if(!$('hrit').hidden)fetchImagery(true)},60000)}
+
+// ---------------------------------------------------------------- radar and charts (/api/radar, EMWIN tab)
+let RD=null,radRegion=null,radKey='',chSel='usa',chIdx=-1,chLen=0;
+const madeLine=(made,got,hrit)=>hrit?`sent ${esc(ago2(made))}`:`made ${esc(ago2(made))} (${esc(age(Date.now()/1000-made))} ago) · reached the dish ${esc(ago2(got))} ${latePill({filed:made,received:got})}`;
+const radLoop=new Loop($('radImg'),$('radScrub'),$('radPlay'),$('radPos'),fr=>{$('radCap').innerHTML=fr?madeLine(fr.made,fr.got,false):'No radar frames in the last two days.'},450);
+function fetchRadar(refresh){fetch('/api/radar').then(r=>r.json()).then(d=>{RD=d;renderRadar(refresh);renderCharts(refresh)}).catch(()=>{$('radCap').textContent='Could not load the radar.'})}
+function renderRadar(refresh){const regs=RD.radar||[],sel=$('radRegion');if(!regs.length){radLoop.set([]);return}
+ if(!radRegion||!regs.some(r=>r.id===radRegion))radRegion=(regs.find(r=>r.id==='RADSTHPL')||regs[0]).id;
+ const key=regs.map(r=>r.id).join();if(sel.dataset.key!==key){sel.dataset.key=key;sel.innerHTML=regs.map(r=>`<option value="${esc(r.id)}">${esc(r.name)}</option>`).join('')}sel.value=radRegion;
+ const r=regs.find(x=>x.id===radRegion),span=+$('radSpan').value,t1=r.frames[r.frames.length-1][1],fr=r.frames.filter(f=>f[1]>=t1-span*HOUR);
+ const k=radRegion+span+fr.map(f=>f[0]).join();if(refresh&&k===radKey)return;radKey=k;$('radImg').alt='Radar mosaic, '+r.name;
+ radLoop.set(fr.map(f=>({src:'/img/'+encodeURI(f[0]),made:f[1],got:f[2]})),refresh)}
+$('radRegion').onchange=()=>{radRegion=$('radRegion').value;renderRadar()};$('radSpan').onchange=()=>renderRadar();
+function renderCharts(refresh){const cs=RD.charts||[];if(!cs.length){$('chCap').textContent='No charts in the last two days.';return}
+ if(!cs.some(c=>c.id===chSel))chSel=cs[0].id;let html='',g='';
+ cs.forEach(c=>{if(c.group!==g){g=c.group;html+=`<span class="g">${esc(g)}</span>`}html+=`<button data-ch="${esc(c.id)}" aria-pressed="${c.id===chSel}">${esc(c.name)}</button>`});
+ $('chChips').innerHTML=html;$('chChips').querySelectorAll('[data-ch]').forEach(b=>b.onclick=()=>{chSel=b.dataset.ch;renderCharts()});
+ const c=cs.find(x=>x.id===chSel);if(!refresh||chIdx<0||chIdx>=chLen-1)chIdx=c.frames.length-1;chLen=c.frames.length;showChart()}
+function showChart(){const c=RD.charts.find(x=>x.id===chSel),f=c.frames[chIdx];$('chImg').src='/img/'+encodeURI(f[0]);$('chImg').alt=c.name;
+ $('chPos').textContent=`${chIdx+1} of ${c.frames.length}`;$('chPrev').disabled=chIdx<=0;$('chNext').disabled=chIdx>=c.frames.length-1;
+ $('chCap').innerHTML=`<b>${esc(c.name)}</b> · ${esc(c.by)} · ${madeLine(f[1],f[2],c.source==='hrit')}`}
+$('chPrev').onclick=()=>{if(chIdx>0){chIdx--;showChart()}};$('chNext').onclick=()=>{if(RD&&chIdx<chLen-1){chIdx++;showChart()}};
 showTab(location.hash.slice(1)||'overview');fetchHistory();
 </script></body></html>

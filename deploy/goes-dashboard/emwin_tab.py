@@ -195,6 +195,22 @@ class ProductIndex:
         m = NAME_RE.match(ent[0])
         return f"{TYPE_NAMES.get(m.group(11)[:3], '')} {m.group(11)} {m.group(2)}{m.group(3)} {m.group(4)} {self.offices.get(ent[5], '')}".lower()
 
+    def images(self, awips_ids) -> dict:
+        """AWIPS id -> [(id, filed, received)] of the images with those ids, oldest filed first.
+        An image's WMO heading has the hour on a 12-hour clock (the 00:30Z radar frame is
+        headed 1230), so its time is the EMWIN stamp."""
+        want = set(awips_ids)
+        with self.lock:
+            rows = [e for e in self.newest_first if e[4] == "Images"]
+        out: dict = {}
+        for e in rows:
+            m = NAME_RE.match(e[0])
+            if m and m.group(11) in want:
+                out.setdefault(m.group(11), []).append((f"{e[1]}/{e[0]}", _stamp(m.group(8)), e[2]))
+        for frames in out.values():
+            frames.sort(key=lambda f: (f[1] or 0, f[2]))
+        return out
+
     def get(self, pid: str = "", name: str = ""):
         """An entry by id ("emwin/2026-10-18/A_...TXT") or by bare file name, else None."""
         with self.lock:
@@ -266,6 +282,80 @@ class ProductIndex:
             "kinds": [[k, kinds.get(k, 0)] for k in KINDS],
             "oldest": rows[-1][2] if rows else None,
         }
+
+
+# ----------------------------------------------------------------------------- radar and charts
+# EMWIN's radar mosaics, by AWIPS id, every 15-20 minutes.
+RADAR_REGIONS = [
+    ("RADREFUS", "United States"), ("RADSTHPL", "Southern Plains"), ("RADRCKST", "Southern Rockies"),
+    ("RADSMSVY", "Southern Mississippi Valley"), ("RADSTHES", "Southeast"), ("RADNTHES", "Northeast"),
+    ("RADGRTLK", "Great Lakes"), ("RADUMSVY", "Upper Mississippi Valley"), ("RADRCKNT", "Northern Rockies"),
+    ("RADPACNW", "Pacific Northwest"), ("RADPACSW", "Pacific Southwest"), ("RADALLAK", "Alaska"),
+    ("RADALLHI", "Hawaii"), ("RADALLPR", "Puerto Rico"), ("RADALLGU", "Guam"),
+]
+# (id, name, who makes it, group, source, key): EMWIN charts by AWIPS id, HRIT's NWS channel
+# charts by the name goesproc gives them (20261018T220045Z_USA_latest.gif).
+CHARTS = [
+    ("usa", "Surface analysis", "NWS (WPC, OPC, NHC)", "Weather", "hrit", "USA"),
+    ("fronts", "Fronts and weather forecast", "WPC", "Weather", "emwin", "MOD96FBW"),
+    ("severe", "Severe storm outlook, day 1", "SPC", "Weather", "emwin", "MODDY1US"),
+    ("rain", "Rain forecast, 24 hours", "WPC", "Weather", "emwin", "MODQP1US"),
+    ("flash", "Flash flood risk, day 1", "WPC", "Weather", "emwin", "MOD94SUS"),
+    ("rivers", "River flood outlook", "WPC", "Weather", "emwin", "GPHJ88US"),
+    ("pacific", "Pacific surface analysis", "OPC", "Marine and tropics", "emwin", "NPSA01US"),
+    ("carib", "Caribbean surface analysis", "NHC", "Marine and tropics", "emwin", "CSA001US"),
+    ("atl48", "Tropical Atlantic, 48 h forecast", "NHC", "Marine and tropics", "hrit", "atlsfc48"),
+    ("atlsea", "Tropical Atlantic sea state", "NHC", "Marine and tropics", "hrit", "atlsea"),
+]
+NWS_RE = re.compile(r"^(\d{8}T\d{6}Z)_([A-Za-z0-9]+)_latest(?:BW)?\.(?:gif|png|jpg)$")
+
+
+def hrit_charts(nws_root: str, prefix: str = "nws", keep_s: int = KEEP_S, now: float | None = None) -> dict:
+    """goesproc's NWS-channel charts of the last two days: name -> [(id, made, received)]."""
+    now = now or time.time()
+    out: dict = {}
+    try:
+        days = sorted(d for d in os.listdir(nws_root) if DAY_RE.match(d))[-3:]
+    except OSError:
+        return out
+    for day in days:
+        try:
+            with os.scandir(os.path.join(nws_root, day)) as it:
+                for e in it:
+                    m = NWS_RE.match(e.name)
+                    if not m:
+                        continue
+                    received = int(e.stat().st_mtime)
+                    if now - received > keep_s:
+                        continue
+                    made = int(datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).timestamp())
+                    out.setdefault(m.group(2), []).append((f"{prefix}/{day}/{e.name}", made, received))
+        except OSError:
+            continue
+    for frames in out.values():
+        frames.sort(key=lambda f: (f[1], f[2]))
+    return out
+
+
+def radar_and_charts(index: ProductIndex, nws_root: str) -> dict:
+    """Every radar region and chart that has a frame, each frame [id, made, received], oldest
+    made first. A frame made twice (NOAA sends some again) is listed once."""
+    emwin = index.images([a for a, _ in RADAR_REGIONS] + [c[5] for c in CHARTS if c[4] == "emwin"])
+    hrit = hrit_charts(nws_root)
+
+    def frames(rows):
+        out, seen = [], set()
+        for pid, made, received in rows:
+            if made is None or made // 60 in seen:
+                continue
+            seen.add(made // 60)
+            out.append([pid, made, received])
+        return out
+    return {
+        "radar": [{"id": a, "name": n, "frames": frames(emwin[a])} for a, n in RADAR_REGIONS if emwin.get(a)],
+        "charts": [{"id": cid, "name": n, "by": by, "group": g, "source": src, "frames": frames(fr)}
+                   for cid, n, by, g, src, key in CHARTS if (fr := (hrit if src == "hrit" else emwin).get(key))],
+    }
 
 
 # ----------------------------------------------------------------------------- base map

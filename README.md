@@ -608,14 +608,17 @@ both.
 The page has three tabs. Overview is the above. HRIT and EMWIN carry 7 days of
 station history (`station_history.py`, kept in `~/goes/history.db`): signal,
 traffic per virtual channel, EMWIN delay and volume, events and sun-outage
-predictions. The EMWIN tab also has a warnings map, drawn from the portal's
-`/api/public/warnings` (every active event the bot holds, as outlines, and the
+predictions. The HRIT tab also has an imagery viewer that loops the last 3, 6 or
+24 hours of every sector and channel goesproc writes (`imagery.py`; the 1080 px
+loop frames of the last six hours are made ahead in the thumbnail cache). The
+EMWIN tab has radar loops and charts from the EMWIN and HRIT images, and a
+warnings map drawn from the portal's `/api/public/warnings` (every active event the bot holds, as outlines, and the
 area it covers; proxied at `/api/warnings`) over a Natural Earth base map from
 goestools' own files, and a browser over the last two days of products on disk
 (`emwin_tab.py`, office names from `offices.json`). To update the page:
 
 ```bash
-scp deploy/goes-dashboard/{dashboard.py,dashboard.html,station_history.py,emwin_tab.py,offices.json} digitaino@mesh-wx.digitaino.com:goes/
+scp deploy/goes-dashboard/{dashboard.py,dashboard.html,station_history.py,emwin_tab.py,imagery.py,offices.json} digitaino@mesh-wx.digitaino.com:goes/
 ssh digitaino@mesh-wx.digitaino.com sudo systemctl restart goes-dashboard
 ```
 
