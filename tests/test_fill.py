@@ -210,21 +210,141 @@ METAR_FILE = "####1####\nSAUS44 KEWX 191340\nMTRAUS\nMETAR KAUS 191340Z 18008KT 
 TAF_FILE = "####1####\nFTUS44 KEWX 191340\nTAFAUS\nTAF KAUS 191340Z 1914/2018 18008KT P6SM SKC=\n"
 
 
-def test_airport_files_are_not_even_listed_while_the_feed_is_current(tmp_path):
+def _metar(station: str, t: datetime, kind: str = "METAR") -> str:
+    return f"{kind} {station} {t:%d%H%M}Z 18008KT 10SM CLR 25/15 A3001="
+
+
+def _nws_file(*reports: str, n: int = 1) -> str:
+    """A DS.metar file: one single-station bulletin a report."""
+    return "".join(f"####{n}{i:04d}####\nSAUS44 KEWX 191340\nMTR{r.split()[1][1:]}\n{r}\n" for i, r in enumerate(reports))
+
+
+def _sah(t: datetime, *reports: str) -> bytes:
+    """One of the dish's SAHOURLY bundles, made at `t`: "METAR" or "SPECI" on a
+    line of its own, then a line a station."""
+    kind = reports[0].split()[0]
+    return "\r\r\n".join([f"SAUS70 KWBC {t:%d%H%M}", kind, *(r.split(" ", 1)[1] for r in reports)]).encode()
+
+
+def test_a_lost_bundle_is_filled_report_by_report_while_others_arrive(tmp_path):
+    # 2026-10-19: the dish lost the bundles with KAUS 1553Z while others came
+    # on time, and one fresh bundle had said every station was current.
+    from meshcore_weather.core import services
+    from meshcore_weather.geodata import resolver
+    from meshcore_weather.parser.weather import WeatherStore
+
     nws = FakeNws()
     src = _source(tmp_path, nws)
-    _dish(tmp_path / "dish", _kwin("SAUS70", "KWBC", NOW - timedelta(minutes=3), "SAHOURLY"))
-    _dish(tmp_path / "dish", _kwin("FTUS80", "KWBC", NOW - timedelta(minutes=8), "TAFALLUS", seq=2))
+    h = NOW - timedelta(minutes=25)                  # the hourly reports
+    _dish(tmp_path / "dish", _kwin("SAUS70", "KWBC", h - timedelta(minutes=57), "SAHOURLY", seq=1),
+          body=_sah(h - timedelta(minutes=57), _metar("KAUS", h - timedelta(hours=1))))
+    _dish(tmp_path / "dish", _kwin("SAUS70", "KWBC", h + timedelta(minutes=2), "SAHOURLY", seq=2),
+          body=_sah(h + timedelta(minutes=2), _metar("KDFW", h)))       # on time; KAUS's bundle is lost
     src.scan()
-    assert _poll(src, NOW, "obs") == 0 and nws.calls == []
+    speci = NOW - timedelta(minutes=10)
+    nws.feeds["DS.metar"] = {
+        "sn.0010.txt": (h + timedelta(minutes=3), _nws_file(_metar("KAUS", h), _metar("KDFW", h), _metar("EGLL", h))),
+        "sn.0011.txt": (speci + timedelta(minutes=2), _nws_file(_metar("KAUS", speci, "SPECI"),
+                                                                _metar("KDFW", speci, "SPECI"), n=2)),
+    }
+    assert _poll(src, NOW, "obs") == 1
+    assert not any(c.endswith("sn.0011.txt") for c in nws.calls)      # in its grace yet
+    (filled,) = [p for p in asyncio.run(src.fetch_products()) if p["source"] == "internet"]
+    assert f"KAUS {h:%d%H%M}Z" in filled["raw_text"]
+    assert "KDFW" not in filled["raw_text"] and "EGLL" not in filled["raw_text"]   # the feed's; not a station of ours
+
+    # Ten minutes on: the specials' file is due, and the dish brought KDFW's in time.
+    _dish(tmp_path / "dish", _kwin("SAUS70", "KWBC", speci + timedelta(minutes=1), "SAHOURLY", seq=3),
+          body=_sah(speci + timedelta(minutes=1), _metar("KDFW", speci, "SPECI")))
+    src.scan()
+    assert _poll(src, NOW + timedelta(minutes=10), "obs") == 1
+    newest = max((p for p in asyncio.run(src.fetch_products()) if p["source"] == "internet"), key=lambda p: p["timestamp"])
+    assert f"KAUS {speci:%d%H%M}Z" in newest["raw_text"] and "KDFW" not in newest["raw_text"]
+
+    store = WeatherStore()
+    store.ingest(asyncio.run(src.fetch_products()), log=False)
+    assert services.raw_metar_for(store, resolver.resolve("KAUS"))[2].startswith(f"KAUS {speci:%d%H%M}Z")
+    assert services.raw_metar_for(store, resolver.resolve("KDFW"))[2].startswith(f"KDFW {speci:%d%H%M}Z")
+
+    st = src.fill.status(NOW + timedelta(minutes=10))
+    assert st["active"] is False                        # a station or two: mopping up, not filling in
+    assert st["last_hour"]["obs_files"] == 2 and st["last_hour"]["obs_reports"] == 2
+
+    # A restart reads back what was taken, report by report: nothing is taken twice.
+    for f in (tmp_path / "fill").rglob("*.TXT"):
+        os.utime(f, (time.time() - 60, time.time() - 60))
+    again = _source(tmp_path, nws)
+    again.scan()
+    assert again.fill.reports["SAH"]["KAUS"] == speci
+    assert _poll(again, NOW + timedelta(minutes=11), "obs") == 0
 
 
-def test_airport_files_newer_than_the_feeds_newest_are_taken_once_their_grace_is_up(tmp_path):
+def test_airport_forecasts_are_filled_station_by_station_too(tmp_path):
+    from meshcore_weather.core import services
+    from meshcore_weather.parser.weather import WeatherStore
+
+    nws = FakeNws()
+    src = _source(tmp_path, nws)
+    old, new = NOW - timedelta(hours=5), NOW - timedelta(minutes=25)
+    _dish(tmp_path / "dish", _kwin("FTUS80", "KWBC", old, "TAFALLUS", seq=1),
+          body=f"FTUS80 KWBC {old:%d%H%M}\r\r\nTAF\r\r\nKAUS {old:%d%H%M}Z 1912/2012 18008KT P6SM SKC=\r\r\n".encode())
+    _dish(tmp_path / "dish", _kwin("FTUS80", "KWBC", new, "TAFALLUS", seq=2),          # on time
+          body=f"FTUS80 KWBC {new:%d%H%M}\r\r\nTAF AMD\r\r\nKDFW {new:%d%H%M}Z 1918/2024 18010KT P6SM BKN040=\r\r\n".encode())
+    src.scan()
+    nws.feeds["DS.tafst"] = {"sn.0001.txt": (new + timedelta(minutes=2), (
+        f"####1####\nFTUS44 KEWX {new:%d%H%M}\nTAFAUS\nTAF KAUS {new:%d%H%M}Z 1918/2024 16008KT P6SM SCT035\n"
+        f"     FM200000 14006KT P6SM SKC=\n"
+        f"####2####\nFTUS44 KFWD {new:%d%H%M}\nTAFDFW\nTAF AMD KDFW {new:%d%H%M}Z 1918/2024 18010KT P6SM BKN040=\n"
+        f"####3####\nFTCH05 SCSC {new:%d%H%M}\nTAF SCIP {new:%d%H%M}Z 1918/2018 09014KT 9999 SCT030=\n"))}
+    assert _poll(src, NOW, "obs") == 1
+    (filled,) = [p for p in asyncio.run(src.fetch_products()) if p["source"] == "internet"]
+    assert filled["awips_id"] == "TAFALLUS" and "KDFW" not in filled["raw_text"] and "SCIP" not in filled["raw_text"]
+    store = WeatherStore()
+    store.ingest(asyncio.run(src.fetch_products()), log=False)
+    assert services.station_taf(store, "KAUS").startswith(f"TAF KAUS {new:%d%H%M}Z 1918/2024")
+    assert services.station_taf(store, "KDFW").startswith(f"TAF KDFW {new:%d%H%M}Z")              # the dish's
+
+
+STATIONS = ["KAUS", "KDFW", "KIAH", "KLAX", "KSEA", "KDEN", "KMIA", "KBOS", "KSTL", "KBNA", "KSLC", "KPDX"]
+
+
+def _six_files(nws: FakeNws) -> None:
+    """Six DS.metar files, 50 to 25 min old, each with a report from every station."""
+    for i in range(6):
+        written = NOW - timedelta(minutes=50 - 5 * i)
+        nws.feeds["DS.metar"][f"sn.{i:04d}.txt"] = (written, _nws_file(*(_metar(s, written - timedelta(minutes=2))
+                                                                          for s in STATIONS), n=i))
+
+
+def test_it_counts_as_filling_in_only_when_the_feed_missed_most_of_what_it_carries(tmp_path):
+    # EMWIN three hours late: the feed carries every one of these stations, and missed all of it.
+    nws = FakeNws()
+    (tmp_path / "late").mkdir()
+    src = _source(tmp_path / "late", nws)
+    t = NOW - timedelta(hours=3)
+    _dish(tmp_path / "late" / "dish", _kwin("SAUS70", "KWBC", t, "SAHOURLY"), body=_sah(t, *(_metar(s, t) for s in STATIONS)))
+    src.scan()
+    _six_files(nws)
+    assert _poll(src, NOW, "obs") == 6
+    st = src.fill.status(NOW)
+    assert st["active"] is True and src.fill.spell_filled == 6 and st["last_hour"]["obs_reports"] == 72
+
+    # Stations the feed never carries: every report is taken, and none of it is filling in.
+    nws = FakeNws()
+    (tmp_path / "never").mkdir()
+    src = _source(tmp_path / "never", nws)
+    _six_files(nws)
+    assert _poll(src, NOW, "obs") == 6
+    st = src.fill.status(NOW)
+    assert st["active"] is False and st["last_hour"]["obs_reports"] == 72 and st["last_hour"]["obs_files"] == 6
+
+
+def test_airport_files_are_taken_once_their_grace_is_up(tmp_path):
     nws = FakeNws()
     src = _source(tmp_path, nws)
     _dish(tmp_path / "dish", _kwin("SAUS70", "KWBC", NOW - timedelta(hours=3), "SAHOURLY"))   # EMWIN 3 h late
     src.scan()
-    nws.feeds["DS.metar"] = {"sn.0001.txt": (NOW - timedelta(hours=4), METAR_FILE),           # older than the feed's
+    nws.feeds["DS.metar"] = {"sn.0001.txt": (NOW - timedelta(hours=4), METAR_FILE),           # older than a first poll's 75 min
                              "sn.0002.txt": (NOW - timedelta(minutes=20), METAR_FILE),
                              "sn.0003.txt": (NOW - timedelta(minutes=5), METAR_FILE)}         # in its grace yet
     nws.feeds["DS.tafst"] = {"sn.0001.txt": (NOW - timedelta(minutes=30), TAF_FILE)}          # the feed has no TAF at all

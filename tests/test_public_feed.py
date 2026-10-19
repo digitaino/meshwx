@@ -86,7 +86,8 @@ def test_the_public_bundle_says_where_the_products_come_from_and_how_late(client
     bot.emwin = SDRSource(root=bot.emwin.root, fallback_root=bot.emwin.fallback_root)
     fill = c.get("/api/public/bot").json()["feed"]["fill"]
     assert fill["active"] is False and fill["since"] is None and fill["last_ok"] is None
-    assert fill["last_hour"] == {"issued": 0, "in_time": 0, "in_time_pct": None, "text": 0, "obs_files": 0, "radar": 0}
+    assert fill["last_hour"] == {"issued": 0, "in_time": 0, "in_time_pct": None, "text": 0, "obs_files": 0,
+                                 "obs_reports": 0, "radar": 0}
 
 
 def test_the_public_bundle_gives_no_key_and_no_position(client):

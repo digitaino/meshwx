@@ -34,6 +34,7 @@ import httpx
 
 from meshcore_weather import __version__
 from meshcore_weather.config import settings
+from meshcore_weather.emwin import nws_metar
 from meshcore_weather.emwin.fill import InternetFill, key_of_name, stamp_of_name
 from meshcore_weather.emwin.retention import is_expired, longest_hours, max_age_hours
 
@@ -252,8 +253,8 @@ class _LagTracker:
 class _FillHost:
     """What a source tells the internet fill about its feed: which text
     products it holds (by WMO heading, office and minute), the newest of the
-    kinds the fill watches, and what each source does with what the fill
-    takes (`fill_take`)."""
+    kinds the fill watches, each station's newest airport report and forecast,
+    and what each source does with what the fill takes (`fill_take`)."""
 
     fill_radar = False
 
@@ -261,6 +262,8 @@ class _FillHost:
         self.fill = InternetFill(self)
         self._feed_keys: dict[tuple, float] = {}      # key -> when the feed's copy arrived (unix)
         self._feed_newest: dict[str, datetime] = {}
+        # "SAH" / "TAF" -> station -> the time of the newest report / forecast the feed brought
+        self._feed_reports: dict[str, dict[str, datetime]] = {"SAH": {}, "TAF": {}}
 
     def _feed_saw(self, name: str, arrived: float | None = None) -> bool:
         """One of the feed's own products, arrived at `arrived` (now when not
@@ -278,9 +281,23 @@ class _FillHost:
             self._feed_newest[kind] = stamp
         return True
 
+    def _feed_read(self, name: str, text: str) -> None:
+        """The body of one of the feed's own products: for an airport report
+        or forecast bundle, each station's newest is noted for the fill."""
+        kind = _feed_kind(name)
+        if kind not in self._feed_reports or not text:
+            return
+        newest = self._feed_reports[kind]
+        for station, when in nws_metar.station_times(text, stamp_of_name(name) or datetime.now(UTC), kind):
+            if station not in newest or when > newest[station]:
+                newest[station] = when
+
     def _forget_feed_keys(self, now: datetime) -> None:
         cutoff = now.timestamp() - 2 * 86400
         self._feed_keys = {k: t for k, t in self._feed_keys.items() if t >= cutoff}
+        old = now - timedelta(days=2)
+        for kind, newest in self._feed_reports.items():
+            self._feed_reports[kind] = {s: t for s, t in newest.items() if t >= old}
 
     def fill_feed_has(self, key: tuple) -> bool:
         return key in self._feed_keys
@@ -291,6 +308,11 @@ class _FillHost:
 
     def fill_feed_newest(self, kind: str) -> datetime | None:
         return self._feed_newest.get(kind)
+
+    def fill_feed_report(self, kind: str, station: str) -> datetime | None:
+        """The time of the newest airport report ("SAH") or forecast ("TAF")
+        for a station that the feed brought, or None when it brought none."""
+        return self._feed_reports[kind].get(station)
 
 
 class _NoaaBundles(_LagTracker):
@@ -547,6 +569,7 @@ class InternetSource(_FillHost, _NoaaBundles, EMWINSource):
                 self._note_created(name)
             if not self._feed_saw(name, wall):
                 continue                # the fill took it already: this copy is late
+            self._feed_read(name, prod.get("raw_text") or "")
             self._products[name] = prod
             new.append(prod)
         self._unsaved.extend(new)
@@ -672,8 +695,9 @@ class InternetSource(_FillHost, _NoaaBundles, EMWINSource):
                     self._note_created(fname)
                     if KWIN_TS_RE.search(fname):
                         self._feed_saw(fname)
+                        self._feed_read(fname, rec.get("raw_text") or "")
                     else:                       # an earlier run's fill
-                        self.fill.restore(fname)
+                        self.fill.restore(fname, rec.get("raw_text") or "")
                     count += 1
         except FileNotFoundError:
             pass
@@ -919,6 +943,10 @@ class SDRSource(_FillHost, _LagTracker, EMWINSource):
                     self._seen.add(name)
                     if not raw:
                         continue
+                    if dish:
+                        self._feed_read(name, raw)
+                    elif source == "internet":
+                        self.fill.restore(name, raw)       # what it took, report by report
                     prod = parse_emwin_file(name, raw, source=source)
                     if prod:
                         self._products[name] = prod

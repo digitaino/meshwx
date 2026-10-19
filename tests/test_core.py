@@ -349,3 +349,21 @@ class TestStaleObservation:
         old = _store_with(_metar_product(st, f"{st} 131355Z 16010KT 10SM CLR 30/20 A3001", age_min=13 * 60))
         assert services.raw_metar_for(old, loc) is None
         assert render_text.raw_metar(loc, None) == "Round Rock, TX: no METAR within 12h from nearby stations"
+
+    def test_a_station_asked_for_by_name_answers_with_its_own_report(self):
+        # 2026-10-19: "metar KLAX" answered with Hawthorne's (KHHR) newer report.
+        # A METAR is one airport's; the reply says how old it is, as `>metar` does.
+        loc = resolver.resolve("KLAX")
+        near = loc["stations"][1][0]
+        store = _store_with(
+            _metar_product("KLAX", "KLAX 191353Z 25008KT 10SM CLR 20/12 A2995", age_min=155, seq=1),
+            _metar_product(near, f"{near} 191553Z 25008KT 10SM CLR 21/12 A2995", age_min=35, seq=2),
+        )
+        found = services.raw_metar_for(store, loc)
+        assert found[0] == "KLAX" and render_text.raw_metar(loc, found).startswith("METAR (2h old) KLAX ")
+        # A place still gets the nearest current report.
+        place = dict(loc, stations=[(s, km + 1.0) for s, km in loc["stations"]])
+        assert services.raw_metar_for(store, place)[0] == near
+        # A station with nothing in twelve hours: a neighbour, named.
+        silent = _store_with(_metar_product(near, f"{near} 191553Z 25008KT 10SM CLR 21/12 A2995", age_min=35))
+        assert services.raw_metar_for(silent, loc)[0] == near

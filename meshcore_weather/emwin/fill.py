@@ -16,10 +16,15 @@ internet instead:
   dish received, and the dish's copies all matched by that key.
 - **Airport reports and forecasts** from NWS's own feeds on tgftp (DS.metar,
   DS.tafst): a file every five minutes with every report. The API has
-  neither. A file is taken once its grace is up if the feed has delivered no
-  US bundle of its kind (SAHOURLY, TAF) at least as new; while the feed is
-  current, which on the dish is a bundle every two minutes, the files are
-  not even listed.
+  neither. Each file is read once its grace is up, and of the reports in it
+  for stations the bot knows (its station table), those whose station has
+  nothing as new from the feed (or from the fill already) are taken, as one
+  product. Decided report by report, by station and time: on 2026-10-19 the
+  dish's bundles came anywhere from 3 minutes to 3 hours late, and one fresh
+  bundle had said every station was current, so KAUS 1553Z never came. A
+  file counts as filling in only when the feed missed most of what it
+  carries of it; stations EMWIN does not carry at all (some 200 of the
+  table's, military fields mostly) are taken but never count.
 - **Radar** from radar.weather.gov's standard mosaics: the pictures EMWIN
   carries, same size and same base map (94% of pixels the same between a dish
   frame and a web frame two hours apart, the rest echoes and the time). While
@@ -83,6 +88,7 @@ FIRST_LOOKBACK = timedelta(hours=6)     # ... and after a start, the last six ho
 LIST_LIMIT = 500                        # the API's most per answer; a full one is split in two
 FETCH_PER_POLL = 60                     # product texts per poll, warnings first
 OBS_EVERY = timedelta(minutes=5)        # the NWS feeds write a file every five minutes
+OBS_FILE_MIN = 10                       # an airport file counts as filling in with at least this many of the feed's stations
 RADAR_EVERY = timedelta(minutes=5)
 KEEP = timedelta(hours=26)              # what was decided, for the counts and to decide once
 ACTIVE_FILLS = 5                        # products filled in the last 30 minutes for it to count as filling in
@@ -183,15 +189,17 @@ class InternetFill:
     """Owned by a source (`host`), which answers what the feed has:
 
     - `host.fill_feed_has(key)`: the feed holds the text product with that key;
-    - `host.fill_feed_newest(kind)`: the newest feed stamp of "SAH" (US
-      airport-report bundles), "TAF", or a radar product (RADSTHPL), or None;
+    - `host.fill_feed_newest(kind)`: the newest feed stamp of a radar product
+      (RADSTHPL), or None;
+    - `host.fill_feed_report(kind, station)`: the time of the newest airport
+      report ("SAH") or forecast ("TAF") the feed brought for a station, or None;
     - `host.fill_take(products, kind)`: hold these ("text", "obs" or "radar"
       products; a radar one carries "bytes" instead of "raw_text"), returning
       how many were new;
     - `host.fill_radar` (bool): the host has somewhere to keep radar pictures.
 
     and tells it what the feed brought (`learn`) and what an earlier run of
-    the fill left on disk (`restore`)."""
+    the fill left on disk (`restore`, with the text of an airport file)."""
 
     def __init__(self, host, transport: httpx.AsyncBaseTransport | None = None):
         self.host = host
@@ -205,8 +213,11 @@ class InternetFill:
         self._text_next = self._obs_next = self._radar_next = 0.0
         self._feeds = {"SAH": nws_metar.NwsFeed(settings.nws_metar_url, nws_metar.metar_file, "airport report"),
                        "TAF": nws_metar.NwsFeed(settings.nws_taf_url, nws_metar.taf_file, "airport forecast")}
+        # "SAH" / "TAF" -> station -> the time of the newest report / forecast the fill took
+        self.reports: dict[str, dict[str, datetime]] = {"SAH": {}, "TAF": {}}
         self._radar_seen: dict[str, str] = {}          # product -> the Last-Modified taken
-        self.log: deque[tuple[float, str, int]] = deque(maxlen=5000)   # (when, "text"/"obs"/"radar", how many)
+        # (when, "text"/"obs"/"obs reports"/"radar", how many, how many of them count as filling in)
+        self.log: deque[tuple[float, str, int, int]] = deque(maxlen=5000)
         self.active_since: datetime | None = None
         self.spell_filled = 0                          # products filled since it last started filling in
         self.last_ok: datetime | None = None
@@ -219,11 +230,18 @@ class InternetFill:
     def learn(self, name: str) -> None:
         self.book.learn(name)
 
-    def restore(self, name: str) -> None:
-        """A product an earlier run filled, found on disk at start."""
+    def restore(self, name: str, text: str = "") -> None:
+        """A product an earlier run filled, found on disk at start; with its
+        text, an airport file's reports are known taken too."""
         k = key_of_name(name)
         if k:
             self.filled[k] = time.time()
+        kind = _airport_kind(name)
+        if kind and text:
+            took = self.reports[kind]
+            for station, when in nws_metar.station_times(text, stamp_of_name(name) or datetime.now(UTC), kind):
+                if station not in took or when > took[station]:
+                    took[station] = when
 
     def is_duplicate(self, name: str) -> bool:
         """The feed's copy of a product the fill already took."""
@@ -283,12 +301,14 @@ class InternetFill:
         self.errors[part.split()[0]] = self.last_error
         logger.warning("Internet fill (%s): %s", part, what, exc_info=not isinstance(e, httpx.HTTPError))
 
-    def _took(self, kind: str, n: int, now: datetime) -> None:
+    def _took(self, kind: str, n: int, now: datetime, counted: int | None = None) -> None:
+        """`n` taken, of which `counted` (all, unless said) count as filling in."""
         self.last_ok = now
         if n:
-            self.log.append((now.timestamp(), kind, n))
+            counted = n if counted is None else min(counted, n)
+            self.log.append((now.timestamp(), kind, n, counted))
             if self.active_since is not None:
-                self.spell_filled += n
+                self.spell_filled += counted
 
     # -- text, from api.weather.gov ---------------------------------------------------
 
@@ -392,20 +412,45 @@ class InternetFill:
     # -- airport reports and forecasts, from NWS's tgftp feeds -------------------------
 
     async def _obs(self, now: datetime) -> int:
-        taken = 0
+        """The NWS files whose grace is up, each read once: of its reports for
+        stations the bot knows, those the feed (or the fill) has nothing as new
+        for, as one product. Returns the files taken from."""
+        due = now - timedelta(minutes=settings.fill_grace_min)
+        known = _stations()
+        taken = counted = reports = 0
         for kind, feed in self._feeds.items():
-            newest = self.host.fill_feed_newest(kind)
-            if newest is not None and newest >= now - timedelta(minutes=settings.fill_grace_min):
-                continue        # the feed is current: nothing to list
-            keep = lambda written, newest=newest: (now - written >= timedelta(minutes=settings.fill_grace_min)
-                                                   and (newest is None or written > newest))
-            products = await feed.poll(self._http(), now, keep=keep)
+            entries, make = _AIRPORT[kind]
+            products, bulk, n_reports = [], 0, 0
+            for written, sequence, text in await feed.files(self._http(), now, keep=lambda written: written <= due):
+                chosen, carried, missed = [], 0, 0
+                for station, when, entry in entries(text, written):
+                    if station not in known:
+                        continue
+                    on_feed = self.host.fill_feed_report(kind, station)
+                    took = self.reports[kind].get(station)
+                    carried += on_feed is not None
+                    if (on_feed is not None and on_feed >= when) or (took is not None and took >= when):
+                        continue        # the feed brought it or a newer one, or the fill took it already
+                    self.reports[kind][station] = when
+                    chosen.append(entry)
+                    missed += on_feed is not None
+                prod = make(list(dict.fromkeys(chosen)), written, sequence) if chosen else None
+                if prod is None:
+                    continue
+                products.append(prod)
+                n_reports += len(chosen)
+                # Filling in, not mopping up: the feed missed most of what it carries of this file.
+                bulk += carried >= OBS_FILE_MIN and 2 * missed >= carried
             if products:
                 n = self.host.fill_take(products, "obs")
-                taken += n
-                logger.info("Internet fill: +%d %s files from NWS (the feed's newest is %s)", n, feed.kind,
-                            f"{newest:%H:%MZ}" if newest else "none")
-        self._took("obs", taken, now)
+                taken, counted, reports = taken + n, counted + min(bulk, n), reports + n_reports
+                logger.info("Internet fill: +%d %ss from NWS the feed had not brought in time (%d files)",
+                            n_reports, feed.kind, n)
+        for took in self.reports.values():
+            for station in [s for s, t in took.items() if t < now - KEEP]:
+                del took[station]
+        self._took("obs", taken, now, counted)
+        self._took("obs reports", reports, now, 0)
         return taken
 
     # -- radar, from radar.weather.gov ------------------------------------------------
@@ -451,7 +496,7 @@ class InternetFill:
     # -- what it is doing, for the pages -------------------------------------------------
 
     def _activity(self, now: datetime) -> None:
-        recent = sum(n for t, _, n in self.log if t >= now.timestamp() - 1800)
+        recent = sum(counted for t, _, _, counted in self.log if t >= now.timestamp() - 1800)
         if recent >= ACTIVE_FILLS and self.active_since is None:
             self.active_since = now
             self.spell_filled = recent
@@ -481,7 +526,7 @@ class InternetFill:
         in_time = sum(1 for v in window if v[1] == "feed")
         since = now.timestamp() - 3600
         by_kind = Counter()
-        for t, kind, n in self.log:
+        for t, kind, n, _ in self.log:
             if t >= since:
                 by_kind[kind] += n
         unix = lambda t: int(t.timestamp()) if t else None 
@@ -494,12 +539,32 @@ class InternetFill:
                           "radar": settings.fill_radar_grace_min},
             "last_hour": {"issued": len(window), "in_time": in_time,
                           "in_time_pct": round(100 * in_time / len(window)) if window else None,
-                          "text": by_kind["text"], "obs_files": by_kind["obs"], "radar": by_kind["radar"]},
+                          "text": by_kind["text"], "obs_files": by_kind["obs"], "obs_reports": by_kind["obs reports"],
+                          "radar": by_kind["radar"]},
             "waiting": len(self.pending),
             "last_ok": unix(self.last_ok),
             "last_error": self.last_error,
             "errors": dict(self.errors),
         }
+
+
+# What an airport file is read as, and made into: (entries, product) by kind.
+_AIRPORT = {"SAH": (nws_metar.metar_entries, nws_metar.collective),
+            "TAF": (nws_metar.taf_entries, nws_metar.taf_collective)}
+
+
+def _airport_kind(name: str) -> str | None:
+    """"SAH" or "TAF" for one of the fill's own airport files, by its name."""
+    if "_C_NWSF_" not in name:
+        return None
+    return "SAH" if name.endswith("-SAHOURLY.TXT") else "TAF" if name.endswith("-TAFALLUS.TXT") else None
+
+
+def _stations():
+    """The bot's station table: the stations a reply can name."""
+    from meshcore_weather.geodata import resolver
+    resolver.load()
+    return resolver._stations
 
 
 def _span(delta: timedelta) -> str:

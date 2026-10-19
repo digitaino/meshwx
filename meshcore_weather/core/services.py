@@ -590,7 +590,12 @@ def raw_metar_for(store: WeatherStore, loc: dict, max_age_min: int = OBS_MAX_AGE
 
     With nothing current, the newest report up to `stale_max_age_min` old,
     as `observation_for` does: the line carries its own DDHHMMZ time and
-    `render_text.raw_metar` says how old it is."""
+    `render_text.raw_metar` says how old it is.
+
+    A station asked for by name (`metar KLAX`: it is the location, 0 km) is
+    answered with its own report while it has one up to `stale_max_age_min`
+    old, never a neighbour's newer one: a METAR is one airport's, and the
+    reply says how old it is. On 2026-10-19 "metar KLAX" got Hawthorne's."""
     now = datetime.now(timezone.utc)
     newest_stale: tuple[datetime, str, float, str] | None = None
     for icao, km in loc.get("stations") or []:
@@ -599,9 +604,12 @@ def raw_metar_for(store: WeatherStore, loc: dict, max_age_min: int = OBS_MAX_AGE
         raw = store._find_metar_raw(icao)
         if not raw:
             continue
-        if (now - raw[1]) <= timedelta(minutes=max_age_min):
-            return icao, float(km), raw[0]
+        # The report's own time, not its collective's (`observation_for`).
         ts = metar_observed_at(raw[0], raw[1]) or raw[1]
+        if (now - ts) <= timedelta(minutes=max_age_min):
+            return icao, float(km), raw[0]
+        if (now - ts) <= timedelta(minutes=stale_max_age_min) and km == 0:
+            return icao, 0.0, raw[0]
         if (now - ts) <= timedelta(minutes=stale_max_age_min) and (
                 newest_stale is None or ts > newest_stale[0]):
             newest_stale = (ts, icao, float(km), raw[0])
