@@ -515,7 +515,8 @@ class InternetFill:
             return "the dish is quiet" if q == float("inf") else f"the dish has been quiet for {_span(timedelta(minutes=q))}"
         if lag is not None and lag >= settings.fill_grace_min:
             return f"EMWIN is running {_span(timedelta(minutes=lag))} late"
-        return "products the feed missed" if self.active_since else "the feed delivers in time"
+        # Said on the mesh's status channel and the public page: plain words, not the bot's own.
+        return "some products came late or not at all" if self.active_since else "the feed delivers in time"
 
     def status(self, now: datetime | None = None) -> dict:
         """The fill for the portal, the public page, `sat` and the status channel (times unix seconds)."""

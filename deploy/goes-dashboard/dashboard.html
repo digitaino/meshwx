@@ -77,7 +77,17 @@ td{padding:5px 6px;border-bottom:1px solid var(--line);white-space:nowrap;overfl
 td.r{text-align:right;color:var(--dim);width:1%;max-width:none}
 td a{text-decoration:none}
 .net{color:var(--warn);font-weight:600}
-.howto{font-size:14px}.howto ol{margin:0 0 10px;padding-left:22px}.howto li{margin:4px 0}
+.howto{font-size:14px}.howto ol,.howto ul{margin:0 0 10px;padding-left:22px}.howto li{margin:4px 0}
+/* Ways to get the weather: the Overview's cards and the guide tab */
+.ways{display:grid;gap:12px;grid-template-columns:1fr}
+@media(min-width:620px){.ways{grid-template-columns:1fr 1fr}}
+@media(min-width:1000px){.ways{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.ways a{display:block;text-decoration:none;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.ways a:hover,.ways a:focus-visible{border-color:var(--acc)}
+.ways .k{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)}
+.ways .v{font-size:16px;font-weight:650;margin:2px 0 4px}.ways .d{font-size:13px;color:var(--dim)}
+a.golink{display:inline-flex;align-items:center;padding:6px 12px;border-radius:8px;background:var(--acc);color:#fff;text-decoration:none;font-size:13px;font-weight:600}
+.links td{white-space:normal;max-width:none}.links td:first-child{width:1%;white-space:nowrap}
 code{background:var(--inset);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12.5px}
 .cmd td{white-space:normal;max-width:none;vertical-align:top}.cmd td:first-child{white-space:nowrap;width:1%}
 .meter{height:28px;background:var(--inset);border-radius:8px;overflow:hidden;position:relative;margin:8px 0 4px}
@@ -86,7 +96,8 @@ code{background:var(--inset);border:1px solid var(--line);border-radius:5px;padd
 .bigsnr{font-size:60px;font-weight:700;line-height:1}
 footer{color:var(--dim);font-size:12px;padding:0 0 24px}
 [hidden]{display:none!important}
-nav.tabs{display:flex;gap:4px}
+nav.tabs{display:flex;gap:4px;flex-wrap:wrap}
+@media(max-width:520px){nav.tabs{gap:2px}nav.tabs a{padding:7px 8px;font-size:13px}.cmd td.r{display:none}}
 nav.tabs a{padding:7px 14px;border-radius:8px;text-decoration:none;color:var(--dim);font-weight:600;font-size:14px}
 nav.tabs a[aria-selected="true"]{background:var(--inset);color:var(--fg)}
 .tab{display:flex;flex-direction:column;gap:16px}
@@ -159,7 +170,7 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
 </style></head><body>
 <header class="top"><div class="wrap">
  <div><h1>mesh-wx</h1><p class="sub">The GOES-19 satellite receiver and the <span id="hName">WX-AUS</span> weather bot on the Austin MeshCore mesh</p></div>
- <nav class="tabs" aria-label="Dashboard"><a href="#overview" id="t-overview" aria-selected="true">Overview</a><a href="#weather" id="t-weather" aria-selected="false">Weather</a><a href="#station" id="t-station" aria-selected="false">Station</a></nav>
+ <nav class="tabs" aria-label="Dashboard"><a href="#overview" id="t-overview" aria-selected="true">Overview</a><a href="#weather" id="t-weather" aria-selected="false">Weather</a><a href="#station" id="t-station" aria-selected="false">Station</a><a href="#use" id="t-use" aria-selected="false">Get the weather</a></nav>
  <div class="ops hidden" id="ops"><button id="btnPoint">Pointing mode</button><button id="btnRecv" class="primary hidden">Back to receiving</button><span id="msg"></span></div>
 </div></header>
 
@@ -172,6 +183,12 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
   <div class="stat" id="stData"><span class="dot" aria-hidden="true"></span><div><div class="k">Weather data</div><div class="v">Checking…</div><div class="d"></div></div></div>
  </section>
  <div class="notice hidden" id="notice" role="status"></div>
+ <nav class="ways" aria-label="Ways to get the weather">
+  <a href="#use" data-jump="useMesh"><div class="k">On the mesh</div><div class="v">Any MeshCore app</div><div class="d">Send <code>wx austin tx</code> on <code>#meshwx</code> and get the weather back as text.</div></a>
+  <a href="#use" data-jump="useWeb"><div class="k">In your browser</div><div class="v">MeshWX web client</div><div class="d">Maps, alerts and radar in Chrome, with your radio on USB or Bluetooth. No internet needed.</div></a>
+  <a href="#use" data-jump="useIos"><div class="k">On iPhone</div><div class="v">DigitainoMesh beta</div><div class="d">A MeshCore app with the weather built in, on TestFlight.</div></a>
+  <a href="#use" data-jump="useDev"><div class="k">Build your own</div><div class="v">The open protocol</div><div class="d">Ask the bot from your own MeshCore client: the spec, test vectors and tables.</div></a>
+ </nav>
 
  <section class="block" aria-labelledby="hAct">
   <h2 id="hAct">Mesh activity · last 24 hours</h2>
@@ -193,9 +210,20 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
   </div>
  </section>
 
- <details class="block howto" id="howto">
-  <summary>Use the bot</summary>
-  <p>The dish receives NOAA's EMWIN broadcast from GOES-19: every National Weather Service text product for the whole country. The bot reads them as they arrive and answers on the MeshCore mesh over LoRa. A reply is one mesh packet, and normally no internet is involved.</p>
+
+ <section class="block" aria-labelledby="hImg">
+  <div class="bh"><h2 id="hImg">Latest satellite images</h2><div class="right"><a class="hint" href="#weather" data-jump="hrImg">Loops of every channel →</a></div></div>
+  <div class="grid" id="imgs"><span class="hint">Nothing decoded yet.</span></div>
+ </section>
+
+</div>
+<div class="tab" id="use" hidden>
+ <div class="subnav" aria-label="Ways to get the weather"><button data-go="useMesh">On the mesh</button><button data-go="useWeb">In your browser</button><button data-go="useIos">On iPhone</button><button data-go="useDev">Build your own</button></div>
+ <p class="why" style="margin-top:12px">The bot answers on the MeshCore mesh, over LoRa radio, from the National Weather Service products its dish receives from the GOES-19 satellite. Nothing on your side needs the internet: a MeshCore radio within reach of the mesh is enough. Every way below talks to the same bot.</p>
+
+ <section class="block howto" id="useMesh" aria-labelledby="hUseMesh">
+  <div class="bh"><h2 id="hUseMesh">On the mesh, with any MeshCore app</h2></div>
+  <p class="why">Text in, text back. It works with the MeshCore app on a phone, or anything else that can post on a channel or send a message.</p>
   <ol>
    <li>Set your radio to <span id="uRadio">the US MeshCore default (910.525 MHz, 62.5 kHz, SF7, CR5)</span>.</li>
    <li>Add the channel <code id="uChannel">#meshwx</code> in the MeshCore app. Type the name only; the key comes from it.</li>
@@ -204,15 +232,61 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
    <li>Products cover the whole country. If another <code>WX-</code> bot is nearer to the place you ask about, that bot answers.</li>
   </ol>
   <table class="cmd" id="uCmds"></table>
-  <p class="hint">The MeshWX iOS app reads the bot's binary weather messages on <code id="uData">#meshwx</code>.</p>
- </details>
-
- <section class="block" aria-labelledby="hImg">
-  <div class="bh"><h2 id="hImg">Latest satellite images</h2><div class="right"><a class="hint" href="#weather" data-jump="hrImg">Loops of every channel →</a></div></div>
-  <div class="grid" id="imgs"><span class="hint">Nothing decoded yet.</span></div>
+  <p class="hint">A long reply comes a page at a time: send <code>more</code> for the next page. <code>status</code> gives any notice from the station's operator.</p>
  </section>
 
+ <section class="block howto" id="useWeb" aria-labelledby="hUseWeb">
+  <div class="bh"><h2 id="hUseWeb">In your browser: the MeshWX web client</h2><div class="right"><a class="golink" href="https://github.com/digitaino/meshwx/releases/latest" target="_blank" rel="noopener">Download MeshWX.html</a></div></div>
+  <p class="why">Warnings on a map, current conditions, the forecast and radar, from the bot over your own radio. It is one file that runs in your browser, and it never touches the internet: the maps, the place names and the words are all inside it.</p>
+  <div class="grid2">
+   <div><h3 class="sm">What you need</h3><ul>
+    <li>A computer with macOS, Windows, Linux or ChromeOS</li>
+    <li>Chrome, Edge, Brave or Vivaldi. Safari and Firefox cannot talk to a radio</li>
+    <li>A MeshCore radio with firmware 1.15 or newer, on USB or paired over Bluetooth, and not connected to your phone's MeshCore app at the same time</li>
+    <li>A weather bot in range: a node named <code>WX-</code> something on <code>#meshwx</code></li>
+   </ul></div>
+   <div><h3 class="sm">Start it</h3><ol>
+    <li>Download <b>MeshWX.html</b> from the <a href="https://github.com/digitaino/meshwx/releases/latest" target="_blank" rel="noopener">latest release</a>.</li>
+    <li>Open it. If it opens in Safari or Firefox, right-click the file, choose <b>Open With</b> and pick Chrome.</li>
+    <li>Press <b>No radio</b> at the top, then <b>Connect over Bluetooth</b> or <b>Connect over USB</b>, and pick your radio.</li>
+    <li>Add a place and press <b>Update</b>. The weather comes in over the air.</li>
+   </ol></div>
+  </div>
+  <p class="hint">Nothing arriving? Your radio has to be on exactly the mesh's frequency and settings: press your radio's name at the top, then <b>Radio settings</b>, pick your region under <b>Preset</b> and apply it. To look around without a radio, press <b>No radio</b> and choose <b>Show recorded data</b>.</p>
+ </section>
+
+ <section class="block howto" id="useIos" aria-labelledby="hUseIos">
+  <div class="bh"><h2 id="hUseIos">On iPhone: DigitainoMesh</h2><div class="right"><a class="golink" href="https://testflight.apple.com/join/Cbpf5S7D" target="_blank" rel="noopener">Join the beta on TestFlight</a></div></div>
+  <p class="why">A build of the MeshCore One app with the weather built in, in public beta through Apple's TestFlight.</p>
+  <ol>
+   <li>On the iPhone, open the <a href="https://testflight.apple.com/join/Cbpf5S7D" target="_blank" rel="noopener">TestFlight invitation</a>, install Apple's TestFlight app if it asks, and install <b>DigitainoMesh</b>.</li>
+   <li>Connect your MeshCore radio (firmware 1.15 or newer) as in any MeshCore app.</li>
+   <li>Open the <b>Tools</b> tab, then <b>Weather</b>. When it offers to add <code>#meshwx</code> to your radio, say yes.</li>
+   <li>Add a place: warnings on the map, current conditions, the forecast and radar come from the bot over the mesh.</li>
+  </ol>
+  <p class="hint">It is a beta, so things change: send feedback from the TestFlight app. A radio talks to one app at a time.</p>
+ </section>
+
+ <section class="block howto" id="useDev" aria-labelledby="hUseDev">
+  <div class="bh"><h2 id="hUseDev">Build it into your own app</h2></div>
+  <p class="why">The weather protocol, MeshWX v5, is open. Any MeshCore client can ask the bot for the weather and draw what comes back.</p>
+  <ul>
+   <li><b>Find a bot.</b> Weather bots advertise as chat nodes named <code>WX-</code> and a city (<code>WX-AUS</code>) and work on the channel <code>#meshwx</code>, added by name like any hashtag channel.</li>
+   <li><b>Ask</b> with the commands people type, starting with <code>&gt;</code>: <code>&gt;w</code> for the warnings, <code>&gt;o KAUS</code> for conditions, <code>&gt;f 78701</code> for a forecast, <code>&gt;radar 30.270,-97.740</code> for radar. Send it as a Request datagram on <code>#meshwx</code>, or as a DM or channel message.</li>
+   <li><b>Listen.</b> Answers come back on <code id="uData">#meshwx</code> as MeshCore channel data packets (<code>GRP_DATA</code>, data type <code>0xFF10</code>): compact binary messages of at most 165 bytes that every app listening can use. Companion firmware 1.15 or newer delivers them.</li>
+   <li><b>Draw</b> them with the preload tables (forecast zones, stations, forecast points, places): only numbers go over the air.</li>
+   <li><b>Mind the airtime.</b> Send a request only when someone asks for the weather, never on a timer, and leave five seconds between requests.</li>
+  </ul>
+  <div class="tbl"><table class="links"><tbody>
+   <tr><td><a href="https://github.com/digitaino/meshwx/blob/main/docs/MeshWX_v5_Spec.md" target="_blank" rel="noopener">Protocol spec</a></td><td>Every message, the request grammar, rendering and a build checklist</td></tr>
+   <tr><td><a href="https://github.com/digitaino/meshwx/blob/main/docs/meshwx_v5_vectors.json" target="_blank" rel="noopener">Test vectors</a></td><td>Encoded messages and what they decode to, to test a decoder against</td></tr>
+   <tr><td><a href="https://github.com/digitaino/meshwx/tree/main/meshcore_weather/client_data" target="_blank" rel="noopener">Preload tables</a></td><td>The zones, stations, forecast points and places the messages refer to by number</td></tr>
+   <tr><td><a href="https://github.com/digitaino/meshwx/tree/main/web/src/meshwx" target="_blank" rel="noopener">JavaScript codec</a></td><td>The web client's decoder and encoder, plain ES modules</td></tr>
+   <tr><td><a href="https://github.com/digitaino/meshwx" target="_blank" rel="noopener">The bot</a></td><td>This weather bot's source, in Python</td></tr>
+  </tbody></table></div>
+ </section>
 </div>
+
 <div class="tab" id="weather" hidden>
  <div class="subnav" aria-label="Weather sections"><button data-go="emWarn">Warnings</button><button data-go="emRadar">Radar and charts</button><button data-go="hrImg">Satellite imagery</button><button data-go="emProd">Products</button></div>
  <section class="block" id="emWarn" aria-labelledby="hWarn">
@@ -455,15 +529,23 @@ fetch('/api/state').then(r=>r.json()).then(renderRx).catch(()=>{}).finally(conne
 // without one), and the internet fill, which takes from NWS whatever the feed has not
 // delivered in time. Times in the bundle are unix seconds.
 const fillTook=f=>{const h=(f&&f.last_hour)||{};return (h.text||0)+(h.obs_files||0)+(h.radar||0)};
-const cap1=s=>s?s[0].toUpperCase()+s.slice(1):s;
+// Why the bot is filling in (the bot's own reason, emwin/fill.py InternetFill.reason), in plain
+// words: a card's few words, and the Overview's sentence.
+const fillCase=f=>{const r=(f&&f.reason)||'',m=r.match(/running (.+) late/),q=r.match(/quiet for (.+)/);return r.startsWith('the dish')?['dish',q&&q[1]]:m?['late',m[1]]:['missed']};
+function fillShort(f){const [k,v]=fillCase(f);return k==='dish'?'the dish is receiving nothing':k==='late'?`the satellite feed is ${v} late`:'some products missed the dish'}
+function fillWhy(f){const [k,v]=fillCase(f);
+ const why=k==='dish'?(v?`The dish has received nothing from the satellite for ${v}, so the bot is getting the weather`:'The dish is receiving nothing from the satellite, so the bot is getting the weather')
+  :k==='late'?`NOAA's satellite broadcast is running about ${v} late, so the bot is getting anything late`
+  :'Some weather products did not come through the satellite in time, so the bot got those';
+ return `${why} from the National Weather Service over the internet instead. The forecasts, warnings, current conditions and radar it sends on the mesh stay up to date.`}
 function renderData(d){const fd=d.feed||{},f=fd.fill,lag=fd.lag_min,notes=[],filling=!!(f&&f.active);
  const newest=fd.newest_product_at?`newest product ${clock(fd.newest_product_at)}`:'';
- const fillLine=filling?[f.reason,f.since?'NWS filling in since '+clock(f.since):'NWS filling in',`${n(fillTook(f))} products from NWS in the last hour`]:[];
+ const fillLine=filling?[fillShort(f),f.since?'from NWS since '+clock(f.since):'from NWS',`${n(fillTook(f))} products from NWS in the last hour`]:[];
  if(fd.source==='internet')stat('stData',filling?'warn':'info','Over the internet',['This bot has no dish',...(filling?fillLine:[lag!=null&&lag>=30?'NOAA is '+late(lag)+' behind':newest])].filter(Boolean).join(' · '));
  else if(filling)stat('stData','warn','Filling in from NWS',fillLine.filter(Boolean).join(' · '));
  else if(lag!=null&&lag>=30)stat('stData',lag>=120?'bad':'warn',late(lag)+' late',['NOAA\'s EMWIN feed is behind',newest].filter(Boolean).join(' · '));
  else stat('stData','ok','On time',['From the dish, NOAA EMWIN',lag!=null?`within ${lag} min of NOAA`:newest].filter(Boolean).join(' · '));
- if(filling)notes.push(`${cap1(f.reason)}, so the bot is filling in from the National Weather Service over the internet: forecasts, warnings, current conditions and radar stay current.`);
+ if(filling)notes.push(fillWhy(f));
  else if(lag!=null&&lag>=30)notes.push(`NOAA's EMWIN feed is running about ${late(lag)} late, so forecasts and warnings reach the mesh late.`);
  const box=$('notice');box.classList.toggle('hidden',!notes.length);box.className='notice'+(notes.length?(!filling&&lag>=120?' bad':' warn'):' hidden');box.textContent=notes.join(' ');$('hNote').textContent=notes.join(' ');$('hNote').classList.toggle('hidden',!notes.length)}
 
@@ -516,7 +598,7 @@ pollBot();
 // ---------------------------------------------------------------- tabs (bare #token links)
 // Weather is everything to look at, Station everything about whether the dish and feed work.
 // The tabs used to be the two parts of the downlink; their old addresses still land.
-const TABS=['overview','weather','station'],MOVED={hrit:'station',emwin:'weather'};
+const TABS=['overview','weather','station','use'],MOVED={hrit:'station',emwin:'weather'};
 function showTab(tab,jump){if(MOVED[tab]){tab=MOVED[tab];history.replaceState(null,'','#'+tab)}if(!TABS.includes(tab))tab='overview';TABS.forEach(t=>{$(t).hidden=t!==tab;$('t-'+t).setAttribute('aria-selected',t===tab)});
  requestAnimationFrame(()=>{drawHistory();if(rx.history&&tab==='station'){drawConst((rx.stats||{}).const||[]);drawHist(rx.history)}if(tab==='weather'){emwinShown();imageryShown()}LOOPS.forEach(l=>{if($(tab)&&!$(tab).contains(l.img))l.stop()});if(jump)$(jump).scrollIntoView({behavior:'smooth',block:'start'})})}
 addEventListener('hashchange',()=>showTab(location.hash.slice(1)));
