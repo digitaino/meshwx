@@ -1059,44 +1059,56 @@ var Portal = {
   // -- Station: the receiver, the pointing meter, the feed and the fill -------------
 
   station: {
-    _timer: null, _mtimer: null, _mode: null, _gains: null, _yMin: null, _yMax: null,
+    _timer: null, _mtimer: null, _sse: null, _mode: null, _gains: null, _yMin: null, _yMax: null,
     onEnter: function () {
       var s = this;
       this.load();
+      // The receiver as the dashboard streams it, twice a second, as on
+      // goes.digitaino.com; the feed and the fill move by the minute.
+      if (this._sse) this._sse.close();
+      this._sse = liveStream("/api/sdr/events", function (r) { s.renderRx(r); }, "rx-dot");
       if (this._timer) clearInterval(this._timer);
-      this._timer = setInterval(function () { s.load(); }, 10000);
+      this._timer = setInterval(function () { s.load(); }, 30000);
     },
     onLeave: function () {
       if (this._timer) clearInterval(this._timer); this._timer = null;
+      if (this._sse) { this._sse.close(); this._sse = null; }
       this._stopMeter();
     },
 
     load: function () {
       var self = this;
       api("/api/sdr").then(function (d) {
-        var r = d.receiver || {}, st = r.stats || {}, feed = d.feed || {}, err = r._error;
-        self._showMode(err ? null : r.mode);
-        var pillEl = $("rx-pill");
-        pillEl.className = "pill " + (err ? "bad" : r.mode === "point" ? "info" : st.locked ? "ok" : "warn");
-        pillEl.textContent = err ? "Unreachable" : r.mode === "point" ? "Being aimed" : st.locked ? "Locked" : "No lock";
-        $("sat-signal-sub").textContent = err ? "The goestools dashboard does not answer: " + err :
-          r.mode === "point" ? (r.mode_msg || "Pointing mode") :
-          "Locked for " + (st.lock_since ? agoAt(st.lock_since) : "–") + " · tuner gain " + (st.gain != null ? st.gain.toFixed(1) : "?") + " dB · carrier offset " + (st.freq != null ? Math.round(st.freq) + " Hz" : "?");
-        if (!err && r.mode !== "point") {
-          var tot = st.totals || {};
-          $("sat-stats").innerHTML =
-            tile("Viterbi errors", st.vit_avg != null ? st.vit_avg : "–", "per frame, under 200 is good", st.vit_avg == null ? "" : st.vit_avg < 200 ? "ok" : st.vit_avg < 600 ? "warn" : "bad") +
-            tile("dropped", st.drops != null ? st.drops : "–", "packets, last interval", st.drops ? "warn" : "ok") +
-            tile("packets", tot.packets != null ? tot.packets.toLocaleString() : "–", "since goesrecv started") +
-            tile("dropped in all", tot.drops != null ? tot.drops.toLocaleString() : "–", tot.packets ? (tot.drops * 100 / tot.packets).toFixed(2) + "% of them" : "") +
-            tile("Reed-Solomon fixes", tot.rs_errors != null ? tot.rs_errors.toLocaleString() : "–", "bytes corrected");
-          self.drawHistory(r.history);
-        }
-        var svc = (r.status || {}).services || {}, stt = r.status || {};
-        $("sat-services").innerHTML = "<span>goesrecv <b>" + esc(svc.goesrecv || "?") + "</b>" + (stt.goesrecv_up_s ? " · up " + ago(stt.goesrecv_up_s) : "") + "</span>" +
-          "<span>goesproc <b>" + esc(svc.goesproc || "?") + "</b>" + (stt.counts ? " · " + (stt.counts.emwin_today || 0) + " EMWIN files today" : "") + "</span>";
-        self.renderFeed(feed);
+        self.renderRx(d.receiver || {});
+        self.renderFeed(d.feed || {});
       }).catch(function (e) { Portal.ui.toast("Station: " + e.message, false); });
+    },
+
+    // One state of the receiver: the whole of it from /api/sdr, or a frame of
+    // the stream, where only every tenth carries the services and the chart.
+    renderRx: function (r) {
+      var self = this, st = r.stats || {}, err = r._error;
+      self._showMode(err ? null : r.mode);
+      var pillEl = $("rx-pill");
+      pillEl.className = "pill " + (err ? "bad" : r.mode === "point" ? "info" : st.locked ? "ok" : "warn");
+      pillEl.textContent = err ? "Unreachable" : r.mode === "point" ? "Being aimed" : st.locked ? "Locked" : "No lock";
+      $("sat-signal-sub").textContent = err ? "The goestools dashboard does not answer: " + err :
+        r.mode === "point" ? (r.mode_msg || "Pointing mode") :
+        "Locked for " + (st.lock_since ? agoAt(st.lock_since) : "–") + " · tuner gain " + (st.gain != null ? st.gain.toFixed(1) : "?") + " dB · carrier offset " + (st.freq != null ? Math.round(st.freq) + " Hz" : "?");
+      if (!err && r.mode !== "point") {
+        var tot = st.totals || {};
+        $("sat-stats").innerHTML =
+          tile("Viterbi errors", st.vit_avg != null ? st.vit_avg : "–", "per frame, under 200 is good", st.vit_avg == null ? "" : st.vit_avg < 200 ? "ok" : st.vit_avg < 600 ? "warn" : "bad") +
+          tile("dropped", st.drops != null ? st.drops : "–", "packets, last interval", st.drops ? "warn" : "ok") +
+          tile("packets", tot.packets != null ? tot.packets.toLocaleString() : "–", "since goesrecv started") +
+          tile("dropped in all", tot.drops != null ? tot.drops.toLocaleString() : "–", tot.packets ? (tot.drops * 100 / tot.packets).toFixed(2) + "% of them" : "") +
+          tile("Reed-Solomon fixes", tot.rs_errors != null ? tot.rs_errors.toLocaleString() : "–", "bytes corrected");
+        self.drawHistory(r.history);
+      }
+      if (!r.status && !err) return;
+      var svc = (r.status || {}).services || {}, stt = r.status || {};
+      $("sat-services").innerHTML = "<span>goesrecv <b>" + esc(svc.goesrecv || "?") + "</b>" + (stt.goesrecv_up_s ? " · up " + ago(stt.goesrecv_up_s) : "") + "</span>" +
+        "<span>goesproc <b>" + esc(svc.goesproc || "?") + "</b>" + (stt.counts ? " · " + (stt.counts.emwin_today || 0) + " EMWIN files today" : "") + "</span>";
     },
 
     _showMode: function (mode) {

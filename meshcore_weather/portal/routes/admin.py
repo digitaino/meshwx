@@ -7,6 +7,7 @@ portal has no login: keep it on the LAN or gate it at the edge (see server.py)."
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -433,6 +434,46 @@ async def sdr_state(request: Request) -> JSONResponse:
     # The link is for the person reading the page: the public address when
     # the dashboard has one, while the bot itself polls `sdr_dashboard_url`.
     return JSONResponse({"dashboard_url": settings.dashboard_link, "receiver": state, "feed": feed})
+
+
+# The receiver as the dashboard streams it (its /events: twice a second, and
+# every tenth frame with the service status and the last 15 minutes), relayed
+# for the Station tab, which used to poll /api/sdr every 10 s while
+# goes.digitaino.com moved with every frame. The constellation's points are
+# left out: the tab draws none. A stream that fails or ends is said as an
+# `_error` frame and opened again after SDR_RETRY_S.
+SDR_RETRY_S = 5.0
+
+
+async def _dashboard_frames(transport: httpx.AsyncBaseTransport | None = None, retry_s: float = SDR_RETRY_S):
+    url = settings.sdr_dashboard_url.rstrip("/") + "/events"
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=30.0), transport=transport) as c:
+                async with c.stream("GET", url) as r:
+                    r.raise_for_status()
+                    async for line in r.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        try:
+                            d = json.loads(line[5:])
+                        except ValueError:
+                            continue
+                        if isinstance(d.get("stats"), dict):
+                            d["stats"].pop("const", None)
+                        yield d
+            err = "the dashboard ended its stream"
+        except httpx.HTTPStatusError as e:      # 503: the dashboard's live viewers are all taken
+            err = f"{e.response.status_code} {e.response.reason_phrase}".strip()
+        except Exception as e:  # noqa: BLE001 - down or refusing: said, and tried again
+            err = str(e) or type(e).__name__
+        yield {"_error": err}
+        await asyncio.sleep(retry_s)
+
+
+@router.get("/sdr/events")
+async def sdr_events():
+    return sse_response(_dashboard_frames())
 
 
 @router.get("/sdr/history")

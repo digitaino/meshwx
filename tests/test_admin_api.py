@@ -673,6 +673,34 @@ def test_the_meter_gain_must_be_one_the_tuner_offers(client):
     assert r.status_code == 400
 
 
+def test_the_receiver_stream_relays_the_dashboards_frames_and_says_when_it_fails():
+    import asyncio
+    import httpx
+    from meshcore_weather.portal.routes import admin
+    calls = []
+
+    def dashboard(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) > 1:
+            return httpx.Response(503, text="too many live viewers right now")
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, text=(
+            'data: {"mode": "receive", "stats": {"vit_avg": 313, "locked": true, "const": [1, 2]}}\n\n'
+            ": a comment\n\ndata: not json\n\n"
+            'data: {"mode": "receive", "stats": {"vit_avg": 290}, "history": [[1, 290, 55, 0, 3]]}\n\n'))
+
+    async def first(n):
+        frames = admin._dashboard_frames(transport=httpx.MockTransport(dashboard), retry_s=0)
+        out = [await anext(frames) for _ in range(n)]
+        await frames.aclose()
+        return out
+
+    got = asyncio.run(first(4))
+    assert got[0] == {"mode": "receive", "stats": {"vit_avg": 313, "locked": True}}     # no constellation
+    assert got[1]["history"] == [[1, 290, 55, 0, 3]]
+    assert got[2] == {"_error": "the dashboard ended its stream"}
+    assert got[3] == {"_error": "503 Service Unavailable"} and calls == ["/events", "/events"]
+
+
 def test_the_page_has_the_six_tabs_and_no_old_sections(client):
     c, _ = client
     page = c.get("/").text
