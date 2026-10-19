@@ -311,7 +311,7 @@ class MeshcoreRadio:
             self._port_real = os.path.realpath(p)
             if p != port:
                 logger.warning("Radio answered on %s, not on the configured %s; update MCW_SERIAL_PORT "
-                               "under System > Settings (or install the udev rule for /dev/meshcore)", p, port)
+                               "under Settings › Radio link (or install the udev rule for /dev/meshcore)", p, port)
             return mc
         raise ConnectionError(
             f"no companion response on {port} (is the firmware 'Companion Radio USB'?)"
@@ -1520,7 +1520,7 @@ class MeshcoreRadio:
             raise ValueError("channel 0 (public) cannot be cleared")
         role = self._role_for(idx)
         if role:
-            raise ValueError(f"slot {idx} is the bot's {role} channel; change it under Text Bot instead of clearing it")
+            raise ValueError(f"slot {idx} is the bot's {role} channel; change it under Radio › Channels instead of clearing it")
         await self.set_channel_name(idx, "", "00" * 16)
 
     async def assign_role(self, role: str, name: str) -> int | None:

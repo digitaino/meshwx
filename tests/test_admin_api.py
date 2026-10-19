@@ -406,7 +406,7 @@ def test_legacy_routes_are_gone(client):
                  "/api/autocomplete/city", "/api/radio/stats", "/config", "/schedule", "/data"):
         assert c.get(path).status_code in (404, 405), path
     assert c.post("/api/actions/v2-request", json={}).status_code in (404, 405)
-    assert c.get("/").status_code == 200 and "Meshcore Weather" in c.get("/").text
+    assert c.get("/").status_code == 200 and "mesh-wx admin" in c.get("/").text
 
 
 def test_the_page_asks_for_its_script_by_what_is_in_it(client, monkeypatch, tmp_path):
@@ -581,3 +581,102 @@ def test_the_channel_reply_limits_show_what_they_are_holding(client):
     assert row["opens_in_s"] > 3000
     c.post("/api/limits/reset", json={"id": "channel"})
     assert not bot._channel_replies and not bot._channel_reply_by_sender
+
+
+# -- The modernized admin: what needs the operator, the audit's age, dish controls --
+
+
+def _healthy_overview(**over):
+    d = {
+        "radio": {"connected": True, "tx_enabled": True, "reply_mode": "channel", "health": {"verdict": "ok"},
+                  "pending_adoption": False},
+        "satellite": {"reachable": True, "mode": "receive", "locked": True},
+        "feed": {"newest_age_s": 120, "lag_min": 4, "fill": {"enabled": True, "active": False, "errors": {}}},
+        "problems": {"last_hour": 90, "errors_last_hour": 0, "config": []},
+        "audit": {"available": True, "age_s": 600, "passed": 155, "failed": 0},
+        "host": {"disk_used_pct": 46, "temp_c": 47.2},
+    }
+    for k, v in over.items():
+        d[k] = {**d[k], **v}
+    return d
+
+
+def test_attention_is_empty_when_all_is_well():
+    """Channel replies are how this bot is meant to run, and the log's warnings
+    (the dish's dropped-packet notes) are not something to act on."""
+    from meshcore_weather.portal.routes.admin import attention
+    assert attention(_healthy_overview()) == []
+
+
+def test_attention_lists_what_needs_the_operator_worst_first():
+    from meshcore_weather.portal.routes.admin import attention
+    d = _healthy_overview(
+        radio={"tx_enabled": False},
+        feed={"fill": {"enabled": True, "active": True, "reason": "EMWIN is running 117 min late",
+                       "errors": {"text": "429 Too Many Requests"}}},
+        problems={"errors_last_hour": 3, "config": [{"level": "error", "text": "Coverage: no home city"}]},
+        audit={"age_s": 5 * 86400},
+        host={"disk_used_pct": 90},
+    )
+    items = attention(d)
+    texts = [i["text"] for i in items]
+    assert [i["level"] for i in items] == sorted((i["level"] for i in items), key=["bad", "warn", "info"].index)
+    assert items[0]["level"] == "bad"
+    assert "Coverage: no home city" in texts and "The disk is 90% full." in texts
+    assert any("Transmit is off" in t for t in texts)
+    assert any(t.startswith("Internet filling in: EMWIN is running 117 min late") for t in texts)
+    assert any("429" in t for t in texts)
+    assert any("3 errors in the log" in t for t in texts)
+    assert any("last ran 5 days ago" in t for t in texts)
+    hrefs = {i["href"] for i in items}
+    assert hrefs <= {"#radio", "#station", "#settings", "#settings/host", "#logs", "#overview/audit"}
+
+
+def test_attention_says_when_the_radio_is_down_and_skips_its_health():
+    from meshcore_weather.portal.routes.admin import attention
+    items = attention(_healthy_overview(radio={"connected": False, "error": "no reply on /dev/meshcore",
+                                               "health": {"verdict": "rx_silent"}}))
+    assert [i["text"] for i in items] == ["The radio is not connected: no reply on /dev/meshcore"]
+
+
+def test_attention_notes_pointing_mode_instead_of_a_lost_lock():
+    from meshcore_weather.portal.routes.admin import attention
+    items = attention(_healthy_overview(satellite={"mode": "point", "locked": False}))
+    assert [(i["level"], i["href"]) for i in items] == [("info", "#station")]
+
+
+def test_overview_carries_the_attention_list_and_the_public_link(client):
+    c, bot = client
+    bot.emwin = FakeEmwin()
+    d = c.get("/api/overview").json()
+    assert isinstance(d["attention"], list) and all({"level", "text", "href"} <= set(i) for i in d["attention"])
+    assert "errors_last_hour" in d["problems"] and "lag_min" in d["feed"] and "dashboard_url" in d
+
+
+def test_audit_summary_reports_its_age(tmp_path, monkeypatch):
+    import datetime as dt
+    import json
+    from meshcore_weather.portal.routes import admin
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+    at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)
+    (tmp_path / "audit.json").write_text(json.dumps({"at": at.isoformat(), "results": [
+        {"check": "obs", "subject": "KAUS", "ok": True}, {"check": "obs", "subject": "KEDC", "ok": False, "detail": "x"}]}))
+    s = admin._audit_summary()
+    assert s["passed"] == 1 and s["failed"] == 1 and 7100 < s["age_s"] < 7300
+
+
+def test_the_meter_gain_must_be_one_the_tuner_offers(client):
+    c, _ = client
+    r = c.post("/api/sdr/gain", json={"gain": 41}, headers={"X-Requested-With": "meshcore-portal"})
+    assert r.status_code == 400 and "the tuner offers" in r.json()["detail"]
+    r = c.post("/api/sdr/gain", json={"gain": "loud"}, headers={"X-Requested-With": "meshcore-portal"})
+    assert r.status_code == 400
+
+
+def test_the_page_has_the_six_tabs_and_no_old_sections(client):
+    c, _ = client
+    page = c.get("/").text
+    for tab in ("overview", "mesh", "radio", "station", "settings", "logs"):
+        assert f'id="tab-{tab}"' in page and f'data-section="{tab}"' in page
+    for old in ("section-textbot", "section-broadcasts", "section-satellite", "section-system"):
+        assert old not in page

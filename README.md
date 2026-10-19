@@ -355,8 +355,8 @@ Two guards hold whatever the schedule says:
   every scheduled job together. Tornado, severe thunderstorm, flash flood
   and extreme wind warnings and their one repeat always go out (and count);
   past the ceiling everything else waits for room, keeps its state and goes
-  out later. The log says so once an hour, and the Text Bot page's Limits
-  card shows it as "Scheduled broadcasts".
+  out later. The log says so once an hour, and the Mesh tab's Limits and
+  cooldowns shows it as "Scheduled broadcasts".
 - **Restarts are quiet**: when each job last ran, the hour's count and the
   last advert are kept in `data/warning_state.json`, so a restart (or a
   reconnect of the radio) sends no digest, observations, forecast, coverage
@@ -366,17 +366,19 @@ Two guards hold whatever the schedule says:
 
 ### Then manage everything else from the admin portal
 
-The portal (`MCW_PORTAL_PORT`, 8081 on the Pi) is one page with six sections.
-Each setting lives in exactly one place, next to the status it affects:
+The portal (`MCW_PORTAL_PORT`, 8081 on the Pi) is one page with six tabs,
+grouped by job the way the public dashboard is, and it shares that page's
+look. Every `.env` setting is under Settings; what is applied to the node
+itself (name, LoRa, transmit, channel slots, contacts) stays under Radio.
 
-| Section | What it shows | What you set there |
+| Tab | What it shows | What you do there |
 |---|---|---|
-| **Overview** | Dish, feed, radio, transmit and reply mode, requests and replies, jobs, log problems, host; recent requests; the accuracy audit result. Refreshes every 15 s; the header strip repeats dish, radio and transmit on every page. | nothing |
-| **Text Bot** | Request/reply counters, the live feed of the channel and DMs (with why a request was not answered), a "try a command" box that runs the DM path, the `help` text, the channels it listens on, peer bots heard | reply mode (with a confirmation before `channel`), stranger hop limit, advert interval, peer-bot prefix, resend limit, echo window, resends per hour, wait before answering a relayed request |
-| **Broadcasts** | Counters, jobs with last/next run and bytes, the broadcast log (jobs and app requests) | jobs (add, edit, enable, run now, delete), "run due jobs" |
-| **Radio** | Link, health verdict, hardware and node profile, LoRa parameters, all channel slots, the contact table with housekeeping status | test transmit, adopt a replacement radio or start a new profile, node name and location, LoRa preset or parameters, TX power, transmit on/off, advert, reboot, the text and data channel names, contact housekeeping |
-| **Satellite** | goesrecv and goesproc, signal stats and history, what the EMWIN feed delivered in the last hour, a browser for every product in the store, a link to the public dashboard | pointing / receive mode |
-| **System** | Logs (satellite, radio, bot; live, filterable), bot and host stats | coverage (cities, radius, states, offices), serial port, EMWIN source and directory, dashboard URL, timezone, log level, CoreScope, replacement-radio mode, receiver-silent threshold, restart |
+| **Overview** | Four status cards (bot, radio, dish and feed, host); **Needs attention**, the short list of what to act on (radio down or unwell, transmit off, no lock, a late feed or the internet fill at work, configuration problems, errors in the log, a stale or failing audit, a full disk), each linking to the tab that fixes it; the last 24 hours on the mesh; the accuracy audit. Refreshes every 15 s; the header repeats dish, radio and transmit on every tab. | nothing |
+| **Mesh** | Request/reply counters and the live feed of the channel and DMs (with why a request was not answered); the scheduled broadcast jobs with last/next run and bytes, and the data channel log; every limit and cooldown with where it stands; a "try a command" box that runs the DM path, and the `help` text | jobs (add, edit, on/off, run now, delete), "run due jobs", reset a limit |
+| **Radio** | Health verdict and counters, the node (link, frequency, power, battery), LoRa parameters, hardware and the saved profile, all channel slots, the contact table with housekeeping status | test transmit, adopt a replacement radio or start a new profile, node name and location, LoRa preset or parameters, TX power, transmit on/off, advert, reboot, the text and data channel names, contact housekeeping |
+| **Station** | The receiver: lock, Viterbi errors and drops over the last 15 minutes, goesrecv and goesproc; while the dish is aimed, the live signal meter and spectrum; the EMWIN feed's last hour and what the internet fill took | pointing / receive mode, the meter's tuner gain and peak (the public page offers these only on the home network) |
+| **Settings** | Every setting the portal may write, in groups: replies, delivery, limits, coverage, feed and internet fill, radio link, CoreScope, host. Each field says whether it applies at once or after a restart; "Show help" opens every field's explanation. | edit, then one Save bar lists the changes; restart the bot |
+| **Logs** | The live log of the satellite, radio and bot parts, filterable by part, level and text | pause, clear |
 
 Settings are written to `.env` and applied live where the bot can (the
 response says which keys need a restart). Values are validated before the
@@ -485,7 +487,7 @@ ignored`. A `Node name: … WX-<IATA>` warning means apps will not find the
 bot by name.
 
 Open `http://localhost:8080/#broadcasts` to see the five jobs, and type
-`help` or `wx austin tx` into Text Bot > Try a command.
+`help` or `wx austin tx` into Mesh > Try a command.
 
 ## CLI tools
 
@@ -538,7 +540,7 @@ a value, so keep comments on their own lines.
 `MCW_EMWIN_SOURCE=sdr` makes the bot read goesproc's `emwin/YYYY-MM-DD/` tree
 directly; the internet is only the backup while the dish is quiet.
 `MCW_SDR_DASHBOARD_URL` (`http://127.0.0.1:8080`) is the goestools dashboard
-that the `sat` reply, the receiver log lines and the Satellite page read:
+that the `sat` reply, the receiver log lines and the portal's Station tab read:
 keep it the local address, and put the dashboard's public hostname in
 `MCW_SDR_DASHBOARD_PUBLIC_URL` for the links people see. The bot starts without a
 radio and keeps retrying every minute, trying `/dev/meshcore` and every USB
@@ -625,7 +627,7 @@ scp deploy/goes-dashboard/{dashboard.py,dashboard.html,station_history.py,emwin_
 ssh digitaino@mesh-wx.digitaino.com sudo systemctl restart goes-dashboard
 ```
 
-The admin portal's Text Bot page shows the same feed unredacted (sender names,
+The admin portal's Mesh tab shows the same feed unredacted (sender names,
 DM text, admin and console commands, and why a request was not answered).
 
 ## Running a bot in another city
@@ -765,7 +767,7 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_FILL_GRACE_MIN` | `15` | The same for everything else, airport reports and forecasts included |
 | `MCW_FILL_RADAR_GRACE_MIN` | `20` | A radar region whose newest picture on the feed is older than this is taken from the web every five minutes |
 | `MCW_RADAR_DIR` | empty | Where the EMWIN radar GIFs are (`YYYY-MM-DD/*-RAD*.GIF`). Empty means `MCW_SDR_EMWIN_DIR` when the source is `sdr`, and no radar otherwise: the internet bundle carries no images. With the dish, the internet fill's pictures in `data/emwin_internet/` are read too |
-| `MCW_SDR_DASHBOARD_URL` | `http://127.0.0.1:8080` | The goestools dashboard the bot polls (every 10 s) and posts mode changes to: the `sat` reply, receiver log lines, the status channel, the portal's Satellite page and Overview. Keep it the local address |
+| `MCW_SDR_DASHBOARD_URL` | `http://127.0.0.1:8080` | The goestools dashboard the bot polls (every 10 s) and posts mode changes to: the `sat` reply, receiver log lines, the status channel, the portal's Station tab and Overview. Keep it the local address |
 | `MCW_SDR_DASHBOARD_PUBLIC_URL` | *(empty)* | The dashboard's address for people (the portal's link, the public bundle), e.g. its public hostname. Empty = `MCW_SDR_DASHBOARD_URL` |
 
 **Coverage**
@@ -999,7 +1001,7 @@ meshcore_weather/
 ├── portal/                # FastAPI admin portal (one page, hash routing, no build step)
 │   ├── server.py          # App factory, state-change header check, uvicorn lifecycle
 │   ├── sse.py             # SSE helper with heartbeats (logs, traffic, broadcast log)
-│   ├── logbuf.py          # Log ring buffer behind System > Logs
+│   ├── logbuf.py          # Log ring buffer behind the Logs tab
 │   ├── routes/
 │   │   ├── pages.py       # GET / (the page)
 │   │   ├── api.py         # Product browser, broadcast log, channels, schedule CRUD

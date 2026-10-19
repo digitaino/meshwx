@@ -452,6 +452,50 @@ async def sdr_mode(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "mode": mode})
 
 
+# The tuner gains the RTL-SDR offers (the dashboard's own list): the meter's
+# gain is set while the dish is aimed, and only to one of these.
+SDR_GAINS = (0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7, 22.9, 25.4, 28, 29.7,
+             32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4, 43.9, 44.5, 48, 49.6)
+
+
+@router.post("/sdr/gain")
+async def sdr_gain(request: Request) -> JSONResponse:
+    """The pointing meter's tuner gain. The dashboard refuses its own control
+    endpoints to anyone who comes through Cloudflare; the portal reaches it
+    on localhost, so wx-admin gets the controls the public page cannot have."""
+    body = await _body(request)
+    try:
+        gain = float(body.get("gain"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "gain must be a number")
+    if not any(abs(gain - g) < 0.01 for g in SDR_GAINS):
+        raise HTTPException(400, "gain must be one the tuner offers: " + ", ".join(str(g) for g in SDR_GAINS))
+    res = await _dashboard(f"/meter/gain/{gain:g}", "POST")
+    if res and res.get("_error"):
+        raise HTTPException(502, res["_error"])
+    return JSONResponse({"ok": True, "gain": gain})
+
+
+@router.get("/sdr/meter")
+async def sdr_meter() -> JSONResponse:
+    """The receiver's mode and, while the dish is aimed, the signal meter:
+    polled every second by the Station tab, so without the feed statistics
+    /api/sdr adds (a scan of every product in the store)."""
+    state = await _dashboard("/api/state") or {}
+    if state.get("_error"):
+        return JSONResponse({"error": state["_error"]})
+    return JSONResponse({"mode": state.get("mode"), "mode_msg": state.get("mode_msg"), "meter": state.get("meter"),
+                         "gains": SDR_GAINS})
+
+
+@router.post("/sdr/resetpeak")
+async def sdr_resetpeak() -> JSONResponse:
+    res = await _dashboard("/meter/resetpeak", "POST")
+    if res and res.get("_error"):
+        raise HTTPException(502, res["_error"])
+    return JSONResponse({"ok": True})
+
+
 # -- Text bot console ----------------------------------------------------------------
 
 
@@ -1023,8 +1067,80 @@ def _audit_summary() -> dict:
     for r in res:
         c = by_check.setdefault(r["check"], {"pass": 0, "fail": 0})
         c["pass" if r.get("ok") else "fail"] += 1
-    return {"available": True, "at": d.get("at"), "passed": len(res) - len(fails), "failed": len(fails),
-            "by_check": by_check, "failures": fails[:20]}
+    try:
+        age_s = int(time.time() - datetime.fromisoformat(d["at"]).timestamp())
+    except (KeyError, TypeError, ValueError):
+        age_s = None
+    return {"available": True, "at": d.get("at"), "age_s": age_s, "passed": len(res) - len(fails),
+            "failed": len(fails), "by_check": by_check, "failures": fails[:20]}
+
+
+# The audit's timer runs it every hour; a result older than this is a timer
+# that stopped (it was off for five weeks once, and the card never said).
+AUDIT_STALE_S = 3 * 3600
+
+
+def attention(d: dict) -> list[dict]:
+    """What the operator should act on, from the Overview's own bundle: the
+    first thing the page shows. Only states someone would do something about,
+    worst first; the log's warnings are not one (the dish logs a dropped
+    packet a minute). Each item is {"level": "bad" | "warn" | "info",
+    "text": ..., "href": the tab where it is fixed}."""
+    out: list[dict] = []
+    add = lambda level, text, href: out.append({"level": level, "text": text, "href": href})
+    r, sat, feed = d.get("radio") or {}, d.get("satellite") or {}, d.get("feed") or {}
+    if not r.get("connected"):
+        add("bad", f"The radio is not connected: {r.get('error') or 'no reply on the serial port'}", "#radio")
+    else:
+        if r.get("pending_adoption"):
+            add("warn", "A different radio is connected. Adverts are held until you adopt it or start a new profile.", "#radio")
+        h = r.get("health") or {}
+        if h.get("verdict") == "tx_suspect":
+            add("bad", f"Transmit looks broken: {h.get('reason') or 'nothing it sends is heard'}", "#radio")
+        elif h.get("verdict") == "rx_silent":
+            add("bad", f"The radio hears nothing: {h.get('reason') or 'no packet from anyone'}", "#radio")
+    if not r.get("tx_enabled"):
+        add("warn", "Transmit is off: no replies, adverts or broadcasts go out.", "#radio")
+    if not sat.get("reachable"):
+        add("bad", f"The receiver's dashboard does not answer: {sat.get('error') or 'unreachable'}", "#station")
+    elif sat.get("mode") == "point":
+        add("info", "The dish is in pointing mode, so reception is paused.", "#station")
+    elif not sat.get("locked"):
+        add("warn", "The receiver has no lock on the satellite.", "#station")
+    fill = feed.get("fill") or {}
+    age = feed.get("newest_age_s")
+    if age is None:
+        add("bad", "The store holds no EMWIN products.", "#station")
+    elif fill.get("active"):
+        add("info", f"Internet filling in: {fill.get('reason')}.", "#station")
+    elif age > 1800:
+        add("warn", f"The newest product is {age // 60} min old.", "#station")
+    elif (feed.get("lag_min") or 0) >= 30:
+        add("warn", f"EMWIN runs {round(feed['lag_min'])} min behind NOAA.", "#station")
+    for part, err in (fill.get("errors") or {}).items():
+        add("warn", f"Internet fill, {part}: {err}", "#station")
+    for p in (d.get("problems") or {}).get("config") or []:
+        add("bad" if p.get("level") == "error" else "warn", p.get("text", ""), "#settings")
+    errors = (d.get("problems") or {}).get("errors_last_hour") or 0
+    if errors:
+        add("warn", f"{errors} error{'s' if errors != 1 else ''} in the log in the last hour.", "#logs")
+    au = d.get("audit") or {}
+    if not au.get("available"):
+        add("info", "The accuracy audit has not run yet.", "#overview/audit")
+    elif au.get("age_s") is not None and au["age_s"] > AUDIT_STALE_S:
+        days = round(au["age_s"] / 86400)
+        add("warn", "The accuracy audit last ran " + (f"{days} days ago" if days > 1 else f"{round(au['age_s'] / 3600)} h ago")
+            + "; its hourly timer is not running.", "#overview/audit")
+    elif au.get("failed"):
+        add("warn", f"The accuracy audit failed {au['failed']} of {au['passed'] + au['failed']} checks.", "#overview/audit")
+    host = d.get("host") or {}
+    disk, temp = host.get("disk_used_pct"), host.get("temp_c")
+    if disk is not None and disk > 75:
+        add("bad" if disk > 85 else "warn", f"The disk is {disk}% full.", "#settings/host")
+    if temp is not None and temp > 75:
+        add("bad" if temp > 80 else "warn", f"The Pi is at {temp}°C.", "#settings/host")
+    order = {"bad": 0, "warn": 1, "info": 2}
+    return sorted(out, key=lambda i: order[i["level"]])
 
 
 @router.get("/overview")
@@ -1054,7 +1170,7 @@ async def overview(request: Request) -> JSONResponse:
                 next_in = n if next_in is None else min(next_in, n)
     counts = logbuf.counts()
     started = getattr(bot, "_started_at", None)
-    return JSONResponse({
+    d = {
         "t": time.time(),
         "satellite": {
             "reachable": not receiver.get("_error"),
@@ -1065,7 +1181,7 @@ async def overview(request: Request) -> JSONResponse:
             "drops": st.get("drops"),
         },
         "feed": {k: feed.get(k) for k in ("source", "products_total", "products_last_hour",
-                                          "warnings_last_hour", "newest_age_s")},
+                                          "warnings_last_hour", "newest_age_s", "lag_min", "fill")},
         "radio": {
             "connected": radio.connected,
             "error": None if radio.connected else (getattr(bot, "_radio_last_error", None) or "not connected"),
@@ -1096,12 +1212,16 @@ async def overview(request: Request) -> JSONResponse:
         },
         # `config`: what the configuration gets wrong now (config_problems),
         # beside the log's count.
-        "problems": {"last_hour": counts.get("problems", 0), "config": config_problems(bot)},
+        "problems": {"last_hour": counts.get("problems", 0), "errors_last_hour": counts.get("errors", 0),
+                     "config": config_problems(bot)},
         "audit": _audit_summary(),
         "host": _host(),
         "bot": {"uptime_s": int(time.time() - started) if started else None, "git": _git_rev()},
         "recent": traffic_log.recent(12),
-    })
+        "dashboard_url": settings.dashboard_link,
+    }
+    d["attention"] = attention(d)
+    return JSONResponse(d)
 
 
 # Keys the running bot can take on board without a restart.
