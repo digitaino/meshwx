@@ -1513,25 +1513,30 @@ class WeatherBot:
 
     def _status_reply(self) -> str:
         """`status`: the operator's notices, written on wx-admin and shown on the
-        public page (the receiver monitor fetches them from the dashboard), each
-        in full, then the page's address. With none up, the feed in a few words."""
+        public page (the receiver monitor fetches them from the dashboard). The
+        first headline and the page's address come first, so page 1 alone says
+        what is wrong and where to read more (a note's details ran to six pages
+        on 2026-10-19); the details follow, after "; ", on "more". With none
+        up, the feed in a few words."""
         site = public_site()
         monitor = self._sdr_monitor
         now = time.time()
         notes = [n for n in (getattr(monitor, "notes", None) or []) if not n.get("t_end") or n["t_end"] > now]
         if notes:
-            text = " ".join(f"Notice: {n['title'].rstrip('.')}." + (f" {n['detail']}" if n.get("detail") else "")
-                            for n in notes)
+            parts = []
+            for i, n in enumerate(notes):
+                head = f"Notice: {n['title'].rstrip('.')}." + (f" {site}" if i == 0 and site else "")
+                parts.append(head + (f"; {n['detail']}" if n.get("detail") else ""))
+            return "; ".join(parts)
+        fill, lag = getattr(self.emwin, "fill", None), getattr(self.emwin, "feed_lag_min", None)
+        since = fill.active_since if fill is not None else None
+        if since is not None:
+            feed = f"filling in from NWS since {since:%H:%MZ}"
+        elif lag is not None and lag >= 30:
+            feed = f"EMWIN ~{lag} min late"
         else:
-            fill, lag = getattr(self.emwin, "fill", None), getattr(self.emwin, "feed_lag_min", None)
-            since = fill.active_since if fill is not None else None
-            if since is not None:
-                feed = f"filling in from NWS since {since:%H:%MZ}"
-            elif lag is not None and lag >= 30:
-                feed = f"EMWIN ~{lag} min late"
-            else:
-                feed = "EMWIN on time"
-            text = ("No notices from the operator. " if monitor is not None else "") + feed[0].upper() + feed[1:] + "."
+            feed = "EMWIN on time"
+        text = ("No notices from the operator. " if monitor is not None else "") + feed[0].upper() + feed[1:] + "."
         return f"{text} {site}" if site else text
 
     def _coverage_reply(self) -> str:

@@ -861,7 +861,7 @@ as dropped, "conversation, not a request". By DM every message is a request.
 | `space` | `space` | Space weather |
 | `radar [city ST or ZIP]` | `radar Dallas TX` | The newest radar picture in words: its time and age, what is over the place, the nearest precipitation and the nearest heavy core (the home city without an argument). A bot without a dish says it has none |
 | `sat` | `sat` | The bot's GOES receiver: lock, signal quality, packets dropped in the last minute, age of the newest file the dish wrote, and how far behind the uplink the products run when that is 30 min or more (`products ~5h behind`); with the internet fill filling in, since when. A reply that would not fit one message leaves out the packet count. A bot on internet EMWIN says it has no receiver |
-| `status` | `status` | The operator's notices, as on the public page (written on the admin portal's Station tab), each in full, then the public page's address; with none up, `No notices from the operator.` and whether EMWIN is on time |
+| `status` | `status` | The operator's notices, as on the public page (written on the admin portal's Station tab): the first headline and the public page's address on page 1, the details on `more`; with none up, `No notices from the operator.`, whether EMWIN is on time and the address |
 | `cov` | `cov` | What this bot covers: the area and how far it reaches, the NWS offices in it, how many stations it reports hourly, how often the alert list goes out |
 | `more` | `more` | The next page of the last long reply |
 | `help` | `help` | The command list, ending with the public page's address (`MCW_SDR_DASHBOARD_PUBLIC_URL`) when it fits |

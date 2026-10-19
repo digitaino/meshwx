@@ -110,8 +110,13 @@ async def test_status_gives_the_operators_notices_from_the_dashboard_and_the_pub
         await m.poll(client)
     bot = WeatherBot()
     bot._sdr_monitor = m
-    assert bot._process_command("status", "") == ("Notice: EMWIN is running about two hours late. NOAA is working "
-                                                  "on the link to the uplink site. goes.digitaino.com")   # the ended one is left out
+    assert bot._process_command("status", "") == ("Notice: EMWIN is running about two hours late. goes.digitaino.com; "
+                                                  "NOAA is working on the link to the uplink site.")   # the ended one is left out
+    # A long note: page 1 alone is the headline and where to read more.
+    m.notes = [dict(notes[0], title="Weather data is late because of a NOAA problem, not our station", detail="x " * 300)]
+    first, more = bot.reply_chunk("status", "", "k")
+    assert first.startswith("Notice: Weather data is late because of a NOAA problem, not our station. goes.digitaino.com (1/")
+    assert more
     m.notes = []
     assert bot._process_command("status", "") == "No notices from the operator. EMWIN on time. goes.digitaino.com"
     assert bot._process_command("help", "").endswith(", more. goes.digitaino.com")
