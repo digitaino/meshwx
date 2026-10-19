@@ -1516,10 +1516,12 @@ class WeatherBot:
             facts = {"emwin_mtime": getattr(self.emwin, "newest_mtime", None),
                      "lag_min": getattr(self.emwin, "feed_lag_min", None)}
             line = self._sdr_monitor.report(**facts)
-            since = getattr(self.emwin, "fallback_since", None)
-            # The dish is quiet and the bot is on NOAA's internet feed: the
-            # one thing a person asking `sat` most needs to know.
-            tail = f". Internet backup on since {since.strftime('%H:%MZ')}" if since is not None else ""
+            fill = getattr(self.emwin, "fill", None)
+            since = fill.active_since if fill is not None else None
+            # The dish is quiet or EMWIN late, and the bot is filling in from
+            # NWS over the internet: the one thing a person asking `sat` most
+            # needs to know.
+            tail = f". Internet filling in since {since:%H:%MZ}" if since is not None else ""
             if len(line + tail) > self.page_budget():
                 # One message, not a "more": the packet count is what goes.
                 line = self._sdr_monitor.report(**facts, brief=True)

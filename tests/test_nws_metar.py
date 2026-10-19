@@ -1,10 +1,10 @@
-"""NWS's own METAR feed beside EMWIN (emwin/nws_metar.py).
+"""NWS's own airport report and forecast feeds (emwin/nws_metar.py).
 
 On 2026-10-18 the dish and NOAA's EMWIN bundles were both ~3 h behind, and
 WX-AUS answered Camp Mabry with its 05:51 CDT report for six hours while
 tgftp's DS.metar had every hourly report within minutes. These tests hold the
-feed's parsing, its polling, the switch, and the store taking the fresher
-report.
+feeds' parsing, their polling and the store taking the fresher report; which
+files the internet fill takes is tests/test_fill.py's.
 """
 
 import asyncio
@@ -13,9 +13,8 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from meshcore_weather.config import settings
+from meshcore_weather.core import services
 from meshcore_weather.emwin import nws_metar
-from meshcore_weather.emwin.fetcher import InternetSource, SDRSource
 from meshcore_weather.parser.weather import WeatherStore
 from meshcore_weather.protocol import v5
 from meshcore_weather.protocol import v5_builders as b
@@ -127,12 +126,11 @@ def test_a_first_poll_takes_the_last_75_minutes_and_the_next_only_what_is_new():
         "sn.0190.txt": (now - timedelta(minutes=5), FEED_FILE),
     }
     handler, calls = _server(files)
-    feed = nws_metar.NwsMetarFeed("https://tgftp.example/DS.metar")
+    feed = nws_metar.NwsFeed("https://tgftp.example/DS.metar", nws_metar.metar_file)
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             first = await feed.poll(client, now)
-            assert not feed.due(now + timedelta(seconds=60))
             files["sn.0191.txt"] = (now + timedelta(minutes=5), FEED_FILE)
             second = await feed.poll(client, now + timedelta(minutes=6))
             return first, second
@@ -147,7 +145,7 @@ def test_a_first_poll_takes_the_last_75_minutes_and_the_next_only_what_is_new():
 def test_a_failed_listing_costs_that_poll_only():
     now = datetime(2026, 10, 18, 17, 0, tzinfo=UTC)
     handler, _ = _server({"sn.0190.txt": (now - timedelta(minutes=5), FEED_FILE)}, fail_listing=True)
-    feed = nws_metar.NwsMetarFeed("https://tgftp.example/DS.metar/")
+    feed = nws_metar.NwsFeed("https://tgftp.example/DS.metar/", nws_metar.metar_file)
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -157,89 +155,44 @@ def test_a_failed_listing_costs_that_poll_only():
     assert feed.last_error.startswith("HTTPStatusError")
 
 
-def test_the_dish_source_takes_the_feed_only_while_it_is_switched_on_by_hand(tmp_path, monkeypatch):
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
+def test_a_file_the_fill_turns_down_is_asked_about_again():
+    now = datetime(2026, 10, 18, 17, 0, tzinfo=UTC)
     handler, calls = _server({"sn.0190.txt": (now - timedelta(minutes=5), FEED_FILE)})
-    src = SDRSource(root=tmp_path)
-    src._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    feed = nws_metar.NwsFeed("https://tgftp.example/DS.metar/", nws_metar.metar_file)
 
-    monkeypatch.setattr(settings, "nws_metar_mode", "off")
-    assert asyncio.run(src.check_nws_metar(now)) == 0
-    assert calls == []
+    async def run(keep):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await feed.poll(client, now, keep=keep)
 
-    monkeypatch.setattr(settings, "nws_metar_mode", "on")
-    assert asyncio.run(src.check_nws_metar(now)) == 1
-    [prod] = asyncio.run(src.fetch_products())
-    assert prod["awips_id"] == "SAHOURLY" and "KATT 181651Z" in prod["raw_text"]
-
-    # Off again: the feed's state goes, and nothing more is fetched.
-    monkeypatch.setattr(settings, "nws_metar_mode", "off")
-    before = len(calls)
-    assert asyncio.run(src.check_nws_metar(now + timedelta(minutes=10))) == 0
-    assert src._nws is None and len(calls) == before
+    assert asyncio.run(run(lambda written: False)) == [] and not any(c.endswith(".txt") for c in calls)
+    assert len(asyncio.run(run(lambda written: True))) == 1
 
 
-def test_the_internet_source_holds_the_feeds_files_too(tmp_path, monkeypatch):
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    handler, _ = _server({"sn.0190.txt": (now - timedelta(minutes=5), FEED_FILE)})
-    src = InternetSource(cache_file=tmp_path / "products.jsonl")
-    src._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "nws_metar_mode", "on")
-    new = src._take(asyncio.run(src._poll_nws_metar(now)), now, fresh=False)
-    assert len(new) == 1 and new[0]["filename"] in src._products
+TAF_FILE = (
+    "####018150041####\r\r\n"
+    "FTUS44 KEWX 191720\r\r\n"
+    "TAFAUS\r\r\n"
+    "TAF KAUS 191720Z 1918/2024 16008KT P6SM SCT035\r\r\n"
+    "     FM200000 14006KT P6SM SKC=\r\r\n"
+    "####018150042####\r\r\n"
+    "FTUS90 KWBC 191720\r\r\n"
+    "TAF\r\r\n"
+    "TAF AMD PABI 191720Z 1918/2020 11012KT 9999 SCT080=\r\r\n"
+)
 
 
-def _lagging(src: SDRSource, minutes: float) -> None:
-    """The dish's last arrivals, all `minutes` behind the uplink."""
-    t = time.time()
-    src._lag_samples.clear()
-    src._lag_samples.extend((t - i, float(minutes)) for i in range(10))
+def test_an_airport_forecast_file_is_read_like_the_dishs_tafs():
+    written = datetime.now(UTC).replace(microsecond=0)
+    prod = nws_metar.taf_file(TAF_FILE, written, 77)
+    assert prod["awips_id"] == "TAFALLUS" and prod["filename"].endswith("-2-TAFALLUS.TXT")
+    assert "####" not in prod["raw_text"] and nws_metar.taf_file("no forecast here", written, 1) is None
+    store = WeatherStore()
+    store.ingest([prod], log=False)
+    assert services.station_taf(store, "KAUS") == "TAF KAUS 191720Z 1918/2024 16008KT P6SM SCT035 FM200000 14006KT P6SM SKC="
+    assert services.station_taf(store, "PABI") == "TAF PABI AMD 191720Z 1918/2020 11012KT 9999 SCT080="
 
 
-def test_auto_comes_on_when_emwin_runs_late_and_goes_off_only_after_an_hour_on_time(tmp_path, monkeypatch):
-    # 2026-10-17 evening: the lag dipped under ten minutes for a few minutes
-    # at a time between hours late. Each dip must not switch the feed off.
-    monkeypatch.setattr(settings, "nws_metar_mode", "auto")
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    handler, calls = _server({"sn.0190.txt": (now - timedelta(minutes=5), FEED_FILE)})
-    src = SDRSource(root=tmp_path)
-    src._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
-    _lagging(src, 3)
-    assert asyncio.run(src.check_nws_metar(now)) == 0 and calls == []
-    assert not src.nws_metar_status()["on"] and src.nws_metar_status()["reason"] == "EMWIN on time"
-
-    _lagging(src, 286)                                   # 18 Oct, 19:30 CDT
-    assert asyncio.run(src.check_nws_metar(now)) == 1
-    status = src.nws_metar_status()
-    assert status["on"] and status["reason"] == "EMWIN 4 h 46 min late" and status["since"] == int(now.timestamp())
-
-    _lagging(src, 5)                                     # on time for a while: still on
-    asyncio.run(src.check_nws_metar(now + timedelta(minutes=10)))
-    assert src.nws_metar_status()["on"]
-    _lagging(src, 59)                                    # late again: the hour starts over
-    asyncio.run(src.check_nws_metar(now + timedelta(minutes=20)))
-    _lagging(src, 5)
-    asyncio.run(src.check_nws_metar(now + timedelta(minutes=30)))
-    asyncio.run(src.check_nws_metar(now + timedelta(minutes=85)))
-    assert src.nws_metar_status()["on"]
-    asyncio.run(src.check_nws_metar(now + timedelta(minutes=91)))
-    status = src.nws_metar_status()
-    assert not status["on"] and status["reason"].startswith("EMWIN on time again for")
-
-
-def test_auto_with_no_lag_to_go_by_stays_as_it_is(tmp_path, monkeypatch):
-    # The dish quiet (its own internet backup on) or the bot just started:
-    # fewer than five arrivals in the hour say nothing about EMWIN.
-    monkeypatch.setattr(settings, "nws_metar_mode", "auto")
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    handler, _ = _server({"sn.0190.txt": (now - timedelta(minutes=5), FEED_FILE)})
-    src = SDRSource(root=tmp_path)
-    src._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    assert asyncio.run(src.check_nws_metar(now)) == 0
-    assert src.nws_metar_status()["reason"] == "EMWIN delay not known yet"
-    _lagging(src, 120)
-    asyncio.run(src.check_nws_metar(now))
-    src._lag_samples.clear()
-    asyncio.run(src.check_nws_metar(now + timedelta(minutes=10)))
-    assert src.nws_metar_status()["on"]
+def test_a_dish_taf_keeps_its_change_groups():
+    # The dish's own "\r\r\n" lines: each TAF reply used to stop after its first line.
+    text = "FTUS80 KWBC 191257 AAA\r\r\nTAF AMD\r\r\nKAUS 191254Z 1913/2012 VRB04KT P6SM SCT250\r\r\n     FM191800 18008KT P6SM BKN040=\r\r\n"
+    assert services._taf_block(text, "KAUS") == "KAUS 191254Z 1913/2012 VRB04KT P6SM SCT250 FM191800 18008KT P6SM BKN040="

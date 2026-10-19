@@ -203,6 +203,19 @@ def test_mend_joins_events_split_before_rejoining_existed(tmp_path):
                     (t, None, "Current conditions from NWS over the internet")]
 
 
+def test_the_internet_fill_is_one_event_and_ends_the_backups_it_replaced(tmp_path):
+    # The NWS feed's spell from Oct 19 01:17Z is still open when the bot starts
+    # reporting the fill: it closes there, and the fill has its own events.
+    store = sh.Store(str(tmp_path / "h.db"))
+    ev, t = sh.Events(store), 1_800_000_000
+    _observe(ev, store, t, fill={"active": True, "reason": "EMWIN is running 45 min late"})
+    nws = store.rows("SELECT t_end, title FROM events WHERE kind='nws_metar' ORDER BY t DESC LIMIT 1")
+    assert nws[0][0] == t and nws[0][1].startswith("Current conditions from NWS for")
+    assert _events(store) == [("fill", "warn", "Internet filling in for the feed", t, None)]
+    _observe(ev, store, t + 3600, fill={"active": False})
+    assert _events(store)[0][2:] == ("Internet filled in for 60 min", t, t + 3600)
+
+
 def test_the_sun_passes_behind_goes19_from_austin_in_early_october_and_march():
     sun = sh.SunPredictor(30.27, -97.74, -75.2, "America/Chicago", mag_decl=2.6)
     assert (round(sun.az, 1), round(sun.el, 1)) == (140.5, 47.0)

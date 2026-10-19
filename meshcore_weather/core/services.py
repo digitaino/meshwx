@@ -626,7 +626,10 @@ class Taf:
 
 def _taf_block(text: str, station: str) -> str | None:
     import re
-    lines = text.splitlines()
+    # The dish's "\r\r\n" line ends: splitlines() made a blank line of every
+    # "\r", and the blank line ended each TAF after its first line, so every
+    # reply lost its FM groups (found 2026-10-19).
+    lines = text.replace("\r", "").split("\n")
     for i, line in enumerate(lines):
         s = line.strip()
         if s.startswith(f"TAF {station}") or s.startswith(f"TAF AMD {station}") or (
@@ -635,7 +638,8 @@ def _taf_block(text: str, station: str) -> str | None:
             block = [s]
             for j in range(i + 1, min(i + 15, len(lines))):
                 nxt = lines[j].strip()
-                if not nxt or nxt.startswith("=") or nxt.startswith("TAF ") or re.match(r"^[A-Z]{4}\s+\d{6}Z", nxt):
+                if block[-1].endswith("=") or not nxt or nxt.startswith("=") or nxt.startswith("TAF ") \
+                        or re.match(r"^[A-Z]{4}\s+\d{6}Z", nxt):
                     break
                 block.append(nxt)
             return " ".join(block)

@@ -412,7 +412,8 @@ class Events:
     REJOIN_S = 600
     # The title a condition's event gets when it ends, by kind.
     CLOSED = {"pointing": "Pointing mode for {}", "lock": "No lock for {}",
-              "inet_backup": "Internet backup for {}", "nws_metar": "Current conditions from NWS for {}"}
+              "inet_backup": "Internet backup for {}", "nws_metar": "Current conditions from NWS for {}",
+              "fill": "Internet filled in for {}"}
 
     def __init__(self, store: Store):
         self.store = store
@@ -485,8 +486,11 @@ class Events:
             self.ok_since = None
 
     def observe(self, db, now: float, *, locked: float | None, mode: str, up_s: int | None, watchdog: int,
-                backup_on: bool | None, nws: dict | None, lag_30: float | None) -> None:
-        """One minute's look at the station; writes inside the caller's transaction."""
+                lag_30: float | None, fill: dict | None = None, backup_on: bool | None = None,
+                nws: dict | None = None) -> None:
+        """One minute's look at the station; writes inside the caller's transaction. `fill` is
+        the bot's internet fill; `backup_on` and `nws` are the two backups it replaced (bots
+        from before 2026-10-19)."""
         if mode == "point":
             self._condition(db, now, "pointing", True, "info", "Pointing mode", "The dish was being aimed; reception paused.")
         else:
@@ -499,6 +503,11 @@ class Events:
             self._start(db, now, "restart", "warn" if by_watchdog else "info",
                         "Watchdog restarted goesrecv" if by_watchdog else "goesrecv restarted",
                         "No packets for 10 minutes." if by_watchdog else "")
+        if fill is not None:
+            # The fill replaced both backups: whichever was still open ends here.
+            backup_on, nws = False, {"on": False}
+            self._condition(db, now, "fill", bool(fill.get("active")), "warn",
+                            "Internet filling in for the feed", fill.get("reason") or "")
         if backup_on is not None:
             self._condition(db, now, "inet_backup", backup_on, "warn", "Dish silent: products over the internet",
                             "The bot's internet backup is on.")
@@ -573,11 +582,12 @@ class Recorder:
                        (t, arr["sdr"], arr["inet"], statistics.median(arr["lags"]) if arr["lags"] else None, len(arr["lags"])))
             db.executemany("INSERT INTO emwin_kind (t, kind, n) VALUES (?,?,?) ON CONFLICT (t, kind) DO UPDATE SET n = n + excluded.n",
                            [(t // 3600 * 3600, k, n) for k, n in arr["families"].items()])
-            ib = feed.get("internet_backup") if isinstance(feed, dict) else None
+            feed = feed if isinstance(feed, dict) else {}
+            ib = feed.get("internet_backup")
             self.events.observe(db, now, locked=None if sig is None or mode != "receive" else sig["locked"], mode=mode,
                                 up_s=st.get("goesrecv_up_s"), watchdog=(st.get("watchdog") or {}).get("restarts", 0),
-                                backup_on=None if ib is None else bool(ib.get("on")),
-                                nws=feed.get("nws_metar") if isinstance(feed, dict) else None, lag_30=lag_30)
+                                lag_30=lag_30, fill=feed.get("fill"),
+                                backup_on=None if ib is None else bool(ib.get("on")), nws=feed.get("nws_metar"))
         with self.cache_lock:
             self.cache.clear()
 
@@ -670,7 +680,7 @@ class Recorder:
                     "SELECT kind, SUM(n) FROM emwin_kind WHERE t >= ? GROUP BY kind ORDER BY SUM(n) DESC LIMIT 14",
                     (int(now - 86400) // 3600 * 3600,))],
                 "events": [e for e in self.events_list(now)
-                                                               if e["kind"] in ("emwin_late", "inet_backup", "nws_metar", "note", "lock")]}
+                                                               if e["kind"] in ("emwin_late", "fill", "inet_backup", "nws_metar", "note", "lock")]}
 
 
 def _weighted_median(pairs: list[tuple[float, int]]) -> float | None:

@@ -38,7 +38,7 @@ ENV_WRITABLE = {
     "MCW_HOME_CITIES", "MCW_HOME_RADIUS_KM", "MCW_HOME_STATES", "MCW_HOME_WFOS",
     "MCW_TIMEZONE", "MCW_TX_ENABLED", "MCW_EMWIN_SOURCE", "MCW_SDR_EMWIN_DIR",
     "MCW_SDR_POLL_INTERVAL", "MCW_SDR_DASHBOARD_URL", "MCW_SDR_DASHBOARD_PUBLIC_URL", "MCW_LOG_LEVEL",
-    "MCW_STATUS_CHANNEL", "MCW_SDR_RESUME_MIN_FILES",
+    "MCW_STATUS_CHANNEL", "MCW_FILL_ENABLED", "MCW_FILL_GRACE_WARNING_MIN", "MCW_FILL_GRACE_MIN",
     "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
     "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE",
     "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
@@ -399,20 +399,9 @@ async def _feed_stats(bot) -> dict:
         # is replaying a backlog.
         "lag_min": getattr(bot.emwin, "feed_lag_min", None),
         "newest_product_at": _unix(getattr(bot.emwin, "newest_product_ts", None)),
-        # The dish's internet backup (emwin/fetcher.py SDRSource): on while
-        # goesproc has written nothing for `sdr_internet_fallback_min`.
-        "internet_backup": {
-            "after_min": settings.sdr_internet_fallback_min,
-            "on": bool(getattr(bot.emwin, "fallback_active", False)),
-            "since": since.isoformat() if (since := getattr(bot.emwin, "fallback_since", None)) else None,
-            "added": getattr(bot.emwin, "fallback_added", 0),
-            "last_ok": _unix(getattr(bot.emwin, "fallback_last_ok", None)),
-            "last_error": getattr(bot.emwin, "fallback_last_error", None),
-            "from_internet_last_hour": sum(1 for p in last_hour if p.get("source") == "internet"),
-        } if settings.emwin_source == "sdr" else None,
-        # NWS's own METAR feed beside EMWIN (emwin/nws_metar.py): by itself
-        # while EMWIN runs late ("auto"), or switched on or off by hand.
-        "nws_metar": bot.emwin.nws_metar_status() if hasattr(bot.emwin, "nws_metar_status") else None,
+        # The internet fill (emwin/fill.py): what it took from NWS because
+        # the feed had not brought it within its grace, and why.
+        "fill": _fill_status(bot, last_hour),
         # An internet-only bot's own fetches (InternetSource): the last one
         # that brought a product, and what the last failed one ran into
         # ("403 Forbidden at 14:03Z") until a bundle comes in whole.
@@ -425,6 +414,16 @@ async def _feed_stats(bot) -> dict:
 
 def _unix(dt: datetime | None) -> int | None:
     return int(dt.timestamp()) if dt else None
+
+
+def _fill_status(bot, last_hour: list[dict] | None = None) -> dict | None:
+    fill = getattr(bot.emwin, "fill", None)
+    if fill is None:
+        return None
+    d = fill.status()
+    if last_hour is not None:
+        d["from_internet_last_hour"] = sum(1 for p in last_hour if p.get("source") == "internet")
+    return d
 
 
 @router.get("/sdr")
@@ -595,9 +594,9 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
         "commands": PUBLIC_COMMANDS,
         "help": HELP_TEXT,
         "dashboard_url": settings.dashboard_link,
-        # Where the products come from right now, and how late they are. With
-        # the dish as the source, the internet backup is on while goesproc has
-        # written nothing for `sdr_internet_fallback_min`; `lag_min` is how far
+        # Where the products come from right now, and how late they are: the
+        # feed (the dish, or NOAA's bundles), what the internet fill took from
+        # NWS because the feed had not brought it in time; `lag_min` is how far
         # behind the uplink runs (hours, on 2026-10-16, while every file was
         # seconds old). The public page says so, so a reader knows whether a
         # warning came off the satellite or over the internet, and how old.
@@ -606,17 +605,10 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
             "source": settings.emwin_source,
             "lag_min": getattr(bot.emwin, "feed_lag_min", None),
             "newest_product_at": _unix(getattr(bot.emwin, "newest_product_ts", None)),
-            "internet_backup": {
-                "after_min": settings.sdr_internet_fallback_min,
-                "on": bool(getattr(bot.emwin, "fallback_active", False)),
-                "since": _unix(getattr(bot.emwin, "fallback_since", None)),
-                "added": getattr(bot.emwin, "fallback_added", 0),
-                "last_ok": _unix(getattr(bot.emwin, "fallback_last_ok", None)),
-                "last_error": getattr(bot.emwin, "fallback_last_error", None),
-            } if settings.emwin_source == "sdr" else None,
-            # Airport reports from NWS's own feed while EMWIN runs late: on or
-            # off, why ("EMWIN 4 h 46 min late"), since when, its newest file.
-            "nws_metar": bot.emwin.nws_metar_status() if hasattr(bot.emwin, "nws_metar_status") else None,
+            # The internet fill: filling in or not, why ("EMWIN is running
+            # 45 min late"), since when, and how much of what NWS issued in the
+            # last hour came down the feed in time.
+            "fill": _fill_status(bot),
             # With the internet as the source: its last fetch that brought a
             # product, and what the last failed one ran into.
             "internet": {
@@ -1117,7 +1109,7 @@ _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADI
               "MCW_HOME_STATES", "MCW_HOME_WFOS", "MCW_SERIAL_PORT", "MCW_SERIAL_BAUD", "MCW_TX_ENABLED",
               "MCW_REPLY_MODE", "MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS", "MCW_PEER_BOT_PREFIX",
               "MCW_CONTACT_HOUSEKEEPING", "MCW_CONTACT_KEEP_FREE", "MCW_SDR_DASHBOARD_URL",
-              "MCW_SDR_DASHBOARD_PUBLIC_URL", "MCW_SDR_RESUME_MIN_FILES",
+              "MCW_SDR_DASHBOARD_PUBLIC_URL", "MCW_FILL_ENABLED", "MCW_FILL_GRACE_WARNING_MIN", "MCW_FILL_GRACE_MIN",
               "MCW_RETRANSMIT_MAX", "MCW_ECHO_WINDOW_S", "MCW_RETRANSMIT_PER_HOUR", "MCW_SCOPE_URL", "MCW_SCOPE_MODE",
               "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_ADOPT", "MCW_RADIO_RX_SILENT_MIN",
               "MCW_RELAYED_REPLY_DELAY_S"} | set(LIMIT_KEYS)
@@ -1126,7 +1118,8 @@ _LIVE_KEYS = {"MCW_TIMEZONE", "MCW_LOG_LEVEL", "MCW_HOME_CITIES", "MCW_HOME_RADI
 # persisted, because the next start would refuse the file.
 _INT_KEYS = {"MCW_SERIAL_BAUD", "MCW_HOME_RADIUS_KM", "MCW_SDR_POLL_INTERVAL", "MCW_CHANNEL_REPLY_MAX_HOPS",
              "MCW_ADVERT_INTERVAL_HOURS", "MCW_CONTACT_KEEP_FREE", "MCW_RETRANSMIT_MAX", "MCW_RETRANSMIT_PER_HOUR",
-             "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_RX_SILENT_MIN", "MCW_SDR_RESUME_MIN_FILES"} \
+             "MCW_SCOPE_MIN_OBSERVERS", "MCW_RADIO_RX_SILENT_MIN", "MCW_FILL_GRACE_WARNING_MIN",
+             "MCW_FILL_GRACE_MIN"} \
     | (set(LIMIT_KEYS) - {"MCW_APP_SENDER_GAP_S"})
 _FLOAT_KEYS = {"MCW_ECHO_WINDOW_S", "MCW_APP_SENDER_GAP_S"}
 _SECONDS_KEYS = {"MCW_RELAYED_REPLY_DELAY_S"}          # 0 allowed: off
@@ -1136,7 +1129,7 @@ _MIN_ONE_KEYS = {"MCW_APP_PACKETS_PER_HOUR", "MCW_TEXT_REPLIES_PER_SENDER_PER_HO
                  "MCW_STRANGER_REPLIES_PER_HOUR", "MCW_SCHEDULED_PACKETS_PER_HOUR"}
 # Free text with a shorter cap than the 200 every value gets.
 _MAX_LEN = {"MCW_OPERATOR_CONTACT": 100}
-_BOOL_KEYS = {"MCW_TX_ENABLED", "MCW_CONTACT_HOUSEKEEPING"}
+_BOOL_KEYS = {"MCW_TX_ENABLED", "MCW_CONTACT_HOUSEKEEPING", "MCW_FILL_ENABLED"}
 _CHOICES = {"MCW_REPLY_MODE": ("dm", "channel", "dm_only"), "MCW_EMWIN_SOURCE": ("sdr", "internet"),
             "MCW_LOG_LEVEL": ("DEBUG", "INFO", "WARNING", "ERROR"), "MCW_SCOPE_MODE": ("stats", "decide"),
             "MCW_RADIO_ADOPT": ("auto", "manual", "off")}
@@ -1224,8 +1217,10 @@ async def _apply_live(bot, updates: dict[str, str]) -> list[str]:
             settings.sdr_dashboard_url = val
         elif key == "MCW_SDR_DASHBOARD_PUBLIC_URL":
             settings.sdr_dashboard_public_url = val
-        elif key == "MCW_SDR_RESUME_MIN_FILES":
-            settings.sdr_resume_min_files = int(val)
+        elif key == "MCW_FILL_ENABLED":
+            settings.fill_enabled = val.strip().lower() in _TRUE
+        elif key in ("MCW_FILL_GRACE_WARNING_MIN", "MCW_FILL_GRACE_MIN"):
+            setattr(settings, key[4:].lower(), int(val))
         elif key in ("MCW_CHANNEL_REPLY_MAX_HOPS", "MCW_ADVERT_INTERVAL_HOURS"):
             setattr(settings, key[4:].lower(), int(val))
         elif key == "MCW_PEER_BOT_PREFIX":

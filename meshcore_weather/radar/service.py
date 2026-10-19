@@ -25,8 +25,9 @@ MAX_AGE_MIN = 60
 
 
 class RadarService:
-    def __init__(self, root: "str | Path | None", frames: "list[Frame] | None" = None):
-        self.source = RadarSource(root) if root else None
+    def __init__(self, root: "str | Path | None", frames: "list[Frame] | None" = None,
+                 extra_roots: "list[str | Path] | None" = None):
+        self.source = RadarSource(root, extra_roots) if root else None
         self.frames = frames if frames is not None else load_frames()
 
     @property
@@ -108,8 +109,16 @@ def radar_dir() -> "str | None":
     return settings.sdr_emwin_dir if settings.emwin_source == "sdr" else None
 
 
+def fill_dir() -> "str | None":
+    """Where the internet fill keeps the radar pictures it took (emwin/fill.py):
+    beside the dish's, read the same way. Only with the dish as the source."""
+    if settings.emwin_source != "sdr" or not settings.fill_enabled:
+        return None
+    return str(Path(settings.data_dir) / "emwin_internet")
+
+
 def shared() -> RadarService:
     global _shared
     if _shared is None:
-        _shared = RadarService(radar_dir())
+        _shared = RadarService(radar_dir(), extra_roots=[r for r in [fill_dir()] if r])
     return _shared

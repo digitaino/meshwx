@@ -1057,14 +1057,17 @@ var Portal = {
     onLeave: function () { if (this._timer) clearInterval(this._timer); this._timer = null; },
 
     load: function () {
-      // The dish's internet backup: off while the dish writes, on after
-      // `after_min` minutes of silence, with what it has brought in.
-      function backupTile(b) {
-        if (!b) return "";
-        if (!b.after_min) return tile("Internet backup", "off", "turned off (MCW_SDR_INTERNET_FALLBACK_MIN 0)");
-        if (!b.on) return tile("Internet backup", "standing by", "takes over after " + b.after_min + " min without a file from the dish" +
-          (b.from_internet_last_hour ? " · " + b.from_internet_last_hour + " products from it in the last hour" : ""), "ok");
-        return tile("Internet backup", "on", "since " + agoAt(Date.parse(b.since) / 1000) + " ago · " + b.added + " products from NOAA", "warn");
+      // The internet fill: what it took from NWS because the feed had not
+      // brought it within its grace, and how much came down the feed in time.
+      function fillTile(f) {
+        if (!f) return "";
+        if (!f.enabled) return tile("Internet fill", "off", "turned off (MCW_FILL_ENABLED)");
+        var h = f.last_hour || {}, took = (h.text || 0) + (h.obs_files || 0) + (h.radar || 0);
+        var share = h.in_time_pct != null ? h.in_time_pct + "% of the last hour's products came down the feed in time" : "nothing to go by yet";
+        if (!f.active) return tile("Internet fill", took ? took + " filled" : "standing by", share +
+          (f.last_error ? " · last error " + f.last_error : ""), "ok");
+        return tile("Internet fill", "filling in", f.reason + " · since " + agoAt(f.since) + " ago · " + h.text + " text, " +
+          h.obs_files + " airport files, " + h.radar + " radar in the last hour", "warn");
       }
       api("/api/sdr").then(function (d) {
         var r = d.receiver || {}, st = r.stats || {}, feed = d.feed || {}, err = r._error;
@@ -1075,7 +1078,7 @@ var Portal = {
           tile("Drops", st.drops != null ? st.drops : "–", "last interval", st.drops ? "warn" : "") +
           tile("Feed", feed.products_last_hour != null ? feed.products_last_hour : "–", "products in the last hour") +
           tile("Newest file", ago(feed.newest_age_s) + " old", feed.source === "sdr" ? "from the dish" : "internet feed") +
-          backupTile(feed.internet_backup);
+          fillTile(feed.fill);
         $("sat-signal-sub").textContent = err ? err :
           ("mode " + (r.mode || "?") + " · gain " + (st.gain != null ? st.gain.toFixed(1) : "?") + " · freq offset " + (st.freq != null ? Math.round(st.freq) + " Hz" : "?"));
         $("sat-mode-point").className = "btn" + (r.mode === "point" ? " btn-primary" : "");

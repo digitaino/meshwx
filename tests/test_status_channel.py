@@ -24,9 +24,11 @@ def _state(locked=True, disk=49, temp=51.0, throttled="0x0", stats=True) -> dict
     return s
 
 
-def _feed(on=False, added=0, lag=None, quiet=3.0):
-    return SimpleNamespace(fallback_active=on, fallback_added=added, feed_lag_min=lag,
-                           dish_quiet_min=lambda now=None: quiet)
+def _feed(on=False, added=0, lag=None, quiet=3.0, why="the dish has been quiet for 14 min"):
+    """The EMWIN source as the reporter sees it: its internet fill (filling in
+    or not, why, how much this spell) and how late it runs."""
+    fill = SimpleNamespace(active_since=1 if on else None, spell_filled=added, reason=lambda now=None: why)
+    return SimpleNamespace(fill=fill, feed_lag_min=lag, dish_quiet_min=lambda now=None: quiet)
 
 
 def _reporter() -> StatusReporter:
@@ -83,18 +85,15 @@ def test_no_reading_is_no_evidence_about_the_lock():
     assert _check(r, T + 2000, _state(locked=False)) == ["GOES lock lost 33m"]
 
 
-def test_the_internet_backup_on_and_off_are_transitions_not_a_state():
+def test_the_internet_fill_filling_in_and_done_are_transitions_not_a_state():
     r = _reporter()
     assert _check(r, T, feed=_feed(on=True)) == []                         # the first look is a baseline
     assert _check(r, T + 10, feed=_feed(on=True)) == []
     assert _check(r, T + 20, feed=_feed(on=False, added=12)) == \
-        ["internet backup off, dish is back (12 products came by internet)"]
+        ["internet fill done, the feed is in time again (12 products filled)"]
     assert _check(r, T + 30, feed=_feed(on=False)) == []
-    assert _check(r, T + 40, feed=_feed(on=True, quiet=14.2)) == ["internet backup on (dish quiet 14m)"]
-    r2 = _reporter()
-    _check(r2, T, feed=_feed(on=False))
-    assert _check(r2, T + 10, feed=_feed(on=True, quiet=float("inf"))) == \
-        ["internet backup on (no file from the dish yet)"]
+    assert _check(r, T + 40, feed=_feed(on=True, why="EMWIN is running 45 min late")) == \
+        ["internet filling in (EMWIN is running 45 min late)"]
     assert _check(StatusReporter(send=None), T, feed=None) == []
 
 
@@ -227,10 +226,10 @@ def test_tick_keeps_lines_short_and_respects_transmit(monkeypatch):
     r = StatusReporter(send=send)
     assert asyncio.run(r.tick(T, _state(locked=False), True, _feed())) == []
     # Two changes in one poll are one line, when they fit.
-    out = asyncio.run(r.tick(T + 600, _state(locked=False), True, _feed(on=True, quiet=11)))
-    assert out == sent == ["status: GOES lock lost 10m; internet backup on (dish quiet 11m)"]
+    out = asyncio.run(r.tick(T + 600, _state(locked=False), True, _feed(on=True, why="the dish has been quiet for 11 min")))
+    assert out == sent == ["status: GOES lock lost 10m; internet filling in (the dish has been quiet for 11 min)"]
     out = asyncio.run(r.tick(T + 620, _state(locked=False), True, _feed(on=False, added=2)))
-    assert out == ["status: internet backup off, dish is back (2 products came by internet)"]
+    assert out == ["status: internet fill done, the feed is in time again (2 products filled)"]
     assert all(len(line) <= MAX_LEN for line in sent) and [line for _, line in r.recent] == sent
 
     # ... and when they do not, two lines, in a fixed order (the limit lowered
@@ -262,8 +261,8 @@ def test_tick_keeps_lines_short_and_respects_transmit(monkeypatch):
     # name before every channel message ("WX-AUS: status: ...").
     plain = StatusReporter(send=send)
     _check(plain, T, feed=_feed(on=False))
-    (line,) = asyncio.run(plain.tick(T + 10, _state(), True, _feed(on=True, quiet=12)))
-    assert line == "status: internet backup on (dish quiet 12m)"
+    (line,) = asyncio.run(plain.tick(T + 10, _state(), True, _feed(on=True, why="the dish has been quiet for 12 min")))
+    assert line == "status: internet filling in (the dish has been quiet for 12 min)"
 
 
 def test_the_bot_never_posts_status_on_the_request_channel():

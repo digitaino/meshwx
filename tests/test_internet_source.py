@@ -238,12 +238,13 @@ async def test_requests_name_the_bot_and_its_operator(tmp_path, interval, monkey
     # Nothing that could break the header or the parentheses gets through.
     monkeypatch.setattr(settings, "operator_contact", " ops@example.org\r\nX-Evil: 1 (é) ")
     assert user_agent().endswith("; ops@example.orgX-Evil: 1)")
-    # The dish's internet backup goes out under the same name.
-    client = SDRSource(root=tmp_path)._make_client()
+    # The internet fill goes out under the same name.
+    fill = SDRSource(root=tmp_path).fill
+    client = fill._http()
     try:
         assert client.headers["user-agent"] == user_agent() and client.timeout == FETCH_TIMEOUT
     finally:
-        await client.aclose()
+        await fill.stop()
 
 
 # -- how late the products are --------------------------------------------------------

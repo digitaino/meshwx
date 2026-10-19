@@ -1,4 +1,4 @@
-"""Current airport reports from NWS's own text feed, for when EMWIN runs late.
+"""Airport reports and forecasts from NWS's own text feeds, for the internet fill.
 
 EMWIN (the dish, and NOAA's internet bundles of the same broadcast) can fall
 hours behind its own uplink queue. On 2026-10-17/18 everything it carried
@@ -21,8 +21,14 @@ reads (`WeatherStore._find_metar_raw`): one report per line ending in "=",
 under a `SAHOURLY` name. The store takes a station's report from the newest
 product it is in, so a fresher NWS report wins over the dish's and the dish's
 wins again once EMWIN catches up. The products say "internet", which is where
-they came from. The sources switch it (`nws_metar_mode`, fetcher.py): by
-itself while EMWIN runs late, or by hand.
+they came from.
+
+The airport forecasts are the same kind of feed (`nws_taf_url`, DS.tafst):
+bulletins of `TAF PABI 191400Z ...`, kept as they are under a `TAFALLUS`
+name, which is what the TAF replies look in.
+
+The internet fill (emwin/fill.py) decides which files to take: only those the
+feed has not covered in time.
 """
 
 import logging
@@ -31,8 +37,6 @@ import zlib
 from datetime import UTC, datetime, timedelta
 
 import httpx
-
-from meshcore_weather.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +97,32 @@ def reports_in(text: str) -> list[str]:
     return reports
 
 
+def metar_file(text: str, written: datetime, sequence: int) -> dict | None:
+    """One METAR feed file as a product, or None when it holds no report."""
+    reports = reports_in(text)
+    return collective(reports, written, sequence) if reports else None
+
+
+def taf_file(text: str, written: datetime, sequence: int) -> dict | None:
+    """One TAF feed file as a product: its bulletins as they are, under a
+    TAFALLUS name, or None when it holds no TAF."""
+    # A bulletin's `####...####` line becomes a blank one: where a TAF ends.
+    lines = ["" if _SEPARATOR_RE.match(ln.strip()) else ln.rstrip() for ln in text.replace("\r", "").split("\n")]
+    if not any(ln.lstrip().startswith("TAF") for ln in lines):
+        return None
+    ddhhmm = f"{written:%d%H%M}"
+    body = "\r\r\n".join(["FTUS99 NWSF " + ddhhmm, "TAFALLUS", *lines]).strip()
+    return {
+        "product_id": "FTUS99",
+        "station": "NWSF",
+        "awips_id": "TAFALLUS",
+        "timestamp": written,
+        "raw_text": body,
+        "filename": f"A_FTUS99NWSF{ddhhmm}_C_NWSF_{written:%Y%m%d%H%M%S}_{sequence}-2-TAFALLUS.TXT",
+        "source": "internet",
+    }
+
+
 def collective(reports: list[str], written: datetime, sequence: int) -> dict:
     """One feed file's reports as a product dict, named like an EMWIN file
     (`A_<WMO><stn><ddhhmm>_C_<center>_<ts>_<seq>-N-<AWIPS>.TXT`) so the store
@@ -110,58 +140,54 @@ def collective(reports: list[str], written: datetime, sequence: int) -> dict:
     }
 
 
-class NwsMetarFeed:
-    """Polls the feed directory and hands back each new file as a product."""
+class NwsFeed:
+    """Polls one feed directory and hands back each new file it is asked for
+    as a product (`make`: metar_file or taf_file)."""
 
-    def __init__(self, url: str | None = None):
-        self.url = (url or settings.nws_metar_url).rstrip("/") + "/"
+    def __init__(self, url: str, make, kind: str = "SAH"):
+        self.url = url.rstrip("/") + "/"
+        self.make = make
+        self.kind = kind
         self._taken: set[tuple[str, datetime]] = set()     # (file, written at) already turned into a product
-        self._last_poll: datetime | None = None
         self.newest_file: datetime | None = None            # for the log and the portal
         self.last_error: str | None = None
 
-    def due(self, now: datetime) -> bool:
-        return self._last_poll is None or now - self._last_poll >= timedelta(seconds=settings.nws_metar_poll_interval)
-
-    async def poll(self, client: httpx.AsyncClient, now: datetime | None = None) -> list[dict]:
-        """The files written since the last poll (the last FIRST_WINDOW on the
-        first), oldest first, as product dicts. A failure costs that poll only:
-        the next one takes whatever it missed, by the listing."""
+    async def poll(self, client: httpx.AsyncClient, now: datetime | None = None, keep=None) -> list[dict]:
+        """The files of the last FIRST_WINDOW not taken yet that `keep(written)`
+        accepts (all, without one), oldest first, as product dicts. A failure
+        costs that poll only: the next one takes whatever it missed, by the
+        listing. A file `keep` turns down is asked about again next time."""
         now = now or datetime.now(UTC)
-        self._last_poll = now
         try:
             resp = await client.get(self.url)
             resp.raise_for_status()
             listing = parse_listing(resp.text)
         except httpx.HTTPError as e:
             self.last_error = f"{type(e).__name__} at {now:%H:%MZ}"
-            logger.warning("NWS METAR feed: listing failed (%s)", e)
+            logger.warning("NWS %s feed: listing failed (%s)", self.kind, e)
             return []
         since = now - FIRST_WINDOW
         todo = sorted((when, name) for name, when in listing
-                      if when >= since and (name, when) not in self._taken)[-MAX_FILES_PER_POLL:]
+                      if when >= since and (name, when) not in self._taken and (keep is None or keep(when)))
         products = []
-        for when, name in todo:
+        for when, name in todo[-MAX_FILES_PER_POLL:]:
             try:
                 resp = await client.get(self.url + name)
                 resp.raise_for_status()
             except httpx.HTTPError as e:
                 self.last_error = f"{type(e).__name__} at {now:%H:%MZ}"
-                logger.warning("NWS METAR feed: %s failed (%s)", name, e)
+                logger.warning("NWS %s feed: %s failed (%s)", self.kind, name, e)
                 continue
             self._taken.add((name, when))
-            reports = reports_in(resp.content.decode("latin-1"))
-            if not reports:
-                continue
             sequence = int(name[3:7]) * 100000 + zlib.crc32(resp.content) % 100000
-            products.append(collective(reports, when, sequence))
+            prod = self.make(resp.content.decode("latin-1"), when, sequence)
+            if prod is None:
+                continue
+            products.append(prod)
             if self.newest_file is None or when > self.newest_file:
                 self.newest_file = when
         # The listing rolls over daily: forget what can no longer come back.
         self._taken = {k for k in self._taken if k[1] >= now - timedelta(hours=26)}
         if products:
             self.last_error = None
-            logger.info("NWS METAR feed: +%d files, %d reports, newest written %s",
-                        len(products), sum(p["raw_text"].count("=") for p in products),
-                        f"{self.newest_file:%H:%MZ}")
         return products

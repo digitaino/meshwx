@@ -3,7 +3,7 @@ changes, so whoever follows "#meshwx-status" hears of an outage from the
 bot itself and not from a `sat` reply that happened to mention it.
 
 Fed every 10 s by the dashboard poll in sdr_monitor.py (the receiver and
-the Pi) together with the EMWIN source (the internet backup, how late the
+the Pi) together with the EMWIN source (the internet fill, how late the
 products run). Nothing here is a request or an answer: the lines go on a
 channel of their own, never the request channel, and only while transmit
 is on.
@@ -12,8 +12,8 @@ What makes a line, and what clears it:
 - GOES lock lost, once the receiver has been unlocked ten minutes without a
   break (a flap is not an outage, and pointing mode is the operator at work,
   not an outage); "locked again" on recovery.
-- The internet backup on (how long the dish had been quiet) and off (how
-  many products came that way).
+- The internet fill filling in for the feed (why: the dish quiet, EMWIN
+  late) and done again (how many products it filled).
 - Products two hours or more behind the uplink, held for twenty minutes
   (NOAA's replay of 2026-10-16); cleared once under 45 minutes for an hour.
 - The receiver dashboard unreachable for five minutes; reachable again.
@@ -96,7 +96,7 @@ class StatusReporter:
         self._lock_said = False
         self._down_since: float | None = None
         self._down_said = False
-        self._backup_on: bool | None = None        # None until the first look: a start is not a change
+        self._fill_on: bool | None = None          # None until the first look: a start is not a change
         self._lag_said = False
         self._lag_high_since: float | None = None
         self._lag_low_since: float | None = None
@@ -111,7 +111,7 @@ class StatusReporter:
     # What has been said survives a restart: a bot restarted in the middle of
     # an outage must not say it again, nor say "back to normal" for a line
     # nobody heard. Two restarts on 17 Oct each posted the lag line anew.
-    _KEPT = ("_lock_said", "_down_said", "_backup_on", "_lag_said", "_host_said", "_posted_at")
+    _KEPT = ("_lock_said", "_down_said", "_fill_on", "_lag_said", "_host_said", "_posted_at")
 
     def _snapshot(self) -> dict:
         snap = {k: getattr(self, k) for k in self._KEPT}
@@ -153,7 +153,7 @@ class StatusReporter:
         now, the transitions and the rate limits applied."""
         lines: list[str] = []
         self._lock(now, state if reachable else None, lines)
-        self._backup(now, feed, lines)
+        self._fill(now, feed, lines)
         self._lag(now, feed, lines)
         self._dashboard(now, reachable, lines)
         self._host(now, state if reachable else None, lines)
@@ -218,19 +218,18 @@ class StatusReporter:
         if not self._lock_said and now - self._unlocked_since >= LOCK_LOST_AFTER_S:
             self._lock_said = self._say("lock", f"GOES lock lost {_m(now - self._unlocked_since)}", now, lines)
 
-    def _backup(self, now: float, feed, lines: list[str]) -> None:
-        on = bool(getattr(feed, "fallback_active", False))
-        was, self._backup_on = self._backup_on, on
+    def _fill(self, now: float, feed, lines: list[str]) -> None:
+        fill = getattr(feed, "fill", None)
+        if fill is None:
+            return
+        on = fill.active_since is not None
+        was, self._fill_on = self._fill_on, on
         if was is None or on == was:
             return
         if on:
-            quiet = getattr(feed, "dish_quiet_min", None)
-            q = quiet(now) if callable(quiet) else None
-            how = "no file from the dish yet" if q is None or q == float("inf") else f"dish quiet {q:.0f}m"
-            self._say("backup_on", f"internet backup on ({how})", now, lines)
+            self._say("fill_on", f"internet filling in ({fill.reason()})", now, lines)
         else:
-            added = getattr(feed, "fallback_added", 0)
-            self._say("backup_off", f"internet backup off, dish is back ({added} products came by internet)",
+            self._say("fill_off", f"internet fill done, the feed is in time again ({fill.spell_filled} products filled)",
                       now, lines)
 
     def _lag(self, now: float, feed, lines: list[str]) -> None:

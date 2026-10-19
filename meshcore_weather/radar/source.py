@@ -34,8 +34,12 @@ RECEIVE_SLACK_MIN = 45
 
 
 class RadarSource:
-    def __init__(self, root: "str | Path"):
+    """`root` is the dish's directory; `extra_roots` are read the same way (the
+    internet fill's folder, whose pictures carry the web's time as their stamp)."""
+
+    def __init__(self, root: "str | Path", extra_roots: "list[str | Path] | None" = None):
         self.root = Path(root).expanduser()
+        self.roots = [self.root] + [Path(r).expanduser() for r in extra_roots or []]
         self._listing: "dict[str, list[tuple[datetime, Path]]]" = {}
         self._listed_at = 0.0
         self._decoded: "OrderedDict[Path, RadarPicture]" = OrderedDict()
@@ -50,8 +54,8 @@ class RadarSource:
             return
         found: "dict[str, list[tuple[datetime, Path]]]" = {}
         settle = time.time() - 2          # goesproc may still be writing the newest
-        for day in (now, now - timedelta(days=1)):
-            folder = self.root / day.strftime("%Y-%m-%d")
+        for root, day in ((r, d) for r in self.roots for d in (now, now - timedelta(days=1))):
+            folder = root / day.strftime("%Y-%m-%d")
             try:
                 entries = os.scandir(folder)
             except OSError:

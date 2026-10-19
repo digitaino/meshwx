@@ -169,7 +169,7 @@ class Settings(BaseSettings):
     serial_baud: int = 115200
     meshcore_channel: str = "#meshwx"  # request channel: one name for every bot, everywhere
     # Operational status lines (status_channel.py): lock lost or back, the
-    # internet backup on or off, products running hours behind, the Pi's
+    # internet fill filling in or not, products running hours behind, the Pi's
     # dashboard, disk or temperature. One short line per change, on a public
     # hashtag channel anyone can join by name. Never the request channel.
     # Empty = no status lines.
@@ -181,35 +181,22 @@ class Settings(BaseSettings):
     # "sdr": goesproc's emwin output tree (YYYY-MM-DD/ dirs of .TXT files)
     sdr_emwin_dir: str = "~/goes-images/emwin"
     sdr_poll_interval: int = 30     # seconds between directory scans
-    # The dish's internet backup. With the source "sdr", once goesproc has
-    # written nothing for this many minutes (a dish down for maintenance, a
-    # lost lock) the bot also takes NOAA's internet bundle: emwin_base_url
-    # once to cover the gap, then emwin_poll_url every emwin_poll_interval,
-    # until the dish writes again. The same product has the same file name
-    # either way, so nothing is held twice, and each product keeps the
-    # source it came by. 0 = never.
-    sdr_internet_fallback_min: int = 10
-    # ... and it stays on until the dish has written this many of its own
-    # (_C_KWIN_) files in the last 10 minutes. On 2026-10-16 a marginal lock
-    # trickled one file every few minutes; each one switched the backup off
-    # and the next quiet spell switched it on again, with a gap every time.
-    sdr_resume_min_files: int = 20
-    # Current airport reports from NWS's ordinary text feed on tgftp, alongside
-    # whatever EMWIN source is in use (emwin/nws_metar.py). For when EMWIN runs
-    # late: on 2026-10-17/18 the dish and NOAA's EMWIN bundles were both ~3 h
-    # behind while this feed had each METAR within minutes. The freshest report
-    # wins, so it is safe to leave on.
-    # "auto" (the default) switches it by how late EMWIN runs (`feed_lag_min`):
-    # on once EMWIN is nws_metar_auto_on_min late, off again once it has stayed
-    # under nws_metar_auto_off_min for nws_metar_auto_hold_min, so nobody has to
-    # remember to turn it off. "on" and "off" set it by hand. Like the dish's
-    # internet backup, it is the internet, used only while EMWIN cannot do the job.
-    nws_metar_mode: str = "auto"
-    nws_metar_auto_on_min: int = 30
-    nws_metar_auto_off_min: int = 10
-    nws_metar_auto_hold_min: int = 60
+    # The internet fill (emwin/fill.py), the feed's one backup: a product the
+    # feed (the dish, or NOAA's bundles) has not delivered within its grace of
+    # being issued is taken from NWS over the internet instead. Text from
+    # api.weather.gov, airport reports and forecasts from NWS's tgftp feeds,
+    # radar from radar.weather.gov. It replaced, on 2026-10-19, the dish's
+    # NOAA-bundle backup (the uplink's own queue, as late as the dish when NOAA
+    # fell behind) and the METAR feed's on/off switch. False = never.
+    fill_enabled: bool = True
+    fill_grace_warning_min: int = 2      # warnings, watches and statements
+    fill_grace_min: int = 15             # everything else, airport reports and forecasts too
+    fill_radar_grace_min: int = 20       # a region's newest picture older than this: the web's
+    fill_poll_interval: int = 60         # seconds between listings of what NWS issued
+    fill_api_url: str = "https://api.weather.gov"
+    fill_radar_url: str = "https://radar.weather.gov/ridge/standard"
     nws_metar_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/DF.an/DC.sflnd/DS.metar/"
-    nws_metar_poll_interval: int = 300   # seconds; the feed writes a file every ~5 min
+    nws_taf_url: str = "https://tgftp.nws.noaa.gov/SL.us008001/DF.an/DC.sflnd/DS.tafst/"
     # Radar pictures (spec 7D): a directory of EMWIN `*-RAD*.GIF` under YYYY-MM-DD/.
     # Empty means the dish's own EMWIN directory when the source is "sdr", and
     # no radar at all otherwise: the internet bundle carries no images.

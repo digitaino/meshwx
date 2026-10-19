@@ -12,7 +12,7 @@ Checked against the code on 2026-09-15.
 | App requests (`>` prefix) | anyone, by DM or on `#meshwx` | same control-character cleaning; the first word picks the answer and the rest is looked up as a warning identity, a UGC code, an ICAO code, a point index or a place. An unknown word gets a Not available message, and an exception while building an answer becomes a Not available (bot error) |
 | Adverts | anyone | contact name cleaned; the contact table on the node is bounded by firmware, the bot's name→key map is capped |
 | `@lat,lon` prefix | DM senders | parsed as floats, range-checked, capped table |
-| `sat` / `>sat` | anyone | answered from the receiver dashboard sample the bot already holds, with no request to goesrecv: lock, signal quality, dropped packets, goesproc state, age of the newest EMWIN file, how far behind the uplink the products run, and since when the internet backup is on. Nothing about the host, the network or the settings |
+| `sat` / `>sat` | anyone | answered from the receiver dashboard sample the bot already holds, with no request to goesrecv: lock, signal quality, dropped packets, goesproc state, age of the newest EMWIN file, how far behind the uplink the products run, and since when the internet fill is filling in. Nothing about the host, the network or the settings |
 | EMWIN products | the satellite (unauthenticated broadcast) | every parser is wrapped per product or per point; a bad product is skipped, never fatal |
 | Portal HTTP API | whoever can reach the portal port (8081 on the Pi; `127.0.0.1` by default since 2026-10-17; no login by design) with a `Host` it answers | see below |
 | Public dashboard | anyone the goestools dashboard is exposed to | read-only; see below |
@@ -178,8 +178,8 @@ prefixes; a public viewer gets a read-only page, and every POST is refused.
 For the bot it proxies one portal endpoint, `/api/public/bot`, fetched at
 most every 3 s however many viewers there are. That bundle holds the bot's
 name, the radio preset, channels, coverage, the command list, counters,
-where the products come from (the dish or its internet backup, and how far
-behind the uplink they run) and the recent traffic in redacted form:
+where the products come from (the dish, what the internet fill took from
+NWS, and how far behind the uplink they run) and the recent traffic in redacted form:
 channel traffic as anyone on `#meshwx` heard it, DMs as the command and
 reply length only, admin and console traffic not at all. No settings, no
 contacts, no key and no position, the bot's own included (peer bots appear

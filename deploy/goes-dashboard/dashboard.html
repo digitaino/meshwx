@@ -170,7 +170,6 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
   <div class="stat" id="stBot"><span class="dot" aria-hidden="true"></span><div><div class="k">Weather bot</div><div class="v">Checking…</div><div class="d"></div></div></div>
   <div class="stat" id="stSat"><span class="dot" aria-hidden="true"></span><div><div class="k">Satellite</div><div class="v">Checking…</div><div class="d"></div></div></div>
   <div class="stat" id="stData"><span class="dot" aria-hidden="true"></span><div><div class="k">Weather data</div><div class="v">Checking…</div><div class="d"></div></div></div>
-  <div class="stat" id="stObs"><span class="dot" aria-hidden="true"></span><div><div class="k">Current conditions</div><div class="v">Checking…</div><div class="d"></div></div></div>
  </section>
  <div class="notice hidden" id="notice" role="status"></div>
  <div class="mini">
@@ -288,8 +287,7 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
    <div class="tile" id="hSigT"><div class="v" id="hSig">–</div><div class="l" id="hSigL">satellite signal</div></div>
    <div class="tile" id="hLostT"><div class="v" id="hLost">–</div><div class="l">frames lost · last hour</div></div>
    <div class="tile" id="eLagT"><div class="v" id="eLag">–</div><div class="l">EMWIN behind NOAA</div></div>
-   <div class="tile" id="eBackupT"><div class="v" id="eBackup">–</div><div class="l">internet backup for the dish</div></div>
-   <div class="tile" id="eNwsT"><div class="v" id="eNws">–</div><div class="l">current conditions from NWS</div></div>
+   <div class="tile" id="hFillT"><div class="v" id="hFill">–</div><div class="l" id="hFillL">internet fill</div></div>
    <div class="tile" id="hOutT"><div class="v" id="hOut">–</div><div class="l" id="hOutL">last time without a signal</div></div>
   </div>
   <p class="why hidden" id="hNote" style="margin:12px 0 0"></p>
@@ -341,7 +339,7 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
    <div><h3 class="sm">Delay behind NOAA, hourly · 7 days</h3><canvas id="lagChart" height="220" aria-label="EMWIN delay per hour"></canvas>
     <div class="key"><span><i class="sw" style="background:var(--alert)"></i>median delay of what arrived that hour</span><span><i class="sw" style="background:var(--dim);opacity:.25"></i>not recorded</span></div></div>
    <div><h3 class="sm">Products received, hourly · 7 days <span class="count" id="eHour"></span></h3><canvas id="volChart" height="220" aria-label="EMWIN products per hour"></canvas>
-    <div class="key"><span><i class="sw" style="background:var(--series2)"></i>from the dish</span><span><i class="sw" style="background:var(--warn)"></i>over the internet (backup)</span></div></div>
+    <div class="key"><span><i class="sw" style="background:var(--series2)"></i>from the dish</span><span><i class="sw" style="background:var(--warn)"></i>filled from NWS over the internet</span></div></div>
   </div>
   <h3 class="sm" style="margin-top:14px">Received in the last 24 hours, by kind</h3>
   <div class="grid2"><div class="tbl"><table><tbody id="kindsA"></tbody></table></div><div class="tbl"><table><tbody id="kindsB"></tbody></table></div></div>
@@ -457,22 +455,21 @@ function connect(){const es=new EventSource('/events');es.onmessage=e=>{try{rend
 fetch('/api/state').then(r=>r.json()).then(renderRx).catch(()=>{}).finally(connect);
 
 // ---------------------------------------------------------------- the weather bot (read-only bundle from its portal)
-// Where the weather comes from, in words: EMWIN off the dish (or the dish's internet
-// backup while it is silent), and current conditions from NWS over the internet
-// while EMWIN runs late. Times in the bundle are unix seconds.
-function renderData(d){const fd=d.feed||{},ib=fd.internet_backup,nm=fd.nws_metar,lag=fd.lag_min,t=d.t||Date.now()/1000,notes=[];
+// Where the weather comes from, in words: EMWIN off the dish (or NOAA's bundles on a bot
+// without one), and the internet fill, which takes from NWS whatever the feed has not
+// delivered in time. Times in the bundle are unix seconds.
+const fillTook=f=>{const h=(f&&f.last_hour)||{};return (h.text||0)+(h.obs_files||0)+(h.radar||0)};
+const cap1=s=>s?s[0].toUpperCase()+s.slice(1):s;
+function renderData(d){const fd=d.feed||{},f=fd.fill,lag=fd.lag_min,notes=[],filling=!!(f&&f.active);
  const newest=fd.newest_product_at?`newest product ${clock(fd.newest_product_at)}`:'';
- if(fd.source==='internet')stat('stData',lag!=null&&lag>=30?'warn':'info','Over the internet',['This bot has no dish',lag!=null&&lag>=30?'NOAA is '+late(lag)+' behind':newest].filter(Boolean).join(' · '));
- else if(ib&&ib.on){stat('stData','warn','Internet backup',[ib.since?`dish silent, backup on for ${age(t-ib.since)}`:'dish silent',`${n(ib.added)} products that way`,ib.last_error?'last fetch: '+ib.last_error:''].filter(Boolean).join(' · '));
-  notes.push('The dish has gone quiet, so weather products are coming over the internet from NOAA until it receives again.')}
- else if(lag!=null&&lag>=30){stat('stData',lag>=120?'bad':'warn',late(lag)+' late',['NOAA\'s EMWIN feed is behind',newest].filter(Boolean).join(' · '));
-  notes.push(`NOAA's EMWIN feed is running about ${late(lag)} late, so forecasts and warnings reach the mesh late.`)}
+ const fillLine=filling?[f.reason,f.since?'NWS filling in since '+clock(f.since):'NWS filling in',`${n(fillTook(f))} products from NWS in the last hour`]:[];
+ if(fd.source==='internet')stat('stData',filling?'warn':'info','Over the internet',['This bot has no dish',...(filling?fillLine:[lag!=null&&lag>=30?'NOAA is '+late(lag)+' behind':newest])].filter(Boolean).join(' · '));
+ else if(filling)stat('stData','warn','Filling in from NWS',fillLine.filter(Boolean).join(' · '));
+ else if(lag!=null&&lag>=30)stat('stData',lag>=120?'bad':'warn',late(lag)+' late',['NOAA\'s EMWIN feed is behind',newest].filter(Boolean).join(' · '));
  else stat('stData','ok','On time',['From the dish, NOAA EMWIN',lag!=null?`within ${lag} min of NOAA`:newest].filter(Boolean).join(' · '));
- if(!nm)stat('stObs','','Not reported','This bot does not say where its current conditions come from.');
- else if(nm.on){stat('stObs','info','From NWS, over the internet',[nm.since?'since '+clock(nm.since):'',nm.mode==='auto'?'until EMWIN is on time again':'switched on by hand',nm.last_error?'last fetch: '+nm.last_error:''].filter(Boolean).join(' · '));
-  notes.push('Current conditions come from the National Weather Service over the internet in the meantime, so readings stay current.')}
- else stat('stObs','ok','From the dish',nm.mode==='auto'?`NWS over the internet takes over if EMWIN runs ${nm.auto_on_min}+ min late`:'NWS internet backup is switched off');
- const box=$('notice');box.classList.toggle('hidden',!notes.length);box.className='notice'+(notes.length?(lag>=120?' bad':' warn'):' hidden');box.textContent=notes.join(' ');$('hNote').textContent=notes.join(' ');$('hNote').classList.toggle('hidden',!notes.length)}
+ if(filling)notes.push(`${cap1(f.reason)}, so the bot is filling in from the National Weather Service over the internet: forecasts, warnings, current conditions and radar stay current.`);
+ else if(lag!=null&&lag>=30)notes.push(`NOAA's EMWIN feed is running about ${late(lag)} late, so forecasts and warnings reach the mesh late.`);
+ const box=$('notice');box.classList.toggle('hidden',!notes.length);box.className='notice'+(notes.length?(!filling&&lag>=120?' bad':' warn'):' hidden');box.textContent=notes.join(' ');$('hNote').textContent=notes.join(' ');$('hNote').classList.toggle('hidden',!notes.length)}
 
 let lastId=0,feedInit=false,started=null;
 function dvKey(ev){const d=ev.delivery;return d?`${d.result||''}${d.resent||0}${d.observed_by||0}${d.observed_repeats||0}`:''}
@@ -495,7 +492,7 @@ function line(ev){const tr=ev.transport==='channel'?'CH':ev.transport==='channel
  return `<div data-id="${ev.id}" data-dv="${dvKey(ev)}"><span class="t">${clockS(ev.t)}</span> <span class="${cls}">${ev.dir==='in'?'←':'→'}</span> <span class="tag">${tr||ev.kind}</span> ${who}${body}</div>`}
 
 function renderBot(d){bot=d;
- if(!d.online){stat('stBot','bad','Offline',d.error||'');stat('stData','','–','The bot is not reachable.');stat('stObs','','–','');return}
+ if(!d.online){stat('stBot','bad','Offline',d.error||'');stat('stData','','–','The bot is not reachable.');return}
  const b=d.bot||{},r=d.radio,st=d.stats||{},w=(st.windows||{})['24h']||{},lt=st.lifetime||{},t=d.t||Date.now()/1000;
  stat('stBot',b.connected&&b.tx_enabled?'ok':'warn',b.connected?(b.tx_enabled?'On air':'Listening only'):'No radio',
   [b.name,b.uptime_s!=null?'up '+age(b.uptime_s):'',st.last_request_at?'last request '+age(t-st.last_request_at)+' ago':''].filter(Boolean).join(' · '));
@@ -571,7 +568,7 @@ function drawHistory(){drawVitHist();drawLagChart('lagChart',220,false);drawLagC
 addEventListener('resize',drawHistory);
 
 const LEVEL={bad:['bad','outage'],warn:['warn','late'],info:['info','note']};
-function evItem(e){const [cls,word]=LEVEL[e.level]||['','event'];const open=e.t_end==null&&['lock','pointing','emwin_late','inet_backup','nws_metar'].includes(e.kind);
+function evItem(e){const [cls,word]=LEVEL[e.level]||['','event'];const open=e.t_end==null&&['lock','pointing','emwin_late','fill','inet_backup','nws_metar'].includes(e.kind);
  return `<li><time>${esc(when(e.t))}</time><div><span class="pill ${cls}" style="margin-right:6px">${open?'now':word}</span><b>${esc(e.title)}</b>${e.detail?`<div class="det">${esc(e.detail)}</div>`:''}</div></li>`}
 function renderHrit(){if(!H)return;
  const ch=H.station||{},sun=(H.sun||{}).satellite||{};$('chain').innerHTML=[['Satellite',`${ch.satellite||'GOES-19'}, ${Math.abs(ch.sat_lon||75.2)}° W · HRIT/EMWIN downlink`],['Frequency',ch.freq_mhz?`${ch.freq_mhz.toFixed(1)} MHz · BPSK, 927 kbps`:'–'],['Aim from the dish',`${sun.compass??'–'}° compass (${sun.az??'–'}° true), ${sun.el??'–'}° up`],['Front end',`${ch.lna||'LNA'}${ch.bias_tee?', powered by the bias tee':''}`],['Radio',`${ch.radio||'SDR'}${ch.sample_msps?` at ${ch.sample_msps} MS/s`:''}${ch.gain_db!=null?`, tuner gain ${ch.gain_db} dB`:''}`],['Software','goesrecv (demodulator) → goesproc (images, EMWIN)']].map(([k,v])=>`<tr><td class="k">${k}</td><td class="w">${esc(v)}</td></tr>`).join('');
@@ -592,10 +589,16 @@ function renderHrit(){if(!H)return;
 const KIND={SA:'Airport reports (METAR)',SP:'Special airport reports',FT:'Airport forecasts (TAF)',FP:'Public forecasts',FX:'Forecast discussions',FZ:'Marine forecasts',FO:'Model and aviation guidance',SR:'River and rain data',CD:'Climate reports',QA:'Radar images',AS:'Regional summaries and analyses',WW:'Watches and warnings',WU:'Severe weather warnings',WF:'Tornado and flood warnings',WH:'Marine warnings',SX:'Other text',NO:'Notices',SM:'Synoptic and marine reports'};
 // The delay shown is the bot's (the median of its last 50 arrivals, the figure that switches the
 // NWS feed), so every card on the page says the same; the history's own is the fallback.
-function renderFeedHealth(){if(!E)return;const fd=(bot&&bot.feed)||{},ib=fd.internet_backup,nm=fd.nws_metar,lag=fd.lag_min!=null?fd.lag_min:E.lag_now;
+function renderFeedHealth(){if(!E)return;const fd=(bot&&bot.feed)||{},f=fd.fill,lag=fd.lag_min!=null?fd.lag_min:E.lag_now;
  $('eLag').textContent=lag==null?'–':lag<1?'on time':late(Math.round(lag));tile('eLagT',lag==null?'':lag<30?'good':lag<120?'warn':'bad');
  $('eHour').textContent=`· ${n(E.last_hour.files+E.last_hour.inet)} in the last hour`;
- $('eBackup').textContent=ib?(ib.on?'On':'Off'):'–';tile('eBackupT',ib?(ib.on?'warn':'good'):'');$('eNws').textContent=nm?(nm.on?'On':'Off'):'–';tile('eNwsT',nm&&nm.on?'warn':'');
+ // the internet fill: filling in, or standing by with how much came down the dish in time
+ const pct=f&&f.last_hour?f.last_hour.in_time_pct:null;
+ const [fv,fl,flv]=!f?['–','internet fill','']:!f.enabled?['Off','internet fill switched off','']
+  :f.active?['Filling in',`internet fill · ${n(fillTook(f))} from NWS in the last hour`,'warn']
+  :pct==null?['Standing by','internet fill · nothing to compare yet','good']
+  :[pct+'%','came down the dish in time · internet fill standing by',pct>=90?'good':pct>=50?'warn':'bad'];
+ $('hFill').textContent=fv;$('hFillL').textContent=fl;tile('hFillT',flv);
  const k=E.kinds_24h||[],kmax=Math.max(1,...k.map(r=>r[1])),half=Math.ceil(k.length/2),row=([c,v])=>`<tr><td class="w">${esc(KIND[c]||'Other')} <span class="hint">${esc(c)}</span></td><td style="width:40%"><div class="bar"><i style="width:${v/kmax*100}%"></i></div></td><td class="n">${n(v)}</td></tr>`;
  $('kindsA').innerHTML=k.slice(0,half).map(row).join('');$('kindsB').innerHTML=k.slice(half).map(row).join('');
  $('emSince').textContent=E.recorded_since?`History from ${when(E.recorded_since)}, rebuilt at install from the products on disk, then recorded minute by minute.`:'';
