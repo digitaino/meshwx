@@ -606,8 +606,8 @@ async def console(request: Request) -> JSONResponse:
 
 @router.get("/console/help")
 async def console_help(request: Request) -> JSONResponse:
-    from meshcore_weather.main import HELP_TEXT
-    return JSONResponse({"help": HELP_TEXT})
+    from meshcore_weather.main import help_text
+    return JSONResponse({"help": help_text()})
 
 
 # -- Request/reply traffic: what the bot sees on its channel and by DM -----------------
@@ -651,6 +651,7 @@ PUBLIC_COMMANDS = [
     {"cmd": "rain <ST>", "what": "rainfall totals reported by stations in the state", "example": "rain TX"},
     {"cmd": "metar <ICAO>", "what": "the latest airport observation", "example": "metar KAUS"},
     {"cmd": "space", "what": "space weather: Kp, geomagnetic storm and solar alerts", "example": "space"},
+    {"cmd": "status", "what": "notices from the station's operator, such as why data is late", "example": "status"},
     {"cmd": "more", "what": "the next page of the last long reply", "example": "more"},
     {"cmd": "help", "what": "the command list", "example": "help"},
 ]
@@ -694,7 +695,7 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
     radio = bot.radio
     info = await _radio_info_cached(radio)
     started = getattr(bot, "_started_at", None)
-    from meshcore_weather.main import HELP_TEXT
+    from meshcore_weather.main import help_text
     peers = radio.peer_bots() if radio.connected and hasattr(radio, "peer_bots") else []
     return JSONResponse({
         "t": time.time(),
@@ -718,7 +719,7 @@ async def public_bot(request: Request, n: int = Query(50, ge=1, le=200)) -> JSON
         "coverage": {"home": settings.home_cities, "radius_km": settings.home_radius_km,
                      "states": settings.home_states, "timezone": settings.timezone},
         "commands": PUBLIC_COMMANDS,
-        "help": HELP_TEXT,
+        "help": help_text(),
         "dashboard_url": settings.dashboard_link,
         # Where the products come from right now, and how late they are: the
         # feed (the dish, or NOAA's bundles), what the internet fill took from

@@ -768,7 +768,7 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_FILL_RADAR_GRACE_MIN` | `20` | A radar region whose newest picture on the feed is older than this is taken from the web every five minutes |
 | `MCW_RADAR_DIR` | empty | Where the EMWIN radar GIFs are (`YYYY-MM-DD/*-RAD*.GIF`). Empty means `MCW_SDR_EMWIN_DIR` when the source is `sdr`, and no radar otherwise: the internet bundle carries no images. With the dish, the internet fill's pictures in `data/emwin_internet/` are read too |
 | `MCW_SDR_DASHBOARD_URL` | `http://127.0.0.1:8080` | The goestools dashboard the bot polls (every 10 s) and posts mode changes to: the `sat` reply, receiver log lines, the status channel, the portal's Station tab and Overview. Keep it the local address |
-| `MCW_SDR_DASHBOARD_PUBLIC_URL` | *(empty)* | The dashboard's address for people (the portal's link, the public bundle), e.g. its public hostname. Empty = `MCW_SDR_DASHBOARD_URL` |
+| `MCW_SDR_DASHBOARD_PUBLIC_URL` | *(empty)* | The dashboard's address for people (the portal's link, the public bundle, the end of the `help` and `status` replies), e.g. its public hostname. Empty = `MCW_SDR_DASHBOARD_URL`, which never goes on the mesh |
 
 **Coverage**
 
@@ -861,14 +861,15 @@ as dropped, "conversation, not a request". By DM every message is a request.
 | `space` | `space` | Space weather |
 | `radar [city ST or ZIP]` | `radar Dallas TX` | The newest radar picture in words: its time and age, what is over the place, the nearest precipitation and the nearest heavy core (the home city without an argument). A bot without a dish says it has none |
 | `sat` | `sat` | The bot's GOES receiver: lock, signal quality, packets dropped in the last minute, age of the newest file the dish wrote, and how far behind the uplink the products run when that is 30 min or more (`products ~5h behind`); with the internet fill filling in, since when. A reply that would not fit one message leaves out the packet count. A bot on internet EMWIN says it has no receiver |
+| `status` | `status` | The operator's notices, as on the public page (written on the admin portal's Station tab), each in full, then the public page's address; with none up, `No notices from the operator.` and whether EMWIN is on time |
 | `cov` | `cov` | What this bot covers: the area and how far it reaches, the NWS offices in it, how many stations it reports hourly, how often the alert list goes out |
 | `more` | `more` | The next page of the last long reply |
-| `help` | `help` | The command list |
+| `help` | `help` | The command list, ending with the public page's address (`MCW_SDR_DASHBOARD_PUBLIC_URL`) when it fits |
 
 Aliases: `weather` for `wx` (on its own, and with `here`, `now` or
 `today`, the help line: the bot cannot know where "here" is); `warning`, `warnings` and `wanr` for `warn`; `storms` for `storm`;
 `swx` and `solar` for `space`; `satellite`, `goes` and `signal` for `sat`;
-`coverage` and `covers` for `cov`. The receiver and coverage words count
+`coverage` and `covers` for `cov`; `notice` and `notices` for `status`. The receiver, coverage and status words count
 only on their own, so `satellite beach fl` and `cove tx` are still places. `<command> more` (or `next`) also means `more`. Both 3-letter
 (IATA/FAA) and 4-letter (ICAO) station codes work.
 

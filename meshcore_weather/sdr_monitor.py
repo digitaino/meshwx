@@ -27,6 +27,7 @@ from meshcore_weather.config import settings
 logger = logging.getLogger("meshcore_weather.sdr")
 
 POLL_S = 10
+NOTES_S = 60          # the operator's notices (the dashboard's /api/notes), for `status`
 STALE_S = 120          # an older sample is not "now"
 WINDOW_S = 60
 
@@ -48,6 +49,8 @@ class SdrMonitor:
         self._minute_start: float | None = None
         self.last_state: dict | None = None
         self.last_at: float | None = None
+        self.notes: list[dict] = []        # the operator's notices up, as the dashboard last said
+        self._notes_at = 0.0
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
@@ -82,6 +85,14 @@ class SdrMonitor:
             if self._reachable is not False:
                 logger.warning("receiver dashboard unreachable (%s): %s", self.url, e)
             self._reachable = False
+        if self._reachable and now - self._notes_at >= NOTES_S:
+            self._notes_at = now
+            try:
+                r = await client.get(self.url + "/api/notes")
+                r.raise_for_status()
+                self.notes = list(r.json().get("up") or [])
+            except Exception as e:      # an older dashboard has none; the last ones known stand
+                logger.debug("receiver dashboard notes: %s", e)
         if self.status is not None:
             try:
                 await self.status.tick(now, state, self._reachable is True, self.feed)

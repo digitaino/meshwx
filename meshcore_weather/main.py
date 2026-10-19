@@ -27,13 +27,27 @@ RADIO_RETRY_SECONDS = 60
 # "@lat,lon <command>": a DM that carries the sender's position
 LOC_PREFIX = re.compile(r"^@(-?\d+\.?\d*),(-?\d+\.?\d*)\s+(.*)")
 
-# One message, under the channel budget, no newlines (phones wrap it).
-# A DM already is the private reply, so it does not say "DM me".
-HELP_TEXT_DM = (
-    "Weather bot: wx/forecast/warn/radar <city ST|ZIP> | warn/storm/rain <ST> | "
-    "metar <ICAO|ZIP> | space | sat | cov | more"
-)
-HELP_TEXT = HELP_TEXT_DM + ". DM me for private replies"
+# One message, under the channel budget (147 bytes for "WX-AUS"), no
+# newlines (phones wrap it), the same on the channel and in a DM. It ends with
+# the public page's address (help_text): the channel's line used to end "DM me
+# for private replies", and there is room for one of the two; the owner chose
+# the address (2026-10-19).
+HELP_TEXT = ("Weather bot: wx/forecast/warn/radar <city ST|ZIP>, warn/storm/rain <ST>, "
+             "metar <ICAO|ZIP>, space, sat, status, cov, more")
+
+
+def public_site() -> str | None:
+    """The public page's address as it goes over the mesh ("goes.digitaino.com"),
+    or None when the bot has none (MCW_SDR_DASHBOARD_PUBLIC_URL)."""
+    site = re.sub(r"^https?://", "", (settings.sdr_dashboard_public_url or "").strip()).rstrip("/")
+    return site or None
+
+
+def help_text() -> str:
+    """The help line, with the public page's address when it fits."""
+    site = public_site()
+    line = f"{HELP_TEXT}. {site}" if site else HELP_TEXT
+    return line if len(line.encode()) <= MAX_DM else HELP_TEXT
 
 # What a restart says while its products are still loading (see _load_backlog).
 NOT_READY_TEXT = "Starting up: my weather products are still loading. Ask again in a minute."
@@ -1216,7 +1230,7 @@ class WeatherBot:
             session["next"] += 1
             session["ts"] = now
             return page, session["next"] < len(session["pages"])
-        response = HELP_TEXT_DM if dm and command == "help" else self._process_command(command, location)
+        response = self._process_command(command, location)
         if not response:
             return None, False
         pages = self._start_session(sender_key, (command + " " + location).strip(), response)
@@ -1277,7 +1291,7 @@ class WeatherBot:
         if command == "more":
             reply = DmReply(key=pubkey_prefix, kind="page", build=lambda r: self._dm_more(person, r), prepare=prepare)
         else:
-            response = HELP_TEXT_DM if command == "help" else self._process_command(command, location)
+            response = self._process_command(command, location)
             if not response:
                 traffic_log.record("dropped", reason="nothing to say", req=req, sender=sender_name, key=pubkey_prefix)
                 if dreq is not None:
@@ -1497,6 +1511,29 @@ class WeatherBot:
             return 180
         return job.interval_minutes if job.enabled else 0
 
+    def _status_reply(self) -> str:
+        """`status`: the operator's notices, written on wx-admin and shown on the
+        public page (the receiver monitor fetches them from the dashboard), each
+        in full, then the page's address. With none up, the feed in a few words."""
+        site = public_site()
+        monitor = self._sdr_monitor
+        now = time.time()
+        notes = [n for n in (getattr(monitor, "notes", None) or []) if not n.get("t_end") or n["t_end"] > now]
+        if notes:
+            text = " ".join(f"Notice: {n['title'].rstrip('.')}." + (f" {n['detail']}" if n.get("detail") else "")
+                            for n in notes)
+        else:
+            fill, lag = getattr(self.emwin, "fill", None), getattr(self.emwin, "feed_lag_min", None)
+            since = fill.active_since if fill is not None else None
+            if since is not None:
+                feed = f"filling in from NWS since {since:%H:%MZ}"
+            elif lag is not None and lag >= 30:
+                feed = f"EMWIN ~{lag} min late"
+            else:
+                feed = "EMWIN on time"
+            text = ("No notices from the operator. " if monitor is not None else "") + feed[0].upper() + feed[1:] + "."
+        return f"{text} {site}" if site else text
+
     def _coverage_reply(self) -> str:
         """The `cov` reply: the facts the Coverage message carries (spec 7A),
         in words."""
@@ -1508,7 +1545,10 @@ class WeatherBot:
 
     def _process_command(self, command: str, location: str) -> str | None:
         if command == "help":
-            return HELP_TEXT
+            return help_text()
+
+        if command == "status":
+            return self._status_reply()
 
         if command == "sat":
             if self._sdr_monitor is None:

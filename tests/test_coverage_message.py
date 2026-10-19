@@ -317,7 +317,7 @@ async def test_cov_words_and_the_places_that_start_with_them():
 
 
 def test_cov_says_the_area_the_offices_the_stations_and_the_alert_list():
-    from meshcore_weather.main import HELP_TEXT, HELP_TEXT_DM, WeatherBot
+    from meshcore_weather.main import HELP_TEXT, WeatherBot
     bot = WeatherBot()
     bot._coverage_cache = _wx_aus()
     reply = bot._process_command("cov", "")
@@ -326,7 +326,7 @@ def test_cov_says_the_area_the_offices_the_stations_and_the_alert_list():
         "offices EWX, FWD, HGX, SJT; up to 12 stations hourly; alert list every 3 h"
     )
     assert len(reply) <= render_text.MAX_DM               # one message, no paging needed
-    assert "| cov |" in HELP_TEXT_DM and len(HELP_TEXT) <= render_text.MAX_DM
+    assert ", cov," in HELP_TEXT and len(HELP_TEXT) <= render_text.MAX_DM
 
 
 def test_a_bot_with_no_area_filter_says_so_in_words(monkeypatch):

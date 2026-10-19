@@ -166,12 +166,15 @@ def test_windows_latency_and_the_feed_survive_a_restart(tmp_path):
     assert t3.stats()["windows"]["24h"]["requests"] == 0 and t3.lifetime["requests"] == 3
 
 
-def test_help_by_dm_does_not_say_dm_me(bot):
+def test_help_is_the_same_line_by_dm_and_on_the_channel(bot):
+    # The channel's used to end "DM me for private replies"; the public page's
+    # address took its place (owner, 2026-10-19).
+    from meshcore_weather.main import help_text
     asyncio.run(bot._handle_dm("ab" * 32, "Tommy", "help"))
     dm = bot.radio.dms[-1][1]
     assert dm.startswith("Weather bot:") and "DM me" not in dm
     asyncio.run(bot._handle_channel_message("1", "Stranger", "help", 1))
-    assert bot.radio.channel_sent[-1][1].endswith("DM me for private replies")
+    assert bot.radio.channel_sent[-1][1].endswith(help_text()) and dm == help_text()
 
 
 def test_unknown_kind_is_refused():
