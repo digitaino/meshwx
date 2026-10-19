@@ -647,6 +647,13 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/bot":
             return self._send(200, json.dumps(clean(BOT.get())).encode(), "application/json")
         qs = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if p == "/api/notes":
+            # The operator's notes up now; with all=1 also those ended in the last two weeks.
+            now = time.time()
+            d = {"now": now, "up": HISTORY.notes.up(now)}
+            if qs.get("all"):
+                d["recent"] = HISTORY.notes.recent(now)
+            return self._send(200, json.dumps(d).encode(), "application/json")
         if p in ("/api/hrit", "/api/emwin"):
             try:
                 hours = int(qs.get("hours", "168"))
@@ -720,6 +727,25 @@ class Handler(BaseHTTPRequestHandler):
                 with m.lock:
                     m.peak = None
                     m.history.clear()
+        elif p == "/notes":
+            # A note for the public, from the bot's admin portal on localhost:
+            # {"title", "detail", "level": info|warn|bad, "hours": None for until ended}.
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 65536:
+                return self._send(413, b'{"error":"too long"}', "application/json", {"Connection": "close"})
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+                note = HISTORY.notes.add(time.time(), body.get("title"), body.get("detail"),
+                                         body.get("level") or "info", body.get("hours"))
+            except (ValueError, TypeError, AttributeError) as e:
+                return self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
+            HISTORY.forget()
+            return self._send(200, json.dumps({"ok": True, "note": note}).encode(), "application/json")
+        elif m := re.fullmatch(r"/notes/(\d+)/(end|delete)", p):
+            done = HISTORY.notes.end(int(m[1]), time.time()) if m[2] == "end" else HISTORY.notes.delete(int(m[1]))
+            if not done:
+                return self._send(404, b'{"error":"no such note up"}', "application/json")
+            HISTORY.forget()
         else:
             return self._send(404, b"not found", "text/plain")
         self._send(200, b'{"ok":true}', "application/json")

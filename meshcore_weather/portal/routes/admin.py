@@ -366,13 +366,19 @@ async def radio_contacts(request: Request) -> JSONResponse:
 # -- Satellite receiver -----------------------------------------------------------
 
 
-async def _dashboard(path: str, method: str = "GET") -> dict | None:
+async def _dashboard(path: str, method: str = "GET", body: dict | None = None) -> dict | None:
     url = settings.sdr_dashboard_url.rstrip("/") + path
     try:
         async with httpx.AsyncClient(timeout=5.0) as c:
-            r = await c.request(method, url)
+            r = await c.request(method, url, json=body)
             r.raise_for_status()
             return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
+    except httpx.HTTPStatusError as e:
+        try:
+            said = e.response.json().get("error")
+        except Exception:
+            said = None
+        return {"_error": said or str(e), "_status": e.response.status_code}
     except Exception as e:
         return {"_error": str(e)}
 
@@ -491,6 +497,41 @@ async def sdr_mode(request: Request) -> JSONResponse:
     if res and res.get("_error"):
         raise HTTPException(502, res["_error"])
     return JSONResponse({"ok": True, "mode": mode})
+
+
+# -- Notes on the public page -------------------------------------------------------
+#
+# What the operator tells the public on goes.digitaino.com ("EMWIN is running two
+# hours late"). The dashboard keeps them with its events, so a note stays up while
+# the bot is down; they are written from here over localhost, which the dashboard
+# takes from the LAN only and never from Cloudflare.
+
+
+def _notes_answer(d: dict) -> JSONResponse:
+    if d.get("_error"):
+        raise HTTPException(400 if d.get("_status") == 400 else 502, d["_error"])
+    return JSONResponse(d)
+
+
+@router.get("/public-notes")
+async def public_notes() -> JSONResponse:
+    d = await _dashboard("/api/notes?all=1") or {}
+    if d.get("_error"):
+        raise HTTPException(502, "The dashboard does not answer: " + d["_error"])
+    return JSONResponse({"up": d.get("up") or [], "recent": d.get("recent") or [], "page": settings.dashboard_link})
+
+
+@router.post("/public-notes")
+async def public_notes_post(request: Request) -> JSONResponse:
+    body = await _body(request)
+    return _notes_answer(await _dashboard("/notes", "POST", {k: body.get(k) for k in ("title", "detail", "level", "hours")}) or {})
+
+
+@router.post("/public-notes/{note_id}/{action}")
+async def public_notes_change(note_id: int, action: str) -> JSONResponse:
+    if action not in ("end", "delete"):
+        raise HTTPException(404, "end or delete")
+    return _notes_answer(await _dashboard(f"/notes/{note_id}/{action}", "POST") or {})
 
 
 # The tuner gains the RTL-SDR offers (the dashboard's own list): the meter's

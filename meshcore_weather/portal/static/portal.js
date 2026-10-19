@@ -1101,6 +1101,7 @@ var Portal = {
     onEnter: function () {
       var s = this;
       this._hoverSetup();
+      this.loadNotes();
       this.load();
       // The receiver as the dashboard streams it, twice a second, as on
       // goes.digitaino.com; the feed and the fill move by the minute.
@@ -1159,6 +1160,53 @@ var Portal = {
       if (point && !this._mtimer) this._startMeter();
       if (!point) this._stopMeter();
       this._mode = mode;
+    },
+
+    // -- notes on the public page (kept by the dashboard; see /api/public-notes) --
+    loadNotes: function () {
+      var self = this;
+      api("/api/public-notes").then(function (d) { self.renderNotes(d); }).catch(function (e) {
+        $("notes-pill").className = "pill bad"; $("notes-pill").textContent = "Unreachable";
+        $("notes-list").innerHTML = '<tr><td class="hint">' + esc(e.message) + "</td></tr>";
+      });
+    },
+    renderNotes: function (d) {
+      var up = d.up || [], ids = {};
+      up.forEach(function (n) { ids[n.id] = true; });
+      if (d.page) $("notes-page").href = d.page;
+      $("notes-pill").className = "pill " + (up.length ? "info" : "");
+      $("notes-pill").textContent = up.length ? up.length + " up" : "None up";
+      var kind = { info: ["info", "Information"], warn: ["warn", "Warning"], bad: ["bad", "Problem"] };
+      var at = function (t) { return new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }); };
+      $("notes-list").innerHTML = (d.recent || []).map(function (n) {
+        var k = kind[n.level] || ["", n.level], isUp = ids[n.id];
+        var span = "posted " + at(n.t) + " · " + (isUp ? (n.t_end ? "up until " + at(n.t_end) : "up until taken down") : "ended " + at(n.t_end));
+        return "<tr><td>" + pill(isUp ? "up" : "ended", isUp ? k[0] : "") + "</td><td><b>" + esc(n.title) + "</b>" +
+          (n.detail ? '<div class="hint">' + esc(n.detail) + "</div>" : "") + '<div class="hint">' + esc(k[1] + " · " + span) + "</div></td>" +
+          '<td class="act">' + (isUp ? '<button onclick="Portal.station.noteAction(' + n.id + ', \'end\')">Take down</button> ' : "") +
+          '<button class="danger" onclick="Portal.station.noteAction(' + n.id + ', \'delete\')">Delete</button></td></tr>';
+      }).join("") || '<tr><td class="hint">No notes in the last two weeks.</td></tr>';
+    },
+    postNote: function () {
+      var self = this, title = $("note-title").value.trim(), hours = $("note-hours").value;
+      if (!title) { Portal.ui.toast("A note needs a headline", false); $("note-title").focus(); return; }
+      $("note-post").disabled = true;
+      api("/api/public-notes", { method: "POST", body: { title: title, detail: $("note-detail").value.trim(),
+                                                        level: $("note-level").value, hours: hours ? parseFloat(hours) : null } })
+        .then(function () {
+          Portal.ui.toast("Posted to the public page");
+          $("note-title").value = ""; $("note-detail").value = "";
+          self.loadNotes();
+        })
+        .catch(function (e) { Portal.ui.toast("Note: " + e.message, false); })
+        .then(function () { $("note-post").disabled = false; });
+    },
+    noteAction: function (id, action) {
+      var self = this;
+      if (action === "delete" && !confirm("Delete this note? It goes from the public page and its events list.")) return;
+      api("/api/public-notes/" + id + "/" + action, { method: "POST", body: {} })
+        .then(function () { Portal.ui.toast(action === "end" ? "Taken down" : "Deleted"); self.loadNotes(); })
+        .catch(function (e) { Portal.ui.toast("Note: " + e.message, false); });
     },
 
     // Hover on the three graphs: the second (or the frequency) under the pointer, in figures.

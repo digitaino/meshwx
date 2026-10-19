@@ -216,6 +216,33 @@ def test_the_internet_fill_is_one_event_and_ends_the_backups_it_replaced(tmp_pat
     assert _events(store)[0][2:] == ("Internet filled in for 60 min", t, t + 3600)
 
 
+def test_operator_notes_are_up_until_their_time_or_taken_down_and_stay_in_the_events(tmp_path):
+    import pytest
+    store = sh.Store(str(tmp_path / "h.db"))
+    notes, t = sh.Notes(store), 1_800_000_000
+    late = notes.add(t, "  EMWIN is running   two hours late ", "NOAA is on it.", "warn", hours=6)
+    open_ = notes.add(t + 60, "Dish maintenance Saturday morning")
+    assert late["title"] == "EMWIN is running two hours late" and late["t_end"] == t + 6 * 3600
+    assert [n["id"] for n in notes.up(t + 120)] == [open_["id"], late["id"]]           # newest first
+    assert [n["id"] for n in notes.up(t + 7 * 3600)] == [open_["id"]]                  # its six hours are up
+    assert notes.end(open_["id"], t + 8 * 3600) and notes.up(t + 8 * 3600) == []
+    assert not notes.end(open_["id"], t + 9 * 3600)                                     # down already
+    assert {n["id"] for n in notes.recent(t + 9 * 3600)} == {late["id"], open_["id"]}
+    # The seed history's note is NOAA's word from Oct 18, never one of the operator's up now.
+    assert all(n["title"] != "NOAA confirmed the EMWIN delay" for n in notes.recent(t))
+    # In the events list with everything else, and a note still up survives the prune.
+    rec = sh.Recorder(store, sh.VcCounter(), None, None, *([lambda: None] * 6), emwin_root=str(tmp_path))
+    assert any(e["kind"] == "note" and e["title"] == "EMWIN is running two hours late" for e in rec.events_list(t + 9 * 3600))
+    forever = notes.add(t, "Up until taken down")
+    store.prune(t + 30 * 86400)
+    assert [n["id"] for n in notes.up(t + 30 * 86400)] == [forever["id"]]
+    assert notes.delete(forever["id"]) and notes.up(t + 30 * 86400) == [] and not notes.delete(forever["id"])
+    for bad in (dict(title=" "), dict(title="x" * 121), dict(title="x", level="loud"), dict(title="x", hours=0),
+                dict(title="x", hours=24 * 15)):
+        with pytest.raises(ValueError):
+            notes.add(t, **bad)
+
+
 def test_the_sun_passes_behind_goes19_from_austin_in_early_october_and_march():
     sun = sh.SunPredictor(30.27, -97.74, -75.2, "America/Chicago", mag_decl=2.6)
     assert (round(sun.az, 1), round(sun.el, 1)) == (140.5, 47.0)

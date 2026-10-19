@@ -378,7 +378,9 @@ class Store:
         with self.tx() as db:
             for table in ("signal", "vc", "emwin", "emwin_kind"):
                 db.execute(f"DELETE FROM {table} WHERE t < ?", (cut,))
-            db.execute("DELETE FROM events WHERE COALESCE(t_end, t) < ?", (cut - 7 * 86400,))   # events: two weeks
+            # events: two weeks, but never a note still up
+            db.execute("DELETE FROM events WHERE COALESCE(t_end, t) < ? AND NOT (kind = 'note' AND t_end IS NULL)",
+                       (cut - 7 * 86400,))
 
 
 # ----------------------------------------------------------------------------- one minute at a time
@@ -399,6 +401,61 @@ def summarize_signal(seconds: list, locked_now: bool) -> dict | None:
 def fmt_span(seconds: float) -> str:
     m = int(seconds // 60)
     return f"{m} min" if m < 120 else f"{m // 60} h {m % 60:02d} min"
+
+
+class Notes:
+    """What the operator tells the public, written from the bot's admin portal (wx-admin):
+    an event of kind "note" and source "operator", up from `t` until `t_end` (None: until
+    ended by hand). The page shows those up now above every tab, and every note in the
+    events list with the rest. Notes written into the seed history are not the operator's
+    and are never shown as up."""
+
+    LEVELS = ("info", "warn", "bad")
+    TITLE_MAX, DETAIL_MAX, HOURS_MAX = 120, 600, 14 * 24
+
+    def __init__(self, store: Store):
+        self.store = store
+
+    def _rows(self, where, args):
+        rows = self.store.rows("SELECT id, t, t_end, level, title, detail FROM events WHERE kind='note' AND source='operator' "
+                               f"AND {where} ORDER BY t DESC LIMIT 50", args)
+        return [{"id": r[0], "t": r[1], "t_end": r[2], "level": r[3], "title": r[4], "detail": r[5]} for r in rows]
+
+    def up(self, now: float) -> list[dict]:
+        return self._rows("t <= ? AND (t_end IS NULL OR t_end > ?)", (int(now), int(now)))
+
+    def recent(self, now: float) -> list[dict]:
+        """Up now, and those that ended in the last two weeks: the editor's list."""
+        return self._rows("COALESCE(t_end, ?) >= ?", (int(now), int(now - 14 * 86400)))
+
+    def add(self, now: float, title: str, detail: str = "", level: str = "info", hours: float | None = None) -> dict:
+        title, detail = " ".join(str(title or "").split()), str(detail or "").strip()
+        if not title:
+            raise ValueError("a note needs a headline")
+        if len(title) > self.TITLE_MAX or len(detail) > self.DETAIL_MAX:
+            raise ValueError(f"a headline is at most {self.TITLE_MAX} characters, the details {self.DETAIL_MAX}")
+        if level not in self.LEVELS:
+            raise ValueError("level is one of " + ", ".join(self.LEVELS))
+        if hours is not None and not 0 < float(hours) <= self.HOURS_MAX:
+            raise ValueError(f"a note is up for at most {self.HOURS_MAX} hours, or until it is ended")
+        t_end = None if hours is None else int(now + float(hours) * 3600)
+        with self.store.tx() as db:
+            cur = db.execute("INSERT INTO events (t, t_end, kind, level, title, detail, source) VALUES (?,?,?,?,?,?,?)",
+                             (int(now), t_end, "note", level, title, detail, "operator"))
+        return {"id": cur.lastrowid, "t": int(now), "t_end": t_end, "level": level, "title": title, "detail": detail}
+
+    def end(self, note_id: int, now: float) -> bool:
+        """Take a note down now; it stays in the events list."""
+        with self.store.tx() as db:
+            cur = db.execute("UPDATE events SET t_end=? WHERE id=? AND kind='note' AND source='operator' "
+                             "AND (t_end IS NULL OR t_end > ?)", (int(now), int(note_id), int(now)))
+        return cur.rowcount > 0
+
+    def delete(self, note_id: int) -> bool:
+        """Gone from the page and the events list both: for a note posted by mistake."""
+        with self.store.tx() as db:
+            cur = db.execute("DELETE FROM events WHERE id=? AND kind='note' AND source='operator'", (int(note_id),))
+        return cur.rowcount > 0
 
 
 class Events:
@@ -528,9 +585,15 @@ class Recorder:
         self.seconds, self.locked_now, self.demod, self.mode, self.status, self.bot_feed = (
             seconds, locked_now, demod, mode, status, bot_feed)
         self.events = Events(store)
+        self.notes = Notes(store)
         self.emwin_root = emwin_root
         self.cache: dict = {}
         self.cache_lock = threading.Lock()
+
+    def forget(self) -> None:
+        """The pages' cached answers, after a note changed the events list."""
+        with self.cache_lock:
+            self.cache.clear()
 
     def start(self) -> None:
         threading.Thread(target=self._run, daemon=True).start()

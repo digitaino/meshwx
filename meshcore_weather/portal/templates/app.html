@@ -197,6 +197,21 @@
 
 <!-- ================= STATION ================= -->
 <div class="tab" id="tab-station">
+  <section class="block" id="station-notes" aria-labelledby="hNotes">
+    <div class="bh"><h2 id="hNotes">Notes on the public page</h2><span class="pill" id="notes-pill">–</span>
+      <div class="right"><a class="hint" id="notes-page" href="#" target="_blank" rel="noopener">Public page ↗</a></div></div>
+    <p class="why">A note shows above every tab of the public dashboard while it is up, and stays in its events list after. Use it to tell mesh users why something looks wrong, such as EMWIN running late.</p>
+    <div class="fields">
+      <div class="f wide"><label for="note-title">Headline</label><input id="note-title" maxlength="120" placeholder="EMWIN is running about two hours late"></div>
+      <div class="f wide"><label for="note-detail">Details <span class="hint">(optional)</span></label><textarea id="note-detail" maxlength="600" rows="3" placeholder="NOAA is working on the link to the uplink site. Forecasts and warnings still come in, filled in from NWS over the internet."></textarea></div>
+      <div class="f"><label for="note-level">Kind</label><select id="note-level"><option value="info">Information</option><option value="warn">Warning</option><option value="bad">Problem</option></select></div>
+      <div class="f"><label for="note-hours">Up for</label>
+        <div class="inrow"><select id="note-hours"><option value="">until I take it down</option><option value="1">1 hour</option><option value="6">6 hours</option><option value="24">1 day</option><option value="72">3 days</option><option value="168">1 week</option></select>
+          <button class="primary" id="note-post" onclick="Portal.station.postNote()">Post</button></div></div>
+    </div>
+    <div class="tbl mt"><table><tbody id="notes-list"></tbody></table></div>
+  </section>
+
   <section class="block" id="station-rx" aria-labelledby="hRx">
     <div class="bh"><h2 id="hRx">Receiver</h2><span class="pill" id="rx-pill">–</span><span class="live" id="rx-dot" title="live from the receiver"></span>
       <div class="right"><button id="sat-mode-point" onclick="Portal.station.setMode('point')">Pointing mode</button>

@@ -701,6 +701,35 @@ def test_the_receiver_stream_relays_the_dashboards_frames_and_says_when_it_fails
     assert got[3] == {"_error": "503 Service Unavailable"} and calls == ["/events", "/events"]
 
 
+def test_public_notes_are_written_on_the_dashboard_over_localhost(client, monkeypatch):
+    from meshcore_weather.portal.routes import admin
+    c, _ = client
+    sent = []
+
+    async def dashboard(path, method="GET", body=None):
+        sent.append((method, path, body))
+        if path == "/api/notes?all=1":
+            return {"now": 1, "up": [{"id": 7, "title": "EMWIN late"}], "recent": [{"id": 7, "title": "EMWIN late"}]}
+        if path == "/notes" and not (body or {}).get("title"):
+            return {"_error": "a note needs a headline", "_status": 400}
+        if path == "/notes/9/end":
+            return {"_error": "no such note up", "_status": 404}
+        return {"ok": True}
+
+    monkeypatch.setattr(admin, "_dashboard", dashboard)
+    d = c.get("/api/public-notes").json()
+    assert d["up"][0]["id"] == 7 and "page" in d
+    r = c.post("/api/public-notes", json={"title": "EMWIN late", "detail": "NOAA is on it", "level": "warn",
+                                          "hours": 6, "extra": "dropped"})
+    assert r.status_code == 200
+    assert sent[-1] == ("POST", "/notes", {"title": "EMWIN late", "detail": "NOAA is on it", "level": "warn", "hours": 6})
+    r = c.post("/api/public-notes", json={"title": ""})
+    assert r.status_code == 400 and r.json()["detail"] == "a note needs a headline"
+    assert c.post("/api/public-notes/7/end", json={}).status_code == 200 and sent[-1][:2] == ("POST", "/notes/7/end")
+    assert c.post("/api/public-notes/9/end", json={}).status_code == 502
+    assert c.post("/api/public-notes/7/shout", json={}).status_code == 404
+
+
 def test_the_page_has_the_six_tabs_and_no_old_sections(client):
     c, _ = client
     page = c.get("/").text

@@ -38,6 +38,9 @@ main{padding:16px 0 32px;display:flex;flex-direction:column;gap:16px}
 .stat.ok .dot{background:var(--ok)}.stat.warn .dot{background:var(--warn)}.stat.bad .dot{background:var(--bad)}.stat.info .dot{background:var(--info)}
 .notice{border-radius:12px;padding:12px 16px;font-size:14px;border:1px solid var(--line)}
 .notice.warn{background:var(--warn-bg);border-color:transparent}.notice.bad{background:var(--bad-bg);border-color:transparent}.notice.info{background:var(--info-bg);border-color:transparent}
+/* The operator's notes, above every tab */
+.opnotes{display:grid;gap:8px;margin-bottom:16px}.opnotes:empty{display:none}
+.opnotes .det{overflow-wrap:anywhere}.opnotes .by{color:var(--dim);font-size:12.5px;margin-top:4px}
 
 /* Sections */
 .block{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
@@ -165,6 +168,7 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
 </div></header>
 
 <main class="wrap">
+<div class="opnotes" id="opNotes" aria-live="polite"></div>
 <div class="tab" id="overview">
  <section class="summary" aria-label="Status at a glance">
   <div class="stat" id="stBot"><span class="dot" aria-hidden="true"></span><div><div class="k">Weather bot</div><div class="v">Checking…</div><div class="d"></div></div></div>
@@ -568,7 +572,7 @@ function drawHistory(){drawVitHist();drawLagChart('lagChart',220,false);drawLagC
 addEventListener('resize',drawHistory);
 
 const LEVEL={bad:['bad','outage'],warn:['warn','late'],info:['info','note']};
-function evItem(e){const [cls,word]=LEVEL[e.level]||['','event'];const open=e.t_end==null&&['lock','pointing','emwin_late','fill','inet_backup','nws_metar'].includes(e.kind);
+function evItem(e){let [cls,word]=LEVEL[e.level]||['','event'];if(e.kind==='note')word='note';const open=e.t_end==null&&['lock','pointing','emwin_late','fill','inet_backup','nws_metar'].includes(e.kind);
  return `<li><time>${esc(when(e.t))}</time><div><span class="pill ${cls}" style="margin-right:6px">${open?'now':word}</span><b>${esc(e.title)}</b>${e.detail?`<div class="det">${esc(e.detail)}</div>`:''}</div></li>`}
 function renderHrit(){if(!H)return;
  const ch=H.station||{},sun=(H.sun||{}).satellite||{};$('chain').innerHTML=[['Satellite',`${ch.satellite||'GOES-19'}, ${Math.abs(ch.sat_lon||75.2)}° W · HRIT/EMWIN downlink`],['Frequency',ch.freq_mhz?`${ch.freq_mhz.toFixed(1)} MHz · BPSK, 927 kbps`:'–'],['Aim from the dish',`${sun.compass??'–'}° compass (${sun.az??'–'}° true), ${sun.el??'–'}° up`],['Front end',`${ch.lna||'LNA'}${ch.bias_tee?', powered by the bias tee':''}`],['Radio',`${ch.radio||'SDR'}${ch.sample_msps?` at ${ch.sample_msps} MS/s`:''}${ch.gain_db!=null?`, tuner gain ${ch.gain_db} dB`:''}`],['Software','goesrecv (demodulator) → goesproc (images, EMWIN)']].map(([k,v])=>`<tr><td class="k">${k}</td><td class="w">${esc(v)}</td></tr>`).join('');
@@ -786,5 +790,10 @@ function showChart(){const c=RD.charts.find(x=>x.id===chSel),f=c.frames[chIdx];$
  $('chPos').textContent=`${chIdx+1} of ${c.frames.length}`;$('chPrev').disabled=chIdx<=0;$('chNext').disabled=chIdx>=c.frames.length-1;
  $('chCap').innerHTML=`<b>${esc(c.name)}</b> · ${esc(c.by)} · ${madeLine(f[1],f[2],c.source==='hrit')}`}
 $('chPrev').onclick=()=>{if(chIdx>0){chIdx--;showChart()}};$('chNext').onclick=()=>{if(RD&&chIdx<chLen-1){chIdx++;showChart()}};
-showTab(location.hash.slice(1)||'overview');fetchHistory();
+// The operator's notes (written on the bot's admin portal, kept with the events): those up now,
+// above every tab.
+const upTo=t=>new Date(t*1000).toDateString()===new Date().toDateString()?clock(t):when(t);
+function renderNotes(d){$('opNotes').innerHTML=((d&&d.up)||[]).map(e=>`<div class="notice ${esc(e.level)}" role="status"><b>${esc(e.title)}</b>${e.detail?` <span class="det">${esc(e.detail)}</span>`:''}<div class="by">From the station's operator · ${esc(when(e.t))}${e.t_end?` · until ${esc(upTo(e.t_end))}`:''}</div></div>`).join('')}
+function fetchNotes(){fetch('/api/notes').then(r=>r.json()).then(renderNotes).catch(()=>{}).finally(()=>setTimeout(fetchNotes,60000))}
+showTab(location.hash.slice(1)||'overview');fetchHistory();fetchNotes();
 </script></body></html>
