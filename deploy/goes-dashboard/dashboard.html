@@ -121,6 +121,8 @@ h3.sm{font-size:12.5px;color:var(--dim);font-weight:600;margin:0 0 6px}
 .map canvas{touch-action:none;cursor:grab}.map canvas.drag{cursor:grabbing}
 .maptools{position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:4px}
 .maptools button{width:32px;height:32px;padding:0;font-size:18px;line-height:1;background:var(--panel)}
+.chartline{position:absolute;width:1px;background:var(--fg);opacity:.4;pointer-events:none}
+.tiprows{width:auto;border-collapse:collapse;margin-top:2px;font-variant-numeric:tabular-nums}.tiprows td{padding:0 0 0 12px;border:0;white-space:nowrap;font-size:12.5px;max-width:none;overflow:visible}.tiprows td:first-child{padding-left:0;color:var(--dim)}
 .maptip{position:absolute;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12.5px;max-width:260px;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:2}
 .maphint{position:absolute;left:8px;bottom:8px;font-size:12px;color:var(--dim);background:var(--panel);border-radius:6px;padding:2px 7px;opacity:.9}
 .wlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:420px;overflow:auto}
@@ -532,8 +534,30 @@ function timeAxis(x,W,Hh,px,t0,t1,step){x.strokeStyle=css('--line');x.fillStyle=
  while(t<t0)t+=step;for(;t<=t1;t+=step){const X=px(t);x.beginPath();x.moveTo(X,0);x.lineTo(X,Hh-14*dpr);x.stroke();x.fillText(step>=86400?dayLabel(t):clock(t),X+3*dpr,Hh-3*dpr)}}
 function shadeUnrecorded(x,px,t0,since,Hh){if(since==null||since<=t0)return;x.fillStyle=css('--dim');x.globalAlpha=.15;x.fillRect(px(t0),0,px(since)-px(t0),Hh);x.globalAlpha=1;x.fillStyle=css('--dim');x.fillText('not recorded',px(t0)+6*dpr,16*dpr)}
 
+// Hover (a finger held too) on the history charts: a cursor at the hour or bucket under the
+// pointer and a card of its figures. GEO keeps where each chart last put its time axis (CSS px),
+// and each chart's redraw shows the card again for the pointer where it is.
+const GEO={};
+function chartTip(id,pick){const c=$(id),host=c.parentNode,line=document.createElement('div'),box=document.createElement('div');let at=null;
+ host.style.position='relative';c.style.cursor='crosshair';line.className='chartline';box.className='maptip';line.hidden=box.hidden=true;host.append(line,box);
+ const show=()=>{const g=GEO[id],p=at==null||!g?null:pick(g.t0+(at-g.pad)/g.span*(g.t1-g.t0));line.hidden=box.hidden=!p;if(!p)return;
+  const X=c.offsetLeft+g.pad+(p.t-g.t0)/(g.t1-g.t0)*g.span;line.style.left=X+'px';line.style.top=c.offsetTop+'px';line.style.height=c.clientHeight+'px';
+  box.innerHTML=p.html;box.style.maxWidth='none';const bw=box.offsetWidth;box.style.left=Math.max(c.offsetLeft,X+12+bw>c.offsetLeft+c.clientWidth?X-12-bw:X+12)+'px';box.style.top=c.offsetTop+6+'px'};
+ const move=e=>{at=e.offsetX;show()},out=()=>{at=null;show()};
+ ['pointermove','pointerdown'].forEach(k=>c.addEventListener(k,move));['pointerleave','pointercancel'].forEach(k=>c.addEventListener(k,out));return show}
+const tipRows=rows=>'<table class="tiprows">'+rows.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')+'</table>';
+// an hour of the EMWIN history: its delay and what came in
+function hourTip(t){const r=E&&E.hourly.find(q=>q[0]<=t&&t<q[0]+HOUR);if(!r)return null;
+ return {t:r[0]+HOUR/2,html:`<b>${esc(when(r[0]))} – ${esc(clock(r[0]+HOUR))}</b>`+tipRows([['delay behind NOAA',r[3]==null?'–':r[3]<1?'on time':late(Math.round(r[3]))],['from the dish',n(r[1])],['from NWS over the internet',n(r[2])],['in all',n(r[1]+r[2])]])}}
+// a bucket of the signal history: [t, Viterbi median, 10th, 90th percentile, packets, drops, share locked]
+function vitTip(t){if(!H||!H.signal.length)return null;const b=H.bucket_s,r=H.signal.reduce((a,q)=>Math.abs(q[0]-t)<Math.abs(a[0]-t)?q:a);if(Math.abs(r[0]-t)>2*b)return null;
+ const w=v=>v<200?'good':v<600?'fair':'poor',d=r[4]?` (${(r[5]*100/(r[4]+r[5])).toFixed(1)}%)`:'';
+ return {t:r[0],html:`<b>${esc(when(r[0]))}</b> · ${Math.round(b/60)} min`+tipRows([['Viterbi errors',r[1]==null?'–':`${Math.round(r[1])} (${w(r[1])})`],['10th–90th percentile',r[2]==null?'–':`${Math.round(r[2])}–${Math.round(r[3])}`],['packets',n(r[4])],['dropped',n(r[5])+d],['locked',r[6]==null?'–':Math.round(r[6]*100)+'% of the time']])}}
+const TIPS={vitChart:chartTip('vitChart',vitTip),lagChart:chartTip('lagChart',hourTip),volChart:chartTip('volChart',hourTip)};
+const geo=(id,t0,t1,W,pad)=>{GEO[id]={t0,t1,pad:pad/dpr,span:(W-pad-4*dpr)/dpr}};
+
 function drawVitHist(){if(!H||!visible('vitChart'))return;const rows=H.signal,t1=H.now,t0=t1-H.hours*HOUR,[x,W,Hh,pad]=frame('vitChart',260,4),VM=800;
- const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-14*dpr-Math.min(v,VM)/VM*(Hh-26*dpr);
+ const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-14*dpr-Math.min(v,VM)/VM*(Hh-26*dpr);geo('vitChart',t0,t1,W,pad);
  // the sun near the satellite: today's closest approach +-75 min, each day, when it is within 12 degrees
  const sun=H.sun&&H.sun.today;if(sun&&sun.closest_deg<12){const tod=sun.at%86400;x.fillStyle=css('--warn');x.globalAlpha=.16;for(let d=Math.floor(t0/86400)-1;d<=Math.floor(t1/86400)+1;d++){const c=d*86400+tod;x.fillRect(px(c-4500),0,px(c+4500)-px(c-4500),Hh)}x.globalAlpha=1}
  shadeUnrecorded(x,px,t0,H.recorded_since,Hh);
@@ -549,15 +573,15 @@ function drawVitHist(){if(!H||!visible('vitChart'))return;const rows=H.signal,t1
 // The EMWIN delay and signal sparklines left the Overview at the owner's word (2026-10-19): the
 // operator's view of them is on wx-admin's Station tab; the public keeps these charts here.
 function drawLagChart(id,h){if(!E||!visible(id))return;const rows=E.hourly,t1=E.now,t0=t1-168*HOUR,[x,W,Hh,pad]=frame(id,h,32),VM=480;
- const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-14*dpr-Math.min(v,VM)/VM*(Hh-26*dpr);
+ const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-14*dpr-Math.min(v,VM)/VM*(Hh-26*dpr);geo(id,t0,t1,W,pad);
  shadeUnrecorded(x,px,t0,E.recorded_since,Hh);x.strokeStyle=css('--line');x.setLineDash([4,4]);[[60,'1 h'],[180,'3 h'],[360,'6 h']].forEach(([v,l])=>{x.beginPath();x.moveTo(pad,py(v));x.lineTo(W,py(v));x.stroke();x.fillStyle=css('--dim');x.fillText(l,4*dpr,py(v)+4*dpr)});x.setLineDash([]);timeAxis(x,W,Hh,px,t0,t1,86400);
  x.strokeStyle=css('--alert');x.lineWidth=2*dpr;x.beginPath();let pen=false,last=null;rows.forEach(r=>{if(r[0]<t0||r[3]==null){pen=false;return}const X=px(r[0]+HOUR/2),Y=py(r[3]);pen?x.lineTo(X,Y):x.moveTo(X,Y);pen=true;last=[X,Y]});x.stroke();
  if(last){x.fillStyle=css('--alert');x.beginPath();x.arc(last[0],last[1],3.5*dpr,0,7);x.fill()}}
 function drawVolChart(){if(!E||!visible('volChart'))return;const rows=E.hourly,t1=E.now,t0=t1-168*HOUR,[x,W,Hh,pad]=frame('volChart',220,36),VM=Math.max(1500,...rows.map(r=>r[1]+r[2]));
- const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-14*dpr-v/VM*(Hh-26*dpr),bw=Math.max(1,px(HOUR)-px(0)-1*dpr);
+ const px=t=>pad+(t-t0)/(t1-t0)*(W-pad-4*dpr),py=v=>Hh-14*dpr-v/VM*(Hh-26*dpr),bw=Math.max(1,px(HOUR)-px(0)-1*dpr);geo('volChart',t0,t1,W,pad);
  shadeUnrecorded(x,px,t0,E.recorded_since,Hh);x.strokeStyle=css('--line');x.fillStyle=css('--dim');x.setLineDash([4,4]);[1000,2000,4000].filter(v=>v<VM).forEach(v=>{x.beginPath();x.moveTo(pad,py(v));x.lineTo(W,py(v));x.stroke();x.fillText(v.toLocaleString(),2*dpr,py(v)+4*dpr)});x.setLineDash([]);timeAxis(x,W,Hh,px,t0,t1,86400);
  rows.forEach(r=>{if(r[0]<t0)return;x.fillStyle=css('--series2');x.globalAlpha=.85;x.fillRect(px(r[0]),py(r[1]),bw,Hh-14*dpr-py(r[1]));if(r[2]){x.fillStyle=css('--warn');x.fillRect(px(r[0]),py(r[1]+r[2]),bw,py(r[1])-py(r[1]+r[2]))}});x.globalAlpha=1}
-function drawHistory(){drawVitHist();drawLagChart('lagChart',220);drawVolChart()}
+function drawHistory(){drawVitHist();drawLagChart('lagChart',220);drawVolChart();Object.values(TIPS).forEach(f=>f())}
 addEventListener('resize',drawHistory);
 
 const LEVEL={bad:['bad','outage'],warn:['warn','late'],info:['info','note']};
