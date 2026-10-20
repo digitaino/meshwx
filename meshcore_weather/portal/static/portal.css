@@ -236,3 +236,12 @@ body.saving .toast { bottom: 84px; }
   .bigsnr { font-size: 44px; }
   td.act { white-space: normal; }
 }
+
+/* Scheduled broadcasts: the add dialog's choice of what to send, and a last
+   run that sent nothing. */
+fieldset.f { border: 0; padding: 0; margin: 0; }
+fieldset.f legend { font-size: 13px; font-weight: 600; margin-bottom: 4px; padding: 0; }
+label.choice { display: block; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; margin-top: 6px; cursor: pointer; }
+label.choice:has(input:checked) { border-color: var(--acc); background: var(--inset); }
+label.choice .hint { margin: 2px 0 0 22px; }
+.hint.w { color: var(--warn); }

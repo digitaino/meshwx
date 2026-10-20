@@ -44,6 +44,9 @@ class ExecutorContext:
     # past it is held back, with its state untouched, for a later tick.
     budget: int | None = None
     held_back: int = 0
+    # Why the last job sent nothing, in words for the portal (the scheduler
+    # clears it before each job).
+    reason: str | None = None
 
 
 def area_blocked(job: BroadcastJob, ctx: ExecutorContext) -> bool:
@@ -53,6 +56,7 @@ def area_blocked(job: BroadcastJob, ctx: ExecutorContext) -> bool:
     reason = getattr(ctx.coverage, "blocked", None)
     if reason:
         logger.debug("job %s: nothing sent, coverage blocked (%s)", job.id, reason)
+        ctx.reason = f"coverage is not set up: {reason}"
         return True
     return False
 
@@ -147,6 +151,8 @@ def _build_warnings(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
                 "repeat_at": now + REPEAT_AFTER_S if (_code(w) in b.LIFE_SAFETY and st is None) else None,
             }
             logger.info("Warning %s: %s (%d B)", key, kind, len(msg))
+    if not out and not ctx.held_back:
+        ctx.reason = "no new or changed warnings" if active else "no warnings active in coverage"
     return out
 
 
@@ -166,13 +172,25 @@ def _build_observations(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     if area_blocked(job, ctx):
         return []
     if job.location_type == "station":
-        stations = [job.location_id.strip().upper()]
+        icao = job.location_id.strip().upper()
+        if b.tables.station(icao) is None:
+            ctx.reason = f"{icao or 'the station'} is not a station apps know"
+            return []
+        stations = [icao]
+    elif ctx.home is None:
+        ctx.reason = "the bot has no home point (set the home city in Settings)"
+        return []
     else:
         stations = b.coverage_stations(ctx.home, ctx.radius_km, ctx.store)
-    if not stations:
-        return []
+        if not stations:
+            ctx.reason = f"no station within {ctx.radius_km:g} km of home reported in the last 2 hours"
+            return []
     msg = b.obs_message(ctx.seq.next(), ctx.bot, ctx.store, stations)
-    return [msg] if msg else []
+    if not msg:
+        ctx.reason = f"{stations[0]} has no report from the last 2 hours" if job.location_type == "station" \
+            else "no report could be encoded"
+        return []
+    return [msg]
 
 
 def _is_home(location_id: str) -> bool:
@@ -183,25 +201,39 @@ def _is_home(location_id: str) -> bool:
 
 def _build_forecast(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     lat = lon = point = None
+    place = job.location_id.strip()
     if job.location_type == "pfm_point":
         b.tables.load()
         try:
-            point = int(job.location_id)
+            point = int(place)
+            if point < 0:
+                raise IndexError
             p = b.tables.points[point]
             lat, lon = p[2], p[3]
         except (ValueError, IndexError):
+            ctx.reason = f"forecast point {place!r} is not in the bundle"
             return []
-    elif job.location_type == "city" and job.location_id.strip() and not _is_home(job.location_id):
-        loc = resolver.resolve(job.location_id.strip())
-        if not loc:
-            return []
-        lat, lon = loc.get("lat"), loc.get("lon")
+    elif job.location_type == "city" and place and not _is_home(place):
+        coord = b.parse_latlon(place)
+        if coord:
+            lat, lon = coord
+        else:
+            loc = resolver.resolve(place)
+            if not loc:
+                ctx.reason = f"no place called {place!r}"
+                return []
+            lat, lon = loc.get("lat"), loc.get("lon")
     elif ctx.home is not None:
         lat, lon = ctx.home
+        place = "home"
     if lat is None or lon is None:
+        ctx.reason = "the bot has no home point (set the home city in Settings)"
         return []
     msg = b.forecast_message(ctx.seq.next(), ctx.bot, ctx.store, float(lat), float(lon), point=point)
-    return [msg] if msg else []
+    if not msg:
+        ctx.reason = f"no forecast within 80 km of {place} in the feed yet"
+        return []
+    return [msg]
 
 
 def _build_coverage(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
@@ -213,7 +245,10 @@ def _build_coverage(job: BroadcastJob, ctx: ExecutorContext) -> list[bytes]:
     if area_blocked(job, ctx):
         return []
     msg = b.coverage_message(ctx.seq.next(), ctx.bot, ctx.coverage, ctx.home, ctx.radius_km)
-    return [msg] if msg else []
+    if not msg:
+        ctx.reason = "the bot states neither a centre nor a zone"
+        return []
+    return [msg]
 
 
 PRODUCT_BUILDERS = {

@@ -229,7 +229,9 @@ class TestStorePersistence:
         store_module.save_config(cfg)
         assert tmp_cfg.exists()
         loaded = store_module.load_config()
-        assert len(loaded.jobs) == 5          # the saved job plus the four missing core jobs
+        # The saved job plus all five built-ins: a forecast for a city is one
+        # the operator added, not the home forecast.
+        assert len(loaded.jobs) == 6
         assert loaded.jobs[0].id == "round-trip"
         assert loaded.jobs[0].location_id == "Austin TX"
 

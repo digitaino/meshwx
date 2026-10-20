@@ -69,13 +69,13 @@
 
   <section class="block" id="mesh-jobs" aria-labelledby="hJobs">
     <div class="bh"><h2 id="hJobs">Scheduled broadcasts</h2><span class="hint" id="jobs-sub"></span>
-      <div class="right"><button class="primary" onclick="Portal.broadcasts.openJobModal('create')">New job</button>
-        <button onclick="Portal.broadcasts.runDue(this)" title="Runs every enabled job whose interval has elapsed">Run due jobs</button></div></div>
-    <p class="why">Binary datagrams for the MeshWX apps on the data channel. Each job sends one product for one place on its own interval.</p>
+      <div class="right"><button class="primary" onclick="Portal.broadcasts.openAdd()">Add a broadcast</button></div></div>
+    <p class="why">What this bot sends on its own, on the data channel. The five built-in broadcasts are what every MeshWX app expects: you can turn one off or run it less often, not remove it. Add a forecast for another place, or one airport's observations, if your mesh needs them.</p>
+    <div id="jobs-problems"></div>
     <div class="tiles" id="bc-tiles"></div>
     <div class="tbl mt"><table>
-      <thead><tr><th>Job</th><th>Product</th><th>Location</th><th>Every</th><th>Last run</th><th>Next</th><th>Last sent</th><th></th></tr></thead>
-      <tbody id="jobs-body"><tr><td colspan="8" class="hint">Loading…</td></tr></tbody>
+      <thead><tr><th>Broadcast</th><th>Every</th><th>Last run</th><th>Next</th><th></th></tr></thead>
+      <tbody id="jobs-body"><tr><td colspan="5" class="hint">Loading…</td></tr></tbody>
     </table></div>
     <h3 class="sm mt">Data channel log <span class="live" id="bclog-dot"></span> <span class="hint" id="bclog-status"></span></h3>
     <div class="feed" id="bclog-body"></div>

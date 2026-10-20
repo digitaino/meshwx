@@ -687,13 +687,13 @@ var Portal = {
   // -- Scheduled broadcasts: jobs, counters, the data channel log ------------------
 
   broadcasts: {
-    _meta: null, _timer: null, _sse: null, _n: 0,
+    _meta: null, _timer: null, _sse: null, _n: 0, _jobs: [], _previewN: 0, _previewTimer: null,
     _labels: { broadcast: "Broadcast", beacon: "Discovery beacon", app_request: "App request", app_response: "App reply",
                refresh: "App refresh", throttled: "Throttled" },
 
     start: function () {
       var self = this;
-      if (!this._meta) api("/api/schedule/meta").then(function (d) { self._meta = d; self.loadJobs(); }).catch(function () {});
+      if (!this._meta) api("/api/schedule/meta").then(function (d) { self._meta = d; }).catch(function () {});
       this.loadJobs(); this.loadStats();
       if (this._timer) clearInterval(this._timer);
       this._timer = setInterval(function () { self.loadJobs(); self.loadStats(); }, 30000);
@@ -727,130 +727,202 @@ var Portal = {
         var by = {}; (d.stats || []).forEach(function (s) { by[s.window_minutes] = s; });
         var h1 = by[60] || {}, d1 = by[1440] || {}, m15 = by[15] || {};
         var kb = function (b) { return b >= 1024 ? (b / 1024).toFixed(1) + " KB" : (b || 0) + " B"; };
-        var ov = (Portal.poll.last || {}).broadcasts || {};
-        $("jobs-sub").textContent = ov.running === false ? "off: no data channel configured" : ov.jobs_enabled != null ? ov.jobs_enabled + " of " + ov.jobs_total + " jobs on · " + nextRun(ov.next_run_in_s) : "";
         $("bc-tiles").innerHTML =
           tile("messages · 15 min", m15.messages || 0, kb(m15.bytes) + " on the data channel") +
           tile("messages · 1 h", h1.messages || 0, kb(h1.bytes)) +
           tile("messages · 24 h", d1.messages || 0, kb(d1.bytes));
       }).catch(function () {});
     },
-    _productLabel: function (k) { var i = ((this._meta || {}).product_info || {})[k]; return i ? i.label : k; },
-    _locationLabel: function (k) { var i = ((this._meta || {}).location_info || {})[k]; return i ? i.label : k; },
+    // "every 2 min", "every 6 h", "every 1 h 30 min"
+    _every: function (m) {
+      if (m < 60) return m + " min";
+      var h = Math.floor(m / 60), r = m % 60;
+      return h + " h" + (r ? " " + r + " min" : "");
+    },
+    _sent: function (r) {
+      if (!r) return "";
+      if (r.packets) return r.packets + (r.packets === 1 ? " packet, " : " packets, ") + r.bytes + " B";
+      return "nothing sent: " + (r.reason || "nothing to send");
+    },
 
     loadJobs: function () {
       var self = this;
       api("/api/schedule/jobs").then(function (data) {
+        self._jobs = data.jobs || [];
+        var on = self._jobs.filter(function (j) { return j.enabled; }).length;
+        var c = data.ceiling || {};
+        $("jobs-sub").textContent = on + " of " + self._jobs.length + " on · about " + Math.round(data.estimated_per_hour || 0) +
+          " scheduled packets an hour, of " + (c.cap || "?") + " allowed";
+        $("jobs-problems").innerHTML = (data.problems || []).map(function (t) {
+          return '<div class="notice warn mt">' + esc(t) + "</div>";
+        }).join("");
         var tbody = $("jobs-body");
-        if (!data.jobs || !data.jobs.length) { tbody.innerHTML = '<tr><td colspan="8" class="hint">No jobs yet. New job adds one.</td></tr>'; return; }
-        tbody.innerHTML = data.jobs.map(function (j) {
-          var id = esc(j.id);
-          return "<tr" + (j.enabled ? "" : ' class="off"') + "><td><b>" + esc(j.name) + '</b><div class="mono hint">' + id + "</div></td>" +
-            "<td>" + esc(self._productLabel(j.product)) + "</td>" +
-            "<td>" + esc(self._locationLabel(j.location_type)) + (j.location_id ? ": " + esc(j.location_id) : "") + "</td>" +
-            '<td class="n">' + j.interval_minutes + " min</td>" +
-            "<td>" + (j.last_run_seconds_ago != null ? ago(j.last_run_seconds_ago) + " ago" : "never") + "</td>" +
-            "<td>" + (!j.enabled ? "–" : j.next_run_in_seconds != null && j.last_run_unix ? "in " + ago(j.next_run_in_seconds) : "next tick") + "</td>" +
-            '<td class="n">' + j.last_bytes + ' B <span class="hint">· ' + j.last_msg_count + " msg</span></td>" +
-            '<td class="act"><button class="mini" aria-pressed="' + (j.enabled ? "true" : "false") + '" title="' + (j.enabled ? "On: click to turn it off" : "Off: click to turn it on") + '" onclick="Portal.broadcasts.toggleJob(\'' + id + '\')">' + (j.enabled ? "On" : "Off") + "</button> " +
-            '<button class="mini" onclick="Portal.broadcasts.runNow(\'' + id + '\')">Run now</button> ' +
-            '<button class="mini" onclick="Portal.broadcasts.editJob(\'' + id + '\')">Edit</button> ' +
-            '<button class="mini danger" onclick="Portal.broadcasts.deleteJob(\'' + id + '\')">Delete</button></td></tr>';
+        if (!self._jobs.length) { tbody.innerHTML = '<tr><td colspan="5" class="hint">No broadcasts.</td></tr>'; return; }
+        tbody.innerHTML = self._jobs.map(function (j) {
+          var id = esc(j.id), r = j.last_result;
+          var last = j.last_run_seconds_ago != null ? ago(j.last_run_seconds_ago) + " ago" : "never";
+          var sent = self._sent(r);
+          if (j.waiting_since) sent = "waiting for room under the hourly ceiling";
+          var warn = j.waiting_since || (r && !r.packets && j.product !== "warnings");
+          var next = !j.enabled ? "off" : j.waiting_since ? "when there is room" :
+            j.next_run_in_seconds ? "in " + ago(j.next_run_in_seconds) : "now";
+          return "<tr" + (j.enabled ? "" : ' class="off"') + "><td><b>" + esc(j.name) + "</b>" +
+            (j.builtin ? ' <span class="tag">built in</span>' : "") +
+            '<div class="hint">' + esc(j.product_label) + " · " + esc(j.location_label) + "</div></td>" +
+            '<td class="n">' + self._every(j.interval_minutes) + "</td>" +
+            "<td>" + last + (sent ? '<div class="hint' + (warn ? " w" : "") + '">' + esc(sent) + "</div>" : "") + "</td>" +
+            "<td>" + next + "</td>" +
+            '<td class="act"><button class="mini" aria-pressed="' + (j.enabled ? "true" : "false") + '" onclick="Portal.broadcasts.toggleJob(\'' + id + '\')">' + (j.enabled ? "On" : "Off") + "</button> " +
+            '<button class="mini" onclick="Portal.broadcasts.runNow(\'' + id + '\')"' + (j.enabled ? "" : " disabled") + ">" + (j.product === "warnings" ? "Check now" : "Send now") + "</button> " +
+            '<button class="mini" onclick="Portal.broadcasts.openEdit(\'' + id + '\')">Edit</button>' +
+            (j.builtin ? "" : ' <button class="mini danger" onclick="Portal.broadcasts.deleteJob(\'' + id + '\')">Delete</button>') + "</td></tr>";
         }).join("");
       }).catch(function (e) {
-        $("jobs-body").innerHTML = '<tr><td colspan="8" class="hint">' + esc(e.message) + "</td></tr>";
+        $("jobs-body").innerHTML = '<tr><td colspan="5" class="hint">' + esc(e.message) + "</td></tr>";
       });
     },
+    _job: function (id) { return (this._jobs || []).find(function (j) { return j.id === id; }); },
 
-    runDue: function (btn) {
-      btn.disabled = true;
+    _intervalOptions: function (choices, current) {
       var self = this;
-      api("/api/actions/broadcast", { method: "POST" }).then(function (d) {
-        Portal.ui.toast(d.messages_sent ? "Sent " + d.messages_sent + " message(s)" : "Nothing was due; use Run now on a job to force it");
-        self.loadJobs();
-      }).catch(function (e) { Portal.ui.toast(e.message, false); }).finally(function () { btn.disabled = false; });
+      return choices.map(function (m) {
+        return '<option value="' + m + '"' + (m === current ? " selected" : "") + ">every " + self._every(m) + "</option>";
+      }).join("");
     },
 
-    openJobModal: function (mode, job) {
-      var meta = this._meta || {}, pInfo = meta.product_info || {}, lInfo = meta.location_info || {};
-      var isEdit = mode === "edit" && job;
-      var selectedProduct = isEdit ? job.product : (meta.products || [])[0] || "";
-      var productOpts = (meta.products || []).map(function (p) {
-        return '<option value="' + p + '"' + (p === selectedProduct ? " selected" : "") + ">" + esc((pInfo[p] || {}).label || p) + "</option>";
+    // What a run costs, from /api/schedule/preview.
+    _previewHtml: function (d) {
+      if (!d) return "";
+      var out = [];
+      if (d.errors && d.errors.length) return '<div class="notice bad">' + d.errors.map(esc).join("<br>") + "</div>";
+      if (d.label) out.push("<b>" + esc(d.label) + "</b>");
+      (d.notes || []).forEach(function (n) { out.push(esc(n)); });
+      if (d.active_warnings != null) {
+        out.push("Sends a warning when one appears or changes, and a cancel when one ends early. " + d.active_warnings + " active in coverage now.");
+      } else if (d.packets) {
+        out.push("Each run: " + d.packets + (d.packets === 1 ? " packet, " : " packets, ") + d.bytes + " B, about " +
+          (d.airtime_ms / 1000).toFixed(1) + " s on air before repeaters pass it on. " + d.runs_per_day + " runs a day.");
+      } else if (d.reason && !(d.notes || []).length) {
+        out.push("Right now it would send nothing: " + esc(d.reason) + ".");
+      }
+      var h = d.per_hour || {};
+      var n = function (x) { return x < 10 ? x.toFixed(1) : String(Math.round(x)); };
+      if (h.cap) out.push("Scheduled broadcasts: about " + n(h.others) + " packets an hour" +
+        (h.this ? ", " + n(h.others + h.this) + " with this one" : "") + ", of " + h.cap + " allowed.");
+      return '<div class="notice info">' + out.join("<br>") + "</div>";
+    },
+
+    openAdd: function () {
+      var meta = this._meta || {}, kinds = meta.kinds || {}, self = this;
+      var radios = Object.keys(kinds).map(function (k, i) {
+        return '<label class="choice"><input type="radio" name="jf-kind" value="' + k + '"' + (i === 0 ? " checked" : "") +
+          ' onchange="Portal.broadcasts._onKind()"> <b>' + esc(kinds[k].label) + '</b><div class="hint">' + esc(kinds[k].desc) + "</div></label>";
       }).join("");
-      var validLocs = (pInfo[selectedProduct] || {}).locations || meta.location_types || [];
-      var selectedLoc = isEdit ? job.location_type : validLocs[0] || "";
-      var locOpts = validLocs.map(function (t) {
-        return '<option value="' + t + '"' + (t === selectedLoc ? " selected" : "") + ">" + esc((lInfo[t] || {}).label || t) + "</option>";
-      }).join("");
-      var html =
-        "<h2>" + (isEdit ? "Edit job" : "New job") + "</h2>" +
-        '<form onsubmit="Portal.broadcasts.saveJob(event)">' +
-        '<input type="hidden" id="jf-mode" value="' + mode + '"><input type="hidden" id="jf-original-id" value="' + (isEdit ? esc(job.id) : "") + '">' +
-        '<div class="f"><label for="jf-id">ID (slug)</label><input type="text" id="jf-id" required pattern="[a-z0-9_-]+" maxlength="64" value="' + (isEdit ? esc(job.id) : "") + '"' + (isEdit ? " readonly" : "") + "></div>" +
-        '<div class="f"><label for="jf-name">Display name</label><input type="text" id="jf-name" required maxlength="120" value="' + (isEdit ? esc(job.name) : "") + '"></div>' +
-        '<div class="f"><label for="jf-product">Product</label><select id="jf-product" required onchange="Portal.broadcasts._onProductChange()">' + productOpts + "</select>" +
-        '<div class="hint mt" id="jf-product-desc" style="margin-top:4px">' + esc((pInfo[selectedProduct] || {}).desc || "") + "</div></div>" +
-        '<div class="f"><label for="jf-loctype">Location</label><select id="jf-loctype" required onchange="Portal.broadcasts._onLocTypeChange()">' + locOpts + "</select></div>" +
-        '<div class="f" id="jf-locid-group"' + (selectedLoc !== "coverage" ? "" : " hidden") + '><label for="jf-locid">Location ID</label><input type="text" id="jf-locid" placeholder="' + esc((lInfo[selectedLoc] || {}).placeholder || "") + '" value="' + (isEdit ? esc(job.location_id || "") : "") + '"></div>' +
-        '<div class="f"><label for="jf-interval">Interval (minutes)</label><input type="number" id="jf-interval" required min="1" max="10080" value="' + (isEdit ? job.interval_minutes : 60) + '"></div>' +
-        '<label class="hint"><input type="checkbox" id="jf-enabled"' + (isEdit ? (job.enabled ? " checked" : "") : " checked") + ">On</label>" +
-        '<div class="row"><button type="submit" class="primary">Save</button><button type="button" onclick="Portal.ui.closeModal()">Cancel</button></div></form>';
-      Portal.ui.openModal(html);
+      Portal.ui.openModal(
+        "<h2>Add a broadcast</h2>" +
+        '<form onsubmit="Portal.broadcasts.saveAdd(event)">' +
+        '<fieldset class="f"><legend>What to send</legend>' + radios + "</fieldset>" +
+        '<div class="f mt"><label for="jf-where" id="jf-where-label"></label><input type="text" id="jf-where" autocomplete="off" oninput="Portal.broadcasts._schedulePreview()"></div>' +
+        '<div class="f mt"><label for="jf-interval">How often</label><select id="jf-interval" onchange="Portal.broadcasts._schedulePreview()"></select></div>' +
+        '<div class="f mt"><label for="jf-name">Name</label><input type="text" id="jf-name" maxlength="120"></div>' +
+        '<div id="jf-preview" class="mt" aria-live="polite"></div>' +
+        '<label class="hint mt"><input type="checkbox" id="jf-enabled" checked> On</label>' +
+        '<div class="row mt"><button type="submit" class="primary" id="jf-save" disabled>Add</button><button type="button" onclick="Portal.ui.closeModal()">Cancel</button></div></form>');
+      this._onKind();
+      $("jf-where").focus();
     },
-    _onProductChange: function () {
-      var meta = this._meta || {}, pInfo = meta.product_info || {}, lInfo = meta.location_info || {};
-      var info = pInfo[$("jf-product").value] || {};
-      $("jf-product-desc").textContent = info.desc || "";
-      var validLocs = info.locations || meta.location_types || [];
-      var sel = $("jf-loctype"), cur = sel.value;
-      sel.innerHTML = validLocs.map(function (t) { return '<option value="' + t + '">' + esc((lInfo[t] || {}).label || t) + "</option>"; }).join("");
-      if (validLocs.indexOf(cur) !== -1) sel.value = cur;
-      this._onLocTypeChange();
+    _kind: function () { var el = document.querySelector('input[name="jf-kind"]:checked'); return el ? el.value : ""; },
+    _onKind: function () {
+      var meta = this._meta || {}, k = (meta.kinds || {})[this._kind()] || {};
+      $("jf-where-label").textContent = k.field || "Where";
+      $("jf-where").placeholder = k.placeholder || "";
+      $("jf-interval").innerHTML = this._intervalOptions((meta.interval_choices || {})[k.product] || [], (meta.default_interval || {})[k.product]);
+      this._schedulePreview();
     },
-    _onLocTypeChange: function () {
-      var lInfo = ((this._meta || {}).location_info) || {};
-      var lt = $("jf-loctype").value;
-      $("jf-locid-group").hidden = lt === "coverage";
-      $("jf-locid").placeholder = (lInfo[lt] || {}).placeholder || "";
+    _schedulePreview: function () {
+      var self = this;
+      clearTimeout(this._previewTimer);
+      $("jf-save").disabled = true;
+      this._previewTimer = setTimeout(function () { self._preview(); }, 400);
     },
-    saveJob: function (ev) {
+    _preview: function () {
+      var where = $("jf-where").value.trim(), out = $("jf-preview"), self = this, n = ++this._previewN;
+      if (!where) { out.innerHTML = ""; return; }
+      var body = { kind: this._kind(), interval_minutes: parseInt($("jf-interval").value, 10) };
+      body[this._kind() === "station" ? "station" : "place"] = where;
+      api("/api/schedule/preview", { method: "POST", body: body }).then(function (d) {
+        if (n !== self._previewN) return;                 // a newer preview is on its way
+        out.innerHTML = self._previewHtml(d);
+        $("jf-name").placeholder = d.name || "";
+        $("jf-save").disabled = !d.ok;
+      }).catch(function (e) { if (n === self._previewN) out.innerHTML = '<div class="notice bad">' + esc(e.message) + "</div>"; });
+    },
+    saveAdd: function (ev) {
       ev.preventDefault();
-      var mode = $("jf-mode").value, origId = $("jf-original-id").value, self = this;
-      var body = {
-        id: $("jf-id").value.trim(), name: $("jf-name").value.trim(), product: $("jf-product").value,
-        location_type: $("jf-loctype").value, location_id: $("jf-locid").value.trim(),
-        interval_minutes: parseInt($("jf-interval").value, 10), enabled: $("jf-enabled").checked,
-      };
-      var url = mode === "edit" ? "/api/schedule/jobs/" + encodeURIComponent(origId) : "/api/schedule/jobs";
-      api(url, { method: mode === "edit" ? "PUT" : "POST", body: body }).then(function () {
-        Portal.ui.toast("Job saved"); Portal.ui.closeModal(); self.loadJobs();
-      }).catch(function (e) { Portal.ui.toast("Save failed: " + e.message, false); });
+      var self = this, where = $("jf-where").value.trim();
+      var body = { kind: this._kind(), name: $("jf-name").value.trim(), interval_minutes: parseInt($("jf-interval").value, 10),
+                   enabled: $("jf-enabled").checked };
+      body[this._kind() === "station" ? "station" : "place"] = where;
+      api("/api/schedule/jobs", { method: "POST", body: body }).then(function (d) {
+        Portal.ui.toast("Added " + d.job.name); Portal.ui.closeModal(); self.loadJobs();
+      }).catch(function (e) { Portal.ui.toast(e.message, false); });
+    },
+
+    openEdit: function (id) {
+      var j = this._job(id), self = this;
+      if (!j) { Portal.ui.toast("That broadcast is gone", false); return; }
+      Portal.ui.openModal(
+        "<h2>" + esc(j.name) + "</h2>" +
+        '<p class="hint">' + esc(j.product_label) + " · " + esc(j.location_label) +
+        (j.builtin ? ". Built in: it can be turned off, not removed." : ". To send something else, add a new broadcast.") + "</p>" +
+        '<form onsubmit="Portal.broadcasts.saveEdit(event, \'' + esc(id) + '\')">' +
+        '<div class="f"><label for="jf-name">Name</label><input type="text" id="jf-name" required maxlength="120" value="' + esc(j.name) + '"></div>' +
+        '<div class="f mt"><label for="jf-interval">How often</label><select id="jf-interval" onchange="Portal.broadcasts._editPreview(\'' + esc(id) + '\')">' +
+        this._intervalOptions(j.interval_choices || [j.interval_minutes], j.interval_minutes) + "</select>" +
+        (j.product === "warnings" ? '<div class="hint">How often the bot checks for new and changed warnings. Each goes out at the next check.</div>' : "") + "</div>" +
+        '<div id="jf-preview" class="mt" aria-live="polite"></div>' +
+        '<label class="hint mt"><input type="checkbox" id="jf-enabled"' + (j.enabled ? " checked" : "") + "> On</label>" +
+        '<div class="row mt"><button type="submit" class="primary">Save</button><button type="button" onclick="Portal.ui.closeModal()">Cancel</button></div></form>');
+      this._editPreview(id);
+    },
+    _editPreview: function (id) {
+      var self = this;
+      api("/api/schedule/preview", { method: "POST", body: { job_id: id, interval_minutes: parseInt($("jf-interval").value, 10) } })
+        .then(function (d) { var el = $("jf-preview"); d.label = null; if (el) el.innerHTML = self._previewHtml(d); })
+        .catch(function () {});
+    },
+    _confirmWarningsOff: function () {
+      return confirm("Turn off warnings? This bot stops sending alerts to MeshWX apps until you turn it back on.");
+    },
+    saveEdit: function (ev, id) {
+      ev.preventDefault();
+      var j = this._job(id) || {}, self = this, enabled = $("jf-enabled").checked;
+      if (j.product === "warnings" && j.enabled && !enabled && !this._confirmWarningsOff()) return;
+      api("/api/schedule/jobs/" + encodeURIComponent(id), { method: "PUT",
+        body: { name: $("jf-name").value.trim(), interval_minutes: parseInt($("jf-interval").value, 10), enabled: enabled } })
+        .then(function () { Portal.ui.toast("Saved"); Portal.ui.closeModal(); self.loadJobs(); Portal.poll.tick(); })
+        .catch(function (e) { Portal.ui.toast(e.message, false); });
     },
     toggleJob: function (id) {
-      var self = this;
+      var j = this._job(id) || {}, self = this;
+      if (j.product === "warnings" && j.enabled && !this._confirmWarningsOff()) return;
       api("/api/schedule/jobs/" + encodeURIComponent(id) + "/toggle", { method: "POST" })
         .then(function () { self.loadJobs(); Portal.poll.tick(); }).catch(function (e) { Portal.ui.toast(e.message, false); });
     },
     runNow: function (id) {
       var self = this;
       api("/api/schedule/jobs/" + encodeURIComponent(id) + "/run-now", { method: "POST" })
-        .then(function (d) { Portal.ui.toast(d.messages_sent ? "Sent " + d.messages_sent + " message(s)" : "Job ran: no data to send right now"); setTimeout(function () { self.loadJobs(); self.loadStats(); }, 500); })
+        .then(function (d) {
+          Portal.ui.toast(d.messages_sent ? "Sent " + d.messages_sent + (d.messages_sent === 1 ? " packet" : " packets") : "Nothing sent: " + (d.reason || "nothing to send"));
+          setTimeout(function () { self.loadJobs(); self.loadStats(); }, 500);
+        })
         .catch(function (e) { Portal.ui.toast(e.message, false); });
     },
-    editJob: function (id) {
-      var self = this;
-      api("/api/schedule/jobs").then(function (d) {
-        var job = (d.jobs || []).find(function (j) { return j.id === id; });
-        if (!job) { Portal.ui.toast("Job not found", false); return; }
-        self.openJobModal("edit", job);
-      });
-    },
     deleteJob: function (id) {
-      if (!confirm("Delete job " + id + "?")) return;
-      var self = this;
+      var j = this._job(id) || { name: id }, self = this;
+      if (!confirm("Delete “" + j.name + "”?")) return;
       api("/api/schedule/jobs/" + encodeURIComponent(id), { method: "DELETE" })
-        .then(function () { Portal.ui.toast("Job deleted"); self.loadJobs(); }).catch(function (e) { Portal.ui.toast(e.message, false); });
+        .then(function () { Portal.ui.toast("Deleted " + j.name); self.loadJobs(); }).catch(function (e) { Portal.ui.toast(e.message, false); });
     },
   },
 

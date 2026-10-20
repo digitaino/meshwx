@@ -40,7 +40,7 @@ from meshcore_weather.parser.weather import WeatherStore
 from meshcore_weather.protocol import v5
 from meshcore_weather.protocol import v5_builders as b
 from meshcore_weather.protocol.coverage import Coverage
-from meshcore_weather.schedule.executor import BroadcastExecutor, ExecutorContext
+from meshcore_weather.schedule.executor import area_blocked, BroadcastExecutor, ExecutorContext
 from meshcore_weather.schedule.models import BroadcastConfig
 from meshcore_weather.schedule.store import CONFIG_PATH, load_config, save_config
 
@@ -103,6 +103,11 @@ class Scheduler:
         self._total_bytes: dict[str, int] = {}
         self._total_runs: dict[str, int] = {}
         self._last_msg_count: dict[str, int] = {}
+        # What each job's last run did, kept across restarts for the portal:
+        # {"at": unix, "packets": n, "bytes": n, "reason": why nothing went, or None}.
+        self._last_result: dict[str, dict] = {}
+        # Jobs waiting for room under the ceiling (job id -> since when).
+        self._waiting: dict[str, float] = {}
         # The seq the next packet on air gets. Restored from the state file;
         # the clock only seeds a bot that has never saved one.
         self._next_seq = int(time.time()) & 0xFF
@@ -233,6 +238,8 @@ class Scheduler:
                         self._last_run[str(job_id)] = min(float(t), now)
                 self._sched_sent = deque(sorted(t for t in d.get("sched_sent") or []
                                                 if isinstance(t, (int, float)) and 0 <= now - t <= 3600))
+                self._last_result = {str(k): v for k, v in (d.get("last_result") or {}).items()
+                                     if isinstance(v, dict)}
                 logger.info("Warning state: %d active identities restored, next seq %d, %d job run times",
                             len(self._warning_state), self._next_seq, len(self._last_run))
         except Exception as e:
@@ -255,7 +262,8 @@ class Scheduler:
             now = time.time()
             state = {"warnings": self._warning_state, "next_seq": seq,
                      "last_run": {k: v for k, v in self._last_run.items() if v > 0},
-                     "sched_sent": [t for t in self._sched_sent if now - t <= 3600]}
+                     "sched_sent": [t for t in self._sched_sent if now - t <= 3600],
+                     "last_result": self._last_result}
             advert = self._advert_record()
             if advert is not None:
                 state["advert"] = advert
@@ -392,7 +400,7 @@ class Scheduler:
         if self._digest_due_at and time.time() >= self._digest_due_at:
             self._digest_due_at = None
             digest = self._config.get_job("digest")
-            if digest is not None:
+            if digest is not None and digest.enabled:
                 sent += await self._run(digest, ctx)
         if ctx.warning_state is not self._warning_state:
             self._warning_state = ctx.warning_state
@@ -410,7 +418,9 @@ class Scheduler:
             ctx.budget, ctx.held_back = left, 0
         elif left <= 0:
             self._ceiling_hit(job.id, 1, now)
+            self._waiting.setdefault(job.id, now)
             return 0
+        ctx.reason = None
         try:
             msgs = self.executor.run_job(job, ctx)
         except Exception:
@@ -420,7 +430,9 @@ class Scheduler:
             ctx.budget = None
         if job.product != "warnings" and len(msgs) > left:
             self._ceiling_hit(job.id, len(msgs), now)
+            self._waiting.setdefault(job.id, now)
             return 0
+        self._waiting.pop(job.id, None)
         if job.product == "warnings" and ctx.held_back:
             self._ceiling_hit(job.id, ctx.held_back, now)
         now = time.time()
@@ -430,12 +442,17 @@ class Scheduler:
         if not msgs:
             self._last_msg_count[job.id] = 0
             self._last_bytes[job.id] = 0
-            logger.debug("job %s: nothing to send", job.id)
+            self._last_result[job.id] = {"at": now, "packets": 0, "bytes": 0,
+                                         "reason": ctx.reason or "nothing to send"}
+            logger.debug("job %s: nothing to send (%s)", job.id, ctx.reason)
             return 0
         n, nbytes = await self.transmit(msgs, f"job {job.id} ({job.product})")
         self._sched_sent.extend([time.time()] * n)
         self._last_msg_count[job.id] = n
         self._last_bytes[job.id] = nbytes
+        self._last_result[job.id] = {"at": now, "packets": n, "bytes": nbytes,
+                                     "reason": None if n else ("transmit is off" if not settings.tx_enabled
+                                                               else "the radio did not take the packets")}
         self._total_bytes[job.id] = self._total_bytes.get(job.id, 0) + nbytes
         activity_log.record(EventDir.OUT, "broadcast",
                             f"Job {job.id}: {n} msg(s), {nbytes}B ({job.product})",
@@ -561,7 +578,43 @@ class Scheduler:
             "total_bytes": self._total_bytes.get(job_id, 0),
             "last_bytes": self._last_bytes.get(job_id, 0),
             "last_msg_count": self._last_msg_count.get(job_id, 0),
+            "last_result": self._last_result.get(job_id),
+            "waiting_since": self._waiting.get(job_id),
         }
+
+    def preview(self, job) -> dict:
+        """What `job` would send if it ran now, without sending it or touching
+        any state: the packets' sizes, or why it would send nothing. Warnings
+        are not built (that would move their state); the answer says how many
+        are active in coverage instead."""
+        ctx = self.context()
+        if job.product == "warnings":
+            if area_blocked(job, ctx):
+                return {"packets": [], "reason": ctx.reason}
+            from meshcore_weather.protocol.warnings import extract_active_warnings
+            active = [w for w in extract_active_warnings(self.store, coverage=self._coverage)
+                      if b.warning_identity(w) is not None]
+            return {"packets": [], "reason": None, "active_warnings": len(active)}
+        ctx.warning_state = {}
+        try:
+            msgs = self.executor.run_job(job, ctx)
+        except Exception as exc:
+            logger.exception("preview of job %s", job.id)
+            return {"packets": [], "reason": f"the bot could not build it: {exc}"}
+        return {"packets": [len(m) for m in msgs], "reason": None if msgs else (ctx.reason or "nothing to send")}
+
+    def scheduled_packets_per_hour(self) -> float:
+        """About how many packets the enabled jobs send an hour, from what each
+        sent last time (one packet when it has not run yet). Warnings are left
+        out: they go when the weather says so."""
+        total = 0.0
+        for job in self._config.jobs:
+            if not job.enabled or job.product == "warnings":
+                continue
+            last = self._last_result.get(job.id) or {}
+            packets = last.get("packets") or 1
+            total += packets * 60.0 / job.interval_minutes
+        return total
 
     async def run_job_now(self, job_id: str) -> int:
         job = self._config.get_job(job_id)

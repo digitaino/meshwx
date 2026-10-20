@@ -31,6 +31,31 @@ LOCATION_TYPES = {
 }
 
 
+# The five broadcasts every MeshWX app expects (spec §15). An operator can turn
+# one off or change how often it runs, never delete it or make it send
+# something else: an app relies on each of them.
+BUILTIN_IDS = ("warnings", "digest", "observations", "forecast", "coverage")
+
+# How often each product may run, in minutes: the choices the portal offers,
+# and the one a new job starts with. Warnings are sent when they change; their
+# interval is how often the bot looks, so it stays short.
+INTERVAL_CHOICES = {
+    "warnings": (1, 2, 5),
+    "digest": (60, 120, 180, 360, 720),
+    "observations": (30, 60, 120, 180),
+    "forecast": (180, 360, 720, 1440),
+    "coverage": (60, 180, 360, 720, 1440),
+}
+DEFAULT_INTERVAL = {"warnings": 2, "digest": 180, "observations": 60, "forecast": 360, "coverage": 180}
+
+
+def is_builtin(job: "BroadcastJob") -> bool:
+    """One of the five built-in broadcasts. The home forecast counts however
+    its id was written (a bot bootstrapped before 2026-10-17 named it after
+    its city)."""
+    return job.id in BUILTIN_IDS or (job.product == "forecast" and job.location_id.strip().lower() == "home")
+
+
 _ID_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
 

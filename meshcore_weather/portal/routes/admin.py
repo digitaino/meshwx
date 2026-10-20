@@ -1219,6 +1219,11 @@ def attention(d: dict) -> list[dict]:
         add("warn", f"EMWIN runs {round(feed['lag_min'])} min behind NOAA.", "#station")
     for part, err in (fill.get("errors") or {}).items():
         add("warn", f"Internet fill, {part}: {err}", "#station")
+    bc = d.get("broadcasts") or {}
+    if bc.get("warnings_off"):
+        add("bad", "Warnings are not being broadcast: the Warnings job is off.", "#mesh/jobs")
+    for text in bc.get("config_problems") or []:
+        add("warn", text, "#mesh/jobs")
     for p in (d.get("problems") or {}).get("config") or []:
         add("bad" if p.get("level") == "error" else "warn", p.get("text", ""), "#settings")
     errors = (d.get("problems") or {}).get("errors_last_hour") or 0
@@ -1243,6 +1248,11 @@ def attention(d: dict) -> list[dict]:
     return sorted(out, key=lambda i: order[i["level"]])
 
 
+def _schedule_load_problems() -> list[str]:
+    from meshcore_weather.schedule.store import LOAD_PROBLEMS
+    return LOAD_PROBLEMS
+
+
 @router.get("/overview")
 async def overview(request: Request) -> JSONResponse:
     """Everything the Overview page and the header strip show, in one call:
@@ -1258,11 +1268,13 @@ async def overview(request: Request) -> JSONResponse:
     broadcaster = getattr(bot, "_broadcaster", None)
     jobs_total = jobs_enabled = 0
     next_in = None
+    warnings_off = False
     if broadcaster is not None:
         cfg = broadcaster.scheduler.current_config()
         for job in cfg.jobs:
             jobs_total += 1
             if not job.enabled:
+                warnings_off = warnings_off or job.id == "warnings"
                 continue
             jobs_enabled += 1
             n = broadcaster.scheduler.job_status(job.id).get("next_run_in_seconds")
@@ -1307,6 +1319,8 @@ async def overview(request: Request) -> JSONResponse:
             # Why the area jobs send nothing (coverage fails closed), and the
             # scheduled ceiling's hour.
             "blocked": getattr(getattr(broadcaster, "coverage", None), "blocked", None) if broadcaster else None,
+            "warnings_off": warnings_off,
+            "config_problems": list(_schedule_load_problems()) if broadcaster is not None else [],
             "ceiling": broadcaster.scheduler.ceiling_status()
             if broadcaster is not None and hasattr(broadcaster.scheduler, "ceiling_status") else None,
         },

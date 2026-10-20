@@ -22,7 +22,7 @@ NOAA EMWIN over the internet ───────┘    │ parse, schedule, �
 - **One request grammar for apps and people.** An app sends `>f 102` and gets a binary answer on the channel for every listener; a person sends `forecast austin tx` and gets text. An app's `>` arrives as a flooded Request datagram (v5 type 9), by DM, or as channel text; the answer is the same either way.
 - **Delivery confirmation.** The radio hears a repeater's copy of each channel packet the bot sends. When none comes back within the echo window, the packet goes out once more, byte for byte the same, so nobody sees it twice. DM replies wait for the recipient's ACK instead: about 2 s after the request, one at a time per person, one timestamp for all tries (attempts 0 and 1 on the route, then one by flood). A phone's resend of a request is not answered twice.
 - **Discovery by advert.** The node is named `WX-<city>` (e.g. `WX-AUS`); apps list adverts whose name starts with `WX-`. No discovery channel, no beacon.
-- **A broadcast schedule** of four v5 jobs (warnings on change, digest, observations, home forecast), edited in the portal and kept in `data/broadcast_config.json`.
+- **A broadcast schedule**: five built-in broadcasts (warnings on change, the digest, observations, the home forecast, the coverage statement), plus any forecast for another place or single airport an operator adds in the portal. Kept in `data/broadcast_config.json`.
 - **Radio swaps.** The bot keeps a profile of its node (identity key, name, position, LoRa settings, contacts) and can write it onto a replacement radio, asking first by default. See [`docs/Radio_Swap.md`](docs/Radio_Swap.md).
 - **Receiver status on the mesh.** `sat` (or `>sat` from an app) answers with the dish's lock, signal quality, packets dropped in the last minute and the age of the newest EMWIN file, how far behind the uplink the products run when that is half an hour or more (`products ~5h behind`: on 2026-10-16 NOAA replayed a backlog for ten hours while every file was seconds old), and since when the internet fill is filling in. With `MCW_STATUS_CHANNEL` set, the bot also reports trouble unasked: one short line on a status channel of its own when the lock is lost or back, the internet fill starts or stops filling in, or the products fall an hour behind.
 - **An admin portal** for the radio, receiver, text bot, schedule, logs and settings, and a **public dashboard** on the Pi that shows the receiver and a redacted live feed of the bot.
@@ -783,7 +783,7 @@ box) and `deploy/pi.env.example` (receiver Pi) are starting points.
 | `MCW_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
 | `MCW_MESHWX_REFRESH_COOLDOWN` | `300` | Not read by the current code (left from v4) |
 
-Once the bot is running, **the broadcast schedule is managed in the portal and `data/broadcast_config.json`**, not in environment variables.
+Once the bot is running, **the broadcast schedule is managed in the portal** (Mesh › Scheduled broadcasts) and kept in `data/broadcast_config.json`, not in environment variables. The five built-in broadcasts can be turned off or run less often, not removed. Add a broadcast offers the two things worth adding: a forecast for another place (city and state, ZIP code or lat,lon) and one airport's observations. It shows what one run sends, its airtime and its share of the hourly ceiling before you save. Each row then says what the last run sent, or why it sent nothing.
 
 ## Data sources
 
